@@ -142,7 +142,27 @@ public class DispatchDecision {
         return id;
     }
 
+    public UUID getRideOrderId() {
+        return rideOrderId;
+    }
+
     public String getDecisionResult() {
         return decisionResult;
+    }
+
+    public UUID getBestVehicleId() {
+        return bestVehicleId;
+    }
+
+    public UUID getBestTaskId() {
+        return bestTaskId;
+    }
+
+    public Integer getEstimatedWaitMinutes() {
+        return estimatedWaitMinutes;
+    }
+
+    public Integer getEstimatedDetourMinutes() {
+        return estimatedDetourMinutes;
     }
 }

@@ -78,7 +78,71 @@ public class TaskStop {
         this.vehicleTask = vehicleTask;
     }
 
+    public void arrive() {
+        requireStatus("PLANNED");
+        this.actualArrivalAt = OffsetDateTime.now();
+        this.status = "ARRIVED";
+    }
+
+    public void board() {
+        requireStopType("BOARDING");
+        requireStatus("ARRIVED");
+        this.status = "BOARDED";
+    }
+
+    public void alight() {
+        requireStopType("ALIGHTING");
+        requireStatus("ARRIVED");
+        this.status = "ALIGHTED";
+    }
+
+    public boolean isExecutionComplete() {
+        if ("BOARDING".equals(stopType)) {
+            return "BOARDED".equals(status);
+        }
+        if ("ALIGHTING".equals(stopType)) {
+            return "ALIGHTED".equals(status);
+        }
+        return "ARRIVED".equals(status);
+    }
+
+    public UUID getId() {
+        return id;
+    }
+
+    public UUID getVirtualStopId() {
+        return virtualStopId;
+    }
+
+    public UUID getRideOrderId() {
+        return rideOrderId;
+    }
+
     public int getSequenceNumber() {
         return sequenceNumber;
+    }
+
+    public String getStopType() {
+        return stopType;
+    }
+
+    public OffsetDateTime getPlannedArrivalAt() {
+        return plannedArrivalAt;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    private void requireStopType(String expectedStopType) {
+        if (!expectedStopType.equals(stopType)) {
+            throw new IllegalStateException("Stop type " + stopType + " cannot perform this transition");
+        }
+    }
+
+    private void requireStatus(String expectedStatus) {
+        if (!expectedStatus.equals(status)) {
+            throw new IllegalStateException("Task stop status " + status + " cannot perform this transition");
+        }
     }
 }

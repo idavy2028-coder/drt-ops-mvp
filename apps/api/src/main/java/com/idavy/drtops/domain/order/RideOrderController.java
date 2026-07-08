@@ -21,10 +21,15 @@ public class RideOrderController {
 
     private final RideOrderService rideOrderService;
     private final DispatchOrchestrator dispatchOrchestrator;
+    private final OrderExceptionService orderExceptionService;
 
-    public RideOrderController(RideOrderService rideOrderService, DispatchOrchestrator dispatchOrchestrator) {
+    public RideOrderController(
+            RideOrderService rideOrderService,
+            DispatchOrchestrator dispatchOrchestrator,
+            OrderExceptionService orderExceptionService) {
         this.rideOrderService = rideOrderService;
         this.dispatchOrchestrator = dispatchOrchestrator;
+        this.orderExceptionService = orderExceptionService;
     }
 
     @GetMapping
@@ -40,5 +45,18 @@ public class RideOrderController {
     @PostMapping("/{orderId}/dispatch")
     ApiResponse<DispatchResult> dispatch(@PathVariable UUID orderId) {
         return ApiResponse.ok(dispatchOrchestrator.dispatchOrder(orderId));
+    }
+
+    @PostMapping("/{orderId}/cancel")
+    ApiResponse<RideOrder> cancel(@PathVariable UUID orderId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(orderExceptionService.cancel(orderId, request.reason()));
+    }
+
+    @PostMapping("/{orderId}/no-show")
+    ApiResponse<RideOrder> noShow(@PathVariable UUID orderId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(orderExceptionService.noShow(orderId, request.reason()));
+    }
+
+    public record ReasonRequest(String reason) {
     }
 }

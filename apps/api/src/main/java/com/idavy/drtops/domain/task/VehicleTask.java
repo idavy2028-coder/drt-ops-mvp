@@ -81,7 +81,7 @@ public class VehicleTask {
     }
 
     public void startExecution() {
-        requireStatus(TaskStatus.DISPATCHED);
+        requireStatus(TaskStatus.PENDING_DEPARTURE, TaskStatus.DISPATCHED);
         changeStatus(TaskStatus.IN_PROGRESS);
     }
 
@@ -122,8 +122,21 @@ public class VehicleTask {
         this.updatedAt = OffsetDateTime.now();
     }
 
+    public void markCurrentStop(UUID currentStopId) {
+        this.currentStopId = currentStopId;
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public UUID getId() {
         return id;
+    }
+
+    public UUID getVehicleId() {
+        return vehicleId;
+    }
+
+    public UUID getDriverId() {
+        return driverId;
     }
 
     public TaskStatus getStatus() {
@@ -134,10 +147,13 @@ public class VehicleTask {
         return List.copyOf(stops);
     }
 
-    private void requireStatus(TaskStatus expectedStatus) {
-        if (status != expectedStatus) {
-            throw new IllegalStateException("Task status " + status + " cannot perform this transition");
+    private void requireStatus(TaskStatus... expectedStatuses) {
+        for (TaskStatus expectedStatus : expectedStatuses) {
+            if (status == expectedStatus) {
+                return;
+            }
         }
+        throw new IllegalStateException("Task status " + status + " cannot perform this transition");
     }
 
     private boolean isTerminal() {
