@@ -147,6 +147,50 @@ public class RideOrder {
         return status;
     }
 
+    public String getPassengerName() {
+        return passengerName;
+    }
+
+    public String getPassengerPhone() {
+        return passengerPhone;
+    }
+
+    public int getPassengerCount() {
+        return passengerCount;
+    }
+
+    public String getRequestType() {
+        return requestType;
+    }
+
+    public BigDecimal getOriginLng() {
+        return originLng;
+    }
+
+    public BigDecimal getOriginLat() {
+        return originLat;
+    }
+
+    public BigDecimal getDestinationLng() {
+        return destinationLng;
+    }
+
+    public BigDecimal getDestinationLat() {
+        return destinationLat;
+    }
+
+    public UUID getBoardingStopId() {
+        return boardingStopId;
+    }
+
+    public UUID getAlightingStopId() {
+        return alightingStopId;
+    }
+
+    public OffsetDateTime getRequestedDepartureAt() {
+        return requestedDepartureAt;
+    }
+
     public OffsetDateTime getEstimatedBoardingAt() {
         return estimatedBoardingAt;
     }
