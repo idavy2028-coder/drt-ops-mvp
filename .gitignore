@@ -1,2 +1,9 @@
 .worktrees/
 .superpowers/
+target/
+node_modules/
+dist/
+.venv/
+.pytest_cache/
+.tools/
+__pycache__/

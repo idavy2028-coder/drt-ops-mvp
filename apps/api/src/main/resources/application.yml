@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: drt-ops-api
+  datasource:
+    url: ${DRT_OPS_DATASOURCE_URL:jdbc:postgresql://localhost:5432/drt_ops}
+    username: ${DRT_OPS_DATASOURCE_USERNAME:drt_ops}
+    password: ${DRT_OPS_DATASOURCE_PASSWORD:drt_ops}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
