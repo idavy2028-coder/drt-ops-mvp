@@ -75,11 +75,35 @@ public class AuditLog {
         return id;
     }
 
+    public String getEntityType() {
+        return entityType;
+    }
+
     public UUID getEntityId() {
         return entityId;
     }
 
     public String getAction() {
         return action;
+    }
+
+    public String getActorType() {
+        return actorType;
+    }
+
+    public String getActorId() {
+        return actorId;
+    }
+
+    public String getReason() {
+        return reason;
+    }
+
+    public String getMetadataJson() {
+        return metadataJson;
+    }
+
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
     }
 }

@@ -7,4 +7,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface AuditLogRepository extends JpaRepository<AuditLog, UUID> {
 
     List<AuditLog> findByEntityId(UUID entityId);
+
+    List<AuditLog> findByEntityIdOrderByCreatedAtAsc(UUID entityId);
+
+    List<AuditLog> findAllByOrderByCreatedAtAsc();
 }
