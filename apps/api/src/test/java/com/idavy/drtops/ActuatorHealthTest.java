@@ -12,10 +12,10 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(
         properties = {
-                "spring.autoconfigure.exclude="
-                        + "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,"
-                        + "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration,"
-                        + "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration"
+                "spring.datasource.url=jdbc:h2:mem:drt_ops;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+                "spring.datasource.username=sa",
+                "spring.datasource.password=",
+                "spring.datasource.driver-class-name=org.h2.Driver"
         })
 @AutoConfigureMockMvc
 class ActuatorHealthTest {

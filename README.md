@@ -27,14 +27,17 @@
    ```powershell
    mvn -pl apps/api spring-boot:run
    ```
-3. 然后启动算法服务：
+3. 准备并启动算法服务：
    ```powershell
    cd apps/algorithm
-   python -m uvicorn drt_algorithm.main:app --host 0.0.0.0 --port 8090 --reload
+   python -m venv .venv
+   .\.venv\Scripts\python -m pip install -e .[dev]
+   .\.venv\Scripts\python -m uvicorn drt_algorithm.main:app --host 0.0.0.0 --port 8090 --reload
    ```
-4. 最后启动前端：
+4. 准备并启动前端：
    ```powershell
    cd apps/admin-web
+   npm install
    npm run dev
    ```
 
