@@ -1,47 +1,47 @@
-# Dynamic Responsive Bus Ops MVP Implementation Plan
+# 区域动态响应公交运营管理 MVP 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **给后续执行代理的要求：** 实施本计划时必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐个任务执行。本文使用复选框 `- [ ]` 跟踪步骤。
 
-**Goal:** Build the first enterprise-facing MVP for a dynamic responsive bus operations system that can configure resources, accept ride demand, run real-time dispatch evaluation, create vehicle tasks, simulate execution, handle exceptions, audit decisions, and show a basic dispatch workbench.
+**目标：** 建设第一版面向公交企业内部运营的区域动态响应公交 MVP，跑通资源配置、需求录入、实时调度评估、车辆任务生成、执行模拟、异常处理、审计记录和基础调度工作台。
 
-**Architecture:** Use a monorepo with a modular Spring Boot business backend, a Python/FastAPI dispatch algorithm service, a Vue 3/TypeScript admin web app, and PostgreSQL/PostGIS as the source of truth. The Java backend owns business state and dispatch orchestration; the Python service returns dispatch recommendations and explanations without mutating business records.
+**架构：** 使用 monorepo 管理三个核心应用：Spring Boot 业务后台、Python/FastAPI 调度算法服务、Vue 3/TypeScript 企业管理前端。Java 后台负责业务状态和调度编排，Python 算法服务只返回调度建议和解释，不直接修改订单、车辆任务或审计表。
 
-**Tech Stack:** Java 21, Spring Boot 3.5.x, Maven, PostgreSQL 16+ with PostGIS 3+, Redis 7+, Python 3.12, FastAPI, pytest, Vue 3, TypeScript, Vite, Pinia, Vue Router, Element Plus, MapLibre GL JS, Vitest, Playwright.
+**技术栈：** Java 21、Spring Boot 3.5.x、Maven、PostgreSQL 16+、PostGIS 3+、Redis 7+、Python 3.12、FastAPI、pytest、Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus、MapLibre GL JS、Vitest、Playwright。
 
-## Global Constraints
+## 全局约束
 
-- First MVP scope is enterprise internal operations only: complete passenger app, driver app, regulator portal, payment, membership, marketing, and full customer service are out of scope.
-- Core operating mode is virtual-stop dynamic responsive bus service.
-- Dispatch trigger is real-time per order; architecture must allow future batch or hybrid triggers.
-- Order promise rule is "confirm only after feasible vehicle/task is found".
-- Supported demand window is immediate travel plus short booking up to 2 hours ahead.
-- Dispatch assignment uses configurable tiered auto-dispatch; default manual fallback is medium strictness.
-- Dispatch scoring is weighted and defaults toward passenger experience plus service stability.
-- In-service insertion is configurable; default allows only same-direction, low-detour insertion.
-- Algorithm service must return explanations for every dispatch attempt.
-- Java backend owns order, task, audit, and rule state; algorithm service must not directly write business tables.
-- All key state transitions, manual actions, rule changes, and algorithm decisions must be audited.
-- Every implementation task must end with a runnable verification command and a commit.
+- 第一版只做企业内部运营闭环，不做完整乘客端、完整司机端、监管端、支付、会员、营销和完整客服体系。
+- 核心运营模式是“虚拟站点 + 区域动态响应公交”。
+- 调度触发方式是“每个订单实时触发”，架构必须能兼容未来批量调度和混合调度。
+- 订单承诺规则是“找到可行车辆或任务后才确认接单”。
+- 第一版支持即时出行和未来 2 小时内短时预约。
+- 派发策略是可配置的分级自动派发，默认采用中等人工兜底。
+- 调度评分采用综合权重，默认偏向乘客体验和服务稳定。
+- 执行中插单策略可配置，默认只允许同方向、低绕行插单。
+- 算法服务每次调度都必须返回解释信息。
+- Java 后台拥有订单、任务、审计和规则的最终业务状态；算法服务不能直接写业务表。
+- 关键状态流转、人工操作、规则变更和算法决策必须写审计日志。
+- 每个实施任务都必须有可运行的验证命令，并在通过后提交。
 
 ---
 
-## Scope Check
+## 范围检查
 
-The product design covers several future subsystems. This implementation plan deliberately builds only the first MVP vertical slice:
+设计文档覆盖了多个未来子系统。本实施计划只覆盖第一版可演示的企业运营闭环：
 
-- Resource and rule configuration.
-- Demand entry and virtual-stop matching.
-- Real-time algorithm evaluation.
-- Dispatch orchestration and vehicle task generation.
-- Simplified execution simulation.
-- Exceptions, audit, and basic metrics.
-- Enterprise admin web pages for the above.
+- 资源与规则配置。
+- 需求录入与虚拟站点匹配。
+- 实时调度算法评估。
+- 调度编排与车辆任务生成。
+- 简化执行模拟。
+- 异常、审计和基础指标。
+- 企业管理端页面。
 
-Separate future plans should cover complete passenger app, driver app, regulator portal, payment/settlement, machine-learning demand prediction, and production event streaming with Kafka.
+以下内容另行拆计划：完整乘客端、完整司机端、监管端、支付结算、机器学习需求预测、Kafka 生产级事件流。
 
-## File Structure
+## 文件结构
 
-Create this monorepo structure:
+创建以下 monorepo 结构：
 
 ```text
 D:/codex-projects/
@@ -110,44 +110,44 @@ D:/codex-projects/
   README.md
 ```
 
-Boundary rules:
+职责边界：
 
-- `apps/api` contains business APIs, domain services, persistence, orchestration, metrics, and audit.
-- `apps/algorithm` contains stateless dispatch evaluation and no business persistence.
-- `apps/admin-web` contains only presentation, API clients, client-side state, and UI routing.
-- `infra` contains local development dependencies only.
-- `docs/api/dispatch-algorithm-contract.md` is the contract between Java orchestration and Python algorithm service.
+- `apps/api`：业务 API、领域服务、持久化、调度编排、指标和审计。
+- `apps/algorithm`：无状态调度评估，不保存业务数据。
+- `apps/admin-web`：页面、API 客户端、前端状态和路由。
+- `infra`：本地开发依赖。
+- `docs/api/dispatch-algorithm-contract.md`：Java 调度编排层和 Python 算法服务之间的接口契约。
 
 ---
 
-### Task 1: Monorepo Skeleton And Local Runtime
+### 任务 1：创建 Monorepo 骨架与本地运行基础
 
-**Files:**
-- Create: `pom.xml`
-- Create: `apps/api/pom.xml`
-- Create: `apps/api/src/main/java/com/idavy/drtops/DrtOpsApplication.java`
-- Create: `apps/api/src/main/resources/application.yml`
-- Create: `apps/algorithm/pyproject.toml`
-- Create: `apps/algorithm/src/drt_algorithm/main.py`
-- Create: `apps/admin-web/package.json`
-- Create: `apps/admin-web/index.html`
-- Create: `apps/admin-web/vite.config.ts`
-- Create: `apps/admin-web/tsconfig.json`
-- Create: `apps/admin-web/src/main.ts`
-- Create: `apps/admin-web/src/App.vue`
-- Create: `infra/docker-compose.yml`
-- Create: `infra/postgres/init-postgis.sql`
-- Create: `README.md`
+**文件：**
+- 新建：`pom.xml`
+- 新建：`apps/api/pom.xml`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/DrtOpsApplication.java`
+- 新建：`apps/api/src/main/resources/application.yml`
+- 新建：`apps/algorithm/pyproject.toml`
+- 新建：`apps/algorithm/src/drt_algorithm/main.py`
+- 新建：`apps/admin-web/package.json`
+- 新建：`apps/admin-web/index.html`
+- 新建：`apps/admin-web/vite.config.ts`
+- 新建：`apps/admin-web/tsconfig.json`
+- 新建：`apps/admin-web/src/main.ts`
+- 新建：`apps/admin-web/src/App.vue`
+- 新建：`infra/docker-compose.yml`
+- 新建：`infra/postgres/init-postgis.sql`
+- 新建：`README.md`
 
-**Interfaces:**
-- Produces: backend health endpoint `GET /actuator/health`
-- Produces: algorithm health endpoint `GET /health`
-- Produces: admin web route `/`
-- Produces: local services `postgres:5432`, `redis:6379`, `api:8080`, `algorithm:8090`, `admin-web:5173`
+**接口：**
+- 产出：后端健康检查 `GET /actuator/health`
+- 产出：算法健康检查 `GET /health`
+- 产出：前端首页 `/`
+- 产出：本地依赖服务 `postgres:5432`、`redis:6379`、`api:8080`、`algorithm:8090`、`admin-web:5173`
 
-- [ ] **Step 1: Create backend skeleton**
+- [ ] **步骤 1：创建后端骨架**
 
-Create root Maven aggregator with module `apps/api`.
+根目录 Maven 聚合项目包含 `apps/api` 模块。
 
 ```xml
 <!-- D:/codex-projects/pom.xml -->
@@ -165,7 +165,7 @@ Create root Maven aggregator with module `apps/api`.
 </project>
 ```
 
-Create Spring Boot API module with dependencies for web, validation, data JPA, Flyway, Postgres, actuator, test, Testcontainers, and WebClient.
+`apps/api/pom.xml` 使用 Spring Boot 3.5.x，并加入 Web、Validation、Data JPA、Flyway、PostgreSQL、Actuator、WebClient、Testcontainers 和测试依赖。
 
 ```java
 // D:/codex-projects/apps/api/src/main/java/com/idavy/drtops/DrtOpsApplication.java
@@ -182,7 +182,7 @@ public class DrtOpsApplication {
 }
 ```
 
-- [ ] **Step 2: Create algorithm skeleton**
+- [ ] **步骤 2：创建算法服务骨架**
 
 ```python
 # D:/codex-projects/apps/algorithm/src/drt_algorithm/main.py
@@ -196,7 +196,7 @@ def health() -> dict[str, str]:
     return {"status": "UP"}
 ```
 
-- [ ] **Step 3: Create admin web skeleton**
+- [ ] **步骤 3：创建前端骨架**
 
 ```vue
 <!-- D:/codex-projects/apps/admin-web/src/App.vue -->
@@ -215,7 +215,7 @@ def health() -> dict[str, str]:
 </style>
 ```
 
-- [ ] **Step 4: Create local infrastructure**
+- [ ] **步骤 4：创建本地基础设施**
 
 ```yaml
 # D:/codex-projects/infra/docker-compose.yml
@@ -241,9 +241,9 @@ services:
 CREATE EXTENSION IF NOT EXISTS postgis;
 ```
 
-- [ ] **Step 5: Verify skeleton**
+- [ ] **步骤 5：验证骨架**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api test
@@ -253,7 +253,7 @@ cd ../admin-web
 npm run typecheck
 ```
 
-Expected:
+预期：
 
 ```text
 Maven exits 0.
@@ -261,7 +261,7 @@ pytest exits 0.
 TypeScript typecheck exits 0.
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add pom.xml apps infra README.md
@@ -270,18 +270,18 @@ git commit -m "chore: scaffold dynamic bus ops monorepo"
 
 ---
 
-### Task 2: Database Schema And Seed Data
+### 任务 2：数据库结构与演示数据
 
-**Files:**
-- Create: `apps/api/src/main/resources/db/migration/V1__create_core_schema.sql`
-- Create: `apps/api/src/main/resources/db/migration/V2__seed_demo_operations.sql`
-- Create: `apps/api/src/test/java/com/idavy/drtops/DatabaseMigrationTest.java`
+**文件：**
+- 新建：`apps/api/src/main/resources/db/migration/V1__create_core_schema.sql`
+- 新建：`apps/api/src/main/resources/db/migration/V2__seed_demo_operations.sql`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/DatabaseMigrationTest.java`
 
-**Interfaces:**
-- Produces tables: `service_areas`, `virtual_stops`, `dispatch_rule_sets`, `vehicles`, `drivers`, `ride_orders`, `vehicle_tasks`, `task_stops`, `dispatch_decisions`, `audit_logs`
-- Produces PostGIS columns: `service_areas.boundary`, `virtual_stops.location`, `vehicles.current_location`
+**接口：**
+- 产出表：`service_areas`、`virtual_stops`、`dispatch_rule_sets`、`vehicles`、`drivers`、`ride_orders`、`vehicle_tasks`、`task_stops`、`dispatch_decisions`、`audit_logs`
+- 产出 PostGIS 字段：`service_areas.boundary`、`virtual_stops.location`、`vehicles.current_location`
 
-- [ ] **Step 1: Write failing migration test**
+- [ ] **步骤 1：先写失败的迁移测试**
 
 ```java
 package com.idavy.drtops;
@@ -342,23 +342,23 @@ class DatabaseMigrationTest {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=DatabaseMigrationTest test
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because migration files or tables do not exist.
 ```
 
-- [ ] **Step 3: Create schema migration**
+- [ ] **步骤 3：创建核心数据库迁移**
 
-Create tables with explicit constraints:
+先创建规则、区域和虚拟站点：
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS postgis;
@@ -408,7 +408,7 @@ CREATE INDEX idx_virtual_stops_location ON virtual_stops USING GIST (location);
 CREATE INDEX idx_service_areas_boundary ON service_areas USING GIST (boundary);
 ```
 
-Continue the same migration with these exact business tables:
+继续创建车辆、司机、订单、任务、决策和审计表：
 
 ```sql
 CREATE TABLE vehicles (
@@ -521,25 +521,42 @@ CREATE INDEX idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
 CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at);
 ```
 
-- [ ] **Step 4: Create seed migration**
+- [ ] **步骤 4：创建演示数据迁移**
 
-Seed one area, six virtual stops, two vehicles, two drivers, and one default rule set. Use fixed UUIDs so tests can reference them.
+`V2__seed_demo_operations.sql` 固定写入：
 
-- [ ] **Step 5: Run migration test**
+- 1 个服务区域。
+- 6 个虚拟站点。
+- 2 辆车。
+- 2 名司机。
+- 1 套默认规则组。
 
-Run:
+固定 UUID 供后续测试引用：
+
+```text
+rule_set_id = 11111111-1111-1111-1111-111111111111
+service_area_id = 22222222-2222-2222-2222-222222222222
+vehicle_1_id = 33333333-3333-3333-3333-333333333331
+vehicle_2_id = 33333333-3333-3333-3333-333333333332
+driver_1_id = 44444444-4444-4444-4444-444444444441
+driver_2_id = 44444444-4444-4444-4444-444444444442
+```
+
+- [ ] **步骤 5：运行迁移测试**
+
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=DatabaseMigrationTest test
 ```
 
-Expected:
+预期：
 
 ```text
 BUILD SUCCESS
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/resources/db/migration apps/api/src/test/java/com/idavy/drtops/DatabaseMigrationTest.java
@@ -548,26 +565,27 @@ git commit -m "feat: add core operations database schema"
 
 ---
 
-### Task 3: Java Domain Model And State Rules
+### 任务 3：Java 领域模型与状态规则
 
-**Files:**
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/order/OrderStatus.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrder.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderRepository.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTask.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/TaskStop.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskRepository.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchDecision.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchDecisionRepository.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/order/RideOrderStateTest.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/task/VehicleTaskStateTest.java`
+**文件：**
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/OrderStatus.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrder.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderRepository.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/task/TaskStatus.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTask.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/task/TaskStop.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskRepository.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchDecision.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchDecisionRepository.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/order/RideOrderStateTest.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/task/VehicleTaskStateTest.java`
 
-**Interfaces:**
-- Produces enum `OrderStatus` with values `PENDING_DISPATCH`, `UNSERVICEABLE`, `PENDING_MANUAL_REVIEW`, `CONFIRMED`, `CANCELLED`, `IN_PROGRESS`, `COMPLETED`, `EXCEPTION_CLOSED`
-- Produces enum `TaskStatus` with values `PENDING_DEPARTURE`, `DISPATCHED`, `IN_PROGRESS`, `PAUSED`, `COMPLETED`, `CANCELLED`, `EXCEPTION`
-- Produces domain methods `RideOrder.confirm(...)`, `RideOrder.markUnserviceable(...)`, `RideOrder.markPendingManualReview(...)`, `RideOrder.cancel(...)`, `RideOrder.startExecution()`, `RideOrder.complete()`, `RideOrder.closeException(...)`
+**接口：**
+- 产出枚举 `OrderStatus`：`PENDING_DISPATCH`、`UNSERVICEABLE`、`PENDING_MANUAL_REVIEW`、`CONFIRMED`、`CANCELLED`、`IN_PROGRESS`、`COMPLETED`、`EXCEPTION_CLOSED`
+- 产出枚举 `TaskStatus`：`PENDING_DEPARTURE`、`DISPATCHED`、`IN_PROGRESS`、`PAUSED`、`COMPLETED`、`CANCELLED`、`EXCEPTION`
+- 产出方法：`RideOrder.confirm(...)`、`RideOrder.markUnserviceable(...)`、`RideOrder.markPendingManualReview(...)`、`RideOrder.cancel(...)`、`RideOrder.startExecution()`、`RideOrder.complete()`、`RideOrder.closeException(...)`
 
-- [ ] **Step 1: Write failing state transition tests**
+- [ ] **步骤 1：先写失败的状态流转测试**
 
 ```java
 @Test
@@ -589,43 +607,43 @@ void cancelledOrderCannotBeConfirmed() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **步骤 2：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=RideOrderStateTest,VehicleTaskStateTest test
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because domain classes do not exist.
 ```
 
-- [ ] **Step 3: Implement minimal domain objects**
+- [ ] **步骤 3：实现最小领域对象**
 
-Implement JPA entities with private state and domain methods. Keep state changes inside domain methods; controllers and orchestration services must not assign status strings directly.
+实现 JPA 实体，并把状态修改封装在领域方法里。控制器和编排服务不能直接赋值状态字符串。
 
-- [ ] **Step 4: Add repository smoke tests**
+- [ ] **步骤 4：增加仓储冒烟测试**
 
-Add persistence tests that save and reload one order and one vehicle task.
+保存并重新读取一个订单和一个车辆任务，验证基础持久化可用。
 
-- [ ] **Step 5: Run domain tests**
+- [ ] **步骤 5：运行领域测试**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=*StateTest,*RepositoryTest test
 ```
 
-Expected:
+预期：
 
 ```text
 BUILD SUCCESS
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain apps/api/src/test/java/com/idavy/drtops/domain
@@ -634,20 +652,22 @@ git commit -m "feat: add order task and dispatch domain model"
 
 ---
 
-### Task 4: Resource And Rule Configuration APIs
+### 任务 4：资源与规则配置 API
 
-**Files:**
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceAreaController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/area/VirtualStopController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/fleet/VehicleController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/fleet/DriverController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchRuleSetController.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/area/ServiceAreaApiTest.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/fleet/FleetApiTest.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/dispatch/DispatchRuleSetApiTest.java`
+**文件：**
+- 新建：`apps/api/src/main/java/com/idavy/drtops/common/ApiResponse.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/common/GlobalExceptionHandler.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceAreaController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/area/VirtualStopController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/fleet/VehicleController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/fleet/DriverController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchRuleSetController.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/area/ServiceAreaApiTest.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/fleet/FleetApiTest.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/dispatch/DispatchRuleSetApiTest.java`
 
-**Interfaces:**
-- Produces REST endpoints:
+**接口：**
+- 产出 REST 接口：
   - `GET /api/service-areas`
   - `POST /api/service-areas`
   - `GET /api/virtual-stops?serviceAreaId={id}`
@@ -659,7 +679,7 @@ git commit -m "feat: add order task and dispatch domain model"
   - `GET /api/dispatch-rule-sets`
   - `PUT /api/dispatch-rule-sets/{id}`
 
-- [ ] **Step 1: Write API tests**
+- [ ] **步骤 1：编写 API 测试**
 
 ```java
 @Test
@@ -683,23 +703,23 @@ void rejectsRuleSetWithNegativeWaitTime() throws Exception {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **步骤 2：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=ServiceAreaApiTest,FleetApiTest,DispatchRuleSetApiTest test
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because controllers do not exist.
 ```
 
-- [ ] **Step 3: Implement controllers and services**
+- [ ] **步骤 3：实现控制器和服务**
 
-Return a consistent envelope:
+统一返回结构：
 
 ```java
 public record ApiResponse<T>(T data) {
@@ -709,47 +729,47 @@ public record ApiResponse<T>(T data) {
 }
 ```
 
-Use request DTO validation annotations for numeric thresholds, required names, capacities, and coordinates.
+请求 DTO 必须校验名称、容量、坐标、等待时间、绕行时间、评分阈值和权重。
 
-- [ ] **Step 4: Run API tests**
+- [ ] **步骤 4：运行 API 测试**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=ServiceAreaApiTest,FleetApiTest,DispatchRuleSetApiTest test
 ```
 
-Expected:
+预期：
 
 ```text
 BUILD SUCCESS
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
-git add apps/api/src/main/java/com/idavy/drtops/domain/area apps/api/src/main/java/com/idavy/drtops/domain/fleet apps/api/src/main/java/com/idavy/drtops/domain/dispatch apps/api/src/test/java/com/idavy/drtops/domain
+git add apps/api/src/main/java/com/idavy/drtops apps/api/src/test/java/com/idavy/drtops/domain
 git commit -m "feat: add resource and dispatch rule APIs"
 ```
 
 ---
 
-### Task 5: Demand Entry And Virtual Stop Matching
+### 任务 5：需求录入与虚拟站点匹配
 
-**Files:**
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderService.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/area/VirtualStopMatcher.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/order/RideOrderApiTest.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/area/VirtualStopMatcherTest.java`
+**文件：**
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderService.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/area/VirtualStopMatcher.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/order/RideOrderApiTest.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/area/VirtualStopMatcherTest.java`
 
-**Interfaces:**
-- Consumes: `VirtualStop` and `ServiceArea` from Task 4
-- Produces endpoint `POST /api/orders`
-- Produces endpoint `GET /api/orders`
-- Produces method `VirtualStopMatch matchStops(BigDecimal originLng, BigDecimal originLat, BigDecimal destinationLng, BigDecimal destinationLat, Instant requestedDepartureAt)`
+**接口：**
+- 消费：任务 4 的 `VirtualStop` 和 `ServiceArea`
+- 产出：`POST /api/orders`
+- 产出：`GET /api/orders`
+- 产出方法：`VirtualStopMatch matchStops(BigDecimal originLng, BigDecimal originLat, BigDecimal destinationLng, BigDecimal destinationLat, Instant requestedDepartureAt)`
 
-- [ ] **Step 1: Write virtual-stop matching tests**
+- [ ] **步骤 1：编写虚拟站点匹配测试**
 
 ```java
 @Test
@@ -767,7 +787,7 @@ void matchesNearestBoardingAndAlightingStopsInsideServiceArea() {
 }
 ```
 
-- [ ] **Step 2: Write order API tests**
+- [ ] **步骤 2：编写订单 API 测试**
 
 ```java
 @Test
@@ -787,23 +807,23 @@ void createsPendingDispatchOrderWhenStopsMatch() throws Exception {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **步骤 3：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=VirtualStopMatcherTest,RideOrderApiTest test
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because matcher and order API do not exist.
 ```
 
-- [ ] **Step 4: Implement matching and order creation**
+- [ ] **步骤 4：实现匹配与订单创建**
 
-Use PostGIS distance queries through `JdbcTemplate` for matching:
+用 `JdbcTemplate` 调用 PostGIS 距离查询：
 
 ```sql
 SELECT id, ST_Distance(location, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography) AS distance_meters
@@ -815,21 +835,21 @@ ORDER BY distance_meters ASC
 LIMIT 1
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **步骤 5：运行测试**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=VirtualStopMatcherTest,RideOrderApiTest test
 ```
 
-Expected:
+预期：
 
 ```text
 BUILD SUCCESS
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain/order apps/api/src/main/java/com/idavy/drtops/domain/area apps/api/src/test/java/com/idavy/drtops/domain
@@ -838,27 +858,27 @@ git commit -m "feat: add ride demand entry and virtual stop matching"
 
 ---
 
-### Task 6: Algorithm Service Contract And Evaluation Engine
+### 任务 6：算法服务契约与评估引擎
 
-**Files:**
-- Create: `docs/api/dispatch-algorithm-contract.md`
-- Create: `apps/algorithm/src/drt_algorithm/schemas.py`
-- Create: `apps/algorithm/src/drt_algorithm/matching.py`
-- Create: `apps/algorithm/src/drt_algorithm/insertion.py`
-- Create: `apps/algorithm/src/drt_algorithm/scoring.py`
-- Create: `apps/algorithm/src/drt_algorithm/explanations.py`
-- Modify: `apps/algorithm/src/drt_algorithm/main.py`
-- Create: `apps/algorithm/tests/test_dispatch_evaluation.py`
+**文件：**
+- 新建：`docs/api/dispatch-algorithm-contract.md`
+- 新建：`apps/algorithm/src/drt_algorithm/schemas.py`
+- 新建：`apps/algorithm/src/drt_algorithm/matching.py`
+- 新建：`apps/algorithm/src/drt_algorithm/insertion.py`
+- 新建：`apps/algorithm/src/drt_algorithm/scoring.py`
+- 新建：`apps/algorithm/src/drt_algorithm/explanations.py`
+- 修改：`apps/algorithm/src/drt_algorithm/main.py`
+- 新建：`apps/algorithm/tests/test_dispatch_evaluation.py`
 
-**Interfaces:**
-- Produces algorithm endpoint `POST /dispatch/evaluate`
-- Request model `DispatchEvaluateRequest`
-- Response model `DispatchEvaluateResponse`
-- Response decisions: `AUTO_DISPATCH`, `MANUAL_REVIEW`, `NO_FEASIBLE_PLAN`
+**接口：**
+- 产出算法接口：`POST /dispatch/evaluate`
+- 产出请求模型：`DispatchEvaluateRequest`
+- 产出响应模型：`DispatchEvaluateResponse`
+- 产出决策值：`AUTO_DISPATCH`、`MANUAL_REVIEW`、`NO_FEASIBLE_PLAN`
 
-- [ ] **Step 1: Write algorithm contract**
+- [ ] **步骤 1：编写算法契约文档**
 
-Document this JSON contract:
+请求 JSON 格式：
 
 ```json
 {
@@ -887,7 +907,7 @@ Document this JSON contract:
 }
 ```
 
-- [ ] **Step 2: Write failing pytest cases**
+- [ ] **步骤 2：编写失败的 pytest 用例**
 
 ```python
 def test_no_vehicle_returns_no_feasible_plan(client):
@@ -907,58 +927,59 @@ def test_same_direction_low_detour_returns_auto_dispatch(client):
     assert body["bestPlan"]["estimatedWaitMinutes"] <= 12
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **步骤 3：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 cd apps/algorithm
 python -m pytest tests/test_dispatch_evaluation.py -v
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because /dispatch/evaluate and schemas do not exist.
 ```
 
-- [ ] **Step 4: Implement Pydantic schemas**
+- [ ] **步骤 4：实现 Pydantic 模型**
 
-Define strict models with `uuid.UUID`, `datetime`, integer passenger counts, decimal weights, and string enums.
+模型使用 `uuid.UUID`、`datetime`、整型乘客数、小数权重和字符串枚举。对乘客数、阈值和权重做边界校验。
 
-- [ ] **Step 5: Implement evaluation**
+- [ ] **步骤 5：实现第一版评估逻辑**
 
-Implement deterministic first-version logic:
+确定性规则：
 
-1. Reject empty candidates with `NO_FEASIBLE_PLAN`.
-2. Reject candidates with capacity below passenger count.
-3. Reject candidates exceeding max wait or max detour.
-4. Reject in-service candidates that are not same-direction when insertion policy is `SAME_DIRECTION_ONLY`.
-5. Score remaining candidates:
-   - wait score decreases as wait approaches max wait.
-   - detour score decreases as detour approaches max detour.
-   - stability score decreases when existing passengers are affected.
-   - utilization score increases when free seats are used without exceeding capacity.
-6. Return highest score as `AUTO_DISPATCH` when score is at or above auto threshold.
-7. Return `MANUAL_REVIEW` when score is at or above manual threshold and below auto threshold.
-8. Return `NO_FEASIBLE_PLAN` when all candidates are rejected.
+1. 候选为空返回 `NO_FEASIBLE_PLAN`。
+2. 候选容量小于乘客数时剔除。
+3. 候选等待时间超过最大等待时剔除。
+4. 候选绕行时间超过最大绕行时剔除。
+5. 插单策略是 `SAME_DIRECTION_ONLY` 时，执行中任务必须同方向。
+6. 对剩余候选评分：
+   - 等待时间越接近上限，等待得分越低。
+   - 绕行时间越接近上限，绕行得分越低。
+   - 已有乘客受影响越大，稳定性得分越低。
+   - 在不超容量前提下，座位利用越合理，利用率得分越高。
+7. 最高分达到自动派发阈值时返回 `AUTO_DISPATCH`。
+8. 最高分达到人工确认阈值且低于自动派发阈值时返回 `MANUAL_REVIEW`。
+9. 全部候选被剔除时返回 `NO_FEASIBLE_PLAN`。
 
-- [ ] **Step 6: Run algorithm tests**
+- [ ] **步骤 6：运行算法测试**
 
-Run:
+运行：
 
 ```powershell
 cd apps/algorithm
 python -m pytest -v
 ```
 
-Expected:
+预期：
 
 ```text
 all tests pass
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add docs/api/dispatch-algorithm-contract.md apps/algorithm
@@ -967,22 +988,22 @@ git commit -m "feat: add dispatch algorithm evaluation service"
 
 ---
 
-### Task 7: Java Dispatch Orchestration
+### 任务 7：Java 调度编排
 
-**Files:**
-- Create: `apps/api/src/main/java/com/idavy/drtops/integration/algorithm/AlgorithmClient.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/integration/algorithm/DispatchEvaluateRequest.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/integration/algorithm/DispatchEvaluateResponse.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchOrchestrator.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/CandidateTaskAssembler.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/dispatch/DispatchOrchestratorTest.java`
+**文件：**
+- 新建：`apps/api/src/main/java/com/idavy/drtops/integration/algorithm/AlgorithmClient.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/integration/algorithm/DispatchEvaluateRequest.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/integration/algorithm/DispatchEvaluateResponse.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchOrchestrator.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/dispatch/CandidateTaskAssembler.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/dispatch/DispatchOrchestratorTest.java`
 
-**Interfaces:**
-- Consumes: `POST /dispatch/evaluate` from Task 6
-- Produces method `DispatchResult dispatchOrder(UUID orderId)`
-- Produces endpoint `POST /api/orders/{orderId}/dispatch`
+**接口：**
+- 消费：任务 6 的 `POST /dispatch/evaluate`
+- 产出方法：`DispatchResult dispatchOrder(UUID orderId)`
+- 产出接口：`POST /api/orders/{orderId}/dispatch`
 
-- [ ] **Step 1: Write orchestration tests**
+- [ ] **步骤 1：编写编排测试**
 
 ```java
 @Test
@@ -1010,53 +1031,53 @@ void manualReviewKeepsOrderPendingManualReview() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **步骤 2：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=DispatchOrchestratorTest test
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because orchestration classes do not exist.
 ```
 
-- [ ] **Step 3: Implement algorithm client**
+- [ ] **步骤 3：实现算法客户端**
 
-Use `WebClient` with base URL from `dispatch.algorithm.base-url`. Set local default `http://localhost:8090`.
+使用 `WebClient`，基础地址来自配置项 `dispatch.algorithm.base-url`，本地默认值为 `http://localhost:8090`。
 
-- [ ] **Step 4: Implement orchestration transaction**
+- [ ] **步骤 4：实现编排事务**
 
-Inside one transaction:
+单个事务内完成：
 
-1. Load order and reject non-`PENDING_DISPATCH` orders.
-2. Load rule set, available vehicles, drivers, and active tasks.
-3. Build candidate task request.
-4. Call algorithm service.
-5. Persist `DispatchDecision`.
-6. For `AUTO_DISPATCH`, confirm order and create or update `VehicleTask`.
-7. For `MANUAL_REVIEW`, mark order pending manual review.
-8. For `NO_FEASIBLE_PLAN`, mark order unserviceable.
-9. Write audit log.
+1. 加载订单，非 `PENDING_DISPATCH` 订单拒绝调度。
+2. 加载规则组、可用车辆、司机和进行中任务。
+3. 组装候选任务请求。
+4. 调用算法服务。
+5. 保存 `DispatchDecision`。
+6. `AUTO_DISPATCH` 时确认订单并创建或更新 `VehicleTask`。
+7. `MANUAL_REVIEW` 时把订单标记为待人工确认。
+8. `NO_FEASIBLE_PLAN` 时把订单标记为不可服务。
+9. 写审计日志。
 
-- [ ] **Step 5: Run orchestration tests**
+- [ ] **步骤 5：运行编排测试**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=DispatchOrchestratorTest test
 ```
 
-Expected:
+预期：
 
 ```text
 BUILD SUCCESS
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/integration apps/api/src/main/java/com/idavy/drtops/domain/dispatch apps/api/src/test/java/com/idavy/drtops/domain/dispatch
@@ -1065,29 +1086,29 @@ git commit -m "feat: add dispatch orchestration"
 
 ---
 
-### Task 8: Manual Review, Task Execution, And Exceptions
+### 任务 8：人工确认、任务执行与异常处理
 
-**Files:**
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/ManualReviewController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/TaskExecutionService.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/order/OrderExceptionService.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/task/TaskExecutionApiTest.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/order/OrderExceptionApiTest.java`
+**文件：**
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/dispatch/ManualReviewController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/task/TaskExecutionService.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/OrderExceptionService.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/task/TaskExecutionApiTest.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/order/OrderExceptionApiTest.java`
 
-**Interfaces:**
-- Produces endpoint `POST /api/dispatch-decisions/{decisionId}/approve`
-- Produces endpoint `POST /api/dispatch-decisions/{decisionId}/reject`
-- Produces endpoint `POST /api/vehicle-tasks/{taskId}/start`
-- Produces endpoint `POST /api/vehicle-tasks/{taskId}/stops/{stopId}/arrive`
-- Produces endpoint `POST /api/vehicle-tasks/{taskId}/stops/{stopId}/board`
-- Produces endpoint `POST /api/vehicle-tasks/{taskId}/stops/{stopId}/alight`
-- Produces endpoint `POST /api/vehicle-tasks/{taskId}/complete`
-- Produces endpoint `POST /api/orders/{orderId}/cancel`
-- Produces endpoint `POST /api/orders/{orderId}/no-show`
-- Produces endpoint `POST /api/vehicle-tasks/{taskId}/exception`
+**接口：**
+- `POST /api/dispatch-decisions/{decisionId}/approve`
+- `POST /api/dispatch-decisions/{decisionId}/reject`
+- `POST /api/vehicle-tasks/{taskId}/start`
+- `POST /api/vehicle-tasks/{taskId}/stops/{stopId}/arrive`
+- `POST /api/vehicle-tasks/{taskId}/stops/{stopId}/board`
+- `POST /api/vehicle-tasks/{taskId}/stops/{stopId}/alight`
+- `POST /api/vehicle-tasks/{taskId}/complete`
+- `POST /api/orders/{orderId}/cancel`
+- `POST /api/orders/{orderId}/no-show`
+- `POST /api/vehicle-tasks/{taskId}/exception`
 
-- [ ] **Step 1: Write execution tests**
+- [ ] **步骤 1：编写执行流程测试**
 
 ```java
 @Test
@@ -1107,7 +1128,7 @@ void taskCanMoveThroughStartArriveBoardAlightComplete() throws Exception {
 }
 ```
 
-- [ ] **Step 2: Write exception tests**
+- [ ] **步骤 2：编写异常测试**
 
 ```java
 @Test
@@ -1124,46 +1145,46 @@ void vehicleFailureClosesTaskAsExceptionAndAuditsReason() throws Exception {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **步骤 3：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=TaskExecutionApiTest,OrderExceptionApiTest test
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because execution APIs do not exist.
 ```
 
-- [ ] **Step 4: Implement execution services**
+- [ ] **步骤 4：实现执行服务**
 
-Enforce status transitions:
+必须限制状态流转：
 
-- `PENDING_DEPARTURE` -> `IN_PROGRESS` on start.
-- A task stop can be arrived once.
-- Boarding is allowed only at boarding stops after arrival.
-- Alighting is allowed only at alighting stops after arrival.
-- Task can complete only when all required stops are done.
-- Vehicle failure sets task to `EXCEPTION` and affected orders to `EXCEPTION_CLOSED`.
+- `PENDING_DEPARTURE` 通过 start 进入 `IN_PROGRESS`。
+- 一个任务节点只能到达一次。
+- 上车只能发生在已到达的上车节点。
+- 下车只能发生在已到达的下车节点。
+- 所有必要节点完成后，车辆任务才能完成。
+- 车辆故障时，任务进入 `EXCEPTION`，受影响订单进入 `EXCEPTION_CLOSED`。
 
-- [ ] **Step 5: Run tests**
+- [ ] **步骤 5：运行测试**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=TaskExecutionApiTest,OrderExceptionApiTest test
 ```
 
-Expected:
+预期：
 
 ```text
 BUILD SUCCESS
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain/dispatch apps/api/src/main/java/com/idavy/drtops/domain/task apps/api/src/main/java/com/idavy/drtops/domain/order apps/api/src/test/java/com/idavy/drtops/domain
@@ -1172,24 +1193,24 @@ git commit -m "feat: add manual review task execution and exceptions"
 
 ---
 
-### Task 9: Audit Logs And Operational Metrics
+### 任务 9：审计日志与运营指标
 
-**Files:**
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLog.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLogRepository.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLogService.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLogController.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/metrics/OperationsMetricsService.java`
-- Create: `apps/api/src/main/java/com/idavy/drtops/metrics/OperationsMetricsController.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/domain/audit/AuditLogApiTest.java`
-- Create: `apps/api/src/test/java/com/idavy/drtops/metrics/OperationsMetricsServiceTest.java`
+**文件：**
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLog.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLogRepository.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLogService.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLogController.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/metrics/OperationsMetricsService.java`
+- 新建：`apps/api/src/main/java/com/idavy/drtops/metrics/OperationsMetricsController.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/domain/audit/AuditLogApiTest.java`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/metrics/OperationsMetricsServiceTest.java`
 
-**Interfaces:**
-- Produces endpoint `GET /api/audit-logs`
-- Produces endpoint `GET /api/metrics/operations-summary`
-- Produces metrics fields: `orderCount`, `confirmationRate`, `autoDispatchRate`, `manualReviewRate`, `averageWaitMinutes`, `averageDetourMinutes`, `taskCompletionRate`, `exceptionCloseRate`, `vehicleUtilizationRate`
+**接口：**
+- 产出：`GET /api/audit-logs`
+- 产出：`GET /api/metrics/operations-summary`
+- 指标字段：`orderCount`、`confirmationRate`、`autoDispatchRate`、`manualReviewRate`、`averageWaitMinutes`、`averageDetourMinutes`、`taskCompletionRate`、`exceptionCloseRate`、`vehicleUtilizationRate`
 
-- [ ] **Step 1: Write audit test**
+- [ ] **步骤 1：编写审计测试**
 
 ```java
 @Test
@@ -1203,7 +1224,7 @@ void auditLogsContainDispatchDecisionAndManualAction() throws Exception {
 }
 ```
 
-- [ ] **Step 2: Write metrics test**
+- [ ] **步骤 2：编写指标测试**
 
 ```java
 @Test
@@ -1221,23 +1242,23 @@ void computesOperationsSummaryFromOrdersTasksAndDecisions() {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **步骤 3：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=AuditLogApiTest,OperationsMetricsServiceTest test
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because audit and metrics services do not exist.
 ```
 
-- [ ] **Step 4: Implement audit service**
+- [ ] **步骤 4：实现审计服务**
 
-Every audited event must record:
+每条审计记录必须包含：
 
 - `entityType`
 - `entityId`
@@ -1248,25 +1269,25 @@ Every audited event must record:
 - `metadataJson`
 - `createdAt`
 
-- [ ] **Step 5: Implement metrics service**
+- [ ] **步骤 5：实现指标服务**
 
-Use repository queries or SQL views. Use decimal division with zero-denominator handling returning `0.0000`.
+可使用 repository 查询或 SQL。所有比例字段使用小数计算，分母为 0 时返回 `0.0000`。
 
-- [ ] **Step 6: Run tests**
+- [ ] **步骤 6：运行测试**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=AuditLogApiTest,OperationsMetricsServiceTest test
 ```
 
-Expected:
+预期：
 
 ```text
 BUILD SUCCESS
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain/audit apps/api/src/main/java/com/idavy/drtops/metrics apps/api/src/test/java/com/idavy/drtops/domain/audit apps/api/src/test/java/com/idavy/drtops/metrics
@@ -1275,32 +1296,32 @@ git commit -m "feat: add audit logs and operations metrics"
 
 ---
 
-### Task 10: Admin Web Foundation And API Client
+### 任务 10：前端基础框架与 API 客户端
 
-**Files:**
-- Create: `apps/admin-web/src/router/index.ts`
-- Create: `apps/admin-web/src/api/http.ts`
-- Create: `apps/admin-web/src/api/types.ts`
-- Create: `apps/admin-web/src/api/resources.ts`
-- Create: `apps/admin-web/src/api/orders.ts`
-- Create: `apps/admin-web/src/api/tasks.ts`
-- Create: `apps/admin-web/src/api/metrics.ts`
-- Create: `apps/admin-web/src/layouts/AppLayout.vue`
-- Create: `apps/admin-web/src/stores/operationsStore.ts`
-- Create: `apps/admin-web/src/pages/DashboardPage.vue`
-- Create: `apps/admin-web/src/pages/DispatchWorkbenchPage.vue`
-- Create: `apps/admin-web/src/pages/ResourcesPage.vue`
-- Create: `apps/admin-web/src/pages/RulesPage.vue`
-- Create: `apps/admin-web/src/pages/OrdersPage.vue`
-- Create: `apps/admin-web/src/pages/TasksPage.vue`
-- Create: `apps/admin-web/src/pages/AuditLogsPage.vue`
-- Create: `apps/admin-web/src/api/http.test.ts`
+**文件：**
+- 新建：`apps/admin-web/src/router/index.ts`
+- 新建：`apps/admin-web/src/api/http.ts`
+- 新建：`apps/admin-web/src/api/types.ts`
+- 新建：`apps/admin-web/src/api/resources.ts`
+- 新建：`apps/admin-web/src/api/orders.ts`
+- 新建：`apps/admin-web/src/api/tasks.ts`
+- 新建：`apps/admin-web/src/api/metrics.ts`
+- 新建：`apps/admin-web/src/layouts/AppLayout.vue`
+- 新建：`apps/admin-web/src/stores/operationsStore.ts`
+- 新建：`apps/admin-web/src/pages/DashboardPage.vue`
+- 新建：`apps/admin-web/src/pages/DispatchWorkbenchPage.vue`
+- 新建：`apps/admin-web/src/pages/ResourcesPage.vue`
+- 新建：`apps/admin-web/src/pages/RulesPage.vue`
+- 新建：`apps/admin-web/src/pages/OrdersPage.vue`
+- 新建：`apps/admin-web/src/pages/TasksPage.vue`
+- 新建：`apps/admin-web/src/pages/AuditLogsPage.vue`
+- 新建：`apps/admin-web/src/api/http.test.ts`
 
-**Interfaces:**
-- Consumes backend endpoints from Tasks 4, 5, 8, and 9
-- Produces routes `/`, `/dispatch`, `/resources`, `/rules`, `/orders`, `/tasks`, `/audit-logs`
+**接口：**
+- 消费任务 4、5、8、9 的后端接口
+- 产出路由：`/`、`/dispatch`、`/resources`、`/rules`、`/orders`、`/tasks`、`/audit-logs`
 
-- [ ] **Step 1: Write API client tests**
+- [ ] **步骤 1：编写 API 客户端测试**
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -1313,40 +1334,40 @@ describe("unwrapApiResponse", () => {
 });
 ```
 
-- [ ] **Step 2: Run frontend test to verify it fails**
+- [ ] **步骤 2：运行前端测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 cd apps/admin-web
 npm run test -- http.test.ts
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because API client does not exist.
 ```
 
-- [ ] **Step 3: Implement router and layout**
+- [ ] **步骤 3：实现路由和布局**
 
-Use a left navigation shell for enterprise operations:
+使用左侧导航的企业后台布局，菜单包括：
 
-- Dispatch
-- Orders
-- Tasks
-- Resources
-- Rules
-- Metrics
-- Audit Logs
+- 调度工作台
+- 订单中心
+- 车辆任务
+- 资源配置
+- 规则配置
+- 运营看板
+- 审计日志
 
-- [ ] **Step 4: Implement typed API client**
+- [ ] **步骤 4：实现类型化 API 客户端**
 
-Use one `request<T>()` function backed by `fetch`, `VITE_API_BASE_URL`, and the backend envelope shape `{ data: T }`.
+使用一个 `request<T>()` 函数封装 `fetch`、`VITE_API_BASE_URL` 和后端返回结构 `{ data: T }`。
 
-- [ ] **Step 5: Run frontend checks**
+- [ ] **步骤 5：运行前端检查**
 
-Run:
+运行：
 
 ```powershell
 cd apps/admin-web
@@ -1354,14 +1375,14 @@ npm run typecheck
 npm run test
 ```
 
-Expected:
+预期：
 
 ```text
 typecheck exits 0
 tests exit 0
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add apps/admin-web
@@ -1370,28 +1391,28 @@ git commit -m "feat: add admin web foundation and API client"
 
 ---
 
-### Task 11: Resource, Rule, Order, And Task Pages
+### 任务 11：资源、规则、订单和任务页面
 
-**Files:**
-- Modify: `apps/admin-web/src/pages/ResourcesPage.vue`
-- Modify: `apps/admin-web/src/pages/RulesPage.vue`
-- Modify: `apps/admin-web/src/pages/OrdersPage.vue`
-- Modify: `apps/admin-web/src/pages/TasksPage.vue`
-- Create: `apps/admin-web/src/components/VirtualStopTable.vue`
-- Create: `apps/admin-web/src/components/VehicleTable.vue`
-- Create: `apps/admin-web/src/components/DriverTable.vue`
-- Create: `apps/admin-web/src/components/RuleSetForm.vue`
-- Create: `apps/admin-web/src/components/OrderCreateDialog.vue`
-- Create: `apps/admin-web/src/components/TaskStopTimeline.vue`
-- Create: `apps/admin-web/src/pages/orders-page.test.ts`
-- Create: `apps/admin-web/src/pages/tasks-page.test.ts`
+**文件：**
+- 修改：`apps/admin-web/src/pages/ResourcesPage.vue`
+- 修改：`apps/admin-web/src/pages/RulesPage.vue`
+- 修改：`apps/admin-web/src/pages/OrdersPage.vue`
+- 修改：`apps/admin-web/src/pages/TasksPage.vue`
+- 新建：`apps/admin-web/src/components/VirtualStopTable.vue`
+- 新建：`apps/admin-web/src/components/VehicleTable.vue`
+- 新建：`apps/admin-web/src/components/DriverTable.vue`
+- 新建：`apps/admin-web/src/components/RuleSetForm.vue`
+- 新建：`apps/admin-web/src/components/OrderCreateDialog.vue`
+- 新建：`apps/admin-web/src/components/TaskStopTimeline.vue`
+- 新建：`apps/admin-web/src/pages/orders-page.test.ts`
+- 新建：`apps/admin-web/src/pages/tasks-page.test.ts`
 
-**Interfaces:**
-- Consumes API client from Task 10
-- Produces order creation UI for immediate and short booking orders
-- Produces task execution controls for start, arrive, board, alight, complete, exception
+**接口：**
+- 消费任务 10 的 API 客户端
+- 产出即时订单和短时预约订单录入 UI
+- 产出任务执行控制：发车、到站、上车、下车、完成、异常
 
-- [ ] **Step 1: Write page tests**
+- [ ] **步骤 1：编写页面测试**
 
 ```ts
 it("shows create order action and order status columns", async () => {
@@ -1402,60 +1423,60 @@ it("shows create order action and order status columns", async () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **步骤 2：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 cd apps/admin-web
 npm run test -- orders-page.test.ts tasks-page.test.ts
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because page components are incomplete.
 ```
 
-- [ ] **Step 3: Implement resources page**
+- [ ] **步骤 3：实现资源页面**
 
-Show service area, virtual stops, vehicles, drivers, and capacity. Use tables with compact filters.
+展示服务区域、虚拟站点、车辆、司机和容量信息。使用适合调度场景的紧凑表格和筛选控件。
 
-- [ ] **Step 4: Implement rules page**
+- [ ] **步骤 4：实现规则页面**
 
-Expose:
+暴露这些配置：
 
-- maximum wait minutes
-- maximum detour minutes
-- booking window minutes
-- insertion policy
-- auto dispatch threshold
-- manual review threshold
-- wait, detour, stability, utilization weights
+- 最大等待时间。
+- 最大绕行时间。
+- 预约窗口。
+- 执行中插单策略。
+- 自动派发阈值。
+- 人工确认阈值。
+- 等待、绕行、稳定性、利用率权重。
 
-- [ ] **Step 5: Implement orders page**
+- [ ] **步骤 5：实现订单页面**
 
-Support:
+支持：
 
-- creating demand
-- listing status
-- dispatch trigger button
-- cancel button
-- exception close button
-- dispatch decision drawer
+- 录入需求。
+- 查看订单列表。
+- 触发调度。
+- 取消订单。
+- 异常关闭。
+- 查看调度决策抽屉。
 
-- [ ] **Step 6: Implement tasks page**
+- [ ] **步骤 6：实现任务页面**
 
-Support:
+支持：
 
-- task list
-- task stop timeline
-- execution simulation buttons
-- vehicle failure exception action
+- 任务列表。
+- 任务站点时间线。
+- 执行模拟按钮。
+- 车辆故障异常操作。
 
-- [ ] **Step 7: Run frontend checks**
+- [ ] **步骤 7：运行前端检查**
 
-Run:
+运行：
 
 ```powershell
 cd apps/admin-web
@@ -1463,14 +1484,14 @@ npm run typecheck
 npm run test
 ```
 
-Expected:
+预期：
 
 ```text
 typecheck exits 0
 tests exit 0
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **步骤 8：提交**
 
 ```bash
 git add apps/admin-web/src/pages apps/admin-web/src/components
@@ -1479,25 +1500,25 @@ git commit -m "feat: add resource rule order and task pages"
 
 ---
 
-### Task 12: Dispatch Workbench And Basic Operations Dashboard
+### 任务 12：调度工作台与基础运营看板
 
-**Files:**
-- Modify: `apps/admin-web/src/pages/DispatchWorkbenchPage.vue`
-- Modify: `apps/admin-web/src/pages/DashboardPage.vue`
-- Modify: `apps/admin-web/src/pages/AuditLogsPage.vue`
-- Create: `apps/admin-web/src/components/DispatchMap.vue`
-- Create: `apps/admin-web/src/components/DispatchDecisionPanel.vue`
-- Create: `apps/admin-web/src/components/RealtimeOrderList.vue`
-- Create: `apps/admin-web/src/components/VehicleTaskList.vue`
-- Create: `apps/admin-web/src/components/MetricTileGrid.vue`
-- Create: `apps/admin-web/src/pages/dispatch-workbench.test.ts`
-- Create: `apps/admin-web/src/pages/dashboard-page.test.ts`
+**文件：**
+- 修改：`apps/admin-web/src/pages/DispatchWorkbenchPage.vue`
+- 修改：`apps/admin-web/src/pages/DashboardPage.vue`
+- 修改：`apps/admin-web/src/pages/AuditLogsPage.vue`
+- 新建：`apps/admin-web/src/components/DispatchMap.vue`
+- 新建：`apps/admin-web/src/components/DispatchDecisionPanel.vue`
+- 新建：`apps/admin-web/src/components/RealtimeOrderList.vue`
+- 新建：`apps/admin-web/src/components/VehicleTaskList.vue`
+- 新建：`apps/admin-web/src/components/MetricTileGrid.vue`
+- 新建：`apps/admin-web/src/pages/dispatch-workbench.test.ts`
+- 新建：`apps/admin-web/src/pages/dashboard-page.test.ts`
 
-**Interfaces:**
-- Consumes orders, tasks, dispatch decisions, metrics, audit logs
-- Produces dispatch workbench with map, realtime orders, vehicle tasks, decision explanation, and manual actions
+**接口：**
+- 消费订单、任务、调度决策、指标和审计日志接口
+- 产出调度工作台：地图、实时订单、车辆任务、算法解释、人工操作
 
-- [ ] **Step 1: Write workbench tests**
+- [ ] **步骤 1：编写工作台测试**
 
 ```ts
 it("renders dispatch workbench operational regions", async () => {
@@ -1509,7 +1530,7 @@ it("renders dispatch workbench operational regions", async () => {
 });
 ```
 
-- [ ] **Step 2: Write dashboard tests**
+- [ ] **步骤 2：编写看板测试**
 
 ```ts
 it("renders first-version operations metrics", async () => {
@@ -1521,48 +1542,48 @@ it("renders first-version operations metrics", async () => {
 });
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **步骤 3：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 cd apps/admin-web
 npm run test -- dispatch-workbench.test.ts dashboard-page.test.ts
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL because components are incomplete.
 ```
 
-- [ ] **Step 4: Implement dispatch map**
+- [ ] **步骤 4：实现调度地图**
 
-Use MapLibre GL JS. Render:
+使用 MapLibre GL JS，渲染：
 
-- service area polygon
-- virtual stops
-- vehicle markers
-- task route polyline
+- 服务区域多边形。
+- 虚拟站点。
+- 车辆标记。
+- 任务路线折线。
 
-Use stable container sizing so map controls do not shift layout.
+地图容器使用稳定尺寸，避免地图控件导致布局抖动。
 
-- [ ] **Step 5: Implement workbench panels**
+- [ ] **步骤 5：实现工作台面板**
 
-Use dense operations layout:
+使用高密度运营布局：
 
-- left panel: realtime orders
-- center: map
-- right panel: selected order/task and algorithm explanation
-- bottom panel: manual review queue and exceptions
+- 左侧：实时订单。
+- 中间：地图。
+- 右侧：选中订单或任务的详情与算法解释。
+- 底部：人工确认队列和异常列表。
 
-- [ ] **Step 6: Implement dashboard and audit pages**
+- [ ] **步骤 6：实现看板和审计页面**
 
-Dashboard shows metric tiles and basic trend sections backed by current API data. Audit page shows filters by entity type, action, and date.
+看板展示指标卡片和基础趋势区，数据来自当前 API。审计页面支持按实体类型、操作和日期筛选。
 
-- [ ] **Step 7: Run frontend checks**
+- [ ] **步骤 7：运行前端检查**
 
-Run:
+运行：
 
 ```powershell
 cd apps/admin-web
@@ -1570,14 +1591,14 @@ npm run typecheck
 npm run test
 ```
 
-Expected:
+预期：
 
 ```text
 typecheck exits 0
 tests exit 0
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **步骤 8：提交**
 
 ```bash
 git add apps/admin-web/src/pages apps/admin-web/src/components
@@ -1586,17 +1607,17 @@ git commit -m "feat: add dispatch workbench and operations dashboard"
 
 ---
 
-### Task 13: End-To-End Demo Flow
+### 任务 13：端到端演示链路
 
-**Files:**
-- Create: `apps/admin-web/e2e/dispatch-flow.spec.ts`
-- Create: `apps/api/src/test/java/com/idavy/drtops/e2e/DispatchFlowIntegrationTest.java`
-- Create: `README.md`
+**文件：**
+- 新建：`apps/admin-web/e2e/dispatch-flow.spec.ts`
+- 新建：`apps/api/src/test/java/com/idavy/drtops/e2e/DispatchFlowIntegrationTest.java`
+- 修改：`README.md`
 
-**Interfaces:**
-- Verifies full flow from demand entry to dispatch decision to vehicle task execution
+**接口：**
+- 验证从需求录入、调度决策到车辆任务执行的完整链路
 
-- [ ] **Step 1: Write backend integration flow test**
+- [ ] **步骤 1：编写后端集成流测试**
 
 ```java
 @Test
@@ -1619,7 +1640,7 @@ void demandToDispatchToTaskCompletionFlow() {
 }
 ```
 
-- [ ] **Step 2: Write Playwright flow**
+- [ ] **步骤 2：编写 Playwright 流程**
 
 ```ts
 test("operator can create demand dispatch it and complete the task", async ({ page }) => {
@@ -1634,9 +1655,9 @@ test("operator can create demand dispatch it and complete the task", async ({ pa
 });
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **步骤 3：运行测试确认失败**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api -Dtest=DispatchFlowIntegrationTest test
@@ -1644,19 +1665,19 @@ cd apps/admin-web
 npm run e2e -- dispatch-flow.spec.ts
 ```
 
-Expected:
+预期：
 
 ```text
 FAIL until all previous tasks are complete and local services are running.
 ```
 
-- [ ] **Step 4: Implement missing flow wiring**
+- [ ] **步骤 4：补齐演示链路连线**
 
-Connect UI actions to backend endpoints and ensure demo seed data supports at least one auto-dispatchable order.
+把页面动作连到后端接口，并确保演示种子数据至少支持一个可以自动派发的订单。
 
-- [ ] **Step 5: Update README runbook**
+- [ ] **步骤 5：更新 README 运行手册**
 
-Document:
+写入：
 
 ```powershell
 docker compose -f infra/docker-compose.yml up -d
@@ -1667,9 +1688,9 @@ cd ../admin-web
 npm run dev
 ```
 
-- [ ] **Step 6: Run full verification**
+- [ ] **步骤 6：运行完整验证**
 
-Run:
+运行：
 
 ```powershell
 mvn -q -pl apps/api test
@@ -1681,7 +1702,7 @@ npm run test
 npm run e2e -- dispatch-flow.spec.ts
 ```
 
-Expected:
+预期：
 
 ```text
 backend tests pass
@@ -1691,7 +1712,7 @@ frontend unit tests pass
 Playwright dispatch flow passes
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add apps README.md
@@ -1700,31 +1721,31 @@ git commit -m "test: add end-to-end dispatch demo flow"
 
 ---
 
-### Task 14: Final MVP Readiness Review
+### 任务 14：MVP 就绪检查
 
-**Files:**
-- Create: `docs/release/mvp-readiness-checklist.md`
-- Modify: `README.md`
+**文件：**
+- 新建：`docs/release/mvp-readiness-checklist.md`
+- 修改：`README.md`
 
-**Interfaces:**
-- Produces release checklist mapped to the approved design document
+**接口：**
+- 产出与已确认设计文档对应的发布检查清单
 
-- [ ] **Step 1: Create readiness checklist**
+- [ ] **步骤 1：创建就绪检查清单**
 
-Include these checked sections:
+清单必须覆盖：
 
-- Resource setup: service area, virtual stops, vehicles, drivers, rule set.
-- Demand entry: immediate and short booking orders.
-- Dispatch: no feasible plan, auto-dispatch, manual review.
-- Vehicle tasks: create, insert, execute, complete.
-- Exceptions: cancellation, no-show, vehicle failure, severe delay.
-- Audit: decision, manual action, rule change, task status change.
-- Metrics: confirmation rate, auto-dispatch rate, manual review rate, waiting time, detour time, completion rate, exception rate, utilization.
-- UX: workbench, map, decision explanation, resource pages, task simulation.
+- 资源配置：服务区域、虚拟站点、车辆、司机、规则组。
+- 需求录入：即时订单和短时预约订单。
+- 调度：无可行方案、自动派发、人工确认。
+- 车辆任务：创建、插单、执行、完成。
+- 异常：取消、未到、车辆故障、严重延误。
+- 审计：调度决策、人工操作、规则变更、任务状态变化。
+- 指标：确认率、自动派发率、人工确认率、等待时间、绕行时间、完成率、异常率、车辆利用率。
+- 页面：调度工作台、地图、决策解释、资源页面、任务模拟。
 
-- [ ] **Step 2: Run final verification**
+- [ ] **步骤 2：运行最终验证**
 
-Run:
+运行：
 
 ```powershell
 git status --short
@@ -1737,7 +1758,7 @@ npm run test
 npm run e2e -- dispatch-flow.spec.ts
 ```
 
-Expected:
+预期：
 
 ```text
 git status shows only intended readiness documentation before commit
@@ -1747,7 +1768,7 @@ all frontend checks pass
 e2e dispatch flow passes
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **步骤 3：提交**
 
 ```bash
 git add README.md docs/release/mvp-readiness-checklist.md
@@ -1756,12 +1777,13 @@ git commit -m "docs: add MVP readiness checklist"
 
 ---
 
-## Self-Review
+## 自查结果
 
-**Spec coverage:** This plan covers product boundary, order and task state flow, algorithm service, module boundaries, core data objects, architecture/data flow, exceptions, audit, metrics, admin pages, and MVP acceptance scenarios from the approved design document.
+**设计覆盖：** 本计划覆盖已确认设计文档中的产品边界、订单和任务状态流、算法服务、模块边界、核心数据对象、系统架构与数据流、异常处理、审计、指标、企业管理页面和 MVP 验收场景。
 
-**Known scope exclusions:** Complete passenger app, complete driver app, regulator portal, payment/settlement, machine-learning prediction, and Kafka production event streaming are excluded from this MVP plan and require separate plans.
+**已排除范围：** 完整乘客端、完整司机端、监管端、支付结算、机器学习预测、Kafka 生产级事件流不进入本 MVP 实施计划，需要单独拆计划。
 
-**Unresolved-token scan:** The plan avoids unresolved planning tokens and gives concrete file paths, interfaces, commands, and expected outcomes for every task.
+**未解决标记扫描：** 本计划给出了明确文件路径、接口、命令和预期结果，没有保留未确定的实施项。
 
-**Type consistency:** Core terms are consistent across tasks: `RideOrder`, `VehicleTask`, `TaskStop`, `DispatchDecision`, `DispatchRuleSet`, `OrderStatus`, `TaskStatus`, `DispatchEvaluateRequest`, and `DispatchEvaluateResponse`.
+**类型一致性：** 核心命名在各任务中保持一致：`RideOrder`、`VehicleTask`、`TaskStop`、`DispatchDecision`、`DispatchRuleSet`、`OrderStatus`、`TaskStatus`、`DispatchEvaluateRequest`、`DispatchEvaluateResponse`。
+
