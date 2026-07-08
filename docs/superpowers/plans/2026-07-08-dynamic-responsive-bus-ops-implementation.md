@@ -120,7 +120,7 @@ D:/codex-projects/
 
 ---
 
-### 任务 1：创建 Monorepo 骨架与本地运行基础
+### Task 1：创建 Monorepo 骨架与本地运行基础
 
 **文件：**
 - 新建：`pom.xml`
@@ -270,7 +270,7 @@ git commit -m "chore: scaffold dynamic bus ops monorepo"
 
 ---
 
-### 任务 2：数据库结构与演示数据
+### Task 2：数据库结构与演示数据
 
 **文件：**
 - 新建：`apps/api/src/main/resources/db/migration/V1__create_core_schema.sql`
@@ -565,7 +565,7 @@ git commit -m "feat: add core operations database schema"
 
 ---
 
-### 任务 3：Java 领域模型与状态规则
+### Task 3：Java 领域模型与状态规则
 
 **文件：**
 - 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/OrderStatus.java`
@@ -652,7 +652,7 @@ git commit -m "feat: add order task and dispatch domain model"
 
 ---
 
-### 任务 4：资源与规则配置 API
+### Task 4：资源与规则配置 API
 
 **文件：**
 - 新建：`apps/api/src/main/java/com/idavy/drtops/common/ApiResponse.java`
@@ -754,7 +754,7 @@ git commit -m "feat: add resource and dispatch rule APIs"
 
 ---
 
-### 任务 5：需求录入与虚拟站点匹配
+### Task 5：需求录入与虚拟站点匹配
 
 **文件：**
 - 新建：`apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderController.java`
@@ -858,7 +858,7 @@ git commit -m "feat: add ride demand entry and virtual stop matching"
 
 ---
 
-### 任务 6：算法服务契约与评估引擎
+### Task 6：算法服务契约与评估引擎
 
 **文件：**
 - 新建：`docs/api/dispatch-algorithm-contract.md`
@@ -988,7 +988,7 @@ git commit -m "feat: add dispatch algorithm evaluation service"
 
 ---
 
-### 任务 7：Java 调度编排
+### Task 7：Java 调度编排
 
 **文件：**
 - 新建：`apps/api/src/main/java/com/idavy/drtops/integration/algorithm/AlgorithmClient.java`
@@ -1086,7 +1086,7 @@ git commit -m "feat: add dispatch orchestration"
 
 ---
 
-### 任务 8：人工确认、任务执行与异常处理
+### Task 8：人工确认、任务执行与异常处理
 
 **文件：**
 - 新建：`apps/api/src/main/java/com/idavy/drtops/domain/dispatch/ManualReviewController.java`
@@ -1193,7 +1193,7 @@ git commit -m "feat: add manual review task execution and exceptions"
 
 ---
 
-### 任务 9：审计日志与运营指标
+### Task 9：审计日志与运营指标
 
 **文件：**
 - 新建：`apps/api/src/main/java/com/idavy/drtops/domain/audit/AuditLog.java`
@@ -1296,7 +1296,7 @@ git commit -m "feat: add audit logs and operations metrics"
 
 ---
 
-### 任务 10：前端基础框架与 API 客户端
+### Task 10：前端基础框架与 API 客户端
 
 **文件：**
 - 新建：`apps/admin-web/src/router/index.ts`
@@ -1391,7 +1391,7 @@ git commit -m "feat: add admin web foundation and API client"
 
 ---
 
-### 任务 11：资源、规则、订单和任务页面
+### Task 11：资源、规则、订单和任务页面
 
 **文件：**
 - 修改：`apps/admin-web/src/pages/ResourcesPage.vue`
@@ -1500,7 +1500,7 @@ git commit -m "feat: add resource rule order and task pages"
 
 ---
 
-### 任务 12：调度工作台与基础运营看板
+### Task 12：调度工作台与基础运营看板
 
 **文件：**
 - 修改：`apps/admin-web/src/pages/DispatchWorkbenchPage.vue`
@@ -1607,7 +1607,7 @@ git commit -m "feat: add dispatch workbench and operations dashboard"
 
 ---
 
-### 任务 13：端到端演示链路
+### Task 13：端到端演示链路
 
 **文件：**
 - 新建：`apps/admin-web/e2e/dispatch-flow.spec.ts`
@@ -1721,7 +1721,7 @@ git commit -m "test: add end-to-end dispatch demo flow"
 
 ---
 
-### 任务 14：MVP 就绪检查
+### Task 14：MVP 就绪检查
 
 **文件：**
 - 新建：`docs/release/mvp-readiness-checklist.md`
