@@ -15,7 +15,8 @@ import org.springframework.test.web.servlet.MockMvc;
                 "spring.datasource.url=jdbc:h2:mem:drt_ops;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
                 "spring.datasource.username=sa",
                 "spring.datasource.password=",
-                "spring.datasource.driver-class-name=org.h2.Driver"
+                "spring.datasource.driver-class-name=org.h2.Driver",
+                "spring.flyway.enabled=false"
         })
 @AutoConfigureMockMvc
 class ActuatorHealthTest {

@@ -46,3 +46,8 @@
 - API: `GET http://localhost:8080/actuator/health`
 - 算法: `GET http://localhost:8090/health`
 - 前端: `GET http://localhost:5173/`
+
+## 本地验证
+
+- 后端普通测试：`mvn -pl apps/api test`
+- 后端 PostGIS 迁移集成测试：启动 Docker 后运行 `mvn -pl apps/api -Dtest=DatabaseMigrationTest -Ddrt.integration.postgis=true test`
