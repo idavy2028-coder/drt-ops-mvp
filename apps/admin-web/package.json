@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "e2e": "playwright test",
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit"
   },
@@ -15,6 +16,7 @@
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.45.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/vue": "^8.1.0",
     "@types/node": "^24.0.10",

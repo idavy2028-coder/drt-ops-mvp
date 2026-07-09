@@ -1,6 +1,10 @@
 import { request } from "./http";
 import type { UUID, VehicleTask } from "./types";
 
+export function listTasks(): Promise<VehicleTask[]> {
+  return request<VehicleTask[]>("/api/vehicle-tasks");
+}
+
 export function startTask(taskId: UUID): Promise<VehicleTask> {
   return request<VehicleTask>(`/api/vehicle-tasks/${taskId}/start`, { method: "POST" });
 }

@@ -51,3 +51,26 @@
 
 - 后端普通测试：`mvn -pl apps/api test`
 - 后端 PostGIS 迁移集成测试：启动 Docker 后运行 `mvn -pl apps/api -Dtest=DatabaseMigrationTest -Ddrt.integration.postgis=true test`
+
+## 端到端演示链路
+
+完整演示建议按下面顺序启动本地服务：
+
+```powershell
+docker compose -f infra/docker-compose.yml up -d
+mvn -pl apps/api spring-boot:run
+cd apps/algorithm
+python -m uvicorn drt_algorithm.main:app --port 8090 --reload
+cd ../admin-web
+npm run dev
+```
+
+自动化验证命令：
+
+```powershell
+mvn -pl apps/api -Dtest=DispatchFlowIntegrationTest test
+cd apps/admin-web
+npm run e2e -- dispatch-flow.spec.ts
+```
+
+后端集成测试覆盖真实业务闭环：录入需求、虚拟站点匹配、自动派发、车辆任务生成、站点执行和订单完成。前端 Playwright 流程覆盖管理端页面操作和接口连线，默认使用路由 mock 固定后端响应，便于在没有同时启动全栈服务时验证 UI 流程。

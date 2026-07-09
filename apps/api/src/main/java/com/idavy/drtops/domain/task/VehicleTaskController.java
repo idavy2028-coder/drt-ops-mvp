@@ -1,7 +1,9 @@
 package com.idavy.drtops.domain.task;
 
 import com.idavy.drtops.common.ApiResponse;
+import java.util.List;
 import java.util.UUID;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -12,10 +14,17 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/vehicle-tasks")
 public class VehicleTaskController {
 
+    private final VehicleTaskRepository vehicleTaskRepository;
     private final TaskExecutionService taskExecutionService;
 
-    public VehicleTaskController(TaskExecutionService taskExecutionService) {
+    public VehicleTaskController(VehicleTaskRepository vehicleTaskRepository, TaskExecutionService taskExecutionService) {
+        this.vehicleTaskRepository = vehicleTaskRepository;
         this.taskExecutionService = taskExecutionService;
+    }
+
+    @GetMapping
+    ApiResponse<List<VehicleTask>> list() {
+        return ApiResponse.ok(vehicleTaskRepository.findAllByOrderByPlannedStartAtAsc());
     }
 
     @PostMapping("/{taskId}/start")
