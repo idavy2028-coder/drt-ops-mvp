@@ -12,13 +12,16 @@ import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -134,10 +137,17 @@ public class DispatchOrchestrator {
 
         Vehicle vehicle = vehicleRepository.findById(bestPlan.vehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的车辆不存在"));
-        Driver driver = availableDriver();
         OffsetDateTime estimatedBoardingAt = order.getRequestedDepartureAt().plusMinutes(bestPlan.estimatedWaitMinutes());
         OffsetDateTime estimatedArrivalAt = estimatedBoardingAt.plusMinutes(bestPlan.estimatedDetourMinutes() + 10L);
 
+        if (bestPlan.taskId() != null) {
+            VehicleTask existingTask = vehicleTaskRepository.findWithStopsById(bestPlan.taskId()).orElse(null);
+            if (existingTask != null) {
+                return insertIntoExistingTask(order, vehicle, existingTask, estimatedBoardingAt, estimatedArrivalAt);
+            }
+        }
+
+        Driver driver = availableDriver();
         VehicleTask task = VehicleTask.pendingDeparture(
                 vehicle.getId(),
                 driver.getId(),
@@ -160,6 +170,64 @@ public class DispatchOrchestrator {
         VehicleTask savedTask = vehicleTaskRepository.save(task);
         order.confirm(new RideOrder.OrderPromise(estimatedBoardingAt, estimatedArrivalAt));
         return savedTask;
+    }
+
+    private VehicleTask insertIntoExistingTask(
+            RideOrder order,
+            Vehicle vehicle,
+            VehicleTask task,
+            OffsetDateTime estimatedBoardingAt,
+            OffsetDateTime estimatedArrivalAt) {
+        if (!task.getVehicleId().equals(vehicle.getId())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务车辆不一致");
+        }
+        if (task.getStatus() != TaskStatus.DISPATCHED && task.getStatus() != TaskStatus.IN_PROGRESS) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务不可插单");
+        }
+        assertCapacityAvailable(order, vehicle, task);
+
+        int nextSequence = task.getStops().stream()
+                .mapToInt(TaskStop::getSequenceNumber)
+                .max()
+                .orElse(0) + 1;
+        task.addStop(TaskStop.planned(
+                order.getBoardingStopId(),
+                order.getId(),
+                nextSequence,
+                "BOARDING",
+                estimatedBoardingAt));
+        task.addStop(TaskStop.planned(
+                order.getAlightingStopId(),
+                order.getId(),
+                nextSequence + 1,
+                "ALIGHTING",
+                estimatedArrivalAt));
+        VehicleTask savedTask = vehicleTaskRepository.save(task);
+        order.confirm(new RideOrder.OrderPromise(estimatedBoardingAt, estimatedArrivalAt));
+        return savedTask;
+    }
+
+    private void assertCapacityAvailable(RideOrder order, Vehicle vehicle, VehicleTask task) {
+        if (occupiedSeats(task) + order.getPassengerCount() > vehicle.getCapacity()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务剩余座位不足");
+        }
+    }
+
+    private int occupiedSeats(VehicleTask task) {
+        Set<UUID> orderIds = new LinkedHashSet<>();
+        for (TaskStop stop : task.getStops()) {
+            if (stop.getRideOrderId() != null) {
+                orderIds.add(stop.getRideOrderId());
+            }
+        }
+
+        int occupiedSeats = 0;
+        for (UUID orderId : orderIds) {
+            occupiedSeats += rideOrderRepository.findById(orderId)
+                    .map(RideOrder::getPassengerCount)
+                    .orElse(0);
+        }
+        return occupiedSeats;
     }
 
     private Driver availableDriver() {

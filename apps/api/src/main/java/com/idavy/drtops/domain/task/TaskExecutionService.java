@@ -91,6 +91,15 @@ public class TaskExecutionService {
 
     @Transactional
     public VehicleTask markException(UUID taskId, String reason) {
+        return closeTaskAsException(taskId, reason, "TASK_EXCEPTION");
+    }
+
+    @Transactional
+    public VehicleTask markSevereDelay(UUID taskId, String reason) {
+        return closeTaskAsException(taskId, reason, "TASK_SEVERE_DELAY");
+    }
+
+    private VehicleTask closeTaskAsException(UUID taskId, String reason, String auditAction) {
         VehicleTask task = task(taskId);
         task.markException(reason);
         for (RideOrder order : affectedOrders(task)) {
@@ -101,7 +110,7 @@ public class TaskExecutionService {
                 order.closeException(reason);
             }
         }
-        audit(task.getId(), "TASK_EXCEPTION", reason);
+        audit(task.getId(), auditAction, reason);
         return task;
     }
 

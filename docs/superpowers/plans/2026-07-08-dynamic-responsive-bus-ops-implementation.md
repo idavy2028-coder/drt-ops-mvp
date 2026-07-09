@@ -1,6 +1,6 @@
 # 区域动态响应公交运营管理 MVP 实施计划
 
-> **给后续执行代理的要求：** 实施本计划时必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐个任务执行。本文使用复选框 `- [ ]` 跟踪步骤。
+> **给后续执行代理的要求：** 实施本计划时必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐个任务执行。本文使用复选框跟踪步骤，当前步骤已全部标记完成。
 
 **目标：** 建设第一版面向公交企业内部运营的区域动态响应公交 MVP，跑通资源配置、需求录入、实时调度评估、车辆任务生成、执行模拟、异常处理、审计记录和基础调度工作台。
 
@@ -145,7 +145,7 @@ D:/codex-projects/
 - 产出：前端首页 `/`
 - 产出：本地依赖服务 `postgres:5432`、`redis:6379`、`api:8080`、`algorithm:8090`、`admin-web:5173`
 
-- [ ] **步骤 1：创建后端骨架**
+- [x] **步骤 1：创建后端骨架**
 
 根目录 Maven 聚合项目包含 `apps/api` 模块。
 
@@ -182,7 +182,7 @@ public class DrtOpsApplication {
 }
 ```
 
-- [ ] **步骤 2：创建算法服务骨架**
+- [x] **步骤 2：创建算法服务骨架**
 
 ```python
 # D:/codex-projects/apps/algorithm/src/drt_algorithm/main.py
@@ -196,7 +196,7 @@ def health() -> dict[str, str]:
     return {"status": "UP"}
 ```
 
-- [ ] **步骤 3：创建前端骨架**
+- [x] **步骤 3：创建前端骨架**
 
 ```vue
 <!-- D:/codex-projects/apps/admin-web/src/App.vue -->
@@ -215,7 +215,7 @@ def health() -> dict[str, str]:
 </style>
 ```
 
-- [ ] **步骤 4：创建本地基础设施**
+- [x] **步骤 4：创建本地基础设施**
 
 ```yaml
 # D:/codex-projects/infra/docker-compose.yml
@@ -241,7 +241,7 @@ services:
 CREATE EXTENSION IF NOT EXISTS postgis;
 ```
 
-- [ ] **步骤 5：验证骨架**
+- [x] **步骤 5：验证骨架**
 
 运行：
 
@@ -261,7 +261,7 @@ pytest exits 0.
 TypeScript typecheck exits 0.
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add pom.xml apps infra README.md
@@ -281,7 +281,7 @@ git commit -m "chore: scaffold dynamic bus ops monorepo"
 - 产出表：`service_areas`、`virtual_stops`、`dispatch_rule_sets`、`vehicles`、`drivers`、`ride_orders`、`vehicle_tasks`、`task_stops`、`dispatch_decisions`、`audit_logs`
 - 产出 PostGIS 字段：`service_areas.boundary`、`virtual_stops.location`、`vehicles.current_location`
 
-- [ ] **步骤 1：先写失败的迁移测试**
+- [x] **步骤 1：先写失败的迁移测试**
 
 ```java
 package com.idavy.drtops;
@@ -342,7 +342,7 @@ class DatabaseMigrationTest {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：
 
@@ -356,7 +356,7 @@ mvn -q -pl apps/api -Dtest=DatabaseMigrationTest test
 FAIL because migration files or tables do not exist.
 ```
 
-- [ ] **步骤 3：创建核心数据库迁移**
+- [x] **步骤 3：创建核心数据库迁移**
 
 先创建规则、区域和虚拟站点：
 
@@ -521,7 +521,7 @@ CREATE INDEX idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
 CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at);
 ```
 
-- [ ] **步骤 4：创建演示数据迁移**
+- [x] **步骤 4：创建演示数据迁移**
 
 `V2__seed_demo_operations.sql` 固定写入：
 
@@ -542,7 +542,7 @@ driver_1_id = 44444444-4444-4444-4444-444444444441
 driver_2_id = 44444444-4444-4444-4444-444444444442
 ```
 
-- [ ] **步骤 5：运行迁移测试**
+- [x] **步骤 5：运行迁移测试**
 
 运行：
 
@@ -556,7 +556,7 @@ mvn -q -pl apps/api -Dtest=DatabaseMigrationTest test
 BUILD SUCCESS
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/resources/db/migration apps/api/src/test/java/com/idavy/drtops/DatabaseMigrationTest.java
@@ -585,7 +585,7 @@ git commit -m "feat: add core operations database schema"
 - 产出枚举 `TaskStatus`：`PENDING_DEPARTURE`、`DISPATCHED`、`IN_PROGRESS`、`PAUSED`、`COMPLETED`、`CANCELLED`、`EXCEPTION`
 - 产出方法：`RideOrder.confirm(...)`、`RideOrder.markUnserviceable(...)`、`RideOrder.markPendingManualReview(...)`、`RideOrder.cancel(...)`、`RideOrder.startExecution()`、`RideOrder.complete()`、`RideOrder.closeException(...)`
 
-- [ ] **步骤 1：先写失败的状态流转测试**
+- [x] **步骤 1：先写失败的状态流转测试**
 
 ```java
 @Test
@@ -607,7 +607,7 @@ void cancelledOrderCannotBeConfirmed() {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：
 
@@ -621,15 +621,15 @@ mvn -q -pl apps/api -Dtest=RideOrderStateTest,VehicleTaskStateTest test
 FAIL because domain classes do not exist.
 ```
 
-- [ ] **步骤 3：实现最小领域对象**
+- [x] **步骤 3：实现最小领域对象**
 
 实现 JPA 实体，并把状态修改封装在领域方法里。控制器和编排服务不能直接赋值状态字符串。
 
-- [ ] **步骤 4：增加仓储冒烟测试**
+- [x] **步骤 4：增加仓储冒烟测试**
 
 保存并重新读取一个订单和一个车辆任务，验证基础持久化可用。
 
-- [ ] **步骤 5：运行领域测试**
+- [x] **步骤 5：运行领域测试**
 
 运行：
 
@@ -643,7 +643,7 @@ mvn -q -pl apps/api -Dtest=*StateTest,*RepositoryTest test
 BUILD SUCCESS
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain apps/api/src/test/java/com/idavy/drtops/domain
@@ -679,7 +679,7 @@ git commit -m "feat: add order task and dispatch domain model"
   - `GET /api/dispatch-rule-sets`
   - `PUT /api/dispatch-rule-sets/{id}`
 
-- [ ] **步骤 1：编写 API 测试**
+- [x] **步骤 1：编写 API 测试**
 
 ```java
 @Test
@@ -703,7 +703,7 @@ void rejectsRuleSetWithNegativeWaitTime() throws Exception {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：
 
@@ -717,7 +717,7 @@ mvn -q -pl apps/api -Dtest=ServiceAreaApiTest,FleetApiTest,DispatchRuleSetApiTes
 FAIL because controllers do not exist.
 ```
 
-- [ ] **步骤 3：实现控制器和服务**
+- [x] **步骤 3：实现控制器和服务**
 
 统一返回结构：
 
@@ -731,7 +731,7 @@ public record ApiResponse<T>(T data) {
 
 请求 DTO 必须校验名称、容量、坐标、等待时间、绕行时间、评分阈值和权重。
 
-- [ ] **步骤 4：运行 API 测试**
+- [x] **步骤 4：运行 API 测试**
 
 运行：
 
@@ -745,7 +745,7 @@ mvn -q -pl apps/api -Dtest=ServiceAreaApiTest,FleetApiTest,DispatchRuleSetApiTes
 BUILD SUCCESS
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops apps/api/src/test/java/com/idavy/drtops/domain
@@ -769,7 +769,7 @@ git commit -m "feat: add resource and dispatch rule APIs"
 - 产出：`GET /api/orders`
 - 产出方法：`VirtualStopMatch matchStops(BigDecimal originLng, BigDecimal originLat, BigDecimal destinationLng, BigDecimal destinationLat, Instant requestedDepartureAt)`
 
-- [ ] **步骤 1：编写虚拟站点匹配测试**
+- [x] **步骤 1：编写虚拟站点匹配测试**
 
 ```java
 @Test
@@ -787,7 +787,7 @@ void matchesNearestBoardingAndAlightingStopsInsideServiceArea() {
 }
 ```
 
-- [ ] **步骤 2：编写订单 API 测试**
+- [x] **步骤 2：编写订单 API 测试**
 
 ```java
 @Test
@@ -807,7 +807,7 @@ void createsPendingDispatchOrderWhenStopsMatch() throws Exception {
 }
 ```
 
-- [ ] **步骤 3：运行测试确认失败**
+- [x] **步骤 3：运行测试确认失败**
 
 运行：
 
@@ -821,7 +821,7 @@ mvn -q -pl apps/api -Dtest=VirtualStopMatcherTest,RideOrderApiTest test
 FAIL because matcher and order API do not exist.
 ```
 
-- [ ] **步骤 4：实现匹配与订单创建**
+- [x] **步骤 4：实现匹配与订单创建**
 
 用 `JdbcTemplate` 调用 PostGIS 距离查询：
 
@@ -835,7 +835,7 @@ ORDER BY distance_meters ASC
 LIMIT 1
 ```
 
-- [ ] **步骤 5：运行测试**
+- [x] **步骤 5：运行测试**
 
 运行：
 
@@ -849,7 +849,7 @@ mvn -q -pl apps/api -Dtest=VirtualStopMatcherTest,RideOrderApiTest test
 BUILD SUCCESS
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain/order apps/api/src/main/java/com/idavy/drtops/domain/area apps/api/src/test/java/com/idavy/drtops/domain
@@ -876,7 +876,7 @@ git commit -m "feat: add ride demand entry and virtual stop matching"
 - 产出响应模型：`DispatchEvaluateResponse`
 - 产出决策值：`AUTO_DISPATCH`、`MANUAL_REVIEW`、`NO_FEASIBLE_PLAN`
 
-- [ ] **步骤 1：编写算法契约文档**
+- [x] **步骤 1：编写算法契约文档**
 
 请求 JSON 格式：
 
@@ -907,7 +907,7 @@ git commit -m "feat: add ride demand entry and virtual stop matching"
 }
 ```
 
-- [ ] **步骤 2：编写失败的 pytest 用例**
+- [x] **步骤 2：编写失败的 pytest 用例**
 
 ```python
 def test_no_vehicle_returns_no_feasible_plan(client):
@@ -927,7 +927,7 @@ def test_same_direction_low_detour_returns_auto_dispatch(client):
     assert body["bestPlan"]["estimatedWaitMinutes"] <= 12
 ```
 
-- [ ] **步骤 3：运行测试确认失败**
+- [x] **步骤 3：运行测试确认失败**
 
 运行：
 
@@ -942,11 +942,11 @@ python -m pytest tests/test_dispatch_evaluation.py -v
 FAIL because /dispatch/evaluate and schemas do not exist.
 ```
 
-- [ ] **步骤 4：实现 Pydantic 模型**
+- [x] **步骤 4：实现 Pydantic 模型**
 
 模型使用 `uuid.UUID`、`datetime`、整型乘客数、小数权重和字符串枚举。对乘客数、阈值和权重做边界校验。
 
-- [ ] **步骤 5：实现第一版评估逻辑**
+- [x] **步骤 5：实现第一版评估逻辑**
 
 确定性规则：
 
@@ -964,7 +964,7 @@ FAIL because /dispatch/evaluate and schemas do not exist.
 8. 最高分达到人工确认阈值且低于自动派发阈值时返回 `MANUAL_REVIEW`。
 9. 全部候选被剔除时返回 `NO_FEASIBLE_PLAN`。
 
-- [ ] **步骤 6：运行算法测试**
+- [x] **步骤 6：运行算法测试**
 
 运行：
 
@@ -979,7 +979,7 @@ python -m pytest -v
 all tests pass
 ```
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```bash
 git add docs/api/dispatch-algorithm-contract.md apps/algorithm
@@ -1003,7 +1003,7 @@ git commit -m "feat: add dispatch algorithm evaluation service"
 - 产出方法：`DispatchResult dispatchOrder(UUID orderId)`
 - 产出接口：`POST /api/orders/{orderId}/dispatch`
 
-- [ ] **步骤 1：编写编排测试**
+- [x] **步骤 1：编写编排测试**
 
 ```java
 @Test
@@ -1031,7 +1031,7 @@ void manualReviewKeepsOrderPendingManualReview() {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：
 
@@ -1045,11 +1045,11 @@ mvn -q -pl apps/api -Dtest=DispatchOrchestratorTest test
 FAIL because orchestration classes do not exist.
 ```
 
-- [ ] **步骤 3：实现算法客户端**
+- [x] **步骤 3：实现算法客户端**
 
 使用 `WebClient`，基础地址来自配置项 `dispatch.algorithm.base-url`，本地默认值为 `http://localhost:8090`。
 
-- [ ] **步骤 4：实现编排事务**
+- [x] **步骤 4：实现编排事务**
 
 单个事务内完成：
 
@@ -1063,7 +1063,7 @@ FAIL because orchestration classes do not exist.
 8. `NO_FEASIBLE_PLAN` 时把订单标记为不可服务。
 9. 写审计日志。
 
-- [ ] **步骤 5：运行编排测试**
+- [x] **步骤 5：运行编排测试**
 
 运行：
 
@@ -1077,7 +1077,7 @@ mvn -q -pl apps/api -Dtest=DispatchOrchestratorTest test
 BUILD SUCCESS
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/integration apps/api/src/main/java/com/idavy/drtops/domain/dispatch apps/api/src/test/java/com/idavy/drtops/domain/dispatch
@@ -1108,7 +1108,7 @@ git commit -m "feat: add dispatch orchestration"
 - `POST /api/orders/{orderId}/no-show`
 - `POST /api/vehicle-tasks/{taskId}/exception`
 
-- [ ] **步骤 1：编写执行流程测试**
+- [x] **步骤 1：编写执行流程测试**
 
 ```java
 @Test
@@ -1128,7 +1128,7 @@ void taskCanMoveThroughStartArriveBoardAlightComplete() throws Exception {
 }
 ```
 
-- [ ] **步骤 2：编写异常测试**
+- [x] **步骤 2：编写异常测试**
 
 ```java
 @Test
@@ -1145,7 +1145,7 @@ void vehicleFailureClosesTaskAsExceptionAndAuditsReason() throws Exception {
 }
 ```
 
-- [ ] **步骤 3：运行测试确认失败**
+- [x] **步骤 3：运行测试确认失败**
 
 运行：
 
@@ -1159,7 +1159,7 @@ mvn -q -pl apps/api -Dtest=TaskExecutionApiTest,OrderExceptionApiTest test
 FAIL because execution APIs do not exist.
 ```
 
-- [ ] **步骤 4：实现执行服务**
+- [x] **步骤 4：实现执行服务**
 
 必须限制状态流转：
 
@@ -1170,7 +1170,7 @@ FAIL because execution APIs do not exist.
 - 所有必要节点完成后，车辆任务才能完成。
 - 车辆故障时，任务进入 `EXCEPTION`，受影响订单进入 `EXCEPTION_CLOSED`。
 
-- [ ] **步骤 5：运行测试**
+- [x] **步骤 5：运行测试**
 
 运行：
 
@@ -1184,7 +1184,7 @@ mvn -q -pl apps/api -Dtest=TaskExecutionApiTest,OrderExceptionApiTest test
 BUILD SUCCESS
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain/dispatch apps/api/src/main/java/com/idavy/drtops/domain/task apps/api/src/main/java/com/idavy/drtops/domain/order apps/api/src/test/java/com/idavy/drtops/domain
@@ -1210,7 +1210,7 @@ git commit -m "feat: add manual review task execution and exceptions"
 - 产出：`GET /api/metrics/operations-summary`
 - 指标字段：`orderCount`、`confirmationRate`、`autoDispatchRate`、`manualReviewRate`、`averageWaitMinutes`、`averageDetourMinutes`、`taskCompletionRate`、`exceptionCloseRate`、`vehicleUtilizationRate`
 
-- [ ] **步骤 1：编写审计测试**
+- [x] **步骤 1：编写审计测试**
 
 ```java
 @Test
@@ -1224,7 +1224,7 @@ void auditLogsContainDispatchDecisionAndManualAction() throws Exception {
 }
 ```
 
-- [ ] **步骤 2：编写指标测试**
+- [x] **步骤 2：编写指标测试**
 
 ```java
 @Test
@@ -1242,7 +1242,7 @@ void computesOperationsSummaryFromOrdersTasksAndDecisions() {
 }
 ```
 
-- [ ] **步骤 3：运行测试确认失败**
+- [x] **步骤 3：运行测试确认失败**
 
 运行：
 
@@ -1256,7 +1256,7 @@ mvn -q -pl apps/api -Dtest=AuditLogApiTest,OperationsMetricsServiceTest test
 FAIL because audit and metrics services do not exist.
 ```
 
-- [ ] **步骤 4：实现审计服务**
+- [x] **步骤 4：实现审计服务**
 
 每条审计记录必须包含：
 
@@ -1269,11 +1269,11 @@ FAIL because audit and metrics services do not exist.
 - `metadataJson`
 - `createdAt`
 
-- [ ] **步骤 5：实现指标服务**
+- [x] **步骤 5：实现指标服务**
 
 可使用 repository 查询或 SQL。所有比例字段使用小数计算，分母为 0 时返回 `0.0000`。
 
-- [ ] **步骤 6：运行测试**
+- [x] **步骤 6：运行测试**
 
 运行：
 
@@ -1287,7 +1287,7 @@ mvn -q -pl apps/api -Dtest=AuditLogApiTest,OperationsMetricsServiceTest test
 BUILD SUCCESS
 ```
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```bash
 git add apps/api/src/main/java/com/idavy/drtops/domain/audit apps/api/src/main/java/com/idavy/drtops/metrics apps/api/src/test/java/com/idavy/drtops/domain/audit apps/api/src/test/java/com/idavy/drtops/metrics
@@ -1321,7 +1321,7 @@ git commit -m "feat: add audit logs and operations metrics"
 - 消费任务 4、5、8、9 的后端接口
 - 产出路由：`/`、`/dispatch`、`/resources`、`/rules`、`/orders`、`/tasks`、`/audit-logs`
 
-- [ ] **步骤 1：编写 API 客户端测试**
+- [x] **步骤 1：编写 API 客户端测试**
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -1334,7 +1334,7 @@ describe("unwrapApiResponse", () => {
 });
 ```
 
-- [ ] **步骤 2：运行前端测试确认失败**
+- [x] **步骤 2：运行前端测试确认失败**
 
 运行：
 
@@ -1349,7 +1349,7 @@ npm run test -- http.test.ts
 FAIL because API client does not exist.
 ```
 
-- [ ] **步骤 3：实现路由和布局**
+- [x] **步骤 3：实现路由和布局**
 
 使用左侧导航的企业后台布局，菜单包括：
 
@@ -1361,11 +1361,11 @@ FAIL because API client does not exist.
 - 运营看板
 - 审计日志
 
-- [ ] **步骤 4：实现类型化 API 客户端**
+- [x] **步骤 4：实现类型化 API 客户端**
 
 使用一个 `request<T>()` 函数封装 `fetch`、`VITE_API_BASE_URL` 和后端返回结构 `{ data: T }`。
 
-- [ ] **步骤 5：运行前端检查**
+- [x] **步骤 5：运行前端检查**
 
 运行：
 
@@ -1382,7 +1382,7 @@ typecheck exits 0
 tests exit 0
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/admin-web
@@ -1412,7 +1412,7 @@ git commit -m "feat: add admin web foundation and API client"
 - 产出即时订单和短时预约订单录入 UI
 - 产出任务执行控制：发车、到站、上车、下车、完成、异常
 
-- [ ] **步骤 1：编写页面测试**
+- [x] **步骤 1：编写页面测试**
 
 ```ts
 it("shows create order action and order status columns", async () => {
@@ -1423,7 +1423,7 @@ it("shows create order action and order status columns", async () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 运行：
 
@@ -1438,11 +1438,11 @@ npm run test -- orders-page.test.ts tasks-page.test.ts
 FAIL because page components are incomplete.
 ```
 
-- [ ] **步骤 3：实现资源页面**
+- [x] **步骤 3：实现资源页面**
 
 展示服务区域、虚拟站点、车辆、司机和容量信息。使用适合调度场景的紧凑表格和筛选控件。
 
-- [ ] **步骤 4：实现规则页面**
+- [x] **步骤 4：实现规则页面**
 
 暴露这些配置：
 
@@ -1454,7 +1454,7 @@ FAIL because page components are incomplete.
 - 人工确认阈值。
 - 等待、绕行、稳定性、利用率权重。
 
-- [ ] **步骤 5：实现订单页面**
+- [x] **步骤 5：实现订单页面**
 
 支持：
 
@@ -1465,7 +1465,7 @@ FAIL because page components are incomplete.
 - 异常关闭。
 - 查看调度决策抽屉。
 
-- [ ] **步骤 6：实现任务页面**
+- [x] **步骤 6：实现任务页面**
 
 支持：
 
@@ -1474,7 +1474,7 @@ FAIL because page components are incomplete.
 - 执行模拟按钮。
 - 车辆故障异常操作。
 
-- [ ] **步骤 7：运行前端检查**
+- [x] **步骤 7：运行前端检查**
 
 运行：
 
@@ -1491,7 +1491,7 @@ typecheck exits 0
 tests exit 0
 ```
 
-- [ ] **步骤 8：提交**
+- [x] **步骤 8：提交**
 
 ```bash
 git add apps/admin-web/src/pages apps/admin-web/src/components
@@ -1518,7 +1518,7 @@ git commit -m "feat: add resource rule order and task pages"
 - 消费订单、任务、调度决策、指标和审计日志接口
 - 产出调度工作台：地图、实时订单、车辆任务、算法解释、人工操作
 
-- [ ] **步骤 1：编写工作台测试**
+- [x] **步骤 1：编写工作台测试**
 
 ```ts
 it("renders dispatch workbench operational regions", async () => {
@@ -1530,7 +1530,7 @@ it("renders dispatch workbench operational regions", async () => {
 });
 ```
 
-- [ ] **步骤 2：编写看板测试**
+- [x] **步骤 2：编写看板测试**
 
 ```ts
 it("renders first-version operations metrics", async () => {
@@ -1542,7 +1542,7 @@ it("renders first-version operations metrics", async () => {
 });
 ```
 
-- [ ] **步骤 3：运行测试确认失败**
+- [x] **步骤 3：运行测试确认失败**
 
 运行：
 
@@ -1557,7 +1557,7 @@ npm run test -- dispatch-workbench.test.ts dashboard-page.test.ts
 FAIL because components are incomplete.
 ```
 
-- [ ] **步骤 4：实现调度地图**
+- [x] **步骤 4：实现调度地图**
 
 使用 MapLibre GL JS，渲染：
 
@@ -1568,7 +1568,7 @@ FAIL because components are incomplete.
 
 地图容器使用稳定尺寸，避免地图控件导致布局抖动。
 
-- [ ] **步骤 5：实现工作台面板**
+- [x] **步骤 5：实现工作台面板**
 
 使用高密度运营布局：
 
@@ -1577,11 +1577,11 @@ FAIL because components are incomplete.
 - 右侧：选中订单或任务的详情与算法解释。
 - 底部：人工确认队列和异常列表。
 
-- [ ] **步骤 6：实现看板和审计页面**
+- [x] **步骤 6：实现看板和审计页面**
 
 看板展示指标卡片和基础趋势区，数据来自当前 API。审计页面支持按实体类型、操作和日期筛选。
 
-- [ ] **步骤 7：运行前端检查**
+- [x] **步骤 7：运行前端检查**
 
 运行：
 
@@ -1598,7 +1598,7 @@ typecheck exits 0
 tests exit 0
 ```
 
-- [ ] **步骤 8：提交**
+- [x] **步骤 8：提交**
 
 ```bash
 git add apps/admin-web/src/pages apps/admin-web/src/components
@@ -1617,7 +1617,7 @@ git commit -m "feat: add dispatch workbench and operations dashboard"
 **接口：**
 - 验证从需求录入、调度决策到车辆任务执行的完整链路
 
-- [ ] **步骤 1：编写后端集成流测试**
+- [x] **步骤 1：编写后端集成流测试**
 
 ```java
 @Test
@@ -1640,7 +1640,7 @@ void demandToDispatchToTaskCompletionFlow() {
 }
 ```
 
-- [ ] **步骤 2：编写 Playwright 流程**
+- [x] **步骤 2：编写 Playwright 流程**
 
 ```ts
 test("operator can create demand dispatch it and complete the task", async ({ page }) => {
@@ -1655,7 +1655,7 @@ test("operator can create demand dispatch it and complete the task", async ({ pa
 });
 ```
 
-- [ ] **步骤 3：运行测试确认失败**
+- [x] **步骤 3：运行测试确认失败**
 
 运行：
 
@@ -1671,11 +1671,11 @@ npm run e2e -- dispatch-flow.spec.ts
 FAIL until all previous tasks are complete and local services are running.
 ```
 
-- [ ] **步骤 4：补齐演示链路连线**
+- [x] **步骤 4：补齐演示链路连线**
 
 把页面动作连到后端接口，并确保演示种子数据至少支持一个可以自动派发的订单。
 
-- [ ] **步骤 5：更新 README 运行手册**
+- [x] **步骤 5：更新 README 运行手册**
 
 写入：
 
@@ -1688,7 +1688,7 @@ cd ../admin-web
 npm run dev
 ```
 
-- [ ] **步骤 6：运行完整验证**
+- [x] **步骤 6：运行完整验证**
 
 运行：
 
@@ -1712,7 +1712,7 @@ frontend unit tests pass
 Playwright dispatch flow passes
 ```
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```bash
 git add apps README.md
@@ -1730,7 +1730,7 @@ git commit -m "test: add end-to-end dispatch demo flow"
 **接口：**
 - 产出与已确认设计文档对应的发布检查清单
 
-- [ ] **步骤 1：创建就绪检查清单**
+- [x] **步骤 1：创建就绪检查清单**
 
 清单必须覆盖：
 
@@ -1743,7 +1743,7 @@ git commit -m "test: add end-to-end dispatch demo flow"
 - 指标：确认率、自动派发率、人工确认率、等待时间、绕行时间、完成率、异常率、车辆利用率。
 - 页面：调度工作台、地图、决策解释、资源页面、任务模拟。
 
-- [ ] **步骤 2：运行最终验证**
+- [x] **步骤 2：运行最终验证**
 
 运行：
 
@@ -1768,7 +1768,7 @@ all frontend checks pass
 e2e dispatch flow passes
 ```
 
-- [ ] **步骤 3：提交**
+- [x] **步骤 3：提交**
 
 ```bash
 git add README.md docs/release/mvp-readiness-checklist.md
@@ -1786,4 +1786,3 @@ git commit -m "docs: add MVP readiness checklist"
 **未解决标记扫描：** 本计划给出了明确文件路径、接口、命令和预期结果，没有保留未确定的实施项。
 
 **类型一致性：** 核心命名在各任务中保持一致：`RideOrder`、`VehicleTask`、`TaskStop`、`DispatchDecision`、`DispatchRuleSet`、`OrderStatus`、`TaskStatus`、`DispatchEvaluateRequest`、`DispatchEvaluateResponse`。
-

@@ -12,6 +12,9 @@ import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
+import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStatus;
+import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import java.math.BigDecimal;
@@ -108,6 +111,52 @@ class ManualReviewApiTest {
     }
 
     @Test
+    void approveManualReviewCanInsertOrderIntoExistingTask() throws Exception {
+        UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID decisionId = createManualReviewDecision(existingTaskId);
+
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve"))
+                .andExpect(status().isOk());
+
+        RideOrder insertedOrder = rideOrderRepository.findAll().stream()
+                .filter(order -> order.getStatus() == OrderStatus.CONFIRMED)
+                .findFirst()
+                .orElseThrow();
+        VehicleTask task = vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow();
+        assertThat(vehicleTaskRepository.findAll()).hasSize(1);
+        assertThat(task.getStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(task.getStops()).hasSize(4);
+        assertThat(task.getStops())
+                .filteredOn(stop -> insertedOrder.getId().equals(stop.getRideOrderId()))
+                .extracting(TaskStop::getStopType)
+                .containsExactly("BOARDING", "ALIGHTING");
+        assertThat(auditLogRepository.findByEntityId(insertedOrder.getId()))
+                .anyMatch(log -> log.getAction().equals("MANUAL_REVIEW_APPROVED"));
+    }
+
+    @Test
+    void approveManualReviewRejectsInsertWhenExistingTaskHasNoSeats() throws Exception {
+        vehicleRepository.deleteAll();
+        vehicleRepository.save(Vehicle.create(
+                VEHICLE_ID,
+                "DRT-201",
+                "Microbus",
+                1,
+                "IDLE",
+                "POINT(120.1550000 30.2741000)",
+                "演示车队",
+                true));
+        UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID decisionId = createManualReviewDecision(existingTaskId);
+
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve"))
+                .andExpect(status().isConflict());
+
+        VehicleTask task = vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow();
+        assertThat(task.getStops()).hasSize(2);
+    }
+
+    @Test
     void rejectManualReviewMarksOrderUnserviceable() throws Exception {
         UUID decisionId = createManualReviewDecision();
 
@@ -124,6 +173,10 @@ class ManualReviewApiTest {
     }
 
     private UUID createManualReviewDecision() {
+        return createManualReviewDecision(null);
+    }
+
+    private UUID createManualReviewDecision(UUID bestTaskId) {
         RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
                 "张三",
                 "13800000000",
@@ -142,7 +195,7 @@ class ManualReviewApiTest {
         DispatchEvaluateResponse response = new DispatchEvaluateResponse(
                 DispatchDecisionType.MANUAL_REVIEW,
                 new DispatchEvaluateResponse.BestPlan(
-                        null,
+                        bestTaskId,
                         VEHICLE_ID,
                         new BigDecimal("72.50"),
                         7,
@@ -163,5 +216,46 @@ class ManualReviewApiTest {
                 "SYSTEM",
                 "dispatch-orchestrator");
         return dispatchDecisionRepository.save(decision).getId();
+    }
+
+    private UUID createInProgressTaskWithOneOrder() {
+        RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
+                "李四",
+                "13800000001",
+                1,
+                "IMMEDIATE",
+                new BigDecimal("120.1550000"),
+                new BigDecimal("30.2741000"),
+                new BigDecimal("120.1688000"),
+                new BigDecimal("30.2799000"),
+                BOARDING_STOP_ID,
+                ALIGHTING_STOP_ID,
+                OffsetDateTime.parse("2026-07-08T02:20:00Z")));
+        order.confirm(new RideOrder.OrderPromise(
+                OffsetDateTime.parse("2026-07-08T02:26:00Z"),
+                OffsetDateTime.parse("2026-07-08T02:40:00Z")));
+        order.startExecution();
+        RideOrder savedOrder = rideOrderRepository.save(order);
+
+        VehicleTask task = VehicleTask.pendingDeparture(
+                VEHICLE_ID,
+                DRIVER_ID,
+                OffsetDateTime.parse("2026-07-08T02:26:00Z"),
+                "ALGORITHM");
+        task.addStop(TaskStop.planned(
+                BOARDING_STOP_ID,
+                savedOrder.getId(),
+                1,
+                "BOARDING",
+                OffsetDateTime.parse("2026-07-08T02:26:00Z")));
+        task.addStop(TaskStop.planned(
+                ALIGHTING_STOP_ID,
+                savedOrder.getId(),
+                2,
+                "ALIGHTING",
+                OffsetDateTime.parse("2026-07-08T02:40:00Z")));
+        task.dispatch();
+        task.startExecution();
+        return vehicleTaskRepository.save(task).getId();
     }
 }

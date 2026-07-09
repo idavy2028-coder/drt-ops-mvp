@@ -14,6 +14,7 @@ describe("TasksPage", () => {
     expect(screen.getByRole("button", { name: "下车" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "完成" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "车辆故障" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "严重延误" })).toBeInTheDocument();
     expect(screen.getByText("站点时间线")).toBeInTheDocument();
   });
 });

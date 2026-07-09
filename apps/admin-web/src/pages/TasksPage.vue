@@ -7,6 +7,7 @@ import {
   completeTask,
   listTasks,
   markTaskException,
+  markTaskSevereDelay,
   startTask
 } from "../api/tasks";
 import type { TaskStop, VehicleTask } from "../api/types";
@@ -128,6 +129,13 @@ async function failSelectedTask() {
   await runTaskAction("车辆故障", () => markTaskException(selectedTask.value!.id, "车辆故障"));
 }
 
+async function delaySelectedTask() {
+  if (!selectedTask.value) {
+    return;
+  }
+  await runTaskAction("严重延误", () => markTaskSevereDelay(selectedTask.value!.id, "预计到达严重延误"));
+}
+
 onMounted(() => {
   void loadVehicleTasks();
 });
@@ -196,6 +204,7 @@ onMounted(() => {
           <button class="secondary-button" type="button" :disabled="!nextAlightingStop" @click="alightNextPassenger">下车</button>
           <button class="secondary-button" type="button" :disabled="!canComplete" @click="completeSelectedTask">完成</button>
           <button class="danger-button" type="button" :disabled="!selectedTask" @click="failSelectedTask">车辆故障</button>
+          <button class="danger-button" type="button" :disabled="!selectedTask" @click="delaySelectedTask">严重延误</button>
         </div>
       </section>
 

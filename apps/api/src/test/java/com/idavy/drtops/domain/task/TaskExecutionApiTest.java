@@ -96,6 +96,24 @@ class TaskExecutionApiTest {
                 .anyMatch(log -> log.getAction().equals("TASK_EXCEPTION"));
     }
 
+    @Test
+    void severeDelayClosesTaskAsExceptionAndAuditsDelay() throws Exception {
+        UUID taskId = createConfirmedTaskWithOneOrder();
+
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/delay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"预计到达严重延误\"}"))
+                .andExpect(status().isOk());
+
+        VehicleTask task = vehicleTaskRepository.findById(taskId).orElseThrow();
+        RideOrder order = rideOrderRepository.findAll().getFirst();
+        assertThat(task.getStatus()).isEqualTo(TaskStatus.EXCEPTION);
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.EXCEPTION_CLOSED);
+        assertThat(auditLogRepository.findByEntityId(taskId))
+                .anyMatch(log -> log.getAction().equals("TASK_SEVERE_DELAY")
+                        && log.getReason().equals("预计到达严重延误"));
+    }
+
     private UUID createConfirmedTaskWithOneOrder() {
         RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
                 "张三",

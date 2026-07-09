@@ -31,3 +31,10 @@ export function markTaskException(taskId: UUID, reason: string): Promise<Vehicle
     body: JSON.stringify({ reason })
   });
 }
+
+export function markTaskSevereDelay(taskId: UUID, reason: string): Promise<VehicleTask> {
+  return request<VehicleTask>(`/api/vehicle-tasks/${taskId}/delay`, {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}

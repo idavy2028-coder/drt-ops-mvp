@@ -10,9 +10,12 @@ import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -74,22 +77,76 @@ public class ManualReviewService {
         }
         Vehicle vehicle = vehicleRepository.findById(decision.getBestVehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "候选车辆不存在"));
-        Driver driver = driverRepository.findAll().stream()
-                .filter(candidate -> "QUALIFIED".equals(candidate.getQualificationStatus()))
-                .filter(candidate -> "AVAILABLE".equals(candidate.getCurrentStatus()))
-                .findFirst()
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "没有可用驾驶员"));
 
         int waitMinutes = decision.getEstimatedWaitMinutes() == null ? 0 : decision.getEstimatedWaitMinutes();
         int detourMinutes = decision.getEstimatedDetourMinutes() == null ? 0 : decision.getEstimatedDetourMinutes();
         OffsetDateTime boardingAt = order.getRequestedDepartureAt().plusMinutes(waitMinutes);
         OffsetDateTime alightingAt = boardingAt.plusMinutes(detourMinutes + 10L);
 
+        if (decision.getBestTaskId() != null) {
+            VehicleTask existingTask = vehicleTaskRepository.findWithStopsById(decision.getBestTaskId()).orElse(null);
+            if (existingTask != null) {
+                return insertIntoExistingTask(order, vehicle, existingTask, boardingAt, alightingAt);
+            }
+        }
+
+        Driver driver = driverRepository.findAll().stream()
+                .filter(candidate -> "QUALIFIED".equals(candidate.getQualificationStatus()))
+                .filter(candidate -> "AVAILABLE".equals(candidate.getCurrentStatus()))
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "没有可用驾驶员"));
+
         VehicleTask task = VehicleTask.pendingDeparture(vehicle.getId(), driver.getId(), boardingAt, "MANUAL_REVIEW");
         task.addStop(TaskStop.planned(order.getBoardingStopId(), order.getId(), 1, "BOARDING", boardingAt));
         task.addStop(TaskStop.planned(order.getAlightingStopId(), order.getId(), 2, "ALIGHTING", alightingAt));
         task.dispatch();
         return vehicleTaskRepository.save(task);
+    }
+
+    private VehicleTask insertIntoExistingTask(
+            RideOrder order,
+            Vehicle vehicle,
+            VehicleTask task,
+            OffsetDateTime boardingAt,
+            OffsetDateTime alightingAt) {
+        if (!task.getVehicleId().equals(vehicle.getId())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "候选任务车辆不一致");
+        }
+        if (task.getStatus() != TaskStatus.DISPATCHED && task.getStatus() != TaskStatus.IN_PROGRESS) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "候选任务不可插单");
+        }
+        assertCapacityAvailable(order, vehicle, task);
+
+        int nextSequence = task.getStops().stream()
+                .mapToInt(TaskStop::getSequenceNumber)
+                .max()
+                .orElse(0) + 1;
+        task.addStop(TaskStop.planned(order.getBoardingStopId(), order.getId(), nextSequence, "BOARDING", boardingAt));
+        task.addStop(TaskStop.planned(order.getAlightingStopId(), order.getId(), nextSequence + 1, "ALIGHTING", alightingAt));
+        return vehicleTaskRepository.save(task);
+    }
+
+    private void assertCapacityAvailable(RideOrder order, Vehicle vehicle, VehicleTask task) {
+        if (occupiedSeats(task) + order.getPassengerCount() > vehicle.getCapacity()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "候选任务剩余座位不足");
+        }
+    }
+
+    private int occupiedSeats(VehicleTask task) {
+        Set<UUID> orderIds = new LinkedHashSet<>();
+        for (TaskStop stop : task.getStops()) {
+            if (stop.getRideOrderId() != null) {
+                orderIds.add(stop.getRideOrderId());
+            }
+        }
+
+        int occupiedSeats = 0;
+        for (UUID orderId : orderIds) {
+            occupiedSeats += rideOrderRepository.findById(orderId)
+                    .map(RideOrder::getPassengerCount)
+                    .orElse(0);
+        }
+        return occupiedSeats;
     }
 
     private RideOrder pendingManualReviewOrder(DispatchDecision decision) {

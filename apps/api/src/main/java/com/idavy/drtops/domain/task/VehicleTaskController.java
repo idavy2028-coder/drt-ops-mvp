@@ -57,6 +57,11 @@ public class VehicleTaskController {
         return ApiResponse.ok(taskExecutionService.markException(taskId, request.reason()));
     }
 
+    @PostMapping("/{taskId}/delay")
+    ApiResponse<VehicleTask> markSevereDelay(@PathVariable UUID taskId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(taskExecutionService.markSevereDelay(taskId, request.reason()));
+    }
+
     public record ReasonRequest(String reason) {
     }
 }

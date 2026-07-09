@@ -13,6 +13,9 @@ import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
+import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStatus;
+import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
@@ -130,6 +133,58 @@ class DispatchOrchestratorTest {
     }
 
     @Test
+    void autoDispatchCanInsertOrderIntoExistingInProgressTask() {
+        UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+
+        DispatchResult result = orchestrator.dispatchOrder(orderId);
+
+        assertThat(result.vehicleTaskId()).isEqualTo(existingTaskId);
+        assertThat(vehicleTaskRepository.findAll()).hasSize(1);
+        VehicleTask task = vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow();
+        assertThat(task.getStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(task.getStops()).hasSize(4);
+        assertThat(task.getStops())
+                .filteredOn(stop -> orderId.equals(stop.getRideOrderId()))
+                .extracting(TaskStop::getStopType)
+                .containsExactly("BOARDING", "ALIGHTING");
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(dispatchDecisionRepository.findByRideOrderId(orderId).getFirst().getBestTaskId())
+                .isEqualTo(existingTaskId);
+        assertThat(algorithmClient.lastRequest().candidateTasks())
+                .extracting(DispatchEvaluateRequest.CandidateTask::taskId)
+                .contains(existingTaskId);
+    }
+
+    @Test
+    void autoDispatchRejectsInsertWhenExistingTaskHasNoSeats() {
+        vehicleRepository.deleteAll();
+        vehicleRepository.save(Vehicle.create(
+                VEHICLE_ID,
+                "DRT-201",
+                "Microbus",
+                1,
+                "IDLE",
+                "POINT(120.1550000 30.2741000)",
+                "演示车队",
+                true));
+        UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> orchestrator.dispatchOrder(orderId));
+
+        VehicleTask task = vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow();
+        assertThat(task.getStops()).hasSize(2);
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.PENDING_DISPATCH);
+    }
+
+    @Test
     void manualReviewKeepsOrderPendingManualReview() {
         UUID orderId = createPendingOrder();
         algorithmClient.stubManualReview(VEHICLE_ID);
@@ -169,6 +224,47 @@ class DispatchOrchestratorTest {
         return rideOrderRepository.save(order).getId();
     }
 
+    private UUID createInProgressTaskWithOneOrder() {
+        RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
+                "李四",
+                "13800000001",
+                1,
+                "IMMEDIATE",
+                new BigDecimal("120.1550000"),
+                new BigDecimal("30.2741000"),
+                new BigDecimal("120.1688000"),
+                new BigDecimal("30.2799000"),
+                BOARDING_STOP_ID,
+                ALIGHTING_STOP_ID,
+                OffsetDateTime.parse("2026-07-08T02:20:00Z")));
+        order.confirm(new RideOrder.OrderPromise(
+                OffsetDateTime.parse("2026-07-08T02:26:00Z"),
+                OffsetDateTime.parse("2026-07-08T02:40:00Z")));
+        order.startExecution();
+        RideOrder savedOrder = rideOrderRepository.save(order);
+
+        VehicleTask task = VehicleTask.pendingDeparture(
+                VEHICLE_ID,
+                DRIVER_ID,
+                OffsetDateTime.parse("2026-07-08T02:26:00Z"),
+                "ALGORITHM");
+        task.addStop(TaskStop.planned(
+                BOARDING_STOP_ID,
+                savedOrder.getId(),
+                1,
+                "BOARDING",
+                OffsetDateTime.parse("2026-07-08T02:26:00Z")));
+        task.addStop(TaskStop.planned(
+                ALIGHTING_STOP_ID,
+                savedOrder.getId(),
+                2,
+                "ALIGHTING",
+                OffsetDateTime.parse("2026-07-08T02:40:00Z")));
+        task.dispatch();
+        task.startExecution();
+        return vehicleTaskRepository.save(task).getId();
+    }
+
     @TestConfiguration
     static class FakeAlgorithmClientConfiguration {
 
@@ -203,15 +299,23 @@ class DispatchOrchestratorTest {
             nextResponse = response(DispatchDecisionType.AUTO_DISPATCH, vehicleId);
         }
 
+        void stubAutoDispatchIntoTask(UUID taskId, UUID vehicleId) {
+            nextResponse = response(DispatchDecisionType.AUTO_DISPATCH, taskId, vehicleId);
+        }
+
         void stubManualReview(UUID vehicleId) {
             nextResponse = response(DispatchDecisionType.MANUAL_REVIEW, vehicleId);
         }
 
         private DispatchEvaluateResponse response(DispatchDecisionType decision, UUID vehicleId) {
+            return response(decision, null, vehicleId);
+        }
+
+        private DispatchEvaluateResponse response(DispatchDecisionType decision, UUID taskId, UUID vehicleId) {
             return new DispatchEvaluateResponse(
                     decision,
                     new DispatchEvaluateResponse.BestPlan(
-                            null,
+                            taskId,
                             vehicleId,
                             new BigDecimal("88.50"),
                             6,
