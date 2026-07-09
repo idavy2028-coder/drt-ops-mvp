@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
-import { useOperationsStore } from "../stores/operationsStore";
 import type { OperationsSummary } from "../api/types";
+import MetricTileGrid from "../components/MetricTileGrid.vue";
+import { useOperationsStore } from "../stores/operationsStore";
 
 const { state, loadSummary } = useOperationsStore();
 const today = new Date().toISOString().slice(0, 10);
@@ -19,6 +20,16 @@ const fallbackSummary: OperationsSummary = {
 };
 
 const summary = computed(() => state.summary ?? fallbackSummary);
+const metrics = computed(() => [
+  { label: "订单量", value: summary.value.orderCount, tone: "当日需求总量" },
+  { label: "订单确认率", value: summary.value.confirmationRate, tone: "已确认与可执行需求" },
+  { label: "自动派发率", value: summary.value.autoDispatchRate, tone: "算法直接落单" },
+  { label: "人工复核率", value: summary.value.manualReviewRate, tone: "需要调度员介入" },
+  { label: "平均等待时间", value: summary.value.averageWaitMinutes, tone: "分钟" },
+  { label: "平均绕行时间", value: summary.value.averageDetourMinutes, tone: "分钟" },
+  { label: "任务完成率", value: summary.value.taskCompletionRate, tone: "执行闭环" },
+  { label: "车辆利用率", value: summary.value.vehicleUtilizationRate, tone: "有任务车辆占比" }
+]);
 
 onMounted(() => {
   void loadSummary(today);
@@ -36,32 +47,18 @@ onMounted(() => {
       <span class="status-pill">{{ state.loading ? "同步中" : "今日" }}</span>
     </header>
 
-    <div class="summary-grid">
-      <article class="metric-panel">
-        <p class="metric-label">订单量</p>
-        <p class="metric-value">{{ summary.orderCount }}</p>
-      </article>
-      <article class="metric-panel">
-        <p class="metric-label">确认率</p>
-        <p class="metric-value">{{ summary.confirmationRate }}</p>
-      </article>
-      <article class="metric-panel">
-        <p class="metric-label">自动派发率</p>
-        <p class="metric-value">{{ summary.autoDispatchRate }}</p>
-      </article>
-      <article class="metric-panel">
-        <p class="metric-label">人工复核率</p>
-        <p class="metric-value">{{ summary.manualReviewRate }}</p>
-      </article>
-    </div>
+    <MetricTileGrid :metrics="metrics" />
 
-    <section class="work-panel">
-      <h3 class="section-title">运行质量</h3>
-      <p class="section-copy">
-        平均等待 {{ summary.averageWaitMinutes }} 分钟，平均绕行 {{ summary.averageDetourMinutes }} 分钟，任务完成率
-        {{ summary.taskCompletionRate }}，异常关闭率 {{ summary.exceptionCloseRate }}。
-      </p>
-      <p v-if="state.error" class="section-copy">后端连接状态：{{ state.error }}</p>
-    </section>
+    <div class="split-grid">
+      <section class="work-panel">
+        <h3 class="section-title">基础趋势</h3>
+        <p class="section-copy">订单确认、等待时间、绕行时间和车辆利用率会在后续接入时间序列数据。</p>
+      </section>
+      <section class="work-panel">
+        <h3 class="section-title">异常闭环</h3>
+        <p class="section-copy">异常关闭率 {{ summary.exceptionCloseRate }}，任务完成率 {{ summary.taskCompletionRate }}。</p>
+        <p v-if="state.error" class="section-copy">后端连接状态：{{ state.error }}</p>
+      </section>
+    </div>
   </section>
 </template>
