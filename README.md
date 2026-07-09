@@ -74,3 +74,7 @@ npm run e2e -- dispatch-flow.spec.ts
 ```
 
 后端集成测试覆盖真实业务闭环：录入需求、虚拟站点匹配、自动派发、车辆任务生成、站点执行和订单完成。前端 Playwright 流程覆盖管理端页面操作和接口连线，默认使用路由 mock 固定后端响应，便于在没有同时启动全栈服务时验证 UI 流程。
+
+## MVP 就绪清单
+
+- [MVP 就绪检查清单](docs/release/mvp-readiness-checklist.md)
