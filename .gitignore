@@ -3,6 +3,8 @@
 target/
 node_modules/
 dist/
+test-results/
+playwright-report/
 .venv/
 .pytest_cache/
 .tools/

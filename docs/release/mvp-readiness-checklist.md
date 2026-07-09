@@ -40,6 +40,7 @@
 mvn -q -pl apps/api test
 python -m pytest -v
 cd apps/admin-web
+npm audit --json
 npm run typecheck
 npm run test
 npm run build
@@ -51,11 +52,11 @@ npm run e2e -- dispatch-flow.spec.ts
 - 后端全量测试通过，包含 `DispatchFlowIntegrationTest` 的需求录入、调度、任务执行、订单完成闭环。
 - 算法测试通过，覆盖无车不可服务、同向低绕行自动派发、反向任务拒绝和健康检查。
 - 前端类型检查、单元测试、生产构建和 Playwright 演示流程通过，`npm run e2e -- dispatch-flow.spec.ts` 可正常退出。
+- 前端依赖已升级，`npm audit --json` 当前报告 0 个漏洞。
 - Playwright 流程使用接口 mock 验证管理端页面操作和接口连线；完整全栈联调仍建议按 README 启动 Postgres、API、算法和前端后人工演示。
 
 ## 三、已知风险
 
-- `npm audit` 当前报告 7 个依赖安全问题，未执行 `npm audit fix --force`，避免破坏性升级。
 - Vite 构建提示 MapLibre chunk 超过 500 kB，当前可接受，后续可做地图模块拆包优化。
 - PostGIS 迁移集成测试需 Docker/PostGIS 环境；常规 H2 测试不等同于空间数据库生产验证。
 - 复杂动态插单重排、权限角色、生产级消息队列、完整司机端、完整乘客端、监管端、支付结算不在本 MVP 范围内。
@@ -70,4 +71,4 @@ npm run e2e -- dispatch-flow.spec.ts
 4. 在任务页面模拟车辆执行。
 5. 在调度工作台、看板和审计日志查看运营闭环结果。
 
-进入生产试点前，需要补齐权限体系、真实地图/路径服务、全栈环境压测、PostGIS 环境验证、安全依赖处理和运维监控。
+进入生产试点前，需要补齐权限体系、真实地图/路径服务、全栈环境压测、PostGIS 环境验证、持续安全依赖监控和运维监控。

@@ -6,7 +6,11 @@ const mapContainer = ref<HTMLDivElement | null>(null);
 let map: import("maplibre-gl").Map | null = null;
 
 async function initializeMap() {
-  if (!mapContainer.value || typeof window.URL.createObjectURL !== "function") {
+  if (
+    !mapContainer.value ||
+    typeof window.URL.createObjectURL !== "function" ||
+    typeof window.WebGLRenderingContext !== "function"
+  ) {
     return;
   }
   try {
