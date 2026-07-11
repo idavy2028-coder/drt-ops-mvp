@@ -106,6 +106,16 @@ export interface DispatchResult {
   vehicleTaskId?: UUID;
 }
 
+export interface ManualReviewQueueItem {
+  decisionId: UUID;
+  orderId: UUID;
+  passengerName: string;
+  passengerCount: number;
+  requestedDepartureAt: IsoDateTime;
+  bestVehicleId?: UUID;
+  candidateCount: number;
+}
+
 export interface AuditLog {
   id: UUID;
   entityType: string;
