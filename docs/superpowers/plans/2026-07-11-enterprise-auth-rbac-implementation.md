@@ -66,6 +66,7 @@
 - Create: `apps/api/src/main/java/com/idavy/drtops/auth/RoleCode.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/auth/Permission.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/auth/AuthConfiguration.java`
+- Create: `apps/api/src/main/java/com/idavy/drtops/config/SecurityConfiguration.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/auth/UserAccount.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/auth/Role.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/auth/RefreshToken.java`
@@ -150,10 +151,21 @@ CREATE TABLE refresh_tokens (
 
 创建 `Role` JPA 实体和 `RoleRepository`，但角色编码仍受 `RoleCode` 枚举约束。将角色映射集中在 `Permission.permissionsFor`，不要在控制器复制角色判断。`AuthConfiguration` 提供 BCrypt `PasswordEncoder`。增加 `drt.auth` 配置键：`jwt-secret`、`access-token-minutes: 15`、`refresh-token-days: 7`、`bootstrap-admin-username`、`bootstrap-admin-password`、`refresh-cookie-secure`。
 
+同一任务必须创建显式的过渡 `SecurityConfiguration`，防止新引入 `spring-boot-starter-security` 触发 Spring Boot 默认的全站 401。该配置在 Task 1 仅禁用 CSRF、启用 CORS、设为无会话，并临时放行所有现有请求：
+
+```java
+http.csrf(AbstractHttpConfigurer::disable)
+        .cors(Customizer.withDefaults())
+        .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll());
+```
+
+Task 3 必须在该文件中替换这条临时放行规则为正式 JWT/RBAC 规则；不得保留 `anyRequest().permitAll()`。
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `mvn -pl apps/api -Dtest=AuthSchemaRepositoryTest,DatabaseMigrationTest test`  
-Expected: PASS；迁移能在 Postgres 与现有 H2 测试配置下创建认证模型。
+Expected: PASS；迁移能在 Postgres 与现有 H2 测试配置下创建认证模型，且显式过渡安全配置不改变已有 API 测试行为。
 
 - [ ] **Step 5: 提交**
 
@@ -230,7 +242,7 @@ git commit -m "feat: add local login and token rotation"
 ### Task 3: Spring Security 过滤链与现有业务 API 授权
 
 **Files:**
-- Create: `apps/api/src/main/java/com/idavy/drtops/config/SecurityConfiguration.java`
+- Modify: `apps/api/src/main/java/com/idavy/drtops/config/SecurityConfiguration.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/config/JwtAuthenticationFilter.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/config/AuthenticationFailureHandler.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/config/WebCorsConfiguration.java`
@@ -272,7 +284,7 @@ Expected: FAIL，因为现有 API 尚未默认要求认证或按权限授权。
 
 - [ ] **Step 3: 实现过滤链和权限路由规则**
 
-在 `SecurityConfiguration` 中禁用服务端会话，允许 `/actuator/health` 与 `/api/auth/**`，其余 `/api/**` 要求认证；`JwtAuthenticationFilter` 在每个请求读取 Bearer JWT，再确认用户 `enabled` 和 `tokenVersion`。
+在 Task 1 创建的 `SecurityConfiguration` 中保留无会话与 CORS 设置，但替换临时 `anyRequest().permitAll()`：允许 `/actuator/health` 与 `/api/auth/**`，其余 `/api/**` 要求认证；`JwtAuthenticationFilter` 在每个请求读取 Bearer JWT，再确认用户 `enabled` 和 `tokenVersion`。
 
 使用 HTTP 方法与路径建立集中授权规则：
 
