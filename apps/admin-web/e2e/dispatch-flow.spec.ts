@@ -26,6 +26,19 @@ test("operator can create demand dispatch it and complete the task", async ({ pa
   await expect(page.getByText("COMPLETED")).toBeVisible();
 });
 
+test("operator can approve manual review from dispatch workbench", async ({ page }) => {
+  await installManualReviewWorkbenchMocks(page);
+
+  await page.goto("/dispatch");
+  await expect(page.getByRole("heading", { name: "人工复核队列" })).toBeVisible();
+  await expect(page.getByText("Manual review rider")).toBeVisible();
+
+  await page.getByRole("button", { name: "确认派单" }).click();
+
+  await expect(page.getByText("暂无待复核订单")).toBeVisible();
+  await expect(page.getByText("DISPATCHED")).toBeVisible();
+});
+
 async function installDispatchFlowMocks(page: Page) {
   let orders: Record<string, unknown>[] = [];
   let tasks: Record<string, unknown>[] = [];
@@ -111,6 +124,67 @@ async function installDispatchFlowMocks(page: Page) {
   await page.route("**/api/vehicle-tasks/*/complete", async (route) => {
     tasks = [demoTask("COMPLETED", "BOARDED", "ALIGHTED")];
     await json(route, tasks[0]);
+  });
+}
+
+async function installManualReviewWorkbenchMocks(page: Page) {
+  let orders: Record<string, unknown>[] = [
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      passengerName: "Manual review rider",
+      passengerPhone: "13800000000",
+      passengerCount: 2,
+      requestType: "IMMEDIATE",
+      originLng: 116.312,
+      originLat: 39.94,
+      destinationLng: 116.325,
+      destinationLat: 39.936,
+      requestedDepartureAt: "2026-07-08T02:30:00Z",
+      estimatedBoardingAt: null,
+      estimatedArrivalAt: null,
+      status: "PENDING_MANUAL_REVIEW"
+    }
+  ];
+  let reviews: Record<string, unknown>[] = [
+    {
+      decisionId: "22222222-2222-4222-8222-222222222222",
+      orderId: "11111111-1111-4111-8111-111111111111",
+      passengerName: "Manual review rider",
+      passengerCount: 2,
+      requestedDepartureAt: "2026-07-08T02:30:00Z",
+      bestVehicleId: "33333333-3333-4333-8333-333333333333",
+      candidateCount: 2
+    }
+  ];
+  let tasks: Record<string, unknown>[] = [];
+
+  await page.route("**/api/orders", async (route) => {
+    await json(route, orders);
+  });
+
+  await page.route("**/api/vehicle-tasks", async (route) => {
+    await json(route, tasks);
+  });
+
+  await page.route("**/api/dispatch-decisions/manual-review", async (route) => {
+    await json(route, reviews);
+  });
+
+  await page.route("**/api/dispatch-decisions/*/approve", async (route) => {
+    orders = orders.map((order) => ({
+      ...order,
+      estimatedBoardingAt: "2026-07-08T02:36:00Z",
+      estimatedArrivalAt: "2026-07-08T02:49:00Z",
+      status: "CONFIRMED"
+    }));
+    reviews = [];
+    tasks = [demoTask("DISPATCHED", "PLANNED", "PLANNED")];
+    await json(route, {
+      orderId: "11111111-1111-4111-8111-111111111111",
+      decision: "MANUAL_REVIEW",
+      dispatchDecisionId: "22222222-2222-4222-8222-222222222222",
+      vehicleTaskId: "33333333-3333-4333-8333-333333333333"
+    });
   });
 }
 

@@ -1,23 +1,61 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { approveManualReview, listManualReviews, rejectManualReview } from "../api/manualReviews";
 import { listOrders } from "../api/orders";
-import type { RideOrder, VehicleTask } from "../api/types";
-import DispatchDecisionPanel from "../components/DispatchDecisionPanel.vue";
+import { listTasks } from "../api/tasks";
+import type { ManualReviewQueueItem, RideOrder, UUID, VehicleTask } from "../api/types";
 import DispatchMap from "../components/DispatchMap.vue";
+import ManualReviewQueuePanel from "../components/ManualReviewQueuePanel.vue";
 import RealtimeOrderList from "../components/RealtimeOrderList.vue";
 import VehicleTaskList from "../components/VehicleTaskList.vue";
 
 const orders = ref<RideOrder[]>([]);
 const tasks = ref<VehicleTask[]>([]);
+const reviews = ref<ManualReviewQueueItem[]>([]);
+const processingDecisionId = ref<UUID>();
 const status = ref("");
+const actionError = ref("");
 
 async function loadWorkbench() {
   try {
-    orders.value = await listOrders();
+    status.value = "";
+    const [loadedOrders, loadedTasks, loadedReviews] = await Promise.all([
+      listOrders(),
+      listTasks(),
+      listManualReviews()
+    ]);
+    orders.value = loadedOrders;
+    tasks.value = loadedTasks;
+    reviews.value = loadedReviews;
   } catch (error) {
     status.value = error instanceof Error ? error.message : "工作台数据加载失败";
   }
-  tasks.value = [];
+}
+
+async function approve(decisionId: UUID) {
+  processingDecisionId.value = decisionId;
+  actionError.value = "";
+  try {
+    await approveManualReview(decisionId);
+    await loadWorkbench();
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : "人工确认失败";
+  } finally {
+    processingDecisionId.value = undefined;
+  }
+}
+
+async function reject(payload: { decisionId: UUID; reason: string }) {
+  processingDecisionId.value = payload.decisionId;
+  actionError.value = "";
+  try {
+    await rejectManualReview(payload.decisionId, payload.reason);
+    await loadWorkbench();
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : "人工拒绝失败";
+  } finally {
+    processingDecisionId.value = undefined;
+  }
 }
 
 onMounted(() => {
@@ -46,7 +84,7 @@ onMounted(() => {
       </article>
       <article class="metric-panel">
         <p class="metric-label">待复核</p>
-        <p class="metric-value">{{ orders.filter((order) => order.status === "PENDING_MANUAL_REVIEW").length }}</p>
+        <p class="metric-value">{{ reviews.length }}</p>
       </article>
       <article class="metric-panel">
         <p class="metric-label">车辆任务</p>
@@ -59,7 +97,13 @@ onMounted(() => {
     <div class="dispatch-grid">
       <RealtimeOrderList :orders="orders" />
       <DispatchMap />
-      <DispatchDecisionPanel />
+      <ManualReviewQueuePanel
+        :items="reviews"
+        :processing-decision-id="processingDecisionId"
+        :error="actionError"
+        @approve="approve"
+        @reject="reject"
+      />
       <VehicleTaskList :tasks="tasks" />
     </div>
   </section>
