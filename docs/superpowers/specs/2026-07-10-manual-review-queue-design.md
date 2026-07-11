@@ -15,7 +15,7 @@
 
 ## 接口设计
 
-新增 `GET /api/dispatch-decisions/manual-review`，仅返回决策结果为 `PENDING_MANUAL_REVIEW` 且订单仍处于待人工复核状态的记录。
+新增 `GET /api/dispatch-decisions/manual-review`，仅返回订单状态为 `PENDING_MANUAL_REVIEW`，且决策结果为 `MANUAL_REVIEW` 或历史兼容值 `PENDING_MANUAL_REVIEW` 的记录。
 
 每个队列项包含：
 
