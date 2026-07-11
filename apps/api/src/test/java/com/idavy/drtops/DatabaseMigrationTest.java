@@ -26,6 +26,7 @@ class DatabaseMigrationTest {
         String schema = readMigration("V1__create_core_schema.sql");
         String seedData = readMigration("V2__seed_demo_operations.sql");
         String authSchema = readMigration("V3__create_auth_schema.sql");
+        String refreshTokenVersion = readMigration("V4__add_refresh_token_version.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -60,6 +61,11 @@ class DatabaseMigrationTest {
                 "'DISPATCHER'",
                 "'OPERATOR'",
                 "'AUDITOR'");
+
+        assertThat(refreshTokenVersion).contains(
+                "ALTER TABLE refresh_tokens",
+                "token_version BIGINT NOT NULL",
+                "FROM user_accounts");
     }
 
     @Test

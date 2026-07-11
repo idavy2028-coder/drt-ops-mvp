@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 
@@ -51,6 +52,27 @@ class AuthSchemaRepositoryTest {
 
         assertThat(userAccountRepository.findByUsernameIgnoreCase("OPERATOR01")).isPresent();
         assertThat(refreshTokenRepository.findByTokenHashAndRevokedAtIsNull("token-hash")).isPresent();
+    }
+
+    @Test
+    void consumesAnActiveRefreshTokenOnlyOnce() {
+        UserAccount operator = UserAccount.create("operator02", "operator", passwordEncoder.encode("Secret123!"));
+        userAccountRepository.save(operator);
+        refreshTokenRepository.save(RefreshToken.issue(operator, "single-use-token", OffsetDateTime.now().plusDays(7)));
+
+        assertThat(refreshTokenRepository.revokeActiveByTokenHash(
+                "single-use-token", OffsetDateTime.now(), OffsetDateTime.now())).isEqualTo(1);
+        assertThat(refreshTokenRepository.revokeActiveByTokenHash(
+                "single-use-token", OffsetDateTime.now(), OffsetDateTime.now())).isZero();
+    }
+
+    @Test
+    @Transactional
+    void locksAnAccountBeforeChangingItsPassword() {
+        UserAccount operator = UserAccount.create("operator03", "operator", passwordEncoder.encode("Secret123!"));
+        userAccountRepository.saveAndFlush(operator);
+
+        assertThat(userAccountRepository.findByIdForPasswordChange(operator.getId())).isPresent();
     }
 
     @Test

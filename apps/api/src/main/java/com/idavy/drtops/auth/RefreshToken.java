@@ -27,6 +27,9 @@ public class RefreshToken {
     @Column(nullable = false)
     private OffsetDateTime expiresAt;
 
+    @Column(nullable = false)
+    private long tokenVersion;
+
     private OffsetDateTime revokedAt;
 
     @Column(nullable = false, length = 120)
@@ -38,17 +41,23 @@ public class RefreshToken {
     protected RefreshToken() {
     }
 
-    private RefreshToken(UserAccount user, String tokenHash, OffsetDateTime expiresAt, String createdFrom) {
+    private RefreshToken(
+            UserAccount user, String tokenHash, OffsetDateTime expiresAt, long tokenVersion, String createdFrom) {
         this.id = UUID.randomUUID();
         this.user = user;
         this.tokenHash = tokenHash;
         this.expiresAt = expiresAt;
+        this.tokenVersion = tokenVersion;
         this.createdFrom = createdFrom;
         this.createdAt = OffsetDateTime.now();
     }
 
     public static RefreshToken issue(UserAccount user, String tokenHash, OffsetDateTime expiresAt) {
-        return new RefreshToken(user, tokenHash, expiresAt, "unknown");
+        return issue(user, tokenHash, expiresAt, user.getTokenVersion());
+    }
+
+    public static RefreshToken issue(UserAccount user, String tokenHash, OffsetDateTime expiresAt, long tokenVersion) {
+        return new RefreshToken(user, tokenHash, expiresAt, tokenVersion, "unknown");
     }
 
     public UUID getId() {
@@ -62,4 +71,12 @@ public class RefreshToken {
     public OffsetDateTime getRevokedAt() {
         return revokedAt;
     }
+
+    public UserAccount getUser() { return user; }
+
+    public OffsetDateTime getExpiresAt() { return expiresAt; }
+
+    public long getTokenVersion() { return tokenVersion; }
+
+    public void revoke() { revokedAt = OffsetDateTime.now(); }
 }

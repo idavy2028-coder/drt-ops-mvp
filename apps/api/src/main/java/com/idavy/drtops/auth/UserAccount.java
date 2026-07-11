@@ -102,4 +102,23 @@ public class UserAccount {
     public boolean isEnabled() {
         return enabled;
     }
+
+    public long getTokenVersion() {
+        return tokenVersion;
+    }
+
+    public boolean isMustChangePassword() {
+        return mustChangePassword;
+    }
+
+    public void disable() {
+        enabled = false;
+        tokenVersion++;
+    }
+
+    public void changePassword(String passwordHash) {
+        this.passwordHash = passwordHash;
+        mustChangePassword = false;
+        tokenVersion++;
+    }
 }
