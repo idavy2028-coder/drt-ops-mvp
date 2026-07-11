@@ -54,11 +54,12 @@ npm run e2e -- dispatch-flow.spec.ts
 - 前端类型检查、单元测试、生产构建和 Playwright 演示流程通过，`npm run e2e -- dispatch-flow.spec.ts` 可正常退出。
 - 前端依赖已升级，`npm audit --json` 当前报告 0 个漏洞。
 - Playwright 流程使用接口 mock 验证管理端页面操作、调度工作台人工复核确认和接口连线；完整全栈联调仍建议按 README 启动 Postgres、API、算法和前端后人工演示。
+- 本地真实 PostgreSQL/PostGIS 持久化验证已通过：`PostgisDispatchPersistenceIntegrationTest` 连接 `127.0.0.1:15432/drt_ops`，Flyway 成功验证 3 个迁移，数据库版本 PostgreSQL 16.9。
 
 ## 三、已知风险
 
 - Vite 构建提示 MapLibre chunk 超过 500 kB，当前可接受，后续可做地图模块拆包优化。
-- PostGIS 迁移集成测试需 Docker/PostGIS 环境；常规 H2 测试不等同于空间数据库生产验证。
+- Testcontainers 版 PostGIS 迁移测试仍受本机 Java 到 Docker Desktop named pipe 连接限制影响，会跳过；本地 `drt-ops-demo-postgres` 的真实 PostGIS 持久化测试已通过，但生产环境仍需独立数据库验收。
 - 复杂动态插单重排、权限角色、生产级消息队列、完整司机端、完整乘客端、监管端、支付结算不在本 MVP 范围内。
 
 ## 四、就绪结论
@@ -71,4 +72,4 @@ npm run e2e -- dispatch-flow.spec.ts
 4. 在任务页面模拟车辆执行。
 5. 在调度工作台、看板和审计日志查看运营闭环结果。
 
-进入生产试点前，需要补齐权限体系、真实地图/路径服务、全栈环境压测、PostGIS 环境验证、持续安全依赖监控和运维监控。
+进入生产试点前，需要补齐权限体系、真实地图/路径服务、全栈环境压测、生产 PostGIS 环境验收、持续安全依赖监控和运维监控。
