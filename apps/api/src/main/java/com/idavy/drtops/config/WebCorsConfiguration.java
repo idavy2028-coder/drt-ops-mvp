@@ -18,6 +18,9 @@ public class WebCorsConfiguration implements WebMvcConfigurer {
                 .map(String::trim)
                 .filter(origin -> !origin.isEmpty())
                 .toArray(String[]::new);
+        if (Arrays.stream(this.allowedOrigins).anyMatch("*"::equals)) {
+            throw new IllegalArgumentException("drt.web.allowed-origins must not contain wildcard origins");
+        }
     }
 
     @Override
@@ -26,6 +29,7 @@ public class WebCorsConfiguration implements WebMvcConfigurer {
                 .allowedOrigins(allowedOrigins)
                 .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                 .allowedHeaders("*")
+                .allowCredentials(true)
                 .maxAge(3600);
     }
 }
