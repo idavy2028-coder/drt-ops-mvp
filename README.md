@@ -50,7 +50,8 @@
 ## 本地验证
 
 - 后端普通测试：`mvn -pl apps/api test`
-- 后端 PostGIS 迁移集成测试：启动 Docker 后运行 `mvn -pl apps/api -Dtest=DatabaseMigrationTest -Ddrt.integration.postgis=true test`
+- 后端真实 PostGIS 持久化测试：先启动本地 `infra/docker-compose.yml`，再运行 `mvn -pl apps/api -Dtest=PostgisDispatchPersistenceIntegrationTest -Ddrt.integration.postgis=true test`
+- 后端 Testcontainers 版 PostGIS 迁移测试：Docker/Testcontainers 环境可用时运行 `mvn -pl apps/api -Dtest=DatabaseMigrationTest -Ddrt.integration.postgis=true test`。在部分 Windows Docker Desktop named pipe 环境下，Docker CLI 可用但 Java Testcontainers 仍可能无法连接，此时测试会跳过，应以 Docker-capable CI 或 Linux 环境补跑。
 
 ## 端到端演示链路
 
