@@ -24,6 +24,7 @@ class VirtualStopMatcherTest {
     private static final UUID DEMO_AREA_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final UUID BOARDING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555551");
     private static final UUID ALIGHTING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555552");
+    private static final String POSTGIS_EWKB_POINT = "0101000020E61000008716D9CEF7135D40B81E85EB51F84340";
 
     @Autowired
     VirtualStopRepository virtualStopRepository;
@@ -79,5 +80,38 @@ class VirtualStopMatcherTest {
                         Instant.parse("2026-07-08T02:30:00Z")))
                 .isInstanceOf(VirtualStopMatcher.NoMatchedStopException.class)
                 .hasMessageContaining("boarding");
+    }
+
+    @Test
+    void matchesStopsWhenPostgisReturnsEwkbPointValues() {
+        virtualStopRepository.deleteAll();
+        virtualStopRepository.save(VirtualStop.create(
+                BOARDING_STOP_ID,
+                DEMO_AREA_ID,
+                "boarding-ewkb",
+                POSTGIS_EWKB_POINT,
+                600,
+                true,
+                false,
+                "test"));
+        virtualStopRepository.save(VirtualStop.create(
+                ALIGHTING_STOP_ID,
+                DEMO_AREA_ID,
+                "alighting-ewkb",
+                POSTGIS_EWKB_POINT,
+                600,
+                false,
+                true,
+                "test"));
+
+        VirtualStopMatcher.VirtualStopMatch match = matcher.matchStops(
+                new BigDecimal("116.3120"),
+                new BigDecimal("39.9400"),
+                new BigDecimal("116.3120"),
+                new BigDecimal("39.9400"),
+                Instant.parse("2026-07-08T02:30:00Z"));
+
+        assertThat(match.boardingStopId()).isEqualTo(BOARDING_STOP_ID);
+        assertThat(match.alightingStopId()).isEqualTo(ALIGHTING_STOP_ID);
     }
 }

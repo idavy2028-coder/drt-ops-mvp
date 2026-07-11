@@ -14,10 +14,10 @@ const form = reactive({
   passengerPhone: "",
   passengerCount: 1,
   requestType: "IMMEDIATE",
-  originLng: 120.155,
-  originLat: 30.2741,
-  destinationLng: 120.1688,
-  destinationLat: 30.2799,
+  originLng: 116.312,
+  originLat: 39.94,
+  destinationLng: 116.325,
+  destinationLat: 39.936,
   requestedDepartureAt
 });
 

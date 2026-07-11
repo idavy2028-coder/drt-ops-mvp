@@ -8,6 +8,8 @@ import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "dispatch_decisions")
@@ -37,9 +39,11 @@ public class DispatchDecision {
     private Integer estimatedDetourMinutes;
 
     @Column(nullable = false, length = 1000)
+    @JdbcTypeCode(SqlTypes.JSON)
     private String rejectedReasonsJson;
 
     @Column(nullable = false, length = 1000)
+    @JdbcTypeCode(SqlTypes.JSON)
     private String explanationJson;
 
     @Column(nullable = false, length = 40)
@@ -127,7 +131,7 @@ public class DispatchDecision {
                 response.decision().name(),
                 response.candidateCount(),
                 bestPlan == null ? null : bestPlan.vehicleId(),
-                persistedTaskId != null ? persistedTaskId : bestPlan == null ? null : bestPlan.taskId(),
+                persistedTaskId,
                 bestPlan == null ? null : bestPlan.score(),
                 bestPlan == null ? null : bestPlan.estimatedWaitMinutes(),
                 bestPlan == null ? null : bestPlan.estimatedDetourMinutes(),

@@ -6,6 +6,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "audit_logs")
@@ -33,6 +35,7 @@ public class AuditLog {
     private String reason;
 
     @Column(nullable = false, length = 1000)
+    @JdbcTypeCode(SqlTypes.JSON)
     private String metadataJson;
 
     @Column(nullable = false)

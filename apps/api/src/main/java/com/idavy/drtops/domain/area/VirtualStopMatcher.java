@@ -1,7 +1,10 @@
 package com.idavy.drtops.domain.area;
 
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.Comparator;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -43,7 +46,7 @@ public class VirtualStopMatcher {
     }
 
     private MatchedStop toMatchedStop(VirtualStop stop, double lng, double lat) {
-        Coordinate coordinate = Coordinate.fromPointWkt(stop.getLocation());
+        Coordinate coordinate = Coordinate.fromPointValue(stop.getLocation());
         double distanceMeters = haversineMeters(lat, lng, coordinate.lat(), coordinate.lng());
         return new MatchedStop(stop.getId(), distanceMeters, stop.getServiceRadiusMeters());
     }
@@ -77,16 +80,69 @@ public class VirtualStopMatcher {
     }
 
     private record Coordinate(double lng, double lat) {
-        static Coordinate fromPointWkt(String pointWkt) {
+        static Coordinate fromPointValue(String pointValue) {
+            String trimmed = pointValue.trim();
+            if (trimmed.startsWith("SRID=")) {
+                int separator = trimmed.indexOf(';');
+                if (separator < 0) {
+                    throw unsupportedPointValue(pointValue);
+                }
+                trimmed = trimmed.substring(separator + 1);
+            }
+            if (trimmed.startsWith("POINT(")) {
+                return fromPointWkt(trimmed, pointValue);
+            }
+            return fromPostgisEwkb(trimmed, pointValue);
+        }
+
+        private static Coordinate fromPointWkt(String pointWkt, String originalValue) {
             String trimmed = pointWkt.trim();
             if (!trimmed.startsWith("POINT(") || !trimmed.endsWith(")")) {
-                throw new IllegalArgumentException("Unsupported point WKT: " + pointWkt);
+                throw unsupportedPointValue(originalValue);
             }
             String[] parts = trimmed.substring("POINT(".length(), trimmed.length() - 1).split("\\s+");
             if (parts.length != 2) {
-                throw new IllegalArgumentException("Unsupported point WKT: " + pointWkt);
+                throw unsupportedPointValue(originalValue);
             }
             return new Coordinate(Double.parseDouble(parts[0]), Double.parseDouble(parts[1]));
+        }
+
+        private static Coordinate fromPostgisEwkb(String ewkb, String originalValue) {
+            byte[] bytes;
+            try {
+                bytes = HexFormat.of().parseHex(ewkb);
+            } catch (IllegalArgumentException exception) {
+                throw unsupportedPointValue(originalValue);
+            }
+            if (bytes.length < 21) {
+                throw unsupportedPointValue(originalValue);
+            }
+
+            ByteOrder byteOrder = switch (bytes[0]) {
+                case 0 -> ByteOrder.BIG_ENDIAN;
+                case 1 -> ByteOrder.LITTLE_ENDIAN;
+                default -> throw unsupportedPointValue(originalValue);
+            };
+            ByteBuffer buffer = ByteBuffer.wrap(bytes).order(byteOrder);
+            buffer.get();
+            int geometryType = buffer.getInt();
+            boolean includesSrid = (geometryType & 0x20000000) != 0;
+            if ((geometryType & 0x0FFFFFFF) != 1) {
+                throw unsupportedPointValue(originalValue);
+            }
+            if (includesSrid) {
+                if (buffer.remaining() < 20) {
+                    throw unsupportedPointValue(originalValue);
+                }
+                buffer.getInt();
+            } else if (buffer.remaining() < 16) {
+                throw unsupportedPointValue(originalValue);
+            }
+            return new Coordinate(buffer.getDouble(), buffer.getDouble());
+        }
+
+        private static IllegalArgumentException unsupportedPointValue(String pointValue) {
+            return new IllegalArgumentException("Unsupported point value: " + pointValue);
         }
     }
 }
