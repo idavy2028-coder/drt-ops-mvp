@@ -24,3 +24,12 @@ management:
     health:
       probes:
         enabled: true
+
+drt:
+  auth:
+    jwt-secret: ${DRT_AUTH_JWT_SECRET:}
+    access-token-minutes: 15
+    refresh-token-days: 7
+    bootstrap-admin-username: ${DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME:}
+    bootstrap-admin-password: ${DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD:}
+    refresh-cookie-secure: ${DRT_AUTH_REFRESH_COOKIE_SECURE:false}

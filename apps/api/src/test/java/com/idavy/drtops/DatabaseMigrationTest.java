@@ -25,6 +25,7 @@ class DatabaseMigrationTest {
     void migrationScriptsDeclareCoreTablesAndSeedData() throws IOException {
         String schema = readMigration("V1__create_core_schema.sql");
         String seedData = readMigration("V2__seed_demo_operations.sql");
+        String authSchema = readMigration("V3__create_auth_schema.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -49,6 +50,16 @@ class DatabaseMigrationTest {
                 "33333333-3333-3333-3333-333333333332",
                 "44444444-4444-4444-4444-444444444441",
                 "44444444-4444-4444-4444-444444444442");
+
+        assertThat(authSchema).contains(
+                "CREATE TABLE user_accounts",
+                "CREATE TABLE roles",
+                "CREATE TABLE user_roles",
+                "CREATE TABLE refresh_tokens",
+                "'SYSTEM_ADMIN'",
+                "'DISPATCHER'",
+                "'OPERATOR'",
+                "'AUDITOR'");
     }
 
     @Test
@@ -87,7 +98,11 @@ class DatabaseMigrationTest {
                     "vehicle_tasks",
                     "task_stops",
                     "dispatch_decisions",
-                    "audit_logs");
+                    "audit_logs",
+                    "user_accounts",
+                    "roles",
+                    "user_roles",
+                    "refresh_tokens");
 
             Integer areaCount = jdbcTemplate.queryForObject("select count(*) from service_areas", Integer.class);
             Integer stopCount = jdbcTemplate.queryForObject("select count(*) from virtual_stops", Integer.class);
