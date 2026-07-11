@@ -85,7 +85,7 @@ public class DispatchOrchestrator {
         DispatchDecision decision = dispatchDecisionRepository.save(DispatchDecision.fromAlgorithm(
                 order.getId(),
                 response,
-                vehicleTask == null ? null : vehicleTask.getId(),
+                persistedTaskId(response, vehicleTask),
                 toJson(response.rejectedCandidates()),
                 toJson(response.explanation()),
                 ALGORITHM_VERSION,
@@ -107,6 +107,20 @@ public class DispatchOrchestrator {
                 response.decision(),
                 decision.getId(),
                 vehicleTask == null ? null : vehicleTask.getId());
+    }
+
+    private UUID persistedTaskId(DispatchEvaluateResponse response, VehicleTask vehicleTask) {
+        if (vehicleTask != null) {
+            return vehicleTask.getId();
+        }
+        DispatchEvaluateResponse.BestPlan bestPlan = response.bestPlan();
+        if (response.decision() == DispatchDecisionType.MANUAL_REVIEW
+                && bestPlan != null
+                && bestPlan.taskId() != null
+                && vehicleTaskRepository.existsById(bestPlan.taskId())) {
+            return bestPlan.taskId();
+        }
+        return null;
     }
 
     private DispatchRuleSet enabledRuleSet() {

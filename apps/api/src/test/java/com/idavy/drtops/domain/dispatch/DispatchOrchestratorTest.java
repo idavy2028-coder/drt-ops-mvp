@@ -199,6 +199,20 @@ class DispatchOrchestratorTest {
     }
 
     @Test
+    void manualReviewPreservesExistingTaskCandidateForApproval() {
+        UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubManualReviewIntoTask(existingTaskId, VEHICLE_ID);
+
+        DispatchResult result = orchestrator.dispatchOrder(orderId);
+
+        assertThat(result.decision()).isEqualTo(DispatchDecisionType.MANUAL_REVIEW);
+        assertThat(result.vehicleTaskId()).isNull();
+        assertThat(dispatchDecisionRepository.findByRideOrderId(orderId).getFirst().getBestTaskId())
+                .isEqualTo(existingTaskId);
+    }
+
+    @Test
     void dispatchApiReturnsDecision() throws Exception {
         UUID orderId = createPendingOrder();
         algorithmClient.stubManualReview(VEHICLE_ID);
@@ -305,6 +319,10 @@ class DispatchOrchestratorTest {
 
         void stubManualReview(UUID vehicleId) {
             nextResponse = response(DispatchDecisionType.MANUAL_REVIEW, vehicleId);
+        }
+
+        void stubManualReviewIntoTask(UUID taskId, UUID vehicleId) {
+            nextResponse = response(DispatchDecisionType.MANUAL_REVIEW, taskId, vehicleId);
         }
 
         private DispatchEvaluateResponse response(DispatchDecisionType decision, UUID vehicleId) {

@@ -209,7 +209,7 @@ class ManualReviewApiTest {
         DispatchDecision decision = DispatchDecision.fromAlgorithm(
                 savedOrder.getId(),
                 response,
-                null,
+                bestTaskId,
                 "[]",
                 "{\"reason\":\"MANUAL_REVIEW_THRESHOLD_REACHED\"}",
                 "0.1.0",

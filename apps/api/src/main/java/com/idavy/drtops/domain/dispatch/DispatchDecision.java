@@ -162,6 +162,10 @@ public class DispatchDecision {
         return bestTaskId;
     }
 
+    public int getCandidateCount() {
+        return candidateCount;
+    }
+
     public Integer getEstimatedWaitMinutes() {
         return estimatedWaitMinutes;
     }
