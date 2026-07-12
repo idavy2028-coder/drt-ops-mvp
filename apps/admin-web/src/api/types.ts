@@ -2,6 +2,19 @@ export type UUID = string;
 export type IsoDateTime = string;
 export type DecimalValue = number | string;
 
+export interface CurrentUser {
+  id: UUID;
+  username: string;
+  roles: string[];
+  mustChangePassword: boolean;
+}
+
+export interface AuthSession {
+  accessToken: string;
+  expiresAt: IsoDateTime;
+  user: CurrentUser;
+}
+
 export interface ServiceArea {
   id: UUID;
   name: string;
