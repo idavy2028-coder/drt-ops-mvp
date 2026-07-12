@@ -28,26 +28,28 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwt;
     private final AuthConfiguration config;
+    private final AuthAuditService authAuditService;
 
     public AuthService(
             UserAccountRepository users,
             RefreshTokenRepository tokens,
             PasswordEncoder passwordEncoder,
             JwtTokenService jwt,
-            AuthConfiguration config) {
+            AuthConfiguration config,
+            AuthAuditService authAuditService) {
         this.users = users;
         this.tokens = tokens;
         this.passwordEncoder = passwordEncoder;
         this.jwt = jwt;
         this.config = config;
+        this.authAuditService = authAuditService;
     }
 
     @Transactional
     public LoginResult login(String username, String password) {
-        UserAccount user = users.findByUsernameIgnoreCase(username)
-                .filter(UserAccount::isEnabled)
-                .orElseThrow(this::invalid);
-        if (!passwordEncoder.matches(password, user.getPasswordHash())) {
+        UserAccount user = users.findByUsernameIgnoreCase(username).orElseThrow(this::invalid);
+        if (!user.isEnabled() || !passwordEncoder.matches(password, user.getPasswordHash())) {
+            authAuditService.recordAuthenticationFailure(user, "AUTH_LOGIN_FAILED");
             throw invalid();
         }
         return issueSession(user);
@@ -59,13 +61,19 @@ public class AuthService {
             throw invalid();
         }
         String tokenHash = hash(rawRefreshToken);
-        RefreshToken current = tokens.findByTokenHashAndRevokedAtIsNull(tokenHash)
+        RefreshToken current = tokens.findByTokenHash(tokenHash)
                 .orElseThrow(this::invalid);
         UserAccount user = current.getUser();
+        if (current.getRevokedAt() != null) {
+            authAuditService.recordAuthenticationFailure(user, "AUTH_REFRESH_REPLAY");
+            throw invalid();
+        }
         if (!user.isEnabled() || current.getTokenVersion() != user.getTokenVersion()) {
+            authAuditService.recordAuthenticationFailure(user, "AUTH_REFRESH_REJECTED");
             throw invalid();
         }
         if (tokens.revokeActiveByTokenHash(tokenHash, OffsetDateTime.now(), OffsetDateTime.now()) != 1) {
+            authAuditService.recordAuthenticationFailure(user, "AUTH_REFRESH_REPLAY");
             throw invalid();
         }
         return issueSession(user);

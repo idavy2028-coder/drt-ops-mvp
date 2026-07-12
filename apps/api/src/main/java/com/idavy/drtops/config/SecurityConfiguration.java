@@ -1,5 +1,7 @@
 package com.idavy.drtops.config;
 
+import com.idavy.drtops.auth.AuthAuditService;
+import java.util.UUID;
 import org.springframework.http.HttpMethod;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -10,6 +12,7 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 @Configuration
 @EnableWebSecurity
@@ -19,11 +22,20 @@ public class SecurityConfiguration {
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             JwtAuthenticationFilter jwtAuthenticationFilter,
-            AuthenticationFailureHandler authenticationFailureHandler) throws Exception {
+            AuthenticationFailureHandler authenticationFailureHandler,
+            AuthAuditService authAuditService) throws Exception {
         http.csrf(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .exceptionHandling(exceptions -> exceptions.authenticationEntryPoint(authenticationFailureHandler))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(authenticationFailureHandler)
+                        .accessDeniedHandler((request, response, exception) -> {
+                            Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+                            if (principal instanceof UUID actorId) {
+                                authAuditService.recordAuthorizationDenied(actorId);
+                            }
+                            response.sendError(403);
+                        }))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/actuator/health", "/api/auth/**").permitAll()

@@ -91,6 +91,10 @@ public class UserAccount {
         return username;
     }
 
+    public String getDisplayName() {
+        return displayName;
+    }
+
     public Set<RoleCode> getRoles() {
         return Set.copyOf(roles);
     }
@@ -120,6 +124,16 @@ public class UserAccount {
         this.passwordHash = passwordHash;
         mustChangePassword = false;
         revokeAllSessions();
+    }
+
+    public void resetPassword(String passwordHash) {
+        this.passwordHash = passwordHash;
+        mustChangePassword = true;
+        revokeAllSessions();
+    }
+
+    public void enable() {
+        enabled = true;
     }
 
     public void revokeAllSessions() {

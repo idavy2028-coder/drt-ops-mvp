@@ -13,6 +13,8 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
 
     Optional<RefreshToken> findByTokenHashAndRevokedAtIsNull(String tokenHash);
 
+    Optional<RefreshToken> findByTokenHash(String tokenHash);
+
     @Modifying
     @Transactional
     @Query("update RefreshToken token set token.revokedAt = :revokedAt "
