@@ -113,12 +113,16 @@ public class UserAccount {
 
     public void disable() {
         enabled = false;
-        tokenVersion++;
+        revokeAllSessions();
     }
 
     public void changePassword(String passwordHash) {
         this.passwordHash = passwordHash;
         mustChangePassword = false;
+        revokeAllSessions();
+    }
+
+    public void revokeAllSessions() {
         tokenVersion++;
     }
 }

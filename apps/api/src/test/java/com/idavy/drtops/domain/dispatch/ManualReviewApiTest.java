@@ -4,6 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.idavy.drtops.auth.JwtTokenService;
+import com.idavy.drtops.auth.RoleCode;
+import com.idavy.drtops.auth.UserAccount;
+import com.idavy.drtops.auth.UserAccountRepository;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Driver;
 import com.idavy.drtops.domain.fleet.DriverRepository;
@@ -22,11 +26,13 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -67,6 +73,14 @@ class ManualReviewApiTest {
     @Autowired
     AuditLogRepository auditLogRepository;
 
+    @Autowired
+    UserAccountRepository userAccountRepository;
+
+    @Autowired
+    JwtTokenService jwtTokenService;
+
+    private String dispatcherToken;
+
     @BeforeEach
     void setUp() {
         auditLogRepository.deleteAll();
@@ -75,6 +89,11 @@ class ManualReviewApiTest {
         rideOrderRepository.deleteAll();
         vehicleRepository.deleteAll();
         driverRepository.deleteAll();
+        userAccountRepository.deleteAll();
+
+        UserAccount dispatcher = UserAccount.create("dispatcher01", "dispatcher01", "not-used-in-manual-review-test");
+        dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER));
+        dispatcherToken = jwtTokenService.issue(userAccountRepository.save(dispatcher)).value();
 
         vehicleRepository.save(Vehicle.create(
                 VEHICLE_ID,
@@ -100,7 +119,8 @@ class ManualReviewApiTest {
     void approveManualReviewConfirmsOrderAndCreatesTask() throws Exception {
         UUID decisionId = createManualReviewDecision();
 
-        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve"))
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
 
         RideOrder order = rideOrderRepository.findAll().getFirst();
@@ -115,7 +135,8 @@ class ManualReviewApiTest {
         UUID existingTaskId = createInProgressTaskWithOneOrder();
         UUID decisionId = createManualReviewDecision(existingTaskId);
 
-        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve"))
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
 
         RideOrder insertedOrder = rideOrderRepository.findAll().stream()
@@ -149,7 +170,8 @@ class ManualReviewApiTest {
         UUID existingTaskId = createInProgressTaskWithOneOrder();
         UUID decisionId = createManualReviewDecision(existingTaskId);
 
-        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve"))
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isConflict());
 
         VehicleTask task = vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow();
@@ -161,6 +183,7 @@ class ManualReviewApiTest {
         UUID decisionId = createManualReviewDecision();
 
         mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/reject")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"调度员拒绝\"}"))
                 .andExpect(status().isOk());

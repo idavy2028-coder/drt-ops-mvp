@@ -190,6 +190,16 @@ class AuthorizationApiTest {
     }
 
     @Test
+    void rejectsTokenAfterItsSessionVersionIsRevoked() throws Exception {
+        UserAccount operator = userAccountRepository.findByUsernameIgnoreCase("operator01").orElseThrow();
+        operator.revokeAllSessions();
+        userAccountRepository.saveAndFlush(operator);
+
+        mockMvc.perform(get("/api/orders").header(HttpHeaders.AUTHORIZATION, bearer(operatorToken)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void enforcesOperationsRoleMatrix() throws Exception {
         String createResponse = mockMvc.perform(post("/api/orders")
                         .header(HttpHeaders.AUTHORIZATION, bearer(operatorToken))

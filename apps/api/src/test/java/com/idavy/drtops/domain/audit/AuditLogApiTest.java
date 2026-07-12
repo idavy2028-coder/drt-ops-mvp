@@ -5,12 +5,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.idavy.drtops.auth.JwtTokenService;
+import com.idavy.drtops.auth.RoleCode;
+import com.idavy.drtops.auth.UserAccount;
+import com.idavy.drtops.auth.UserAccountRepository;
 import java.util.UUID;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(properties = {
@@ -33,9 +39,21 @@ class AuditLogApiTest {
     @Autowired
     AuditLogRepository auditLogRepository;
 
+    @Autowired
+    UserAccountRepository userAccountRepository;
+
+    @Autowired
+    JwtTokenService jwtTokenService;
+
+    private String auditorToken;
+
     @BeforeEach
     void setUp() {
         auditLogRepository.deleteAll();
+        userAccountRepository.deleteAll();
+        UserAccount auditor = UserAccount.create("auditor01", "auditor01", "not-used-in-audit-test");
+        auditor.assignRoles(Set.of(RoleCode.AUDITOR));
+        auditorToken = jwtTokenService.issue(userAccountRepository.save(auditor)).value();
     }
 
     @Test
@@ -65,7 +83,9 @@ class AuditLogApiTest {
                 "passenger cancelled",
                 "{}"));
 
-        mockMvc.perform(get("/api/audit-logs").param("entityId", ORDER_ID.toString()))
+        mockMvc.perform(get("/api/audit-logs")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + auditorToken)
+                        .param("entityId", ORDER_ID.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(2))
                 .andExpect(jsonPath("$.data[*].entityId", hasItems(ORDER_ID.toString())))
