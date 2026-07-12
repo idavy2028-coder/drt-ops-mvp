@@ -1,8 +1,6 @@
 <template>
-  <RouterView v-slot="{ Component }">
-    <component :is="Component" v-if="route.meta.public === true" />
-    <AppLayout v-else />
-  </RouterView>
+  <RouterView v-if="route.meta.public === true" />
+  <AppLayout v-else />
 </template>
 
 <script setup lang="ts">

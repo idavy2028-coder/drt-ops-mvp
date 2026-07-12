@@ -25,6 +25,9 @@
    ```
 2. 再启动后端：
    ```powershell
+   $env:DRT_AUTH_JWT_SECRET = "replace-with-at-least-32-random-bytes"
+   $env:DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME = "admin"
+   $env:DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD = "replace-this-temporary-password"
    mvn -pl apps/api spring-boot:run
    ```
 3. 准备并启动算法服务：
@@ -69,12 +72,20 @@ npm run dev
 自动化验证命令：
 
 ```powershell
-mvn -pl apps/api -Dtest=DispatchFlowIntegrationTest test
+mvn -pl apps/api -Dtest=DispatchFlowIntegrationTest,AuthRbacFlowIntegrationTest test
 cd apps/admin-web
 npm run e2e -- dispatch-flow.spec.ts
+npm run e2e -- auth-rbac.spec.ts
 ```
 
 后端集成测试覆盖真实业务闭环：录入需求、虚拟站点匹配、自动派发、车辆任务生成、站点执行和订单完成。前端 Playwright 流程覆盖管理端页面操作和接口连线，默认使用路由 mock 固定后端响应，便于在没有同时启动全栈服务时验证 UI 流程。
+
+## 企业管理端认证
+
+- 仅系统管理员可创建账号、修改角色、重置密码和启停账号；系统提供 `SYSTEM_ADMIN`、`DISPATCHER`、`OPERATOR`、`AUDITOR` 四类固定角色。
+- 访问令牌只保存在管理端内存；刷新令牌通过 `HttpOnly` Cookie 轮换。生产环境必须启用 HTTPS 并设置 `DRT_AUTH_REFRESH_COOKIE_SECURE=true`。
+- 初始管理员只会在用户库为空且三个 `DRT_AUTH_*` 变量均已设置时创建。示例变量是占位符，不应提交真实密码。
+- OIDC/LDAP、组织级多租户和乘客/司机端认证不在本 MVP 范围内。
 
 ## MVP 就绪清单
 

@@ -1,6 +1,6 @@
 # MVP 就绪检查清单
 
-检查日期：2026-07-09
+检查日期：2026-07-12
 
 本清单用于判断“区域动态响应公交运营管理 MVP”是否具备企业内部演示和第一轮业务验收条件。结论先行：当前版本已具备本地演示闭环，不等同于生产上线就绪。
 
@@ -45,6 +45,7 @@ npm run typecheck
 npm run test
 npm run build
 npm run e2e -- dispatch-flow.spec.ts
+npm run e2e -- auth-rbac.spec.ts
 ```
 
 验证结论：
@@ -53,6 +54,7 @@ npm run e2e -- dispatch-flow.spec.ts
 - 算法测试通过，覆盖无车不可服务、同向低绕行自动派发、反向任务拒绝和健康检查。
 - 前端类型检查、单元测试、生产构建和 Playwright 演示流程通过，`npm run e2e -- dispatch-flow.spec.ts` 可正常退出。
 - 前端依赖已升级，`npm audit --json` 当前报告 0 个漏洞。
+- 后端 `AuthRbacFlowIntegrationTest` 通过，覆盖管理员、运营员、调度员、审计员经真实登录后的授权边界；前端 `auth-rbac.spec.ts` 覆盖登录、运营员录单和受保护路由的会话恢复边界。
 - Playwright 流程使用接口 mock 验证管理端页面操作、调度工作台人工复核确认和接口连线；完整全栈联调仍建议按 README 启动 Postgres、API、算法和前端后人工演示。
 - 本地真实 PostgreSQL/PostGIS 持久化验证已通过：`PostgisDispatchPersistenceIntegrationTest` 连接 `127.0.0.1:15432/drt_ops`，Flyway 成功验证 3 个迁移，数据库版本 PostgreSQL 16.9。
 
@@ -60,7 +62,7 @@ npm run e2e -- dispatch-flow.spec.ts
 
 - Vite 构建提示 MapLibre chunk 超过 500 kB，当前可接受，后续可做地图模块拆包优化。
 - Testcontainers 版 PostGIS 迁移测试仍受本机 Java 到 Docker Desktop named pipe 连接限制影响，会跳过；本地 `drt-ops-demo-postgres` 的真实 PostGIS 持久化测试已通过，但生产环境仍需独立数据库验收。
-- 复杂动态插单重排、权限角色、生产级消息队列、完整司机端、完整乘客端、监管端、支付结算不在本 MVP 范围内。
+- 复杂动态插单重排、OIDC/LDAP、多租户、生产级消息队列、完整司机端、完整乘客端、监管端、支付结算不在本 MVP 范围内。
 
 ## 四、就绪结论
 
@@ -72,4 +74,4 @@ npm run e2e -- dispatch-flow.spec.ts
 4. 在任务页面模拟车辆执行。
 5. 在调度工作台、看板和审计日志查看运营闭环结果。
 
-进入生产试点前，需要补齐权限体系、真实地图/路径服务、全栈环境压测、生产 PostGIS 环境验收、持续安全依赖监控和运维监控。
+进入生产试点前，需要补齐 OIDC/LDAP 或企业统一身份源、真实地图/路径服务、全栈环境压测、生产 PostGIS 环境验收、持续安全依赖监控和运维监控。

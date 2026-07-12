@@ -1,9 +1,11 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 test("operator can create demand dispatch it and complete the task", async ({ page }) => {
+  await installSessionMocks(page, ["OPERATOR", "DISPATCHER"]);
   await installDispatchFlowMocks(page);
 
   await page.goto("/orders");
+  await login(page);
   await page.getByRole("button", { name: "录入需求" }).click();
   await page.getByLabel("乘客姓名").fill("张三");
   await page.getByLabel(/乘客(电话|手机号)/).fill("13800000000");
@@ -14,7 +16,7 @@ test("operator can create demand dispatch it and complete the task", async ({ pa
   await page.getByRole("button", { name: "调度" }).click();
   await expect(page.getByText("CONFIRMED")).toBeVisible();
 
-  await page.goto("/tasks");
+  await page.getByRole("link", { name: "车辆任务" }).click();
   await expect(page.getByText("DRT-201")).toBeVisible();
   await page.getByRole("button", { name: "发车" }).click();
   await expect(page.getByText("IN_PROGRESS")).toBeVisible();
@@ -27,9 +29,11 @@ test("operator can create demand dispatch it and complete the task", async ({ pa
 });
 
 test("operator can approve manual review from dispatch workbench", async ({ page }) => {
+  await installSessionMocks(page, ["DISPATCHER"]);
   await installManualReviewWorkbenchMocks(page);
 
   await page.goto("/dispatch");
+  await login(page);
   await expect(page.getByRole("heading", { name: "人工复核队列" })).toBeVisible();
   await expect(page.getByText("Manual review rider")).toBeVisible();
 
@@ -38,6 +42,23 @@ test("operator can approve manual review from dispatch workbench", async ({ page
   await expect(page.getByText("暂无待复核订单")).toBeVisible();
   await expect(page.getByText("DISPATCHED")).toBeVisible();
 });
+
+async function installSessionMocks(page: Page, roles: string[]) {
+  await page.route("**/api/auth/refresh", (route) => route.fulfill({ status: 401 }));
+  await page.route("**/api/auth/login", async (route) => {
+    await json(route, {
+      accessToken: "workflow-token",
+      expiresAt: "2026-07-12T16:00:00+08:00",
+      user: { id: "workflow-user", username: "workflow01", roles, mustChangePassword: false }
+    });
+  });
+}
+
+async function login(page: Page) {
+  await page.getByLabel("用户名").fill("workflow01");
+  await page.getByLabel("密码").fill("Secret123!");
+  await page.getByRole("button", { name: "登录" }).click();
+}
 
 async function installDispatchFlowMocks(page: Page) {
   let orders: Record<string, unknown>[] = [];
