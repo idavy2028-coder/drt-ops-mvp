@@ -1,0 +1,6 @@
+drt:
+  auth:
+    jwt-secret: 01234567890123456789012345678901
+    access-token-minutes: 15
+    refresh-token-days: 7
+    refresh-cookie-secure: true

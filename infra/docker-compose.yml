@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.5
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: drt_ops
+      POSTGRES_USER: drt_ops
+      POSTGRES_PASSWORD: drt_ops
+    volumes:
+      - ./postgres/init-postgis.sql:/docker-entrypoint-initdb.d/init-postgis.sql:ro
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
