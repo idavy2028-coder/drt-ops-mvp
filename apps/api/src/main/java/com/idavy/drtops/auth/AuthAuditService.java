@@ -9,6 +9,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AuthAuditService {
 
+    private static final java.util.UUID UNKNOWN_LOGIN_ENTITY_ID =
+            java.util.UUID.fromString("00000000-0000-0000-0000-000000000001");
+
     private final AuditLogRepository auditLogs;
 
     public AuthAuditService(AuditLogRepository auditLogs) {
@@ -28,9 +31,18 @@ public class AuthAuditService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void recordAuthenticationFailure(UserAccount user, String action) {
+        recordAuthenticationFailure(user.getId(), action);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordUnknownAuthenticationFailure() {
+        recordAuthenticationFailure(UNKNOWN_LOGIN_ENTITY_ID, "AUTH_LOGIN_FAILED");
+    }
+
+    private void recordAuthenticationFailure(java.util.UUID userId, String action) {
         auditLogs.save(AuditLog.record(
                 "USER_ACCOUNT",
-                user.getId(),
+                userId,
                 action,
                 "ANONYMOUS",
                 "anonymous",
@@ -39,10 +51,10 @@ public class AuthAuditService {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void recordAuthorizationDenied(java.util.UUID actorId) {
+    public void recordAuthorizationDenied(java.util.UUID actorId, java.util.UUID entityId) {
         auditLogs.save(AuditLog.record(
                 "USER_ACCOUNT",
-                actorId,
+                entityId,
                 "AUTHORIZATION_DENIED",
                 "USER",
                 actorId.toString(),

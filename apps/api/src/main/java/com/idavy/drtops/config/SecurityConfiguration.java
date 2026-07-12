@@ -32,7 +32,8 @@ public class SecurityConfiguration {
                         .accessDeniedHandler((request, response, exception) -> {
                             Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
                             if (principal instanceof UUID actorId) {
-                                authAuditService.recordAuthorizationDenied(actorId);
+                                authAuditService.recordAuthorizationDenied(
+                                        actorId, authorizationEntityId(request.getRequestURI(), actorId));
                             }
                             response.sendError(403);
                         }))
@@ -64,5 +65,17 @@ public class SecurityConfiguration {
                         .anyRequest().denyAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
+    }
+
+    private UUID authorizationEntityId(String requestUri, UUID actorId) {
+        String[] path = requestUri.split("/");
+        if (path.length > 3 && "api".equals(path[1]) && "users".equals(path[2])) {
+            try {
+                return UUID.fromString(path[3]);
+            } catch (IllegalArgumentException ignored) {
+                // Fall through to preserve the actor as the entity for non-user resource denials.
+            }
+        }
+        return actorId;
     }
 }

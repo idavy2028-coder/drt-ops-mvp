@@ -47,7 +47,11 @@ public class AuthService {
 
     @Transactional
     public LoginResult login(String username, String password) {
-        UserAccount user = users.findByUsernameIgnoreCase(username).orElseThrow(this::invalid);
+        UserAccount user = users.findByUsernameIgnoreCase(username).orElse(null);
+        if (user == null) {
+            authAuditService.recordUnknownAuthenticationFailure();
+            throw invalid();
+        }
         if (!user.isEnabled() || !passwordEncoder.matches(password, user.getPasswordHash())) {
             authAuditService.recordAuthenticationFailure(user, "AUTH_LOGIN_FAILED");
             throw invalid();

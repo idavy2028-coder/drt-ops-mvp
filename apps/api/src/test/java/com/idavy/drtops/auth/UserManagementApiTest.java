@@ -107,12 +107,16 @@ class UserManagementApiTest {
     }
 
     @Test
-    void nonAdministratorCannotDisableUser() throws Exception {
-        mockMvc.perform(post("/api/users/{id}/disable", dispatcher.getId())
+    void nonAdministratorCannotDisableAnotherUserAndAuditIdentifiesTargetAndActor() throws Exception {
+        mockMvc.perform(post("/api/users/{id}/disable", admin.getId())
                         .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken)))
                 .andExpect(status().isForbidden());
 
-        assertAuditActions(dispatcher.getId(), "AUTHORIZATION_DENIED");
+        var auditLog = auditLogs.findByEntityIdOrderByCreatedAtAsc(admin.getId()).stream()
+                .filter(log -> log.getAction().equals("AUTHORIZATION_DENIED"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(auditLog.getActorId()).isEqualTo(dispatcher.getId().toString());
     }
 
     @Test
@@ -200,6 +204,22 @@ class UserManagementApiTest {
         auditLogs.findByEntityIdOrderByCreatedAtAsc(dispatcher.getId()).forEach(log -> {
             assertThat(log.getMetadataJson()).doesNotContain("WrongPassword!", "Secret123!", refreshCookie.getValue());
         });
+    }
+
+    @Test
+    void recordsUnknownUserLoginFailureWithoutSecretMaterial() throws Exception {
+        String password = "UnknownUserPassword!";
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"missing-user\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isUnauthorized());
+
+        var auditLog = auditLogs.findAll().stream()
+                .filter(log -> log.getAction().equals("AUTH_LOGIN_FAILED"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(auditLog.getReason()).doesNotContain(password);
+        assertThat(auditLog.getMetadataJson()).doesNotContain(password);
     }
 
     private UserAccount account(String username, RoleCode role) {
