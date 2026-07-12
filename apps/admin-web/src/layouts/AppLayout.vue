@@ -16,7 +16,13 @@ const navItems = [
 
 const visibleNavItems = computed(() => navItems.filter((item) => authStore.has(item.permission as never)));
 const router = useRouter();
-async function signOut() { await authStore.logout(); await router.replace("/login"); }
+async function signOut() {
+  try {
+    await authStore.logout();
+  } finally {
+    await router.replace("/login");
+  }
+}
 
 const today = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
