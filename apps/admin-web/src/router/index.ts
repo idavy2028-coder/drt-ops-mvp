@@ -9,6 +9,7 @@ import ResourcesPage from "../pages/ResourcesPage.vue";
 import RulesPage from "../pages/RulesPage.vue";
 import TasksPage from "../pages/TasksPage.vue";
 import LoginPage from "../pages/LoginPage.vue";
+import UserManagementPage from "../pages/UserManagementPage.vue";
 
 export const routes: RouteRecordRaw[] = [
   { path: "/login", name: "login", component: LoginPage, meta: { public: true } },
@@ -19,6 +20,7 @@ export const routes: RouteRecordRaw[] = [
   { path: "/orders", name: "orders", component: OrdersPage, meta: { title: "订单中心", permission: "ORDER_READ" } },
   { path: "/tasks", name: "tasks", component: TasksPage, meta: { title: "车辆任务", permission: "TASK_READ" } },
   { path: "/audit-logs", name: "auditLogs", component: AuditLogsPage, meta: { title: "审计日志", permission: "AUDIT_READ" } }
+  ,{ path: "/users", name: "users", component: UserManagementPage, meta: { title: "用户与权限", permission: "USER_MANAGE" } }
 ];
 
 export function createAppRouter(history: RouterHistory = createWebHistory()) {

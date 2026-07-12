@@ -10,6 +10,7 @@ import {
 } from "../api/orders";
 import type { RideOrder } from "../api/types";
 import OrderCreateDialog from "../components/OrderCreateDialog.vue";
+import { authStore } from "../auth/authStore";
 
 const orders = ref<RideOrder[]>([]);
 const showCreateDialog = ref(false);
@@ -71,7 +72,7 @@ onMounted(() => {
         <p class="page-subtitle">承接乘客需求录入、虚拟站点匹配、调度状态和异常关闭。</p>
       </div>
       <div class="toolbar">
-        <button class="primary-button" type="button" @click="showCreateDialog = true">录入需求</button>
+        <button v-if="authStore.has('ORDER_CREATE')" class="primary-button" type="button" @click="showCreateDialog = true">录入需求</button>
         <button class="secondary-button" type="button" @click="loadOrders">刷新</button>
       </div>
     </header>
@@ -105,9 +106,7 @@ onMounted(() => {
             <td>{{ formatDateTime(order.requestedDepartureAt) }}</td>
             <td>
               <div class="toolbar">
-                <button class="secondary-button" type="button" @click="runDispatch(order)">调度</button>
-                <button class="secondary-button" type="button" @click="cancel(order)">取消</button>
-                <button class="danger-button" type="button" @click="closeNoShow(order)">异常关闭</button>
+                <template v-if="authStore.has('DISPATCH_EXECUTE')"><button class="secondary-button" type="button" @click="runDispatch(order)">调度</button><button class="secondary-button" type="button" @click="cancel(order)">取消</button><button class="danger-button" type="button" @click="closeNoShow(order)">异常关闭</button></template>
               </div>
             </td>
           </tr>

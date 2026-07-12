@@ -12,6 +12,7 @@ import {
 } from "../api/tasks";
 import type { TaskStop, VehicleTask } from "../api/types";
 import TaskStopTimeline from "../components/TaskStopTimeline.vue";
+import { authStore } from "../auth/authStore";
 
 const tasks = ref<VehicleTask[]>([]);
 const selectedTaskId = ref("");
@@ -197,7 +198,7 @@ onMounted(() => {
             </tr>
           </tbody>
         </table>
-        <div class="toolbar">
+        <div v-if="authStore.has('TASK_EXECUTE')" class="toolbar">
           <button class="primary-button" type="button" :disabled="!selectedTask" @click="startSelectedTask">发车</button>
           <button class="secondary-button" type="button" :disabled="!nextPlannedStop" @click="arriveNextStop">到站</button>
           <button class="secondary-button" type="button" :disabled="!nextBoardingStop" @click="boardNextPassenger">上车</button>

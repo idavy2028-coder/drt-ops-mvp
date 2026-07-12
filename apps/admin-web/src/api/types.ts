@@ -15,6 +15,15 @@ export interface AuthSession {
   user: CurrentUser;
 }
 
+export interface UserAccount {
+  id: UUID;
+  username: string;
+  displayName: string;
+  roles: string[];
+  enabled: boolean;
+  mustChangePassword: boolean;
+}
+
 export interface ServiceArea {
   id: UUID;
   name: string;

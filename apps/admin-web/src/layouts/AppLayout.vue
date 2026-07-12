@@ -1,15 +1,22 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from "vue-router";
+import { computed } from "vue";
+import { RouterLink, RouterView, useRouter } from "vue-router";
+import { authStore } from "../auth/authStore";
 
 const navItems = [
-  { label: "运营看板", to: "/" },
-  { label: "调度工作台", to: "/dispatch" },
-  { label: "订单中心", to: "/orders" },
-  { label: "车辆任务", to: "/tasks" },
-  { label: "资源配置", to: "/resources" },
-  { label: "规则配置", to: "/rules" },
-  { label: "审计日志", to: "/audit-logs" }
+  { label: "运营看板", to: "/", permission: "METRICS_READ" },
+  { label: "调度工作台", to: "/dispatch", permission: "DISPATCH_EXECUTE" },
+  { label: "订单中心", to: "/orders", permission: "ORDER_READ" },
+  { label: "车辆任务", to: "/tasks", permission: "TASK_READ" },
+  { label: "资源配置", to: "/resources", permission: "RESOURCE_MANAGE" },
+  { label: "规则配置", to: "/rules", permission: "RULE_MANAGE" },
+  { label: "审计日志", to: "/audit-logs", permission: "AUDIT_READ" },
+  { label: "用户与权限", to: "/users", permission: "USER_MANAGE" }
 ];
+
+const visibleNavItems = computed(() => navItems.filter((item) => authStore.has(item.permission as never)));
+const router = useRouter();
+async function signOut() { await authStore.logout(); await router.replace("/login"); }
 
 const today = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
@@ -28,7 +35,7 @@ const today = new Intl.DateTimeFormat("zh-CN", {
       </div>
 
       <nav class="nav-list">
-        <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" class="nav-link">
+        <RouterLink v-for="item in visibleNavItems" :key="item.to" :to="item.to" class="nav-link">
           {{ item.label }}
         </RouterLink>
       </nav>
@@ -40,7 +47,7 @@ const today = new Intl.DateTimeFormat("zh-CN", {
           <p class="topbar-kicker">企业运营闭环</p>
           <strong>实时调度 · 任务执行 · 审计追踪</strong>
         </div>
-        <time>{{ today }}</time>
+        <div class="account-summary"><span>{{ authStore.user?.username }}</span><button class="secondary-button" type="button" @click="signOut">退出</button><time>{{ today }}</time></div>
       </header>
 
       <main class="content-surface">
@@ -138,6 +145,7 @@ const today = new Intl.DateTimeFormat("zh-CN", {
   font-size: 14px;
   font-weight: 800;
 }
+.account-summary { display: flex; align-items: center; gap: 12px; color: #4d5b54; font-size: 14px; font-weight: 800; }
 
 .content-surface {
   padding: 28px;

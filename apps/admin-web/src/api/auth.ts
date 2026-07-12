@@ -17,6 +17,7 @@ export async function logout(): Promise<void> {
   await authRequest<void>("/api/auth/logout", { method: "POST" });
 }
 
+
 async function authRequest<T>(path: string, options: RequestInit): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.body !== undefined && !headers.has("Content-Type")) {
