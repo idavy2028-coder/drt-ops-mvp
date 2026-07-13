@@ -54,13 +54,29 @@ onMounted(() => {
 
     <div class="split-grid">
       <section class="work-panel">
-        <h3 class="section-title">基础趋势</h3>
-        <p class="section-copy">订单确认、等待时间、绕行时间和车辆利用率会在后续接入时间序列数据。</p>
+        <h3 class="section-title">今日调度表现</h3>
+        <div class="overview-list">
+          <p><span>订单确认</span><strong>{{ summary.confirmationRate }}</strong></p>
+          <p><span>自动派发</span><strong>{{ summary.autoDispatchRate }}</strong></p>
+          <p><span>人工复核</span><strong>{{ summary.manualReviewRate }}</strong></p>
+        </div>
       </section>
       <section class="work-panel">
-        <h3 class="section-title">异常闭环</h3>
-        <p class="section-copy">异常关闭率 {{ summary.exceptionCloseRate }}，任务完成率 {{ summary.taskCompletionRate }}。</p>
+        <h3 class="section-title">服务闭环</h3>
+        <div class="overview-list">
+          <p><span>平均等待</span><strong>{{ summary.averageWaitMinutes }} 分钟</strong></p>
+          <p><span>平均绕行</span><strong>{{ summary.averageDetourMinutes }} 分钟</strong></p>
+          <p><span>任务完成 / 异常关闭</span><strong>{{ summary.taskCompletionRate }} / {{ summary.exceptionCloseRate }}</strong></p>
+        </div>
       </section>
     </div>
   </section>
 </template>
+
+<style scoped>
+.overview-list { display: grid; gap: 10px; }
+.overview-list p { align-items: center; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; margin: 0; padding-bottom: 10px; }
+.overview-list p:last-child { border-bottom: 0; padding-bottom: 0; }
+.overview-list span { color: var(--ink-muted); }
+.overview-list strong { color: var(--ink); }
+</style>
