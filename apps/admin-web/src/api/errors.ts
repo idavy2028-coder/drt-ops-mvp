@@ -9,8 +9,9 @@ export class ApiError extends Error {
 }
 
 export async function apiErrorFromResponse(response: Response): Promise<ApiError> {
-  const body = await response.text();
-  return new ApiError(response.status, extractMessage(body));
+  const isBusinessError = response.status === 400 || response.status === 409;
+  const message = isBusinessError ? extractMessage(await response.text()) : undefined;
+  return new ApiError(response.status, message);
 }
 
 export function userMessage(error: unknown, fallback: string): string {

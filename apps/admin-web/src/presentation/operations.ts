@@ -43,7 +43,11 @@ const labels: Record<string, string> = {
 };
 
 const auditReasonLabels: Record<string, string> = {
+  AUTO_DISPATCH: "自动派单",
+  MANUAL_REVIEW: "转人工复核",
   MANUAL_REVIEW_THRESHOLD_REACHED: "自动派单未满足阈值，转人工复核",
+  NO_FEASIBLE_PLAN: "暂无可行派车方案",
+  PENDING_MANUAL_REVIEW: "转人工复核",
   "invalid authentication attempt": "用户名或密码不正确"
 };
 
@@ -56,6 +60,10 @@ function metricNumber(value: DecimalValue): number | null {
 }
 
 export function formatPercentage(value: DecimalValue): string {
+  const decimalPercentage = formatDecimalPercentage(String(value));
+  if (decimalPercentage !== null) {
+    return `${decimalPercentage}%`;
+  }
   const parsed = metricNumber(value);
   return parsed === null ? String(value) : `${Math.round(parsed * 100)}%`;
 }
@@ -99,7 +107,28 @@ export function auditReasonFor(reason: string | null | undefined): string {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(reason)) {
     return `关联站点 · ${shortId(reason)}`;
   }
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(reason)) {
+    return "系统处理原因（查看详情）";
+  }
   return reason;
+}
+
+function formatDecimalPercentage(value: string): string | null {
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+
+  const [, sign, whole, fraction = ""] = match;
+  const scaled = BigInt(whole) * 100n + BigInt(fraction.slice(0, 2).padEnd(2, "0"));
+  const remainder = fraction.slice(2);
+  const roundsUp = remainder[0] >= "5";
+  const isNegative = sign === "-";
+  const rounded = isNegative
+    ? -scaled - (roundsUp && (remainder[0] !== "5" || /[1-9]/.test(remainder.slice(1))) ? 1n : 0n)
+    : scaled + (roundsUp ? 1n : 0n);
+
+  return rounded.toString();
 }
 
 export function displayDateTime(value: string): string {
