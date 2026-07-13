@@ -39,6 +39,11 @@ const canComplete = computed(() => {
     return stop.status !== "PLANNED";
   });
 });
+const canStartTask = computed(() => selectedTask.value?.status === "DISPATCHED");
+const canOperateStops = computed(() => selectedTask.value?.status === "IN_PROGRESS");
+const canHandleException = computed(() => {
+  return selectedTask.value?.status === "DISPATCHED" || selectedTask.value?.status === "IN_PROGRESS";
+});
 
 function taskLabel(task: VehicleTask) {
   return task.id.length > 8 ? task.id.slice(0, 8) : task.id;
@@ -199,13 +204,13 @@ onMounted(() => {
           </tbody>
         </table>
         <div v-if="authStore.has('TASK_EXECUTE')" class="toolbar">
-          <button class="primary-button" type="button" :disabled="!selectedTask" @click="startSelectedTask">发车</button>
-          <button class="secondary-button" type="button" :disabled="!nextPlannedStop" @click="arriveNextStop">到站</button>
-          <button class="secondary-button" type="button" :disabled="!nextBoardingStop" @click="boardNextPassenger">上车</button>
-          <button class="secondary-button" type="button" :disabled="!nextAlightingStop" @click="alightNextPassenger">下车</button>
-          <button class="secondary-button" type="button" :disabled="!canComplete" @click="completeSelectedTask">完成</button>
-          <button class="danger-button" type="button" :disabled="!selectedTask" @click="failSelectedTask">车辆故障</button>
-          <button class="danger-button" type="button" :disabled="!selectedTask" @click="delaySelectedTask">严重延误</button>
+          <button class="primary-button" type="button" :disabled="!canStartTask" @click="startSelectedTask">发车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextPlannedStop" @click="arriveNextStop">到站</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextBoardingStop" @click="boardNextPassenger">上车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextAlightingStop" @click="alightNextPassenger">下车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !canComplete" @click="completeSelectedTask">完成</button>
+          <button class="danger-button" type="button" :disabled="!canHandleException" @click="failSelectedTask">车辆故障</button>
+          <button class="danger-button" type="button" :disabled="!canHandleException" @click="delaySelectedTask">严重延误</button>
         </div>
       </section>
 
