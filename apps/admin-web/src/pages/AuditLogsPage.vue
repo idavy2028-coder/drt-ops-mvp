@@ -85,7 +85,7 @@ onMounted(() => {
             <td>{{ displayDateTime(log.createdAt) }}</td>
             <td :title="log.entityId">{{ labelFor(log.entityType) }} · {{ shortId(log.entityId) }}</td>
             <td :title="log.action">{{ labelFor(log.action) }}</td>
-            <td :title="log.actorId">{{ labelFor(log.actorType) }} · {{ shortId(log.actorId) }}</td>
+            <td :title="log.actorId">{{ labelFor(log.actorType) }} · {{ log.actorDisplayName ?? shortId(log.actorId) }}</td>
             <td>{{ log.reason ?? "--" }}</td>
           </tr>
           <tr v-if="filteredLogs.length === 0">

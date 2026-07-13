@@ -145,6 +145,7 @@ export interface AuditLog {
   action: string;
   actorType: string;
   actorId: string;
+  actorDisplayName?: string;
   reason?: string;
   metadataJson: string;
   createdAt: IsoDateTime;
