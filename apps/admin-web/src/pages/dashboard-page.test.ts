@@ -32,6 +32,13 @@ describe("DashboardPage", () => {
     expect(screen.getByText("车辆利用率")).toBeInTheDocument();
   });
 
+  it("renders dashboard rates and durations in operational formats", async () => {
+    render(DashboardPage);
+
+    expect((await screen.findAllByText("100%")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3.0 分钟").length).toBeGreaterThan(0);
+  });
+
   it("provides a refresh control for the current operations summary", async () => {
     render(DashboardPage);
 
