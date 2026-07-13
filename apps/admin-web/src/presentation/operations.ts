@@ -40,6 +40,11 @@ const labels: Record<string, string> = {
   AUTH_LOGIN_FAILED: "登录失败"
 };
 
+const auditReasonLabels: Record<string, string> = {
+  MANUAL_REVIEW_THRESHOLD_REACHED: "自动派单未满足阈值，转人工复核",
+  "invalid authentication attempt": "用户名或密码不正确"
+};
+
 export function labelFor(code: string): string {
   return labels[code] ?? code;
 }
@@ -62,6 +67,19 @@ export function statusTone(code: string): "neutral" | "active" | "success" | "wa
 
 export function shortId(value: string): string {
   return value.length > 8 ? value.slice(0, 8) : value;
+}
+
+export function auditReasonFor(reason: string | null | undefined): string {
+  if (!reason) {
+    return "--";
+  }
+  if (auditReasonLabels[reason]) {
+    return auditReasonLabels[reason];
+  }
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(reason)) {
+    return `关联站点 · ${shortId(reason)}`;
+  }
+  return reason;
 }
 
 export function displayDateTime(value: string): string {

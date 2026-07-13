@@ -31,8 +31,12 @@ const metrics = computed(() => [
   { label: "车辆利用率", value: summary.value.vehicleUtilizationRate, tone: "有任务车辆占比" }
 ]);
 
-onMounted(() => {
+function refreshSummary() {
   void loadSummary(today);
+}
+
+onMounted(() => {
+  refreshSummary();
 });
 </script>
 
@@ -44,7 +48,12 @@ onMounted(() => {
         <h2 class="page-title">运营看板</h2>
         <p class="page-subtitle">按运营日聚合订单确认、自动派发、人工复核、任务完成与异常闭环。</p>
       </div>
-      <span class="status-pill">{{ state.loading ? "同步中" : "今日" }}</span>
+      <div class="page-actions">
+        <button class="secondary-button" type="button" :disabled="state.loading" @click="refreshSummary">
+          {{ state.loading ? "同步中" : "刷新" }}
+        </button>
+        <span class="status-pill">今日</span>
+      </div>
     </header>
 
     <MetricTileGrid :metrics="metrics" />

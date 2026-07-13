@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { listAuditLogs } from "../api/metrics";
 import type { AuditLog } from "../api/types";
-import { displayDateTime, labelFor, shortId } from "../presentation/operations";
+import { auditReasonFor, displayDateTime, labelFor, shortId } from "../presentation/operations";
 import { userMessage } from "../api/errors";
 
 const logs = ref<AuditLog[]>([]);
@@ -86,7 +86,7 @@ onMounted(() => {
             <td :title="log.entityId">{{ labelFor(log.entityType) }} · {{ shortId(log.entityId) }}</td>
             <td :title="log.action">{{ labelFor(log.action) }}</td>
             <td :title="log.actorId">{{ labelFor(log.actorType) }} · {{ log.actorDisplayName ?? shortId(log.actorId) }}</td>
-            <td>{{ log.reason ?? "--" }}</td>
+            <td :title="log.reason ?? undefined">{{ auditReasonFor(log.reason) }}</td>
           </tr>
           <tr v-if="filteredLogs.length === 0">
             <td colspan="5">暂无审计日志</td>
