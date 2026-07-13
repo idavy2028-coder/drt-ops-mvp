@@ -1,3 +1,5 @@
+import type { DecimalValue } from "../api/types";
+
 const labels: Record<string, string> = {
   PENDING_DISPATCH: "待调度",
   PENDING_MANUAL_REVIEW: "待人工复核",
@@ -44,6 +46,21 @@ const auditReasonLabels: Record<string, string> = {
   MANUAL_REVIEW_THRESHOLD_REACHED: "自动派单未满足阈值，转人工复核",
   "invalid authentication attempt": "用户名或密码不正确"
 };
+
+function metricNumber(value: DecimalValue): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function formatPercentage(value: DecimalValue): string {
+  const parsed = metricNumber(value);
+  return parsed === null ? String(value) : `${Math.round(parsed * 100)}%`;
+}
+
+export function formatMinutes(value: DecimalValue): string {
+  const parsed = metricNumber(value);
+  return parsed === null ? String(value) : `${parsed.toFixed(1)} 分钟`;
+}
 
 export function labelFor(code: string): string {
   return labels[code] ?? code;

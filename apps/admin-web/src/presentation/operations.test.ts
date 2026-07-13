@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { auditReasonFor } from "./operations";
+import { auditReasonFor, formatMinutes, formatPercentage } from "./operations";
+
+it("formats a decimal ratio as a percentage", () => {
+  expect(formatPercentage("0.875")).toBe("88%");
+  expect(formatPercentage(0)).toBe("0%");
+});
+
+it("formats minutes with one decimal place", () => {
+  expect(formatMinutes("3")).toBe("3.0 分钟");
+});
+
+it("preserves an invalid metric value", () => {
+  expect(formatPercentage("unknown")).toBe("unknown");
+});
 
 describe("auditReasonFor", () => {
   it("translates a manual review reason into an operational explanation", () => {
