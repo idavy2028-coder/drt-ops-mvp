@@ -1,6 +1,7 @@
 import { readonly, reactive } from "vue";
 import { getOperationsSummary } from "../api/metrics";
 import type { OperationsSummary } from "../api/types";
+import { userMessage } from "../api/errors";
 
 interface OperationsState {
   loading: boolean;
@@ -21,7 +22,7 @@ export function useOperationsStore() {
     try {
       state.summary = await getOperationsSummary(date);
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "运营数据加载失败";
+      state.error = userMessage(error, "运营数据加载失败");
     } finally {
       state.loading = false;
     }

@@ -1,10 +1,12 @@
 <template>
   <RouterView v-if="route.meta.public === true" />
   <AppLayout v-else />
+  <AppFeedback />
 </template>
 
 <script setup lang="ts">
 import { RouterView, useRoute } from "vue-router";
+import AppFeedback from "./components/AppFeedback.vue";
 import AppLayout from "./layouts/AppLayout.vue";
 
 const route = useRoute();
@@ -12,8 +14,18 @@ const route = useRoute();
 
 <style>
 :root {
-  color: #17201c;
-  background: #eef2ef;
+  color: #17241d;
+  background: #f4f6f3;
+  --canvas: #f4f6f3;
+  --surface: #ffffff;
+  --surface-muted: #f7f9f7;
+  --line: #d9e1dc;
+  --ink: #17241d;
+  --ink-muted: #65736b;
+  --brand: #17634b;
+  --brand-soft: #e7f4ec;
+  --danger: #a7352e;
+  --focus: #2d7e5f;
   font-family: "Aptos", "Microsoft YaHei UI", "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: geometricPrecision;
@@ -43,7 +55,7 @@ a {
 
 .page {
   display: grid;
-  gap: 18px;
+  gap: 20px;
 }
 
 .page-header {
@@ -99,10 +111,10 @@ a {
 .metric-panel,
 .work-panel,
 .table-panel {
-  border: 1px solid #d9e1dc;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 12px 28px rgba(23, 32, 28, 0.06);
+  background: var(--surface);
+  box-shadow: 0 8px 18px rgba(23, 36, 29, 0.045);
 }
 
 .metric-panel {
@@ -156,18 +168,18 @@ a {
 }
 
 .data-table th {
-  background: #f6f8f6;
+  background: var(--surface-muted);
   color: #53615a;
   font-size: 13px;
   font-weight: 800;
 }
 
 .data-table tbody tr.is-selected td {
-  background: #eaf4ef;
+  background: var(--brand-soft);
 }
 
 .data-table tbody tr.is-selected td:first-child {
-  box-shadow: inset 3px 0 0 #17634b;
+  box-shadow: inset 3px 0 0 var(--brand);
 }
 
 .status-pill {
@@ -190,10 +202,11 @@ a {
   padding: 8px 14px;
   font-weight: 900;
   cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .primary-button {
-  background: #17634b;
+  background: var(--brand);
   color: #ffffff;
 }
 
@@ -204,7 +217,7 @@ a {
 }
 
 .danger-button {
-  background: #8f2f2f;
+  background: var(--danger);
   color: #ffffff;
 }
 
@@ -213,6 +226,28 @@ a {
 .danger-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.primary-button:not(:disabled):hover,
+.secondary-button:not(:disabled):hover,
+.danger-button:not(:disabled):hover {
+  box-shadow: 0 4px 10px rgba(23, 36, 29, 0.12);
+  transform: translateY(-1px);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--focus) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.page-state {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--ink-muted);
+  padding: 18px;
 }
 
 .form-grid {

@@ -12,12 +12,16 @@ import {
 } from "../api/tasks";
 import type { TaskStop, VehicleTask } from "../api/types";
 import TaskStopTimeline from "../components/TaskStopTimeline.vue";
+import StatusBadge from "../components/StatusBadge.vue";
 import { authStore } from "../auth/authStore";
+import { userMessage } from "../api/errors";
+import { feedbackStore } from "../stores/feedbackStore";
 
 const tasks = ref<VehicleTask[]>([]);
 const selectedTaskId = ref("");
 const status = ref("");
 const lastAction = ref("等待操作");
+const loading = ref(false);
 
 const selectedTask = computed(() => {
   return tasks.value.find((task) => task.id === selectedTaskId.value) ?? tasks.value[0];
@@ -63,13 +67,16 @@ function formatDateTime(value?: string) {
 
 async function loadVehicleTasks() {
   status.value = "";
+  loading.value = true;
   try {
     tasks.value = await listTasks();
     if (!selectedTaskId.value && tasks.value.length > 0) {
       selectedTaskId.value = tasks.value[0].id;
     }
   } catch (error) {
-    status.value = error instanceof Error ? error.message : "任务数据加载失败";
+    status.value = userMessage(error, "任务数据加载失败");
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -88,8 +95,10 @@ async function runTaskAction(action: string, operation: () => Promise<VehicleTas
   status.value = "";
   try {
     updateTask(await operation(), action);
+    feedbackStore.success(`任务已${action}`);
   } catch (error) {
-    status.value = error instanceof Error ? error.message : `${action}失败`;
+    status.value = userMessage(error, `${action}失败`);
+    feedbackStore.error(status.value);
   }
 }
 
@@ -173,7 +182,8 @@ onMounted(() => {
       </article>
     </div>
 
-    <p v-if="status" class="section-copy">状态：{{ status }}</p>
+    <p v-if="loading" class="page-state">正在同步车辆任务与站点执行状态…</p>
+    <p v-else-if="status" class="page-state">{{ status }}</p>
 
     <div class="split-grid">
       <section class="work-panel">
@@ -192,7 +202,7 @@ onMounted(() => {
             <tr v-for="task in tasks" :key="task.id" :class="{ 'is-selected': task.id === selectedTaskId }">
               <td>{{ taskLabel(task) }}</td>
               <td>{{ task.vehicleId }}</td>
-              <td><span class="status-pill">{{ task.status }}</span></td>
+              <td><StatusBadge :code="task.status" /></td>
               <td>{{ formatDateTime(task.plannedStartAt) }}</td>
               <td>
                 <button class="secondary-button" type="button" :aria-pressed="task.id === selectedTaskId" @click="selectedTaskId = task.id">选择</button>

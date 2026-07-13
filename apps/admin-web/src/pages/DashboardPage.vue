@@ -49,6 +49,9 @@ onMounted(() => {
 
     <MetricTileGrid :metrics="metrics" />
 
+    <p v-if="state.loading" class="page-state">正在同步今日运营指标…</p>
+    <p v-else-if="state.error" class="page-state">{{ state.error }}</p>
+
     <div class="split-grid">
       <section class="work-panel">
         <h3 class="section-title">基础趋势</h3>
@@ -57,7 +60,6 @@ onMounted(() => {
       <section class="work-panel">
         <h3 class="section-title">异常闭环</h3>
         <p class="section-copy">异常关闭率 {{ summary.exceptionCloseRate }}，任务完成率 {{ summary.taskCompletionRate }}。</p>
-        <p v-if="state.error" class="section-copy">后端连接状态：{{ state.error }}</p>
       </section>
     </div>
   </section>

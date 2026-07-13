@@ -35,8 +35,8 @@ describe("TasksPage", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(completedTaskResponse()));
     render(TasksPage);
 
-    await screen.findByText("COMPLETED");
-    const selectedRow = screen.getByText("COMPLETED").closest("tr");
+    await screen.findByText("已完成");
+    const selectedRow = screen.getByText("已完成").closest("tr");
     expect(selectedRow).toHaveClass("is-selected");
     expect(screen.getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "true");
     for (const name of ["发车", "到站", "上车", "下车", "完成", "车辆故障", "严重延误"]) {

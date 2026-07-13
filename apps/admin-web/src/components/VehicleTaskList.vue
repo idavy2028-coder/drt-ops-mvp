@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { VehicleTask } from "../api/types";
+import StatusBadge from "./StatusBadge.vue";
 
 defineProps<{
   tasks: VehicleTask[];
@@ -21,7 +22,7 @@ defineProps<{
         <tr v-for="task in tasks" :key="task.id">
           <td>{{ task.id.slice(0, 8) }}</td>
           <td>{{ task.vehicleId.slice(0, 8) }}</td>
-          <td>{{ task.status }}</td>
+          <td><StatusBadge :code="task.status" /></td>
         </tr>
         <tr v-if="tasks.length === 0">
           <td colspan="3">暂无车辆任务</td>

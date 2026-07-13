@@ -8,6 +8,8 @@ import DispatchMap from "../components/DispatchMap.vue";
 import ManualReviewQueuePanel from "../components/ManualReviewQueuePanel.vue";
 import RealtimeOrderList from "../components/RealtimeOrderList.vue";
 import VehicleTaskList from "../components/VehicleTaskList.vue";
+import { userMessage } from "../api/errors";
+import { feedbackStore } from "../stores/feedbackStore";
 
 const orders = ref<RideOrder[]>([]);
 const tasks = ref<VehicleTask[]>([]);
@@ -15,10 +17,12 @@ const reviews = ref<ManualReviewQueueItem[]>([]);
 const processingDecisionId = ref<UUID>();
 const status = ref("");
 const actionError = ref("");
+const loading = ref(false);
 
 async function loadWorkbench() {
   try {
     status.value = "";
+    loading.value = true;
     const [loadedOrders, loadedTasks, loadedReviews] = await Promise.all([
       listOrders(),
       listTasks(),
@@ -28,7 +32,9 @@ async function loadWorkbench() {
     tasks.value = loadedTasks;
     reviews.value = loadedReviews;
   } catch (error) {
-    status.value = error instanceof Error ? error.message : "工作台数据加载失败";
+    status.value = userMessage(error, "工作台数据加载失败");
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -39,9 +45,13 @@ async function approve(decisionId: UUID) {
     await approveManualReview(decisionId);
     await loadWorkbench();
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : "人工确认失败";
+    actionError.value = userMessage(error, "人工确认失败");
+    feedbackStore.error(actionError.value);
   } finally {
     processingDecisionId.value = undefined;
+  }
+  if (!actionError.value) {
+    feedbackStore.success("人工复核已确认，车辆任务已生成");
   }
 }
 
@@ -52,9 +62,13 @@ async function reject(payload: { decisionId: UUID; reason: string }) {
     await rejectManualReview(payload.decisionId, payload.reason);
     await loadWorkbench();
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : "人工拒绝失败";
+    actionError.value = userMessage(error, "人工拒绝失败");
+    feedbackStore.error(actionError.value);
   } finally {
     processingDecisionId.value = undefined;
+  }
+  if (!actionError.value) {
+    feedbackStore.success("人工复核已拒绝，订单已关闭");
   }
 }
 
@@ -72,8 +86,8 @@ onMounted(() => {
         <p class="page-subtitle">聚焦实时订单、车辆任务、服务区地图、算法解释和人工操作队列。</p>
       </div>
       <div class="toolbar">
-        <button class="secondary-button" type="button" @click="loadWorkbench">刷新</button>
-        <span class="status-pill">实时</span>
+        <button class="secondary-button" type="button" :disabled="loading" @click="loadWorkbench">{{ loading ? "同步中" : "刷新" }}</button>
+        <span class="status-pill">{{ loading ? "同步中" : "实时" }}</span>
       </div>
     </header>
 
@@ -92,7 +106,8 @@ onMounted(() => {
       </article>
     </div>
 
-    <p v-if="status" class="section-copy">后端连接状态：{{ status }}</p>
+    <p v-if="loading" class="page-state">正在汇总实时订单、车辆任务与人工复核队列…</p>
+    <p v-else-if="status" class="page-state">{{ status }}</p>
 
     <div class="dispatch-grid">
       <RealtimeOrderList :orders="orders" />

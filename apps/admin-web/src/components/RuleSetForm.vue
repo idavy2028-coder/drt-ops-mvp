@@ -5,6 +5,7 @@ import type { UpdateDispatchRuleSetInput } from "../api/rules";
 
 const props = defineProps<{
   ruleSet: DispatchRuleSet | null;
+  saving?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -98,7 +99,7 @@ function submit() {
       </label>
     </div>
     <div class="toolbar">
-      <button class="primary-button" type="submit" :disabled="!ruleSet">保存规则</button>
+      <button class="primary-button" type="submit" :disabled="!ruleSet || saving">{{ saving ? "正在保存" : "保存规则" }}</button>
     </div>
   </form>
 </template>
