@@ -21,6 +21,18 @@ const status = ref("");
 const loading = ref(false);
 const submitting = ref(false);
 
+function canDispatch(order: RideOrder) {
+  return order.status === "PENDING_DISPATCH";
+}
+
+function canCancel(order: RideOrder) {
+  return !["UNSERVICEABLE", "CANCELLED", "COMPLETED", "EXCEPTION_CLOSED"].includes(order.status);
+}
+
+function canCloseNoShow(order: RideOrder) {
+  return ["CONFIRMED", "IN_PROGRESS"].includes(order.status);
+}
+
 function formatDateTime(value?: string) {
   if (!value) {
     return "--";
@@ -147,7 +159,12 @@ onMounted(() => {
             <td>{{ formatDateTime(order.requestedDepartureAt) }}</td>
             <td>
               <div class="toolbar">
-                <template v-if="authStore.has('DISPATCH_EXECUTE')"><button class="secondary-button" type="button" @click="runDispatch(order)">调度</button><button class="secondary-button" type="button" @click="cancel(order)">取消</button><button class="danger-button" type="button" @click="closeNoShow(order)">异常关闭</button></template>
+                <template v-if="authStore.has('DISPATCH_EXECUTE')">
+                  <button v-if="canDispatch(order)" class="secondary-button" type="button" @click="runDispatch(order)">调度</button>
+                  <button v-if="canCancel(order)" class="secondary-button" type="button" @click="cancel(order)">取消</button>
+                  <button v-if="canCloseNoShow(order)" class="danger-button" type="button" @click="closeNoShow(order)">乘客未到</button>
+                  <span v-if="!canCancel(order)" class="action-hint">无需操作</span>
+                </template>
               </div>
             </td>
           </tr>
@@ -159,3 +176,7 @@ onMounted(() => {
     </section>
   </section>
 </template>
+
+<style scoped>
+.action-hint { color: var(--ink-muted); font-size: 13px; font-weight: 700; }
+</style>
