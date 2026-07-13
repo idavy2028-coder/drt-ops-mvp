@@ -189,13 +189,13 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="task in tasks" :key="task.id">
+            <tr v-for="task in tasks" :key="task.id" :class="{ 'is-selected': task.id === selectedTaskId }">
               <td>{{ taskLabel(task) }}</td>
               <td>{{ task.vehicleId }}</td>
               <td><span class="status-pill">{{ task.status }}</span></td>
               <td>{{ formatDateTime(task.plannedStartAt) }}</td>
               <td>
-                <button class="secondary-button" type="button" @click="selectedTaskId = task.id">选择</button>
+                <button class="secondary-button" type="button" :aria-pressed="task.id === selectedTaskId" @click="selectedTaskId = task.id">选择</button>
               </td>
             </tr>
             <tr v-if="tasks.length === 0">

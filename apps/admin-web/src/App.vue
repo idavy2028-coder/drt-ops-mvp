@@ -162,6 +162,14 @@ a {
   font-weight: 800;
 }
 
+.data-table tbody tr.is-selected td {
+  background: #eaf4ef;
+}
+
+.data-table tbody tr.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 #17634b;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

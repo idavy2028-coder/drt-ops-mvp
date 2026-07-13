@@ -36,6 +36,9 @@ describe("TasksPage", () => {
     render(TasksPage);
 
     await screen.findByText("COMPLETED");
+    const selectedRow = screen.getByText("COMPLETED").closest("tr");
+    expect(selectedRow).toHaveClass("is-selected");
+    expect(screen.getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "true");
     for (const name of ["发车", "到站", "上车", "下车", "完成", "车辆故障", "严重延误"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
     }
