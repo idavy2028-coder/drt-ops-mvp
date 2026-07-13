@@ -22,3 +22,6 @@ Manual review queue backend: complete (commit b75d43a; GET queue API, queue filt
 Manual review queue panel: complete (commit 363e660; frontend API client, queue panel, reject reason validation covered)
 Manual review workbench flow: complete (commit 35b9aab; backend, algorithm, frontend unit, typecheck, build, and Playwright e2e passed)
 Enterprise auth/RBAC: complete (local login, JWT/RBAC, user administration, API and Playwright acceptance coverage; production OIDC/LDAP and multi-tenant scope remain out of MVP)
+运营看板指标格式 Task 1: complete (commits ac18e22..3d6a2cb, focused frontend tests 5/5 passed, task review clean)
+运营看板指标格式 Task 2: complete (commits 3d6a2cb..9ca57dc, page tests 3/3, full frontend tests 30/30, typecheck and build passed, task review clean)
+运营看板指标格式最终复审修复: complete (commits 00a8f33..6ab9835, focused frontend tests 14/14, full frontend tests 37/37, typecheck and build passed, final review approved)
