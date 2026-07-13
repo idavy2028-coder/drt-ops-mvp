@@ -16,9 +16,6 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class TaskExecutionService {
 
-    private static final String SYSTEM_ACTOR_TYPE = "SYSTEM";
-    private static final String SYSTEM_ACTOR_ID = "task-execution";
-
     private final VehicleTaskRepository vehicleTaskRepository;
     private final RideOrderRepository rideOrderRepository;
     private final AuditLogRepository auditLogRepository;
@@ -33,7 +30,7 @@ public class TaskExecutionService {
     }
 
     @Transactional
-    public VehicleTask start(UUID taskId) {
+    public VehicleTask start(UUID actorId, UUID taskId) {
         VehicleTask task = task(taskId);
         task.startExecution();
         for (RideOrder order : affectedOrders(task)) {
@@ -41,40 +38,40 @@ public class TaskExecutionService {
                 order.startExecution();
             }
         }
-        audit(task.getId(), "TASK_STARTED", null);
+        audit(actorId, task.getId(), "TASK_STARTED", null);
         return task;
     }
 
     @Transactional
-    public VehicleTask arrive(UUID taskId, UUID taskStopId) {
+    public VehicleTask arrive(UUID actorId, UUID taskId, UUID taskStopId) {
         VehicleTask task = inProgressTask(taskId);
         TaskStop stop = stop(task, taskStopId);
         stop.arrive();
         task.markCurrentStop(stop.getVirtualStopId());
-        audit(task.getId(), "TASK_STOP_ARRIVED", stop.getId().toString());
+        audit(actorId, task.getId(), "TASK_STOP_ARRIVED", stop.getId().toString());
         return task;
     }
 
     @Transactional
-    public VehicleTask board(UUID taskId, UUID taskStopId) {
+    public VehicleTask board(UUID actorId, UUID taskId, UUID taskStopId) {
         VehicleTask task = inProgressTask(taskId);
         TaskStop stop = stop(task, taskStopId);
         stop.board();
-        audit(task.getId(), "PASSENGER_BOARDED", stop.getId().toString());
+        audit(actorId, task.getId(), "PASSENGER_BOARDED", stop.getId().toString());
         return task;
     }
 
     @Transactional
-    public VehicleTask alight(UUID taskId, UUID taskStopId) {
+    public VehicleTask alight(UUID actorId, UUID taskId, UUID taskStopId) {
         VehicleTask task = inProgressTask(taskId);
         TaskStop stop = stop(task, taskStopId);
         stop.alight();
-        audit(task.getId(), "PASSENGER_ALIGHTED", stop.getId().toString());
+        audit(actorId, task.getId(), "PASSENGER_ALIGHTED", stop.getId().toString());
         return task;
     }
 
     @Transactional
-    public VehicleTask complete(UUID taskId) {
+    public VehicleTask complete(UUID actorId, UUID taskId) {
         VehicleTask task = inProgressTask(taskId);
         if (task.getStops().stream().anyMatch(stop -> !stop.isExecutionComplete())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "任务节点尚未全部完成");
@@ -85,21 +82,21 @@ public class TaskExecutionService {
                 order.complete();
             }
         }
-        audit(task.getId(), "TASK_COMPLETED", null);
+        audit(actorId, task.getId(), "TASK_COMPLETED", null);
         return task;
     }
 
     @Transactional
-    public VehicleTask markException(UUID taskId, String reason) {
-        return closeTaskAsException(taskId, reason, "TASK_EXCEPTION");
+    public VehicleTask markException(UUID actorId, UUID taskId, String reason) {
+        return closeTaskAsException(actorId, taskId, reason, "TASK_EXCEPTION");
     }
 
     @Transactional
-    public VehicleTask markSevereDelay(UUID taskId, String reason) {
-        return closeTaskAsException(taskId, reason, "TASK_SEVERE_DELAY");
+    public VehicleTask markSevereDelay(UUID actorId, UUID taskId, String reason) {
+        return closeTaskAsException(actorId, taskId, reason, "TASK_SEVERE_DELAY");
     }
 
-    private VehicleTask closeTaskAsException(UUID taskId, String reason, String auditAction) {
+    private VehicleTask closeTaskAsException(UUID actorId, UUID taskId, String reason, String auditAction) {
         VehicleTask task = task(taskId);
         task.markException(reason);
         for (RideOrder order : affectedOrders(task)) {
@@ -110,7 +107,7 @@ public class TaskExecutionService {
                 order.closeException(reason);
             }
         }
-        audit(task.getId(), auditAction, reason);
+        audit(actorId, task.getId(), auditAction, reason);
         return task;
     }
 
@@ -149,13 +146,13 @@ public class TaskExecutionService {
         return orders;
     }
 
-    private void audit(UUID taskId, String action, String reason) {
+    private void audit(UUID actorId, UUID taskId, String action, String reason) {
         auditLogRepository.save(AuditLog.record(
                 "VEHICLE_TASK",
                 taskId,
                 action,
-                SYSTEM_ACTOR_TYPE,
-                SYSTEM_ACTOR_ID,
+                "USER",
+                actorId.toString(),
                 reason,
                 "{}"));
     }

@@ -4,6 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.idavy.drtops.auth.JwtTokenService;
+import com.idavy.drtops.auth.RoleCode;
+import com.idavy.drtops.auth.UserAccount;
+import com.idavy.drtops.auth.UserAccountRepository;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
@@ -11,13 +15,14 @@ import com.idavy.drtops.domain.order.RideOrderRepository;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
-import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(properties = {
@@ -29,7 +34,6 @@ import org.springframework.test.web.servlet.MockMvc;
         "spring.jpa.hibernate.ddl-auto=create-drop"
 })
 @AutoConfigureMockMvc
-@WithMockUser(authorities = "TASK_EXECUTE")
 class TaskExecutionApiTest {
 
     private static final UUID VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333331");
@@ -49,36 +53,61 @@ class TaskExecutionApiTest {
     @Autowired
     AuditLogRepository auditLogRepository;
 
+    @Autowired
+    UserAccountRepository userAccountRepository;
+
+    @Autowired
+    JwtTokenService jwtTokenService;
+
+    private String dispatcherToken;
+    private UUID dispatcherId;
+
     @BeforeEach
     void setUp() {
         auditLogRepository.deleteAll();
         vehicleTaskRepository.deleteAll();
         rideOrderRepository.deleteAll();
+        userAccountRepository.deleteAll();
+
+        UserAccount dispatcher = UserAccount.create("dispatcher01", "dispatcher01", "not-used-in-task-execution-test");
+        dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER));
+        dispatcher = userAccountRepository.save(dispatcher);
+        dispatcherId = dispatcher.getId();
+        dispatcherToken = jwtTokenService.issue(dispatcher).value();
     }
 
     @Test
     void taskCanMoveThroughStartArriveBoardAlightComplete() throws Exception {
         UUID taskId = createConfirmedTaskWithOneOrder();
 
-        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/start"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/start")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
         UUID boardingTaskStopId = firstTaskStop(taskId, "BOARDING");
-        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + boardingTaskStopId + "/arrive"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + boardingTaskStopId + "/arrive")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
-        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + boardingTaskStopId + "/board"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + boardingTaskStopId + "/board")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
         UUID alightingTaskStopId = firstTaskStop(taskId, "ALIGHTING");
-        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + alightingTaskStopId + "/arrive"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + alightingTaskStopId + "/arrive")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
-        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + alightingTaskStopId + "/alight"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/stops/" + alightingTaskStopId + "/alight")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
-        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/complete"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/complete")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk());
 
         VehicleTask task = vehicleTaskRepository.findById(taskId).orElseThrow();
         RideOrder order = rideOrderRepository.findAll().getFirst();
         assertThat(task.getStatus()).isEqualTo(TaskStatus.COMPLETED);
         assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
+        assertThat(auditLogRepository.findByEntityId(taskId))
+                .allMatch(log -> log.getActorType().equals("USER")
+                        && log.getActorId().equals(dispatcherId.toString()));
     }
 
     @Test
@@ -86,6 +115,7 @@ class TaskExecutionApiTest {
         UUID taskId = createConfirmedTaskWithOneOrder();
 
         mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/exception")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"车辆故障\"}"))
                 .andExpect(status().isOk());
@@ -103,6 +133,7 @@ class TaskExecutionApiTest {
         UUID taskId = createConfirmedTaskWithOneOrder();
 
         mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/delay")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"预计到达严重延误\"}"))
                 .andExpect(status().isOk());

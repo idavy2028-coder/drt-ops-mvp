@@ -25,6 +25,10 @@ import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
+import com.idavy.drtops.auth.JwtTokenService;
+import com.idavy.drtops.auth.RoleCode;
+import com.idavy.drtops.auth.UserAccount;
+import com.idavy.drtops.auth.UserAccountRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
@@ -33,6 +37,7 @@ import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +48,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
-import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(properties = {
@@ -55,7 +60,6 @@ import org.springframework.test.web.servlet.MockMvc;
         "spring.jpa.hibernate.ddl-auto=create-drop"
 })
 @AutoConfigureMockMvc
-@WithMockUser(authorities = {"ORDER_CREATE", "DISPATCH_EXECUTE", "TASK_READ", "TASK_EXECUTE"})
 class DispatchFlowIntegrationTest {
 
     private static final UUID RULE_SET_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
@@ -96,7 +100,15 @@ class DispatchFlowIntegrationTest {
     AuditLogRepository auditLogRepository;
 
     @Autowired
+    UserAccountRepository userAccountRepository;
+
+    @Autowired
+    JwtTokenService jwtTokenService;
+
+    @Autowired
     FakeAlgorithmClient algorithmClient;
+
+    private String dispatcherToken;
 
     @BeforeEach
     void setUp() {
@@ -109,7 +121,12 @@ class DispatchFlowIntegrationTest {
         vehicleRepository.deleteAll();
         driverRepository.deleteAll();
         ruleSetRepository.deleteAll();
+        userAccountRepository.deleteAll();
         algorithmClient.reset();
+
+        UserAccount dispatcher = UserAccount.create("e2e-dispatcher", "e2e-dispatcher", "not-used-in-e2e-test");
+        dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER, RoleCode.OPERATOR));
+        dispatcherToken = jwtTokenService.issue(userAccountRepository.save(dispatcher)).value();
 
         ruleSetRepository.save(DispatchRuleSet.defaultRules(RULE_SET_ID));
         serviceAreaRepository.save(ServiceArea.create(
@@ -162,6 +179,7 @@ class DispatchFlowIntegrationTest {
         algorithmClient.stubAutoDispatch(VEHICLE_ID);
 
         String createResponse = mockMvc.perform(post("/api/orders")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(sampleDemand()))
                 .andExpect(status().isCreated())
@@ -171,30 +189,37 @@ class DispatchFlowIntegrationTest {
                 .getContentAsString();
         UUID orderId = UUID.fromString(JsonPath.read(createResponse, "$.data.id"));
 
-        mockMvc.perform(post("/api/orders/" + orderId + "/dispatch"))
+        mockMvc.perform(post("/api/orders/" + orderId + "/dispatch")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.decision").value("AUTO_DISPATCH"));
-        mockMvc.perform(get("/api/vehicle-tasks"))
+        mockMvc.perform(get("/api/vehicle-tasks")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].status").value("DISPATCHED"));
 
         VehicleTask task = vehicleTaskRepository.findAll().getFirst();
         List<TaskStop> stops = vehicleTaskRepository.findWithStopsById(task.getId()).orElseThrow().getStops();
-        mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/start"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/start")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"));
         for (TaskStop stop : stops) {
-            mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/arrive"))
+            mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/arrive")
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                     .andExpect(status().isOk());
             if ("BOARDING".equals(stop.getStopType())) {
-                mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/board"))
+                mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/board")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                         .andExpect(status().isOk());
             } else {
-                mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/alight"))
+                mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/alight")
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                         .andExpect(status().isOk());
             }
         }
-        mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/complete"))
+        mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/complete")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("COMPLETED"));
 
