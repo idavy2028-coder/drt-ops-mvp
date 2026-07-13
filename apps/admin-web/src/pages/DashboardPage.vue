@@ -6,7 +6,6 @@ import { formatMinutes, formatPercentage } from "../presentation/operations";
 import { useOperationsStore } from "../stores/operationsStore";
 
 const { state, loadSummary } = useOperationsStore();
-const today = new Date().toISOString().slice(0, 10);
 
 const fallbackSummary: OperationsSummary = {
   orderCount: 0,
@@ -33,7 +32,18 @@ const metrics = computed(() => [
 ]);
 
 function refreshSummary() {
-  void loadSummary(today);
+  void loadSummary(currentOperatingDay());
+}
+
+function currentOperatingDay(): string {
+  const dateParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(dateParts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 onMounted(() => {

@@ -47,6 +47,10 @@ const auditReasonLabels: Record<string, string> = {
   MANUAL_REVIEW: "转人工复核",
   MANUAL_REVIEW_THRESHOLD_REACHED: "自动派单未满足阈值，转人工复核",
   NO_FEASIBLE_PLAN: "暂无可行派车方案",
+  NO_CANDIDATE_TASK: "当前无运行车辆任务可用于调度",
+  ALL_CANDIDATES_REJECTED: "候选车辆均不满足调度约束",
+  AUTO_DISPATCH_THRESHOLD_REACHED: "最优方案达到自动派发阈值",
+  LOW_SCORE: "最优方案未达到人工复核阈值",
   PENDING_MANUAL_REVIEW: "转人工复核",
   "invalid authentication attempt": "用户名或密码不正确"
 };

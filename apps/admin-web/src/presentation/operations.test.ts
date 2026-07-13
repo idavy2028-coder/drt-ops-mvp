@@ -30,6 +30,15 @@ describe("auditReasonFor", () => {
     expect(auditReasonFor("MANUAL_REVIEW_THRESHOLD_REACHED")).toBe("自动派单未满足阈值，转人工复核");
   });
 
+  it.each([
+    ["NO_CANDIDATE_TASK", "当前无运行车辆任务可用于调度"],
+    ["ALL_CANDIDATES_REJECTED", "候选车辆均不满足调度约束"],
+    ["AUTO_DISPATCH_THRESHOLD_REACHED", "最优方案达到自动派发阈值"],
+    ["LOW_SCORE", "最优方案未达到人工复核阈值"]
+  ])("translates algorithm reason %s", (reason, label) => {
+    expect(auditReasonFor(reason)).toBe(label);
+  });
+
   it("presents an audit stop identifier as a readable reference", () => {
     expect(auditReasonFor("3923bcea-fcee-4dd0-85cd-a410fa11dc12")).toBe("关联站点 · 3923bcea");
   });
