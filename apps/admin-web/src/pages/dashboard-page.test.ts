@@ -7,7 +7,7 @@ import DashboardPage from "./DashboardPage.vue";
 vi.mock("../api/metrics", () => ({
   getOperationsSummary: vi.fn().mockResolvedValue({
     orderCount: 1,
-    confirmationRate: "1.0000",
+    confirmationRate: "0.875",
     autoDispatchRate: "1.0000",
     manualReviewRate: "0.0000",
     averageWaitMinutes: "3.00",
@@ -35,8 +35,8 @@ describe("DashboardPage", () => {
   it("renders dashboard rates and durations in operational formats", async () => {
     render(DashboardPage);
 
-    expect((await screen.findAllByText("100%")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("3.0 分钟").length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("88%")).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("3.0 分钟").length).toBeGreaterThanOrEqual(2);
   });
 
   it("provides a refresh control for the current operations summary", async () => {
