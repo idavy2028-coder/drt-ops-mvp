@@ -11,7 +11,10 @@ it("formats minutes with one decimal place", () => {
 });
 
 it("preserves an invalid metric value", () => {
+  expect(formatPercentage("")).toBe("");
+  expect(formatMinutes("   ")).toBe("   ");
   expect(formatPercentage("unknown")).toBe("unknown");
+  expect(formatMinutes("unknown")).toBe("unknown");
 });
 
 describe("auditReasonFor", () => {

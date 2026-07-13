@@ -48,6 +48,9 @@ const auditReasonLabels: Record<string, string> = {
 };
 
 function metricNumber(value: DecimalValue): number | null {
+  if (typeof value === "string" && value.trim() === "") {
+    return null;
+  }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
