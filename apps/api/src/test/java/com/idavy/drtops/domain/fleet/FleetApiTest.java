@@ -51,7 +51,8 @@ class FleetApiTest {
                                  "fleetName":"演示车队","dispatchable":true}
                                 """))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.plateNumber").value("DRT-101"));
+                .andExpect(jsonPath("$.data.plateNumber").value("DRT-101"))
+                .andExpect(jsonPath("$.data.currentLocation").doesNotExist());
 
         mockMvc.perform(get("/api/vehicles"))
                 .andExpect(status().isOk())
