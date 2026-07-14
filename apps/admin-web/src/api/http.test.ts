@@ -53,7 +53,7 @@ describe("request", () => {
       .mockResolvedValueOnce(new Response("", { status: 401 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(request("/api/orders")).rejects.toThrow("401");
+    await expect(request("/api/orders")).rejects.toThrow("登录状态已失效，请重新登录");
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

@@ -3,6 +3,7 @@ package com.idavy.drtops.domain.task;
 import com.idavy.drtops.common.ApiResponse;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,38 +29,44 @@ public class VehicleTaskController {
     }
 
     @PostMapping("/{taskId}/start")
-    ApiResponse<VehicleTask> start(@PathVariable UUID taskId) {
-        return ApiResponse.ok(taskExecutionService.start(taskId));
+    ApiResponse<VehicleTask> start(Authentication authentication, @PathVariable UUID taskId) {
+        return ApiResponse.ok(taskExecutionService.start(actorId(authentication), taskId));
     }
 
     @PostMapping("/{taskId}/stops/{taskStopId}/arrive")
-    ApiResponse<VehicleTask> arrive(@PathVariable UUID taskId, @PathVariable UUID taskStopId) {
-        return ApiResponse.ok(taskExecutionService.arrive(taskId, taskStopId));
+    ApiResponse<VehicleTask> arrive(Authentication authentication, @PathVariable UUID taskId, @PathVariable UUID taskStopId) {
+        return ApiResponse.ok(taskExecutionService.arrive(actorId(authentication), taskId, taskStopId));
     }
 
     @PostMapping("/{taskId}/stops/{taskStopId}/board")
-    ApiResponse<VehicleTask> board(@PathVariable UUID taskId, @PathVariable UUID taskStopId) {
-        return ApiResponse.ok(taskExecutionService.board(taskId, taskStopId));
+    ApiResponse<VehicleTask> board(Authentication authentication, @PathVariable UUID taskId, @PathVariable UUID taskStopId) {
+        return ApiResponse.ok(taskExecutionService.board(actorId(authentication), taskId, taskStopId));
     }
 
     @PostMapping("/{taskId}/stops/{taskStopId}/alight")
-    ApiResponse<VehicleTask> alight(@PathVariable UUID taskId, @PathVariable UUID taskStopId) {
-        return ApiResponse.ok(taskExecutionService.alight(taskId, taskStopId));
+    ApiResponse<VehicleTask> alight(Authentication authentication, @PathVariable UUID taskId, @PathVariable UUID taskStopId) {
+        return ApiResponse.ok(taskExecutionService.alight(actorId(authentication), taskId, taskStopId));
     }
 
     @PostMapping("/{taskId}/complete")
-    ApiResponse<VehicleTask> complete(@PathVariable UUID taskId) {
-        return ApiResponse.ok(taskExecutionService.complete(taskId));
+    ApiResponse<VehicleTask> complete(Authentication authentication, @PathVariable UUID taskId) {
+        return ApiResponse.ok(taskExecutionService.complete(actorId(authentication), taskId));
     }
 
     @PostMapping("/{taskId}/exception")
-    ApiResponse<VehicleTask> markException(@PathVariable UUID taskId, @RequestBody ReasonRequest request) {
-        return ApiResponse.ok(taskExecutionService.markException(taskId, request.reason()));
+    ApiResponse<VehicleTask> markException(
+            Authentication authentication, @PathVariable UUID taskId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(taskExecutionService.markException(actorId(authentication), taskId, request.reason()));
     }
 
     @PostMapping("/{taskId}/delay")
-    ApiResponse<VehicleTask> markSevereDelay(@PathVariable UUID taskId, @RequestBody ReasonRequest request) {
-        return ApiResponse.ok(taskExecutionService.markSevereDelay(taskId, request.reason()));
+    ApiResponse<VehicleTask> markSevereDelay(
+            Authentication authentication, @PathVariable UUID taskId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(taskExecutionService.markSevereDelay(actorId(authentication), taskId, request.reason()));
+    }
+
+    private UUID actorId(Authentication authentication) {
+        return (UUID) authentication.getPrincipal();
     }
 
     public record ReasonRequest(String reason) {

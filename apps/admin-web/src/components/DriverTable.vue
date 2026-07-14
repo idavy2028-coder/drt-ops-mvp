@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Driver } from "../api/types";
+import StatusBadge from "./StatusBadge.vue";
 
 defineProps<{
   drivers: Driver[];
@@ -22,7 +23,7 @@ defineProps<{
         <tr v-for="driver in drivers" :key="driver.id">
           <td>{{ driver.name }}</td>
           <td>{{ driver.qualificationStatus }}</td>
-          <td><span class="status-pill">{{ driver.currentStatus }}</span></td>
+          <td><StatusBadge :code="driver.currentStatus" /></td>
           <td>{{ driver.fleetName }}</td>
           <td>{{ driver.phone }}</td>
         </tr>

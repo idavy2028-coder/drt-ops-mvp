@@ -25,9 +25,6 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class ManualReviewService {
 
-    private static final String SYSTEM_ACTOR_TYPE = "SYSTEM";
-    private static final String SYSTEM_ACTOR_ID = "manual-review";
-
     private final DispatchDecisionRepository dispatchDecisionRepository;
     private final RideOrderRepository rideOrderRepository;
     private final VehicleRepository vehicleRepository;
@@ -51,23 +48,23 @@ public class ManualReviewService {
     }
 
     @Transactional
-    public DispatchResult approve(UUID decisionId) {
+    public DispatchResult approve(UUID actorId, UUID decisionId) {
         DispatchDecision decision = decision(decisionId);
         RideOrder order = pendingManualReviewOrder(decision);
         VehicleTask task = createTask(order, decision);
         order.confirm(new RideOrder.OrderPromise(
                 task.getStops().getFirst().getPlannedArrivalAt(),
                 task.getStops().getLast().getPlannedArrivalAt()));
-        audit(order.getId(), "MANUAL_REVIEW_APPROVED", null);
+        audit(actorId, order.getId(), "MANUAL_REVIEW_APPROVED", null);
         return new DispatchResult(order.getId(), DispatchDecisionType.MANUAL_REVIEW, decision.getId(), task.getId());
     }
 
     @Transactional
-    public DispatchResult reject(UUID decisionId, String reason) {
+    public DispatchResult reject(UUID actorId, UUID decisionId, String reason) {
         DispatchDecision decision = decision(decisionId);
         RideOrder order = pendingManualReviewOrder(decision);
         order.markUnserviceable(reason);
-        audit(order.getId(), "MANUAL_REVIEW_REJECTED", reason);
+        audit(actorId, order.getId(), "MANUAL_REVIEW_REJECTED", reason);
         return new DispatchResult(order.getId(), DispatchDecisionType.NO_FEASIBLE_PLAN, decision.getId(), null);
     }
 
@@ -168,13 +165,13 @@ public class ManualReviewService {
         return decision;
     }
 
-    private void audit(UUID orderId, String action, String reason) {
+    private void audit(UUID actorId, UUID orderId, String action, String reason) {
         auditLogRepository.save(AuditLog.record(
                 "RIDE_ORDER",
                 orderId,
                 action,
-                SYSTEM_ACTOR_TYPE,
-                SYSTEM_ACTOR_ID,
+                "USER",
+                actorId.toString(),
                 reason,
                 "{}"));
     }

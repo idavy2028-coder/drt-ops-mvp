@@ -5,15 +5,18 @@ import VehicleTable from "../components/VehicleTable.vue";
 import VirtualStopTable from "../components/VirtualStopTable.vue";
 import { listDrivers, listServiceAreas, listVehicles, listVirtualStops } from "../api/resources";
 import type { Driver, ServiceArea, Vehicle, VirtualStop } from "../api/types";
+import { userMessage } from "../api/errors";
 
 const serviceAreas = ref<ServiceArea[]>([]);
 const virtualStops = ref<VirtualStop[]>([]);
 const vehicles = ref<Vehicle[]>([]);
 const drivers = ref<Driver[]>([]);
 const error = ref("");
+const loading = ref(false);
 
 async function loadResources() {
   error.value = "";
+  loading.value = true;
   try {
     const [areas, stops, vehicleRows, driverRows] = await Promise.all([
       listServiceAreas(),
@@ -26,7 +29,9 @@ async function loadResources() {
     vehicles.value = vehicleRows;
     drivers.value = driverRows;
   } catch (loadError) {
-    error.value = loadError instanceof Error ? loadError.message : "资源数据加载失败";
+    error.value = userMessage(loadError, "资源数据加载失败");
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -43,7 +48,7 @@ onMounted(() => {
         <h2 class="page-title">资源配置</h2>
         <p class="page-subtitle">维护服务区域、虚拟站点、车辆和驾驶员等基础运营资源。</p>
       </div>
-      <button class="secondary-button" type="button" @click="loadResources">刷新</button>
+      <button class="secondary-button" type="button" :disabled="loading" @click="loadResources">{{ loading ? "同步中" : "刷新" }}</button>
     </header>
 
     <div class="summary-grid">
@@ -65,7 +70,8 @@ onMounted(() => {
       </article>
     </div>
 
-    <p v-if="error" class="section-copy">后端连接状态：{{ error }}</p>
+    <p v-if="loading" class="page-state">正在同步服务区、站点、车辆与驾驶员资源…</p>
+    <p v-else-if="error" class="page-state">{{ error }}</p>
 
     <VirtualStopTable :stops="virtualStops" />
     <VehicleTable :vehicles="vehicles" />

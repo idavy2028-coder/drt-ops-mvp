@@ -10,11 +10,28 @@ import {
 } from "../api/orders";
 import type { RideOrder } from "../api/types";
 import OrderCreateDialog from "../components/OrderCreateDialog.vue";
+import StatusBadge from "../components/StatusBadge.vue";
 import { authStore } from "../auth/authStore";
+import { userMessage } from "../api/errors";
+import { feedbackStore } from "../stores/feedbackStore";
 
 const orders = ref<RideOrder[]>([]);
 const showCreateDialog = ref(false);
 const status = ref("");
+const loading = ref(false);
+const submitting = ref(false);
+
+function canDispatch(order: RideOrder) {
+  return order.status === "PENDING_DISPATCH";
+}
+
+function canCancel(order: RideOrder) {
+  return !["UNSERVICEABLE", "CANCELLED", "COMPLETED", "EXCEPTION_CLOSED"].includes(order.status);
+}
+
+function canCloseNoShow(order: RideOrder) {
+  return ["CONFIRMED", "IN_PROGRESS"].includes(order.status);
+}
 
 function formatDateTime(value?: string) {
   if (!value) {
@@ -30,32 +47,66 @@ function formatDateTime(value?: string) {
 
 async function loadOrders() {
   status.value = "";
+  loading.value = true;
   try {
     orders.value = await listOrders();
   } catch (error) {
-    status.value = error instanceof Error ? error.message : "订单数据加载失败";
+    status.value = userMessage(error, "订单数据加载失败");
+  } finally {
+    loading.value = false;
   }
 }
 
 async function submitOrder(input: CreateRideOrderInput) {
-  await createOrder(input);
-  showCreateDialog.value = false;
-  await loadOrders();
+  submitting.value = true;
+  try {
+    await createOrder(input);
+    showCreateDialog.value = false;
+    feedbackStore.success("需求已录入，等待调度处理");
+    await loadOrders();
+  } catch (error) {
+    const message = userMessage(error, "需求录入失败");
+    status.value = message;
+    feedbackStore.error(message);
+  } finally {
+    submitting.value = false;
+  }
 }
 
 async function runDispatch(order: RideOrder) {
-  await dispatchOrder(order.id);
-  await loadOrders();
+  try {
+    await dispatchOrder(order.id);
+    feedbackStore.success("调度评估已提交");
+    await loadOrders();
+  } catch (error) {
+    const message = userMessage(error, "调度操作失败");
+    status.value = message;
+    feedbackStore.error(message);
+  }
 }
 
 async function cancel(order: RideOrder) {
-  await cancelOrder(order.id, "运营后台取消");
-  await loadOrders();
+  try {
+    await cancelOrder(order.id, "运营后台取消");
+    feedbackStore.success("订单已取消");
+    await loadOrders();
+  } catch (error) {
+    const message = userMessage(error, "订单取消失败");
+    status.value = message;
+    feedbackStore.error(message);
+  }
 }
 
 async function closeNoShow(order: RideOrder) {
-  await markOrderNoShow(order.id, "乘客未上车");
-  await loadOrders();
+  try {
+    await markOrderNoShow(order.id, "乘客未上车");
+    feedbackStore.success("订单已按乘客未到关闭");
+    await loadOrders();
+  } catch (error) {
+    const message = userMessage(error, "异常关闭失败");
+    status.value = message;
+    feedbackStore.error(message);
+  }
 }
 
 onMounted(() => {
@@ -73,17 +124,19 @@ onMounted(() => {
       </div>
       <div class="toolbar">
         <button v-if="authStore.has('ORDER_CREATE')" class="primary-button" type="button" @click="showCreateDialog = true">录入需求</button>
-        <button class="secondary-button" type="button" @click="loadOrders">刷新</button>
+        <button class="secondary-button" type="button" :disabled="loading" @click="loadOrders">{{ loading ? "同步中" : "刷新" }}</button>
       </div>
     </header>
 
     <OrderCreateDialog
       v-if="showCreateDialog"
+      :submitting="submitting"
       @close="showCreateDialog = false"
       @create="submitOrder"
     />
 
-    <p v-if="status" class="section-copy">状态：{{ status }}</p>
+    <p v-if="loading" class="page-state">正在同步订单数据…</p>
+    <p v-else-if="status" class="page-state">{{ status }}</p>
 
     <section class="table-panel">
       <table class="data-table">
@@ -101,20 +154,29 @@ onMounted(() => {
           <tr v-for="order in orders" :key="order.id">
             <td>{{ order.id.slice(0, 8) }}</td>
             <td>{{ order.passengerName }} · {{ order.passengerCount }}人</td>
-            <td><span class="status-pill">{{ order.status }}</span></td>
+            <td><StatusBadge :code="order.status" /></td>
             <td>{{ formatDateTime(order.estimatedBoardingAt) }}</td>
             <td>{{ formatDateTime(order.requestedDepartureAt) }}</td>
             <td>
               <div class="toolbar">
-                <template v-if="authStore.has('DISPATCH_EXECUTE')"><button class="secondary-button" type="button" @click="runDispatch(order)">调度</button><button class="secondary-button" type="button" @click="cancel(order)">取消</button><button class="danger-button" type="button" @click="closeNoShow(order)">异常关闭</button></template>
+                <template v-if="authStore.has('DISPATCH_EXECUTE')">
+                  <button v-if="canDispatch(order)" class="secondary-button" type="button" @click="runDispatch(order)">调度</button>
+                  <button v-if="canCancel(order)" class="secondary-button" type="button" @click="cancel(order)">取消</button>
+                  <button v-if="canCloseNoShow(order)" class="danger-button" type="button" @click="closeNoShow(order)">乘客未到</button>
+                  <span v-if="!canCancel(order)" class="action-hint">无需操作</span>
+                </template>
               </div>
             </td>
           </tr>
           <tr v-if="orders.length === 0">
-            <td colspan="6">暂无订单</td>
+            <td colspan="6">暂无订单，可由运营人员录入一条即时或预约需求。</td>
           </tr>
         </tbody>
       </table>
     </section>
   </section>
 </template>
+
+<style scoped>
+.action-hint { color: var(--ink-muted); font-size: 13px; font-weight: 700; }
+</style>

@@ -1,4 +1,5 @@
 import { authStore } from "../auth/authStore";
+import { apiErrorFromResponse } from "./errors";
 
 export interface ApiResponseEnvelope<T> {
   data: T;
@@ -40,8 +41,7 @@ async function sendRequest<T>(path: string, options: RequestInit, canRefresh: bo
   }
 
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed with status ${response.status}`);
+    throw await apiErrorFromResponse(response);
   }
 
   if (response.status === 204) {

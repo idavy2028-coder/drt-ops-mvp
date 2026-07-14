@@ -12,12 +12,16 @@ import {
 } from "../api/tasks";
 import type { TaskStop, VehicleTask } from "../api/types";
 import TaskStopTimeline from "../components/TaskStopTimeline.vue";
+import StatusBadge from "../components/StatusBadge.vue";
 import { authStore } from "../auth/authStore";
+import { userMessage } from "../api/errors";
+import { feedbackStore } from "../stores/feedbackStore";
 
 const tasks = ref<VehicleTask[]>([]);
 const selectedTaskId = ref("");
 const status = ref("");
 const lastAction = ref("等待操作");
+const loading = ref(false);
 
 const selectedTask = computed(() => {
   return tasks.value.find((task) => task.id === selectedTaskId.value) ?? tasks.value[0];
@@ -39,6 +43,11 @@ const canComplete = computed(() => {
     return stop.status !== "PLANNED";
   });
 });
+const canStartTask = computed(() => selectedTask.value?.status === "DISPATCHED");
+const canOperateStops = computed(() => selectedTask.value?.status === "IN_PROGRESS");
+const canHandleException = computed(() => {
+  return selectedTask.value?.status === "DISPATCHED" || selectedTask.value?.status === "IN_PROGRESS";
+});
 
 function taskLabel(task: VehicleTask) {
   return task.id.length > 8 ? task.id.slice(0, 8) : task.id;
@@ -58,13 +67,16 @@ function formatDateTime(value?: string) {
 
 async function loadVehicleTasks() {
   status.value = "";
+  loading.value = true;
   try {
     tasks.value = await listTasks();
     if (!selectedTaskId.value && tasks.value.length > 0) {
       selectedTaskId.value = tasks.value[0].id;
     }
   } catch (error) {
-    status.value = error instanceof Error ? error.message : "任务数据加载失败";
+    status.value = userMessage(error, "任务数据加载失败");
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -83,8 +95,10 @@ async function runTaskAction(action: string, operation: () => Promise<VehicleTas
   status.value = "";
   try {
     updateTask(await operation(), action);
+    feedbackStore.success(`任务已${action}`);
   } catch (error) {
-    status.value = error instanceof Error ? error.message : `${action}失败`;
+    status.value = userMessage(error, `${action}失败`);
+    feedbackStore.error(status.value);
   }
 }
 
@@ -168,7 +182,8 @@ onMounted(() => {
       </article>
     </div>
 
-    <p v-if="status" class="section-copy">状态：{{ status }}</p>
+    <p v-if="loading" class="page-state">正在同步车辆任务与站点执行状态…</p>
+    <p v-else-if="status" class="page-state">{{ status }}</p>
 
     <div class="split-grid">
       <section class="work-panel">
@@ -184,13 +199,13 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="task in tasks" :key="task.id">
+            <tr v-for="task in tasks" :key="task.id" :class="{ 'is-selected': task.id === selectedTaskId }">
               <td>{{ taskLabel(task) }}</td>
               <td>{{ task.vehicleId }}</td>
-              <td><span class="status-pill">{{ task.status }}</span></td>
+              <td><StatusBadge :code="task.status" /></td>
               <td>{{ formatDateTime(task.plannedStartAt) }}</td>
               <td>
-                <button class="secondary-button" type="button" @click="selectedTaskId = task.id">选择</button>
+                <button class="secondary-button" type="button" :aria-pressed="task.id === selectedTaskId" @click="selectedTaskId = task.id">选择</button>
               </td>
             </tr>
             <tr v-if="tasks.length === 0">
@@ -199,13 +214,13 @@ onMounted(() => {
           </tbody>
         </table>
         <div v-if="authStore.has('TASK_EXECUTE')" class="toolbar">
-          <button class="primary-button" type="button" :disabled="!selectedTask" @click="startSelectedTask">发车</button>
-          <button class="secondary-button" type="button" :disabled="!nextPlannedStop" @click="arriveNextStop">到站</button>
-          <button class="secondary-button" type="button" :disabled="!nextBoardingStop" @click="boardNextPassenger">上车</button>
-          <button class="secondary-button" type="button" :disabled="!nextAlightingStop" @click="alightNextPassenger">下车</button>
-          <button class="secondary-button" type="button" :disabled="!canComplete" @click="completeSelectedTask">完成</button>
-          <button class="danger-button" type="button" :disabled="!selectedTask" @click="failSelectedTask">车辆故障</button>
-          <button class="danger-button" type="button" :disabled="!selectedTask" @click="delaySelectedTask">严重延误</button>
+          <button class="primary-button" type="button" :disabled="!canStartTask" @click="startSelectedTask">发车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextPlannedStop" @click="arriveNextStop">到站</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextBoardingStop" @click="boardNextPassenger">上车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextAlightingStop" @click="alightNextPassenger">下车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !canComplete" @click="completeSelectedTask">完成</button>
+          <button class="danger-button" type="button" :disabled="!canHandleException" @click="failSelectedTask">车辆故障</button>
+          <button class="danger-button" type="button" :disabled="!canHandleException" @click="delaySelectedTask">严重延误</button>
         </div>
       </section>
 

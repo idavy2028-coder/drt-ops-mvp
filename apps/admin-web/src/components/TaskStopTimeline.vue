@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { TaskStop } from "../api/types";
+import { labelFor } from "../presentation/operations";
 
 defineProps<{
   stops: TaskStop[];
@@ -11,7 +12,7 @@ defineProps<{
     <li v-for="stop in stops" :key="stop.id" class="timeline-item">
       <span class="timeline-index">{{ stop.sequenceNumber }}</span>
       <div class="timeline-body">
-        <p class="timeline-title">{{ stop.stopType }} · {{ stop.status }}</p>
+        <p class="timeline-title">{{ stop.stopType === "BOARDING" ? "上车站" : "下车站" }} · {{ labelFor(stop.status) }}</p>
         <p class="timeline-meta">计划到站 {{ stop.plannedArrivalAt }}</p>
       </div>
     </li>

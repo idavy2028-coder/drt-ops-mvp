@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Vehicle } from "../api/types";
+import StatusBadge from "./StatusBadge.vue";
 
 defineProps<{
   vehicles: Vehicle[];
@@ -23,7 +24,7 @@ defineProps<{
           <td>{{ vehicle.plateNumber }}</td>
           <td>{{ vehicle.vehicleType }}</td>
           <td>{{ vehicle.capacity }}</td>
-          <td><span class="status-pill">{{ vehicle.currentStatus }}</span></td>
+          <td><StatusBadge :code="vehicle.currentStatus" /></td>
           <td>{{ vehicle.fleetName }}</td>
         </tr>
         <tr v-if="vehicles.length === 0">

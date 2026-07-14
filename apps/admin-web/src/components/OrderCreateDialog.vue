@@ -7,6 +7,10 @@ const emit = defineEmits<{
   create: [value: CreateRideOrderInput];
 }>();
 
+defineProps<{
+  submitting?: boolean;
+}>();
+
 const requestedDepartureAt = new Date(Date.now() + 15 * 60 * 1000).toISOString().slice(0, 16);
 
 const form = reactive({
@@ -74,8 +78,8 @@ function submit() {
       </label>
     </div>
     <div class="toolbar">
-      <button class="primary-button" type="submit">提交需求</button>
-      <button class="secondary-button" type="button" @click="emit('close')">取消</button>
+      <button class="primary-button" type="submit" :disabled="submitting">{{ submitting ? "正在提交" : "提交需求" }}</button>
+      <button class="secondary-button" type="button" :disabled="submitting" @click="emit('close')">取消</button>
     </div>
   </form>
 </template>

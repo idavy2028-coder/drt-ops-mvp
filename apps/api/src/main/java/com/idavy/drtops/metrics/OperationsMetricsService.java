@@ -11,6 +11,8 @@ import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -23,6 +25,7 @@ public class OperationsMetricsService {
 
     private static final int RATE_SCALE = 4;
     private static final int MINUTES_SCALE = 2;
+    static final ZoneId OPERATING_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final RideOrderRepository rideOrderRepository;
     private final DispatchDecisionRepository dispatchDecisionRepository;
@@ -39,9 +42,9 @@ public class OperationsMetricsService {
 
     @Transactional(readOnly = true)
     public OperationsSummary calculateSummary(LocalDate operatingDate) {
-        LocalDate metricsDate = operatingDate == null ? LocalDate.now() : operatingDate;
+        LocalDate metricsDate = operatingDate == null ? LocalDate.now(OPERATING_ZONE) : operatingDate;
         List<RideOrder> orders = rideOrderRepository.findAll().stream()
-                .filter(order -> order.getRequestedDepartureAt().toLocalDate().equals(metricsDate))
+                .filter(order -> operatingDateOf(order.getRequestedDepartureAt()).equals(metricsDate))
                 .toList();
         Set<UUID> orderIds = orders.stream()
                 .map(RideOrder::getId)
@@ -50,7 +53,7 @@ public class OperationsMetricsService {
                 .filter(decision -> orderIds.contains(decision.getRideOrderId()))
                 .toList();
         List<VehicleTask> tasks = vehicleTaskRepository.findAll().stream()
-                .filter(task -> task.getPlannedStartAt().toLocalDate().equals(metricsDate))
+                .filter(task -> operatingDateOf(task.getPlannedStartAt()).equals(metricsDate))
                 .toList();
         long orderCount = orders.size();
 
@@ -70,6 +73,10 @@ public class OperationsMetricsService {
                 ratio(countCompletedTasks(tasks), tasks.size()),
                 ratio(countExceptionClosedOrders(orders), orderCount),
                 ratio(countUtilizedVehicles(tasks), countTaskVehicles(tasks)));
+    }
+
+    private LocalDate operatingDateOf(OffsetDateTime timestamp) {
+        return timestamp.atZoneSameInstant(OPERATING_ZONE).toLocalDate();
     }
 
     private long countConfirmedOrders(List<RideOrder> orders) {

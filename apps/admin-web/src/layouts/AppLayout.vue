@@ -16,7 +16,13 @@ const navItems = [
 
 const visibleNavItems = computed(() => navItems.filter((item) => authStore.has(item.permission as never)));
 const router = useRouter();
-async function signOut() { await authStore.logout(); await router.replace("/login"); }
+async function signOut() {
+  try {
+    await authStore.logout();
+  } finally {
+    await router.replace("/login");
+  }
+}
 
 const today = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
@@ -62,11 +68,7 @@ const today = new Intl.DateTimeFormat("zh-CN", {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   min-height: 100vh;
-  background:
-    linear-gradient(90deg, rgba(23, 32, 28, 0.04) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(23, 32, 28, 0.04) 1px, transparent 1px),
-    #eef2ef;
-  background-size: 32px 32px;
+  background: var(--canvas);
 }
 
 .sidebar {
@@ -148,7 +150,8 @@ const today = new Intl.DateTimeFormat("zh-CN", {
 .account-summary { display: flex; align-items: center; gap: 12px; color: #4d5b54; font-size: 14px; font-weight: 800; }
 
 .content-surface {
-  padding: 28px;
+  max-width: 1640px;
+  padding: 32px;
 }
 
 @media (max-width: 900px) {

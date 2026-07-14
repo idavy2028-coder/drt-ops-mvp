@@ -11,9 +11,6 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class OrderExceptionService {
 
-    private static final String SYSTEM_ACTOR_TYPE = "SYSTEM";
-    private static final String SYSTEM_ACTOR_ID = "order-exception";
-
     private final RideOrderRepository rideOrderRepository;
     private final AuditLogRepository auditLogRepository;
 
@@ -23,18 +20,18 @@ public class OrderExceptionService {
     }
 
     @Transactional
-    public RideOrder cancel(UUID orderId, String reason) {
+    public RideOrder cancel(UUID actorId, UUID orderId, String reason) {
         RideOrder order = order(orderId);
         order.cancel(reason);
-        audit(order.getId(), "ORDER_CANCELLED", reason);
+        audit(actorId, order.getId(), "ORDER_CANCELLED", reason);
         return order;
     }
 
     @Transactional
-    public RideOrder noShow(UUID orderId, String reason) {
+    public RideOrder noShow(UUID actorId, UUID orderId, String reason) {
         RideOrder order = order(orderId);
         order.closeException(reason);
-        audit(order.getId(), "ORDER_NO_SHOW", reason);
+        audit(actorId, order.getId(), "ORDER_NO_SHOW", reason);
         return order;
     }
 
@@ -43,13 +40,13 @@ public class OrderExceptionService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "订单不存在"));
     }
 
-    private void audit(UUID orderId, String action, String reason) {
+    private void audit(UUID actorId, UUID orderId, String action, String reason) {
         auditLogRepository.save(AuditLog.record(
                 "RIDE_ORDER",
                 orderId,
                 action,
-                SYSTEM_ACTOR_TYPE,
-                SYSTEM_ACTOR_ID,
+                "USER",
+                actorId.toString(),
                 reason,
                 "{}"));
     }
