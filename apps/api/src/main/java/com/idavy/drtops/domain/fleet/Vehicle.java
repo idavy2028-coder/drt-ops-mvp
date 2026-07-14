@@ -1,7 +1,10 @@
 package com.idavy.drtops.domain.fleet;
 
+import com.idavy.drtops.domain.location.LocationSource;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
@@ -28,6 +31,24 @@ public class Vehicle {
 
     @Column(length = 120)
     private String currentLocation;
+
+    @Column(length = 300)
+    private String currentLocationAddress;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 40)
+    private LocationSource currentLocationSource;
+
+    @Column(length = 20)
+    private String currentLocationCoordinateSystem;
+
+    private OffsetDateTime currentLocationReportedAt;
+
+    private OffsetDateTime currentLocationRecordedAt;
+
+    private UUID currentLocationEventId;
+
+    private UUID currentLocationTaskId;
 
     @Column(nullable = false, length = 100)
     private String fleetName;
@@ -106,5 +127,56 @@ public class Vehicle {
 
     public boolean isDispatchable() {
         return dispatchable;
+    }
+
+    public boolean applyLocationSnapshot(
+            String location,
+            String locationAddress,
+            LocationSource source,
+            String coordinateSystem,
+            OffsetDateTime reportedAt,
+            OffsetDateTime recordedAt,
+            UUID eventId,
+            UUID taskId) {
+        if (currentLocationReportedAt != null && reportedAt.isBefore(currentLocationReportedAt)) {
+            return false;
+        }
+        this.currentLocation = location;
+        this.currentLocationAddress = locationAddress;
+        this.currentLocationSource = source;
+        this.currentLocationCoordinateSystem = coordinateSystem;
+        this.currentLocationReportedAt = reportedAt;
+        this.currentLocationRecordedAt = recordedAt;
+        this.currentLocationEventId = eventId;
+        this.currentLocationTaskId = taskId;
+        return true;
+    }
+
+    public String getCurrentLocationAddress() {
+        return currentLocationAddress;
+    }
+
+    public LocationSource getCurrentLocationSource() {
+        return currentLocationSource;
+    }
+
+    public String getCurrentLocationCoordinateSystem() {
+        return currentLocationCoordinateSystem;
+    }
+
+    public OffsetDateTime getCurrentLocationReportedAt() {
+        return currentLocationReportedAt;
+    }
+
+    public OffsetDateTime getCurrentLocationRecordedAt() {
+        return currentLocationRecordedAt;
+    }
+
+    public UUID getCurrentLocationEventId() {
+        return currentLocationEventId;
+    }
+
+    public UUID getCurrentLocationTaskId() {
+        return currentLocationTaskId;
     }
 }
