@@ -60,6 +60,7 @@ class VehicleLocationRecorderTest {
         recorder = new VehicleLocationRecorder(
                 eventRepository,
                 vehicleRepository,
+                idempotencyKey -> { },
                 checker,
                 Clock.fixed(NOW, ZoneOffset.UTC));
         snapshotService = new VehicleLocationSnapshotService(vehicleRepository);
@@ -99,13 +100,19 @@ class VehicleLocationRecorderTest {
                 currentEventId,
                 null);
 
-        LocationReportResult result = recorder.append(command(UUID.randomUUID()));
+        LocationReportCommand historical = command(UUID.randomUUID());
+        LocationReportResult result = recorder.append(historical);
         snapshotService.apply(result.event());
 
         assertThat(result.event().isSnapshotApplied()).isFalse();
         assertThat(result.warnings()).containsExactly(LocationWarning.HISTORICAL_EVENT_NOT_APPLIED_TO_SNAPSHOT);
         assertThat(vehicle.getCurrentLocationEventId()).isEqualTo(currentEventId);
         assertThat(eventRepository.findById(result.event().getId())).isPresent();
+
+        LocationReportResult replay = recorder.append(historical);
+        assertThat(replay.replayed()).isTrue();
+        assertThat(replay.warnings())
+                .containsExactly(LocationWarning.HISTORICAL_EVENT_NOT_APPLIED_TO_SNAPSHOT);
     }
 
     @Test
@@ -126,20 +133,41 @@ class VehicleLocationRecorderTest {
     @Test
     void rejectsDifferentFingerprintForRepeatedIdempotencyKey() {
         UUID idempotencyKey = UUID.randomUUID();
-        recorder.append(command(idempotencyKey));
+        LocationReportCommand original = command(idempotencyKey);
+        recorder.append(original);
 
-        LocationReportCommand changed = command(
-                idempotencyKey,
-                LocationEventType.TASK_STARTED,
-                REPORTED_AT,
-                INSIDE_LONGITUDE,
-                "不同备注",
-                null,
-                null);
+        LocationReportCommand changed = commandWithNote(original, "不同备注");
 
         assertThatThrownBy(() -> recorder.append(changed))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         exception -> assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT));
+    }
+
+    @Test
+    void replaysEquivalentDecimalsAndReportedInstant() {
+        UUID idempotencyKey = UUID.randomUUID();
+        LocationReportCommand original = command(idempotencyKey);
+        LocationReportResult first = recorder.append(original);
+        LocationReportCommand equivalent = new LocationReportCommand(
+                original.vehicleId(),
+                original.vehicleTaskId(),
+                original.taskStopId(),
+                original.virtualStopId(),
+                original.eventType(),
+                new BigDecimal("121.4737"),
+                new BigDecimal("31.2304"),
+                original.standardizedAddress(),
+                original.driverReportedAt().withOffsetSameInstant(ZoneOffset.UTC),
+                original.recordedBy(),
+                original.note(),
+                original.correctionReason(),
+                original.correctsEventId(),
+                original.idempotencyKey());
+
+        LocationReportResult replay = recorder.append(equivalent);
+
+        assertThat(replay.replayed()).isTrue();
+        assertThat(replay.event().getId()).isEqualTo(first.event().getId());
     }
 
     @Test
@@ -174,6 +202,10 @@ class VehicleLocationRecorderTest {
         assertThat(result.event().isOutsideServiceArea()).isTrue();
         assertThat(result.warnings()).containsExactly(LocationWarning.OUTSIDE_SERVICE_AREA);
         assertThat(eventRepository.findById(result.event().getId())).isPresent();
+
+        LocationReportResult replay = recorder.append(outside);
+        assertThat(replay.replayed()).isTrue();
+        assertThat(replay.warnings()).containsExactly(LocationWarning.OUTSIDE_SERVICE_AREA);
     }
 
     @Test
@@ -207,6 +239,38 @@ class VehicleLocationRecorderTest {
         assertThatThrownBy(() -> recorder.append(correction))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         exception -> assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
+    void rejectsCorrectionForAnotherVehicleEvent() {
+        LocationReportResult original = recorder.append(command(UUID.randomUUID()));
+        UUID anotherVehicleId = UUID.randomUUID();
+        vehicleRepository.save(Vehicle.create(
+                anotherVehicleId,
+                "沪B" + anotherVehicleId.toString().substring(0, 5),
+                "MINIBUS",
+                8,
+                "AVAILABLE",
+                "POINT(121.4800 31.2400)",
+                "浦东车队",
+                true));
+        LocationReportCommand correction = correctionCommand(
+                anotherVehicleId, original.event().getId(), UUID.randomUUID());
+
+        assertThatThrownBy(() -> recorder.append(correction))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        exception -> assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
+    void acceptsCorrectionForSameVehicleEvent() {
+        LocationReportResult original = recorder.append(command(UUID.randomUUID()));
+
+        LocationReportResult correction = recorder.append(correctionCommand(
+                vehicleId, original.event().getId(), UUID.randomUUID()));
+
+        assertThat(correction.event().getCorrectsEventId()).isEqualTo(original.event().getId());
+        assertThat(correction.event().getVehicleId()).isEqualTo(vehicleId);
     }
 
     private LocationReportCommand command(UUID idempotencyKey) {
@@ -243,5 +307,50 @@ class VehicleLocationRecorderTest {
                 correctionReason,
                 correctsEventId,
                 idempotencyKey);
+    }
+
+    private LocationReportCommand correctionCommand(
+            UUID correctionVehicleId, UUID correctsEventId, UUID idempotencyKey) {
+        LocationReportCommand command = command(
+                idempotencyKey,
+                LocationEventType.MANUAL_CORRECTION,
+                REPORTED_AT.plusMinutes(1),
+                INSIDE_LONGITUDE,
+                "修正位置",
+                "调度员确认原位置有误",
+                correctsEventId);
+        return new LocationReportCommand(
+                correctionVehicleId,
+                command.vehicleTaskId(),
+                command.taskStopId(),
+                command.virtualStopId(),
+                command.eventType(),
+                command.longitude(),
+                command.latitude(),
+                command.standardizedAddress(),
+                command.driverReportedAt(),
+                command.recordedBy(),
+                command.note(),
+                command.correctionReason(),
+                command.correctsEventId(),
+                command.idempotencyKey());
+    }
+
+    private static LocationReportCommand commandWithNote(LocationReportCommand command, String note) {
+        return new LocationReportCommand(
+                command.vehicleId(),
+                command.vehicleTaskId(),
+                command.taskStopId(),
+                command.virtualStopId(),
+                command.eventType(),
+                command.longitude(),
+                command.latitude(),
+                command.standardizedAddress(),
+                command.driverReportedAt(),
+                command.recordedBy(),
+                note,
+                command.correctionReason(),
+                command.correctsEventId(),
+                command.idempotencyKey());
     }
 }

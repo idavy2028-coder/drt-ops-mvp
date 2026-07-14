@@ -2,6 +2,7 @@ package com.idavy.drtops.domain.location;
 
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -24,6 +25,7 @@ public class VehicleLocationRecorder {
 
     private final VehicleLocationEventRepository eventRepository;
     private final VehicleRepository vehicleRepository;
+    private final IdempotencyKeyLock idempotencyKeyLock;
     private final ServiceAreaLocationChecker serviceAreaLocationChecker;
     private final Clock clock;
 
@@ -31,17 +33,20 @@ public class VehicleLocationRecorder {
     public VehicleLocationRecorder(
             VehicleLocationEventRepository eventRepository,
             VehicleRepository vehicleRepository,
+            IdempotencyKeyLock idempotencyKeyLock,
             ServiceAreaLocationChecker serviceAreaLocationChecker) {
-        this(eventRepository, vehicleRepository, serviceAreaLocationChecker, Clock.systemUTC());
+        this(eventRepository, vehicleRepository, idempotencyKeyLock, serviceAreaLocationChecker, Clock.systemUTC());
     }
 
     VehicleLocationRecorder(
             VehicleLocationEventRepository eventRepository,
             VehicleRepository vehicleRepository,
+            IdempotencyKeyLock idempotencyKeyLock,
             ServiceAreaLocationChecker serviceAreaLocationChecker,
             Clock clock) {
         this.eventRepository = eventRepository;
         this.vehicleRepository = vehicleRepository;
+        this.idempotencyKeyLock = idempotencyKeyLock;
         this.serviceAreaLocationChecker = serviceAreaLocationChecker;
         this.clock = clock;
     }
@@ -58,6 +63,7 @@ public class VehicleLocationRecorder {
 
     public LocationReportResult append(LocationReportCommand command) {
         String requestFingerprint = requestFingerprint(command);
+        idempotencyKeyLock.acquire(command.idempotencyKey());
         Optional<LocationReportResult> replay = findReplay(command.idempotencyKey(), requestFingerprint);
         if (replay.isPresent()) {
             return replay.get();
@@ -113,8 +119,13 @@ public class VehicleLocationRecorder {
         if (command.correctionReason() == null || command.correctionReason().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "修正原因不能为空");
         }
-        if (command.correctsEventId() == null || !eventRepository.existsById(command.correctsEventId())) {
+        if (command.correctsEventId() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "被修正的位置事件不存在");
+        }
+        VehicleLocationEvent correctedEvent = eventRepository.findById(command.correctsEventId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "被修正的位置事件不存在"));
+        if (!correctedEvent.getVehicleId().equals(command.vehicleId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不能修正其他车辆的位置事件");
         }
     }
 
@@ -135,19 +146,19 @@ public class VehicleLocationRecorder {
 
     private static String requestFingerprint(LocationReportCommand command) {
         StringBuilder canonical = new StringBuilder();
-        appendFingerprintPart(canonical, command.vehicleId());
-        appendFingerprintPart(canonical, command.vehicleTaskId());
-        appendFingerprintPart(canonical, command.taskStopId());
-        appendFingerprintPart(canonical, command.virtualStopId());
-        appendFingerprintPart(canonical, command.eventType());
-        appendFingerprintPart(canonical, command.longitude());
-        appendFingerprintPart(canonical, command.latitude());
-        appendFingerprintPart(canonical, command.standardizedAddress());
-        appendFingerprintPart(canonical, command.driverReportedAt());
-        appendFingerprintPart(canonical, command.recordedBy());
-        appendFingerprintPart(canonical, command.note());
-        appendFingerprintPart(canonical, command.correctionReason());
-        appendFingerprintPart(canonical, command.correctsEventId());
+        appendFingerprintPart(canonical, "vehicleId", command.vehicleId());
+        appendFingerprintPart(canonical, "vehicleTaskId", command.vehicleTaskId());
+        appendFingerprintPart(canonical, "taskStopId", command.taskStopId());
+        appendFingerprintPart(canonical, "virtualStopId", command.virtualStopId());
+        appendFingerprintPart(canonical, "eventType", command.eventType());
+        appendFingerprintPart(canonical, "longitude", command.longitude());
+        appendFingerprintPart(canonical, "latitude", command.latitude());
+        appendFingerprintPart(canonical, "standardizedAddress", command.standardizedAddress());
+        appendFingerprintPart(canonical, "driverReportedAt", command.driverReportedAt());
+        appendFingerprintPart(canonical, "recordedBy", command.recordedBy());
+        appendFingerprintPart(canonical, "note", command.note());
+        appendFingerprintPart(canonical, "correctionReason", command.correctionReason());
+        appendFingerprintPart(canonical, "correctsEventId", command.correctsEventId());
 
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
@@ -158,12 +169,26 @@ public class VehicleLocationRecorder {
         }
     }
 
-    private static void appendFingerprintPart(StringBuilder canonical, Object value) {
+    private static void appendFingerprintPart(StringBuilder canonical, String fieldName, Object value) {
+        canonical.append(fieldName).append('=');
         if (value == null) {
-            canonical.append("-1:");
+            canonical.append("null;");
             return;
         }
-        String text = value.toString();
-        canonical.append(text.length()).append(':').append(text);
+        String text = canonicalValue(value);
+        canonical.append(text.length()).append(':').append(text).append(';');
+    }
+
+    private static String canonicalValue(Object value) {
+        if (value instanceof BigDecimal decimal) {
+            return decimal.stripTrailingZeros().toPlainString();
+        }
+        if (value instanceof OffsetDateTime dateTime) {
+            return dateTime.toInstant().toString();
+        }
+        if (value instanceof Enum<?> enumValue) {
+            return enumValue.name();
+        }
+        return value.toString();
     }
 }
