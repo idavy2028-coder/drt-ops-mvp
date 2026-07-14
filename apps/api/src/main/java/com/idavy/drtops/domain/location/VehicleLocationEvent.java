@@ -9,6 +9,9 @@ import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+import org.locationtech.jts.geom.Point;
 
 @Entity
 @Table(name = "vehicle_location_events")
@@ -34,8 +37,9 @@ public class VehicleLocationEvent {
     @Column(nullable = false, length = 40)
     private LocationSource source;
 
-    @Column(nullable = false, length = 120)
-    private String location;
+    @JdbcTypeCode(SqlTypes.GEOGRAPHY)
+    @Column(nullable = false, columnDefinition = "geometry")
+    private Point location;
 
     @Column(nullable = false, precision = 10, scale = 7)
     private BigDecimal longitude;
@@ -110,7 +114,7 @@ public class VehicleLocationEvent {
         this.virtualStopId = virtualStopId;
         this.eventType = eventType;
         this.source = source;
-        this.location = location;
+        this.location = GeographyPoint.fromWkt(location);
         this.longitude = longitude;
         this.latitude = latitude;
         this.coordinateSystem = coordinateSystem;
@@ -180,7 +184,7 @@ public class VehicleLocationEvent {
     public UUID getVirtualStopId() { return virtualStopId; }
     public LocationEventType getEventType() { return eventType; }
     public LocationSource getSource() { return source; }
-    public String getLocation() { return location; }
+    public String getLocation() { return GeographyPoint.toWkt(location); }
     public BigDecimal getLongitude() { return longitude; }
     public BigDecimal getLatitude() { return latitude; }
     public String getCoordinateSystem() { return coordinateSystem; }

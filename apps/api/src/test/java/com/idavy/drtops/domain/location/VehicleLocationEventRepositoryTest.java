@@ -93,7 +93,8 @@ class VehicleLocationEventRepositoryTest {
 
         assertThat(applied).isTrue();
         assertThat(olderSnapshotApplied).isFalse();
-        assertThat(vehicle.getCurrentLocation()).isEqualTo("POINT(121.4740 31.2307)");
+        assertThat(GeographyPoint.fromWkt(vehicle.getCurrentLocation()).getX()).isEqualTo(121.4740);
+        assertThat(GeographyPoint.fromWkt(vehicle.getCurrentLocation()).getY()).isEqualTo(31.2307);
         assertThat(vehicle.getCurrentLocationAddress()).isEqualTo("上海市浦东新区世纪大道 100 号");
         assertThat(vehicle.getCurrentLocationSource()).isEqualTo(LocationSource.MANUAL_DISPATCHER);
         assertThat(vehicle.getCurrentLocationReportedAt()).isEqualTo(reportedAt);

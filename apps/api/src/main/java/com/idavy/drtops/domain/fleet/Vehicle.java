@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.fleet;
 
 import com.idavy.drtops.domain.location.LocationSource;
+import com.idavy.drtops.domain.location.GeographyPoint;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -9,6 +10,9 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+import org.locationtech.jts.geom.Point;
 
 @Entity
 @Table(name = "vehicles")
@@ -29,8 +33,9 @@ public class Vehicle {
     @Column(nullable = false, length = 40)
     private String currentStatus;
 
-    @Column(length = 120)
-    private String currentLocation;
+    @JdbcTypeCode(SqlTypes.GEOGRAPHY)
+    @Column(columnDefinition = "geometry")
+    private Point currentLocation;
 
     @Column(length = 300)
     private String currentLocationAddress;
@@ -76,7 +81,7 @@ public class Vehicle {
         this.vehicleType = vehicleType;
         this.capacity = capacity;
         this.currentStatus = currentStatus;
-        this.currentLocation = currentLocation;
+        this.currentLocation = GeographyPoint.fromWkt(currentLocation);
         this.fleetName = fleetName;
         this.dispatchable = dispatchable;
         this.createdAt = OffsetDateTime.now();
@@ -118,7 +123,7 @@ public class Vehicle {
     }
 
     public String getCurrentLocation() {
-        return currentLocation;
+        return GeographyPoint.toWkt(currentLocation);
     }
 
     public String getFleetName() {
@@ -141,7 +146,7 @@ public class Vehicle {
         if (currentLocationReportedAt != null && reportedAt.isBefore(currentLocationReportedAt)) {
             return false;
         }
-        this.currentLocation = location;
+        this.currentLocation = GeographyPoint.fromWkt(location);
         this.currentLocationAddress = locationAddress;
         this.currentLocationSource = source;
         this.currentLocationCoordinateSystem = coordinateSystem;
