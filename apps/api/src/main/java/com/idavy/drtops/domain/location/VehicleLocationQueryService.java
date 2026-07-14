@@ -8,6 +8,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @Service
 public class VehicleLocationQueryService {
@@ -21,6 +22,7 @@ public class VehicleLocationQueryService {
         this.vehicleRepository = vehicleRepository;
     }
 
+    @PreAuthorize("hasAuthority('LOCATION_READ')")
     public List<VehicleLocationView> history(
             UUID vehicleId, OffsetDateTime from, OffsetDateTime to, LocalDate date, UUID taskId, LocationEventType eventType) {
         TimeRange range = range(from, to, date);
@@ -31,6 +33,7 @@ public class VehicleLocationQueryService {
                 .toList();
     }
 
+    @PreAuthorize("hasAuthority('LOCATION_READ')")
     public List<VehicleLocationView> taskHistory(UUID taskId, OffsetDateTime from, OffsetDateTime to, LocalDate date) {
         TimeRange range = range(from, to, date);
         return eventRepository.findByVehicleTaskIdOrderByDriverReportedAtAsc(taskId).stream()
@@ -39,6 +42,7 @@ public class VehicleLocationQueryService {
                 .toList();
     }
 
+    @PreAuthorize("hasAuthority('LOCATION_READ')")
     public List<VehicleLocationSnapshotItem> latest() {
         return vehicleRepository.findAll().stream()
                 .map(vehicle -> new VehicleLocationSnapshotItem(
@@ -47,7 +51,9 @@ public class VehicleLocationQueryService {
                 .toList();
     }
 
-    List<VehicleLocationView> export(OffsetDateTime from, OffsetDateTime to, LocalDate date, UUID taskId, LocationEventType eventType) {
+    @PreAuthorize("hasAuthority('LOCATION_EXPORT')")
+    public List<VehicleLocationView> export(
+            OffsetDateTime from, OffsetDateTime to, LocalDate date, UUID taskId, LocationEventType eventType) {
         TimeRange range = range(from, to, date);
         return eventRepository.findAll().stream()
                 .filter(event -> matches(event, range, taskId, eventType))

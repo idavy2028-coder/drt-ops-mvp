@@ -17,7 +17,7 @@ public record VehicleView(
 
     static VehicleView from(Vehicle vehicle) {
         return new VehicleView(vehicle.getId(), vehicle.getPlateNumber(), vehicle.getVehicleType(), vehicle.getCapacity(),
-                vehicle.getCurrentStatus(), vehicle.getFleetName(), vehicle.isDispatchable(), null,
+                vehicle.getCurrentStatus(), vehicle.getFleetName(), vehicle.isDispatchable(), vehicle.getCreatedAt(),
                 VehicleLocationSnapshotView.from(vehicle));
     }
 }

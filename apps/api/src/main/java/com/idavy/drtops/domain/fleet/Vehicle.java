@@ -134,6 +134,10 @@ public class Vehicle {
         return dispatchable;
     }
 
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
+    }
+
     public boolean applyLocationSnapshot(
             String location,
             String locationAddress,

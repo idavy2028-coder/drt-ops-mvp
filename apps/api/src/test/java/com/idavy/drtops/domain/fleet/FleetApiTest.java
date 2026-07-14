@@ -52,11 +52,13 @@ class FleetApiTest {
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.plateNumber").value("DRT-101"))
+                .andExpect(jsonPath("$.data.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.data.currentLocation").doesNotExist());
 
         mockMvc.perform(get("/api/vehicles"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1));
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].createdAt").isNotEmpty());
     }
 
     @Test

@@ -114,13 +114,16 @@ public class VehicleLocationRecorder {
 
     private void validateCorrection(LocationReportCommand command) {
         if (command.eventType() != LocationEventType.MANUAL_CORRECTION) {
+            if (command.correctsEventId() != null || command.correctionReason() != null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "普通位置事件不能包含修正关联或原因");
+            }
             return;
+        }
+        if (command.correctsEventId() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "被修正的位置事件不能为空");
         }
         if (command.correctionReason() == null || command.correctionReason().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "修正原因不能为空");
-        }
-        if (command.correctsEventId() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "被修正的位置事件不存在");
         }
         VehicleLocationEvent correctedEvent = eventRepository.findById(command.correctsEventId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "被修正的位置事件不存在"));
