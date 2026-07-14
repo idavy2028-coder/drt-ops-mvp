@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.auth.JwtTokenService;
+import com.idavy.drtops.auth.Permission;
 import com.idavy.drtops.auth.RoleCode;
 import com.idavy.drtops.auth.UserAccount;
 import com.idavy.drtops.auth.UserAccountRepository;
@@ -30,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +45,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -78,6 +82,8 @@ class VehicleLocationApiTest {
     private String adminToken;
     private String operatorToken;
     private UUID dispatcherId;
+    private UUID adminId;
+    private UUID operatorId;
 
     @BeforeEach
     void setUp() {
@@ -96,8 +102,17 @@ class VehicleLocationApiTest {
         UserAccount dispatcher = account("dispatcher01", RoleCode.DISPATCHER);
         dispatcherId = dispatcher.getId();
         dispatcherToken = jwtTokenService.issue(dispatcher).value();
-        adminToken = token("admin01", RoleCode.SYSTEM_ADMIN);
-        operatorToken = token("operator01", RoleCode.OPERATOR);
+        UserAccount admin = account("admin01", RoleCode.SYSTEM_ADMIN);
+        adminId = admin.getId();
+        adminToken = jwtTokenService.issue(admin).value();
+        UserAccount operator = account("operator01", RoleCode.OPERATOR);
+        operatorId = operator.getId();
+        operatorToken = jwtTokenService.issue(operator).value();
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
     }
 
     @Test
@@ -240,6 +255,100 @@ class VehicleLocationApiTest {
     }
 
     @Test
+    void returnsTaskLocationEventsWithAssociationsOrderedByDriverReportedAt() throws Exception {
+        TaskFixture task = createTask(VEHICLE_ID);
+        UUID lateEventId = reportEventId(taskPayload(
+                task, UUID.randomUUID(), "2026-07-13T10:05:00+08:00", "PICKUP_ARRIVED"));
+        UUID earlyEventId = reportEventId(taskPayload(
+                task, UUID.randomUUID(), "2026-07-13T10:00:00+08:00", "TASK_STARTED"));
+        UUID middleEventId = reportEventId(taskPayload(
+                task, UUID.randomUUID(), "2026-07-13T10:03:00+08:00", "DROPOFF_ARRIVED"));
+
+        mockMvc.perform(get("/api/vehicle-tasks/" + task.taskId() + "/location-events")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(3))
+                .andExpect(jsonPath("$.data[0].id").value(earlyEventId.toString()))
+                .andExpect(jsonPath("$.data[1].id").value(middleEventId.toString()))
+                .andExpect(jsonPath("$.data[2].id").value(lateEventId.toString()))
+                .andExpect(jsonPath("$.data[0].driverReportedAt").value("2026-07-13T02:00:00Z"))
+                .andExpect(jsonPath("$.data[1].driverReportedAt").value("2026-07-13T02:03:00Z"))
+                .andExpect(jsonPath("$.data[2].driverReportedAt").value("2026-07-13T02:05:00Z"))
+                .andExpect(jsonPath("$.data[*].vehicleTaskId")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(task.taskId().toString()))))
+                .andExpect(jsonPath("$.data[*].taskStopId")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(task.taskStopId().toString()))))
+                .andExpect(jsonPath("$.data[*].virtualStopId")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(task.virtualStopId().toString()))));
+    }
+
+    @Test
+    void filtersVehicleHistoryByClosedOpenRangeTaskAndEventType() throws Exception {
+        TaskFixture matchingTask = createTask(VEHICLE_ID);
+        TaskFixture otherTask = createTask(VEHICLE_ID);
+        UUID leftBoundaryId = reportEventId(taskPayload(
+                matchingTask, UUID.randomUUID(), "2026-07-13T10:00:00+08:00", "TASK_STARTED"));
+        UUID insideId = reportEventId(taskPayload(
+                matchingTask, UUID.randomUUID(), "2026-07-13T10:30:00+08:00", "TASK_STARTED"));
+        reportEventId(taskPayload(
+                matchingTask, UUID.randomUUID(), "2026-07-13T11:00:00+08:00", "TASK_STARTED"));
+        reportEventId(taskPayload(
+                otherTask, UUID.randomUUID(), "2026-07-13T10:15:00+08:00", "TASK_STARTED"));
+        reportEventId(taskPayload(
+                matchingTask, UUID.randomUUID(), "2026-07-13T10:20:00+08:00", "PICKUP_ARRIVED"));
+
+        mockMvc.perform(get("/api/vehicles/" + VEHICLE_ID + "/location-events")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken))
+                        .param("from", "2026-07-13T10:00:00+08:00")
+                        .param("to", "2026-07-13T11:00:00+08:00")
+                        .param("taskId", matchingTask.taskId().toString())
+                        .param("eventType", "TASK_STARTED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].id").value(leftBoundaryId.toString()))
+                .andExpect(jsonPath("$.data[1].id").value(insideId.toString()))
+                .andExpect(jsonPath("$.data[0].driverReportedAt").value("2026-07-13T02:00:00Z"))
+                .andExpect(jsonPath("$.data[1].driverReportedAt").value("2026-07-13T02:30:00Z"))
+                .andExpect(jsonPath("$.data[*].vehicleTaskId")
+                        .value(org.hamcrest.Matchers.everyItem(
+                                org.hamcrest.Matchers.is(matchingTask.taskId().toString()))))
+                .andExpect(jsonPath("$.data[*].eventType")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("TASK_STARTED"))));
+    }
+
+    @Test
+    void reportsOutsideServiceAreaAndKeepsQueryableAppliedSnapshotSemantics() throws Exception {
+        Map<String, Object> payload = reportPayload(UUID.randomUUID(), "2026-07-13T12:30:00+08:00");
+        payload.put("longitude", new BigDecimal("123.0000"));
+        payload.put("standardizedAddress", "服务区外测试位置");
+
+        String response = report(dispatcherToken, payload)
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.snapshotApplied").value(true))
+                .andExpect(jsonPath("$.data.warnings.length()").value(1))
+                .andExpect(jsonPath("$.data.warnings[0]").value("OUTSIDE_SERVICE_AREA"))
+                .andReturn().getResponse().getContentAsString();
+        UUID eventId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.data.event.id"));
+
+        VehicleLocationEvent event = eventRepository.findById(eventId).orElseThrow();
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        assertThat(event.isOutsideServiceArea()).isTrue();
+        assertThat(event.isSnapshotApplied()).isTrue();
+        assertThat(vehicle.getCurrentLocationEventId()).isEqualTo(eventId);
+        assertThat(vehicle.getCurrentLocationReportedAt())
+                .isEqualTo(OffsetDateTime.parse("2026-07-13T12:30:00+08:00"));
+
+        mockMvc.perform(get("/api/vehicles/" + VEHICLE_ID + "/location-events")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].id").value(eventId.toString()))
+                .andExpect(jsonPath("$.data[0].longitude").value(123.0000))
+                .andExpect(jsonPath("$.data[0].standardizedAddress").value("服务区外测试位置"))
+                .andExpect(jsonPath("$.data[0].snapshotApplied").value(true));
+    }
+
+    @Test
     void enforcesCorrectionFieldSemanticsAndAuditAction() throws Exception {
         String original = report(dispatcherToken, reportPayload(UUID.randomUUID(), "2026-07-13T11:00:00+08:00"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
@@ -357,6 +466,52 @@ class VehicleLocationApiTest {
                 .isInstanceOfAny(AccessDeniedException.class, AuthenticationCredentialsNotFoundException.class);
     }
 
+    @Test
+    void publicCommandServiceEnforcesAuthenticatedLocationPermissionMatrix() {
+        LocationReportRequest ordinaryWithoutPermission = commandRequest(
+                LocationEventType.TASK_STARTED, "2026-07-13T15:00:00+08:00", null, null);
+        LocationReportRequest correctionWithoutPermission = commandRequest(
+                LocationEventType.MANUAL_CORRECTION, "2026-07-13T15:01:00+08:00",
+                UUID.randomUUID(), "修正无权限验证");
+        authenticate(operatorId, Permission.permissionsFor(Set.of(RoleCode.OPERATOR)));
+        assertThatThrownBy(() -> commandService.report(VEHICLE_ID, operatorId, ordinaryWithoutPermission))
+                .isInstanceOf(AccessDeniedException.class);
+        assertThatThrownBy(() -> commandService.report(VEHICLE_ID, operatorId, correctionWithoutPermission))
+                .isInstanceOf(AccessDeniedException.class);
+
+        authenticate(dispatcherId, Set.of(Permission.LOCATION_REPORT));
+        LocationReportResponse original = commandService.report(
+                VEHICLE_ID,
+                dispatcherId,
+                commandRequest(LocationEventType.TASK_STARTED, "2026-07-13T15:02:00+08:00", null, null));
+        assertThat(original.event().eventType()).isEqualTo(LocationEventType.TASK_STARTED);
+        LocationReportRequest correction = commandRequest(
+                LocationEventType.MANUAL_CORRECTION,
+                "2026-07-13T15:03:00+08:00",
+                original.event().id(),
+                "调度员修正权限验证");
+        assertThatThrownBy(() -> commandService.report(VEHICLE_ID, dispatcherId, correction))
+                .isInstanceOf(AccessDeniedException.class);
+
+        Set<Permission> adminPermissions = Permission.permissionsFor(Set.of(RoleCode.SYSTEM_ADMIN));
+        assertThat(adminPermissions).contains(Permission.LOCATION_REPORT, Permission.LOCATION_CORRECT);
+        authenticate(adminId, adminPermissions);
+        LocationReportResponse adminReport = commandService.report(
+                VEHICLE_ID,
+                adminId,
+                commandRequest(LocationEventType.TASK_STARTED, "2026-07-13T15:04:00+08:00", null, null));
+        LocationReportResponse adminCorrection = commandService.report(
+                VEHICLE_ID,
+                adminId,
+                commandRequest(LocationEventType.MANUAL_CORRECTION, "2026-07-13T15:05:00+08:00",
+                        original.event().id(), "管理员修正权限验证"));
+
+        assertThat(adminReport.event().eventType()).isEqualTo(LocationEventType.TASK_STARTED);
+        assertThat(adminCorrection.event().eventType()).isEqualTo(LocationEventType.MANUAL_CORRECTION);
+        assertThat(adminCorrection.event().correctsEventId()).isEqualTo(original.event().id());
+        assertThat(eventRepository.count()).isEqualTo(3);
+    }
+
     private org.springframework.test.web.servlet.ResultActions report(String token, Map<String, Object> payload)
             throws Exception {
         return mockMvc.perform(post(reportPath()).header(HttpHeaders.AUTHORIZATION, bearer(token))
@@ -375,6 +530,46 @@ class VehicleLocationApiTest {
         task.addStop(stop);
         vehicleTaskRepository.saveAndFlush(task);
         return new TaskFixture(task.getId(), stop.getId(), virtualStopId);
+    }
+
+    private UUID reportEventId(Map<String, Object> payload) throws Exception {
+        String response = report(dispatcherToken, payload)
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        return UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.data.event.id"));
+    }
+
+    private Map<String, Object> taskPayload(
+            TaskFixture task, UUID idempotencyKey, String reportedAt, String eventType) {
+        Map<String, Object> payload = reportPayload(idempotencyKey, reportedAt);
+        payload.put("vehicleTaskId", task.taskId());
+        payload.put("taskStopId", task.taskStopId());
+        payload.put("virtualStopId", task.virtualStopId());
+        payload.put("eventType", eventType);
+        return payload;
+    }
+
+    private LocationReportRequest commandRequest(
+            LocationEventType eventType, String reportedAt, UUID correctsEventId, String correctionReason) {
+        return new LocationReportRequest(
+                null,
+                null,
+                null,
+                eventType,
+                new BigDecimal("121.4737"),
+                new BigDecimal("31.2304"),
+                "上海市浦东新区世纪大道 100 号",
+                OffsetDateTime.parse(reportedAt),
+                null,
+                correctionReason,
+                correctsEventId,
+                UUID.randomUUID());
+    }
+
+    private void authenticate(UUID actorId, Set<Permission> permissions) {
+        String[] authorities = permissions.stream().map(Permission::name).toArray(String[]::new);
+        SecurityContextHolder.getContext().setAuthentication(
+                new TestingAuthenticationToken(actorId, null, authorities));
     }
 
     private Map<String, Object> reportPayload(UUID idempotencyKey, String reportedAt) {
@@ -400,10 +595,6 @@ class VehicleLocationApiTest {
         UserAccount account = UserAccount.create(username, username, "not-used-in-location-test");
         account.assignRoles(Set.of(role));
         return userAccountRepository.save(account);
-    }
-
-    private String token(String username, RoleCode role) {
-        return jwtTokenService.issue(account(username, role)).value();
     }
 
     private String json(Map<String, Object> payload) throws Exception {
