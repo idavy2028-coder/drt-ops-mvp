@@ -23,7 +23,7 @@ public class OperationsMetricsController {
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
             LocalDate date) {
-        LocalDate operatingDate = date == null ? LocalDate.now() : date;
+        LocalDate operatingDate = date == null ? LocalDate.now(OperationsMetricsService.OPERATING_ZONE) : date;
         return ApiResponse.ok(metricsService.calculateSummary(operatingDate));
     }
 }

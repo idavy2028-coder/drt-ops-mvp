@@ -96,6 +96,25 @@ class OperationsMetricsServiceTest {
         assertThat(summary.exceptionCloseRate()).isEqualByComparingTo("0.3333");
     }
 
+    @Test
+    void assignsUtcBoundaryOrdersAndTasksToShanghaiOperatingDay() {
+        OffsetDateTime utcBoundary = OffsetDateTime.parse("2026-07-12T23:17:00Z");
+        RideOrder order = newOrder("13800009005", utcBoundary);
+        order.confirm(new RideOrder.OrderPromise(utcBoundary.plusMinutes(3), utcBoundary.plusMinutes(15)));
+        order.startExecution();
+        order.complete();
+        rideOrderRepository.save(order);
+        saveCompletedTask(VEHICLE_ID, utcBoundary);
+
+        OperationsSummary shanghaiDay = metricsService.calculateSummary(LocalDate.parse("2026-07-13"));
+        OperationsSummary utcDay = metricsService.calculateSummary(LocalDate.parse("2026-07-12"));
+
+        assertThat(shanghaiDay.orderCount()).isEqualTo(1L);
+        assertThat(shanghaiDay.taskCompletionRate()).isEqualByComparingTo("1.0000");
+        assertThat(utcDay.orderCount()).isZero();
+        assertThat(utcDay.taskCompletionRate()).isEqualByComparingTo("0.0000");
+    }
+
     private RideOrder saveCompletedAutoDispatchOrder() {
         RideOrder order = newOrder("13800009001");
         order.confirm(new RideOrder.OrderPromise(
