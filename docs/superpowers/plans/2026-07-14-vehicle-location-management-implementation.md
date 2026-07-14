@@ -371,6 +371,7 @@ git commit -m "feat: expose vehicle location operations"
 ### Task 4: 将任务状态机与位置上报原子集成
 
 **Files:**
+- Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/TaskLocationReportRequest.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/TaskActionRequest.java`
 - Create: `apps/api/src/main/java/com/idavy/drtops/domain/task/TaskActionResponse.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskController.java`
@@ -386,8 +387,18 @@ git commit -m "feat: expose vehicle location operations"
 - [ ] **Step 1: 定义任务动作请求和响应**
 
 ```java
+public record TaskLocationReportRequest(
+        @NotNull @DecimalMin("-180.0") @DecimalMax("180.0") BigDecimal longitude,
+        @NotNull @DecimalMin("-90.0") @DecimalMax("90.0") BigDecimal latitude,
+        @NotBlank @Size(max = 300) String standardizedAddress,
+        @NotNull OffsetDateTime driverReportedAt,
+        UUID virtualStopId,
+        @Size(max = 500) String note,
+        @NotNull UUID idempotencyKey) {
+}
+
 public record TaskActionRequest(
-        @NotNull @Valid LocationReportRequest locationReport) {
+        @NotNull @Valid TaskLocationReportRequest locationReport) {
 }
 
 public record TaskActionResponse(
@@ -438,7 +449,7 @@ Expected: 完整任务链、事务回滚、幂等和 RBAC 测试通过。
 - [ ] **Step 7: 提交 Task 4**
 
 ```powershell
-git add apps/api/src/main/java/com/idavy/drtops/domain/task/TaskActionRequest.java apps/api/src/main/java/com/idavy/drtops/domain/task/TaskActionResponse.java apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskController.java apps/api/src/main/java/com/idavy/drtops/domain/task/TaskExecutionService.java apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskRepository.java apps/api/src/test/java/com/idavy/drtops/domain/task/TaskExecutionApiTest.java apps/api/src/test/java/com/idavy/drtops/domain/task/TaskLocationTransactionTest.java
+git add apps/api/src/main/java/com/idavy/drtops/domain/task/TaskLocationReportRequest.java apps/api/src/main/java/com/idavy/drtops/domain/task/TaskActionRequest.java apps/api/src/main/java/com/idavy/drtops/domain/task/TaskActionResponse.java apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskController.java apps/api/src/main/java/com/idavy/drtops/domain/task/TaskExecutionService.java apps/api/src/main/java/com/idavy/drtops/domain/task/VehicleTaskRepository.java apps/api/src/test/java/com/idavy/drtops/domain/task/TaskExecutionApiTest.java apps/api/src/test/java/com/idavy/drtops/domain/task/TaskLocationTransactionTest.java
 git commit -m "feat: record locations with task actions"
 ```
 
