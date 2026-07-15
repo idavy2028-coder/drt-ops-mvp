@@ -12,9 +12,14 @@ import com.idavy.drtops.auth.UserAccountRepository;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
-import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
+import com.idavy.drtops.domain.location.LocationEventType;
+import com.idavy.drtops.domain.location.LocationReportCommand;
+import com.idavy.drtops.domain.location.LocationReportScope;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
+import com.idavy.drtops.domain.location.VehicleLocationRecorder;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Set;
@@ -24,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -67,11 +73,15 @@ class TaskLocationTransactionTest {
     @Autowired JwtTokenService jwtTokenService;
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired JdbcTemplate jdbcTemplate;
+    @Autowired VehicleLocationRecorder locationRecorder;
+    @Autowired ControllableIdempotencyKeyLock idempotencyKeyLock;
 
     private String dispatcherToken;
+    private UUID dispatcherId;
 
     @BeforeEach
     void setUp() {
+        idempotencyKeyLock.reset();
         auditLogRepository.deleteAll();
         eventRepository.deleteAll();
         vehicleTaskRepository.deleteAll();
@@ -90,6 +100,7 @@ class TaskLocationTransactionTest {
         UserAccount dispatcher = UserAccount.create("task-location", "task-location", "not-used");
         dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER));
         dispatcher = userAccountRepository.save(dispatcher);
+        dispatcherId = dispatcher.getId();
         dispatcherToken = jwtTokenService.issue(dispatcher).value();
     }
 
@@ -141,6 +152,76 @@ class TaskLocationTransactionTest {
 
         assertThat(eventRepository.count()).isOne();
         assertThat(auditLogRepository.findByEntityId(taskId)).hasSize(1);
+    }
+
+    @Test
+    void independentReportClaimingSameKeyMakesTaskActionConflictWithoutAdvancing() throws Exception {
+        UUID taskId = createTask();
+        UUID key = UUID.randomUUID();
+        OffsetDateTime reportedAt = OffsetDateTime.now().minusMinutes(1);
+        String note = "跨接口顺序占用幂等编号";
+
+        mockMvc.perform(post("/api/vehicles/" + VEHICLE_ID + "/location-reports")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(independentRequest(taskId, key, reportedAt, note)))
+                .andExpect(status().isCreated());
+
+        performStart(taskId, request(key, reportedAt, note))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.data.message").value("幂等编号已用于不同的位置请求"));
+
+        assertThat(vehicleTaskRepository.findById(taskId).orElseThrow().getStatus())
+                .isEqualTo(TaskStatus.PENDING_DEPARTURE);
+        assertThat(eventRepository.count()).isOne();
+        assertThat(auditLogRepository.findByEntityId(taskId)).isEmpty();
+    }
+
+    @Test
+    void replayDiscoveredInsideAppendIsRejectedWithoutAdvancingTask() throws Exception {
+        UUID taskId = createTask();
+        UUID key = UUID.randomUUID();
+        OffsetDateTime reportedAt = OffsetDateTime.now().minusMinutes(1);
+        String note = "预检查后同域事件";
+        idempotencyKeyLock.blockNext(key);
+
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<MvcResult> taskAction = executor.submit(
+                    () -> performStart(taskId, request(key, reportedAt, note)).andReturn());
+            assertThat(idempotencyKeyLock.awaitBlocked()).isTrue();
+
+            new TransactionTemplate(transactionManager).executeWithoutResult(status -> locationRecorder.append(
+                    new LocationReportCommand(
+                            LocationReportScope.TASK_ACTION_START,
+                            VEHICLE_ID,
+                            taskId,
+                            null,
+                            null,
+                            LocationEventType.TASK_STARTED,
+                            new BigDecimal("120.1550000"),
+                            new BigDecimal("30.2741000"),
+                            "浙江省杭州市事务测试道路",
+                            reportedAt,
+                            dispatcherId,
+                            note,
+                            null,
+                            null,
+                            key)));
+            idempotencyKeyLock.release();
+
+            MvcResult result = taskAction.get(10, TimeUnit.SECONDS);
+            assertThat(result.getResponse().getStatus()).isEqualTo(409);
+            assertThat(com.jayway.jsonpath.JsonPath.<String>read(
+                            result.getResponse().getContentAsString(), "$.data.message"))
+                    .isEqualTo("任务动作幂等状态发生冲突，请重试");
+        } finally {
+            idempotencyKeyLock.release();
+        }
+
+        assertThat(vehicleTaskRepository.findById(taskId).orElseThrow().getStatus())
+                .isEqualTo(TaskStatus.PENDING_DEPARTURE);
+        assertThat(eventRepository.count()).isOne();
+        assertThat(auditLogRepository.findByEntityId(taskId)).isEmpty();
     }
 
     @Test
@@ -281,19 +362,73 @@ class TaskLocationTransactionTest {
                 """.formatted(reportedAt, note, key);
     }
 
+    private String independentRequest(UUID taskId, UUID key, OffsetDateTime reportedAt, String note) {
+        return """
+                {
+                  "vehicleTaskId": "%s",
+                  "eventType": "TASK_STARTED",
+                  "longitude": 120.1550000,
+                  "latitude": 30.2741000,
+                  "standardizedAddress": "浙江省杭州市事务测试道路",
+                  "driverReportedAt": "%s",
+                  "note": "%s",
+                  "idempotencyKey": "%s"
+                }
+                """.formatted(taskId, reportedAt, note, key);
+    }
+
     @TestConfiguration
     static class LocationTestConfiguration {
 
         @Bean
         @Primary
-        IdempotencyKeyLock idempotencyKeyLock() {
-            return idempotencyKey -> { };
+        ControllableIdempotencyKeyLock idempotencyKeyLock() {
+            return new ControllableIdempotencyKeyLock();
         }
 
         @Bean
         @Primary
         ServiceAreaLocationChecker serviceAreaLocationChecker() {
             return (longitude, latitude) -> true;
+        }
+    }
+
+    static final class ControllableIdempotencyKeyLock implements IdempotencyKeyLock {
+
+        private final AtomicReference<UUID> blockedKey = new AtomicReference<>();
+        private final AtomicBoolean blockPending = new AtomicBoolean();
+        private volatile CountDownLatch blocked = new CountDownLatch(0);
+        private volatile CountDownLatch release = new CountDownLatch(0);
+
+        void blockNext(UUID idempotencyKey) {
+            blockedKey.set(idempotencyKey);
+            blockPending.set(true);
+            blocked = new CountDownLatch(1);
+            release = new CountDownLatch(1);
+        }
+
+        boolean awaitBlocked() throws InterruptedException {
+            return blocked.await(5, TimeUnit.SECONDS);
+        }
+
+        void release() {
+            release.countDown();
+        }
+
+        void reset() {
+            release();
+            blockedKey.set(null);
+            blockPending.set(false);
+            blocked = new CountDownLatch(0);
+            release = new CountDownLatch(0);
+        }
+
+        @Override
+        public void acquire(UUID idempotencyKey) {
+            if (idempotencyKey.equals(blockedKey.get()) && blockPending.compareAndSet(true, false)) {
+                blocked.countDown();
+                await(release);
+            }
         }
     }
 }

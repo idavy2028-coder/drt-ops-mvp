@@ -5,6 +5,7 @@ import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.location.LocationEventType;
 import com.idavy.drtops.domain.location.LocationReportCommand;
 import com.idavy.drtops.domain.location.LocationReportResult;
+import com.idavy.drtops.domain.location.LocationReportScope;
 import com.idavy.drtops.domain.location.VehicleLocationRecorder;
 import com.idavy.drtops.domain.location.VehicleLocationSnapshotService;
 import com.idavy.drtops.domain.order.OrderStatus;
@@ -45,6 +46,7 @@ public class TaskExecutionService {
     public TaskActionResponse start(UUID actorId, UUID taskId, TaskLocationReportRequest request) {
         VehicleTask task = taskForExecution(taskId);
         LocationReportCommand command = command(
+                LocationReportScope.TASK_ACTION_START,
                 task, null, null, LocationEventType.TASK_STARTED, actorId, request);
         Optional<LocationReportResult> replay = locationRecorder.findReplay(command);
         if (replay.isPresent()) {
@@ -52,7 +54,7 @@ public class TaskExecutionService {
         }
 
         requireTaskStatus(task, TaskStatus.PENDING_DEPARTURE, TaskStatus.DISPATCHED);
-        LocationReportResult result = locationRecorder.append(command);
+        LocationReportResult result = requireFresh(locationRecorder.append(command));
         task.startExecution();
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() == OrderStatus.CONFIRMED) {
@@ -73,6 +75,7 @@ public class TaskExecutionService {
         LocationEventType eventType = "BOARDING".equals(stop.getStopType())
                 ? LocationEventType.PICKUP_ARRIVED : LocationEventType.DROPOFF_ARRIVED;
         LocationReportCommand command = command(
+                LocationReportScope.TASK_ACTION_ARRIVE,
                 task, stop.getId(), stop.getVirtualStopId(), eventType, actorId, request);
         Optional<LocationReportResult> replay = locationRecorder.findReplay(command);
         if (replay.isPresent()) {
@@ -81,7 +84,7 @@ public class TaskExecutionService {
 
         requireInProgress(task);
         requireStopStatus(stop, "PLANNED", "当前任务节点不能执行到站");
-        LocationReportResult result = locationRecorder.append(command);
+        LocationReportResult result = requireFresh(locationRecorder.append(command));
         stop.arrive();
         task.markCurrentStop(stop.getVirtualStopId());
         snapshotService.apply(result.event());
@@ -96,6 +99,7 @@ public class TaskExecutionService {
         TaskStop stop = stop(task, taskStopId);
         validateVirtualStop(request, stop);
         LocationReportCommand command = command(
+                LocationReportScope.TASK_ACTION_BOARD,
                 task, stop.getId(), stop.getVirtualStopId(), LocationEventType.PASSENGER_BOARDED, actorId, request);
         Optional<LocationReportResult> replay = locationRecorder.findReplay(command);
         if (replay.isPresent()) {
@@ -105,7 +109,7 @@ public class TaskExecutionService {
         requireInProgress(task);
         requireStopType(stop, "BOARDING", "当前任务节点不是上车节点");
         requireStopStatus(stop, "ARRIVED", "当前任务节点不能执行上车");
-        LocationReportResult result = locationRecorder.append(command);
+        LocationReportResult result = requireFresh(locationRecorder.append(command));
         stop.board();
         snapshotService.apply(result.event());
         audit(actorId, task.getId(), "PASSENGER_BOARDED", stop.getId().toString(), result.event().getId());
@@ -119,6 +123,7 @@ public class TaskExecutionService {
         TaskStop stop = stop(task, taskStopId);
         validateVirtualStop(request, stop);
         LocationReportCommand command = command(
+                LocationReportScope.TASK_ACTION_ALIGHT,
                 task, stop.getId(), stop.getVirtualStopId(), LocationEventType.PASSENGER_ALIGHTED, actorId, request);
         Optional<LocationReportResult> replay = locationRecorder.findReplay(command);
         if (replay.isPresent()) {
@@ -128,7 +133,7 @@ public class TaskExecutionService {
         requireInProgress(task);
         requireStopType(stop, "ALIGHTING", "当前任务节点不是下车节点");
         requireStopStatus(stop, "ARRIVED", "当前任务节点不能执行下车");
-        LocationReportResult result = locationRecorder.append(command);
+        LocationReportResult result = requireFresh(locationRecorder.append(command));
         stop.alight();
         snapshotService.apply(result.event());
         audit(actorId, task.getId(), "PASSENGER_ALIGHTED", stop.getId().toString(), result.event().getId());
@@ -139,6 +144,7 @@ public class TaskExecutionService {
     public TaskActionResponse complete(UUID actorId, UUID taskId, TaskLocationReportRequest request) {
         VehicleTask task = taskForExecution(taskId);
         LocationReportCommand command = command(
+                LocationReportScope.TASK_ACTION_COMPLETE,
                 task, null, null, LocationEventType.TASK_COMPLETED, actorId, request);
         Optional<LocationReportResult> replay = locationRecorder.findReplay(command);
         if (replay.isPresent()) {
@@ -149,7 +155,7 @@ public class TaskExecutionService {
         if (task.getStops().stream().anyMatch(stop -> !stop.isExecutionComplete())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "任务节点尚未全部完成");
         }
-        LocationReportResult result = locationRecorder.append(command);
+        LocationReportResult result = requireFresh(locationRecorder.append(command));
         task.complete();
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() == OrderStatus.IN_PROGRESS) {
@@ -187,6 +193,7 @@ public class TaskExecutionService {
     }
 
     private LocationReportCommand command(
+            LocationReportScope scope,
             VehicleTask task,
             UUID taskStopId,
             UUID virtualStopId,
@@ -197,6 +204,7 @@ public class TaskExecutionService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前任务动作没有可关联的任务节点");
         }
         return new LocationReportCommand(
+                scope,
                 task.getVehicleId(),
                 task.getId(),
                 taskStopId,
@@ -211,6 +219,13 @@ public class TaskExecutionService {
                 null,
                 null,
                 request.idempotencyKey());
+    }
+
+    private static LocationReportResult requireFresh(LocationReportResult result) {
+        if (result.replayed()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "任务动作幂等状态发生冲突，请重试");
+        }
+        return result;
     }
 
     private static void validateVirtualStop(TaskLocationReportRequest request, TaskStop stop) {

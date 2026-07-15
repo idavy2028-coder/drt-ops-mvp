@@ -149,6 +149,7 @@ public class VehicleLocationRecorder {
 
     private static String requestFingerprint(LocationReportCommand command) {
         StringBuilder canonical = new StringBuilder();
+        appendFingerprintPart(canonical, "scope", command.scope());
         appendFingerprintPart(canonical, "vehicleId", command.vehicleId());
         appendFingerprintPart(canonical, "vehicleTaskId", command.vehicleTaskId());
         appendFingerprintPart(canonical, "taskStopId", command.taskStopId());

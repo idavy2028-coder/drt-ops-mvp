@@ -116,6 +116,7 @@ class PostgisVehicleLocationConcurrencyTest {
 
     private LocationReportCommand command(UUID vehicleId, UUID idempotencyKey, String note) {
         return new LocationReportCommand(
+                LocationReportScope.INDEPENDENT_REPORT,
                 vehicleId,
                 null,
                 null,

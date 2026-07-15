@@ -149,6 +149,7 @@ class VehicleLocationRecorderTest {
         LocationReportCommand original = command(idempotencyKey);
         LocationReportResult first = recorder.append(original);
         LocationReportCommand equivalent = new LocationReportCommand(
+                original.scope(),
                 original.vehicleId(),
                 original.vehicleTaskId(),
                 original.taskStopId(),
@@ -170,6 +171,33 @@ class VehicleLocationRecorderTest {
 
         assertThat(replay.replayed()).isTrue();
         assertThat(replay.event().getId()).isEqualTo(first.event().getId());
+    }
+
+    @Test
+    void rejectsSamePayloadWhenOperationScopeDiffers() {
+        LocationReportCommand independent = command(UUID.randomUUID());
+        recorder.append(independent);
+
+        LocationReportCommand taskAction = new LocationReportCommand(
+                LocationReportScope.TASK_ACTION_START,
+                independent.vehicleId(),
+                independent.vehicleTaskId(),
+                independent.taskStopId(),
+                independent.virtualStopId(),
+                independent.eventType(),
+                independent.longitude(),
+                independent.latitude(),
+                independent.standardizedAddress(),
+                independent.driverReportedAt(),
+                independent.recordedBy(),
+                independent.note(),
+                independent.correctionReason(),
+                independent.correctsEventId(),
+                independent.idempotencyKey());
+
+        assertThatThrownBy(() -> recorder.findReplay(taskAction))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        exception -> assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.CONFLICT));
     }
 
     @Test
@@ -295,6 +323,7 @@ class VehicleLocationRecorderTest {
             String correctionReason,
             UUID correctsEventId) {
         return new LocationReportCommand(
+                LocationReportScope.INDEPENDENT_REPORT,
                 vehicleId,
                 UUID.randomUUID(),
                 UUID.randomUUID(),
@@ -322,6 +351,7 @@ class VehicleLocationRecorderTest {
                 "调度员确认原位置有误",
                 correctsEventId);
         return new LocationReportCommand(
+                command.scope(),
                 correctionVehicleId,
                 command.vehicleTaskId(),
                 command.taskStopId(),
@@ -340,6 +370,7 @@ class VehicleLocationRecorderTest {
 
     private static LocationReportCommand commandWithNote(LocationReportCommand command, String note) {
         return new LocationReportCommand(
+                command.scope(),
                 command.vehicleId(),
                 command.vehicleTaskId(),
                 command.taskStopId(),

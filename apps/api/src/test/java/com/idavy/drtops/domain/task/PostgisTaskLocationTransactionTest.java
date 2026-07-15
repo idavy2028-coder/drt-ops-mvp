@@ -3,22 +3,30 @@ package com.idavy.drtops.domain.task;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.idavy.drtops.domain.audit.AuditLogRepository;
-import com.idavy.drtops.domain.fleet.VehicleRepository;
-import com.idavy.drtops.domain.location.VehicleLocationEvent;
-import com.idavy.drtops.domain.location.VehicleLocationRecorder;
-import com.idavy.drtops.domain.location.VehicleLocationSnapshotService;
-import com.idavy.drtops.domain.order.RideOrderRepository;
-import java.lang.reflect.Proxy;
+import com.idavy.drtops.domain.location.IdempotencyKeyLock;
+import com.idavy.drtops.domain.location.LocationEventType;
+import com.idavy.drtops.domain.location.LocationReportRequest;
+import com.idavy.drtops.domain.location.LocationReportResponse;
+import com.idavy.drtops.domain.location.VehicleLocationCommandService;
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+import javax.sql.DataSource;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -26,6 +34,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
@@ -41,30 +53,55 @@ class PostgisTaskLocationTransactionTest {
     private static final UUID ACTOR_ID = UUID.fromString("77777777-7777-7777-7777-777777777704");
 
     @Autowired TaskExecutionService taskExecutionService;
+    @Autowired VehicleLocationCommandService locationCommandService;
     @Autowired VehicleTaskRepository vehicleTaskRepository;
-    @Autowired RideOrderRepository rideOrderRepository;
-    @Autowired AuditLogRepository auditLogRepository;
-    @Autowired VehicleLocationRecorder locationRecorder;
-    @Autowired VehicleLocationSnapshotService snapshotService;
-    @Autowired VehicleRepository vehicleRepository;
+    @Autowired IdempotencyKeyLock idempotencyKeyLock;
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired JdbcTemplate jdbcTemplate;
+    @Autowired DataSource dataSource;
+    @PersistenceContext EntityManager entityManager;
 
     private UUID vehicleId;
     private UUID driverId;
     private UUID taskId;
+    private UUID taskStopId;
 
     @BeforeEach
     void setUpFixture() {
+        UUID ruleSetId = UUID.randomUUID();
+        UUID serviceAreaId = UUID.randomUUID();
+        UUID virtualStopId = UUID.randomUUID();
         vehicleId = UUID.randomUUID();
         driverId = UUID.randomUUID();
         taskId = UUID.randomUUID();
+        taskStopId = UUID.randomUUID();
+
         jdbcTemplate.update("""
                 insert into user_accounts (
                   id, username, display_name, password_hash, enabled, must_change_password
                 ) values (?, 'task-location-postgis', 'Task 4 PostgreSQL 测试', 'not-used', true, false)
                 on conflict (id) do nothing
                 """, ACTOR_ID);
+        jdbcTemplate.update("""
+                insert into dispatch_rule_sets (
+                  id, name, max_wait_minutes, max_detour_minutes, booking_window_minutes,
+                  auto_dispatch_score_threshold, manual_review_score_threshold,
+                  wait_weight, detour_weight, stability_weight, utilization_weight, insertion_policy, enabled
+                ) values (?, ?, 15, 10, 120, 80, 60, 1, 1, 1, 1, 'BEST_SCORE', true)
+                """, ruleSetId, "Task 4 " + ruleSetId);
+        jdbcTemplate.update("""
+                insert into service_areas (
+                  id, name, boundary, service_start, service_end, rule_set_id, enabled
+                ) values (?, ?, ST_GeogFromText('SRID=4326;POLYGON((116.30 39.90,116.35 39.90,116.35 39.96,116.30 39.96,116.30 39.90))'),
+                  '00:00', '23:59', ?, true)
+                """, serviceAreaId, "Task 4 " + serviceAreaId, ruleSetId);
+        jdbcTemplate.update("""
+                insert into virtual_stops (
+                  id, service_area_id, name, location, service_radius_meters,
+                  boarding_enabled, alighting_enabled, safety_note, enabled
+                ) values (?, ?, ?, ST_GeogFromText('SRID=4326;POINT(116.32 39.93)'), 500,
+                  true, true, 'Task 4 PostgreSQL 测试站点', true)
+                """, virtualStopId, serviceAreaId, "Task 4 " + virtualStopId);
         jdbcTemplate.update("""
                 insert into vehicles (
                   id, plate_number, vehicle_type, capacity, current_status, current_location, fleet_name, dispatchable
@@ -86,26 +123,25 @@ class PostgisTaskLocationTransactionTest {
                   id, vehicle_id, driver_id, status, planned_start_at, source_type
                 ) values (?, ?, ?, 'PENDING_DEPARTURE', ?, 'MANUAL')
                 """, taskId, vehicleId, driverId, OffsetDateTime.now().minusMinutes(5));
+        jdbcTemplate.update("""
+                insert into task_stops (
+                  id, vehicle_task_id, virtual_stop_id, sequence_number, stop_type, planned_arrival_at, status
+                ) values (?, ?, ?, 1, 'BOARDING', ?, 'PLANNED')
+                """, taskStopId, taskId, virtualStopId, OffsetDateTime.now().plusMinutes(5));
     }
 
     @Test
-    void auditFailureRollsBackTaskEventAndSnapshotInOneTransaction() {
-        TaskExecutionService failingService = new TaskExecutionService(
-                vehicleTaskRepository,
-                rideOrderRepository,
-                failingAuditRepository(),
-                locationRecorder,
-                snapshotService);
+    void auditFlushFailureThroughProductionProxyRollsBackTaskNodeEventSnapshotAndAudit() {
+        Trigger trigger = installAuditFailureTrigger();
+        try {
+            assertThatThrownBy(() -> taskExecutionService.start(
+                            ACTOR_ID, taskId, request(UUID.randomUUID(), "审计 flush 失败回滚")))
+                    .isInstanceOf(RuntimeException.class);
+        } finally {
+            trigger.drop();
+        }
 
-        assertThatThrownBy(() -> new TransactionTemplate(transactionManager).executeWithoutResult(
-                        status -> failingService.start(ACTOR_ID, taskId, request(UUID.randomUUID(), "审计失败回滚"))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("模拟任务审计写入失败");
-
-        assertThat(taskStatus()).isEqualTo("PENDING_DEPARTURE");
-        assertThat(eventCount()).isZero();
-        assertThat(auditCount()).isZero();
-        assertThat(currentLocationEventId()).isNull();
+        assertRollbackStateFromIndependentConnection();
     }
 
     @Test
@@ -122,36 +158,21 @@ class PostgisTaskLocationTransactionTest {
         assertThatThrownBy(() -> taskExecutionService.start(ACTOR_ID, taskId, invalid))
                 .isInstanceOf(RuntimeException.class);
 
-        assertThat(taskStatus()).isEqualTo("PENDING_DEPARTURE");
-        assertThat(eventCount()).isZero();
-        assertThat(auditCount()).isZero();
-        assertThat(currentLocationEventId()).isNull();
+        assertRollbackStateFromIndependentConnection();
     }
 
     @Test
-    void snapshotFailureRollsBackTaskEventAndAudit() {
-        VehicleLocationSnapshotService failingSnapshot = new VehicleLocationSnapshotService(vehicleRepository) {
-            @Override
-            public void apply(VehicleLocationEvent event) {
-                throw new IllegalStateException("模拟车辆快照写入失败");
-            }
-        };
-        TaskExecutionService failingService = new TaskExecutionService(
-                vehicleTaskRepository,
-                rideOrderRepository,
-                auditLogRepository,
-                locationRecorder,
-                failingSnapshot);
+    void snapshotFlushFailureThroughProductionProxyRollsBackTaskNodeEventAndAudit() {
+        Trigger trigger = installSnapshotFailureTrigger();
+        try {
+            assertThatThrownBy(() -> taskExecutionService.start(
+                            ACTOR_ID, taskId, request(UUID.randomUUID(), "快照 flush 失败回滚")))
+                    .isInstanceOf(RuntimeException.class);
+        } finally {
+            trigger.drop();
+        }
 
-        assertThatThrownBy(() -> new TransactionTemplate(transactionManager).executeWithoutResult(
-                        status -> failingService.start(ACTOR_ID, taskId, request(UUID.randomUUID(), "快照失败回滚"))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("模拟车辆快照写入失败");
-
-        assertThat(taskStatus()).isEqualTo("PENDING_DEPARTURE");
-        assertThat(eventCount()).isZero();
-        assertThat(auditCount()).isZero();
-        assertThat(currentLocationEventId()).isNull();
+        assertRollbackStateFromIndependentConnection();
     }
 
     @Test
@@ -172,35 +193,102 @@ class PostgisTaskLocationTransactionTest {
                     assertThat(exception.getReason()).isEqualTo("幂等编号已用于不同的位置请求");
                 });
         assertThat(taskStatus()).isEqualTo("IN_PROGRESS");
-        assertThat(eventCount()).isOne();
+        assertThat(eventCountForTask()).isOne();
         assertThat(auditCount()).isOne();
         assertThat(currentLocationEventId()).isEqualTo(first.locationEvent().id());
     }
 
     @Test
-    void concurrentIdenticalRequestsWaitForTaskLockAndAdvanceOnlyOnce() throws Exception {
+    void independentReportWinningBetweenPrecheckAndAppendMakesTaskActionFailAtomically() throws Exception {
+        UUID key = UUID.randomUUID();
+        OffsetDateTime reportedAt = OffsetDateTime.now().minusMinutes(1);
+        TaskLocationReportRequest taskRequest = request(key, reportedAt, "PostgreSQL 跨接口并发");
+        LocationReportRequest independentRequest = new LocationReportRequest(
+                null,
+                null,
+                null,
+                LocationEventType.TASK_STARTED,
+                taskRequest.longitude(),
+                taskRequest.latitude(),
+                taskRequest.standardizedAddress(),
+                reportedAt,
+                taskRequest.note(),
+                null,
+                null,
+                key);
+        CountDownLatch independentHasLock = new CountDownLatch(1);
+        CountDownLatch allowIndependentReport = new CountDownLatch(1);
+        AtomicInteger blockerPid = new AtomicInteger();
+        AtomicInteger callerPid = new AtomicInteger();
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<LocationReportResponse> independent = executor.submit(() -> withLocationReportAuthority(
+                    () -> new TransactionTemplate(transactionManager).execute(status -> {
+                        blockerPid.set(backendPid());
+                        idempotencyKeyLock.acquire(key);
+                        independentHasLock.countDown();
+                        await(allowIndependentReport);
+                        return locationCommandService.report(vehicleId, ACTOR_ID, independentRequest);
+                    })));
+            assertThat(independentHasLock.await(10, TimeUnit.SECONDS)).isTrue();
+
+            Future<TaskActionResponse> taskAction = executor.submit(
+                    () -> new TransactionTemplate(transactionManager).execute(status -> {
+                        callerPid.set(backendPid());
+                        return taskExecutionService.start(ACTOR_ID, taskId, taskRequest);
+                    }));
+            awaitBlockedBy(callerPid, blockerPid.get());
+            assertThat(isBlockedBy(callerPid.get(), blockerPid.get())).isTrue();
+            allowIndependentReport.countDown();
+
+            LocationReportResponse independentResponse = independent.get(10, TimeUnit.SECONDS);
+            assertThat(independentResponse.replayed()).isFalse();
+            assertThatThrownBy(() -> taskAction.get(10, TimeUnit.SECONDS))
+                    .isInstanceOfSatisfying(ExecutionException.class, exception ->
+                            assertThat(exception.getCause())
+                                    .isInstanceOfSatisfying(ResponseStatusException.class, cause -> {
+                                        assertThat(cause.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+                                        assertThat(cause.getReason()).isEqualTo("幂等编号已用于不同的位置请求");
+                                    }));
+        } finally {
+            allowIndependentReport.countDown();
+        }
+
+        assertThat(taskStatus()).isEqualTo("PENDING_DEPARTURE");
+        assertThat(taskStopStatus()).isEqualTo("PLANNED");
+        assertThat(eventCountForKey(key)).isOne();
+        assertThat(auditCount()).isZero();
+        assertThat(currentLocationEventId()).isNotNull();
+    }
+
+    @Test
+    void concurrentIdenticalRequestsWaitForExactTaskLockPidAndAdvanceOnlyOnce() throws Exception {
         TaskLocationReportRequest request = request(UUID.randomUUID(), "PostgreSQL 并发相同请求");
         CountDownLatch taskLocked = new CountDownLatch(1);
         CountDownLatch releaseTaskLock = new CountDownLatch(1);
-        CountDownLatch callersReady = new CountDownLatch(2);
-        CountDownLatch issueRequests = new CountDownLatch(1);
+        AtomicInteger blockerPid = new AtomicInteger();
+        AtomicInteger firstCallerPid = new AtomicInteger();
+        AtomicInteger secondCallerPid = new AtomicInteger();
 
         try (ExecutorService executor = Executors.newFixedThreadPool(3)) {
             Future<?> lockHolder = executor.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
                 vehicleTaskRepository.findByIdForExecution(taskId).orElseThrow();
+                blockerPid.set(backendPid());
                 taskLocked.countDown();
-                await(releaseTaskLock);
+                await(releaseTaskLock, 30);
             }));
-            assertThat(taskLocked.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(taskLocked.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<TaskActionResponse> first = executor.submit(
-                    () -> concurrentStart(callersReady, issueRequests, request));
+                    () -> concurrentStart(firstCallerPid, request));
+            awaitBlockedBy(firstCallerPid, blockerPid.get());
+            assertThat(isBlockedBy(firstCallerPid.get(), blockerPid.get())).isTrue();
+
             Future<TaskActionResponse> second = executor.submit(
-                    () -> concurrentStart(callersReady, issueRequests, request));
-            assertThat(callersReady.await(5, TimeUnit.SECONDS)).isTrue();
-            issueRequests.countDown();
+                    () -> concurrentStart(secondCallerPid, request));
             try {
-                awaitBlockedTaskRequests(2);
+                awaitBlockedBy(secondCallerPid, firstCallerPid.get());
+                assertThat(isBlockedBy(secondCallerPid.get(), firstCallerPid.get())).isTrue();
             } finally {
                 releaseTaskLock.countDown();
             }
@@ -215,56 +303,156 @@ class PostgisTaskLocationTransactionTest {
         }
 
         assertThat(taskStatus()).isEqualTo("IN_PROGRESS");
-        assertThat(eventCount()).isOne();
+        assertThat(eventCountForTask()).isOne();
         assertThat(auditCount()).isOne();
     }
 
     private TaskActionResponse concurrentStart(
-            CountDownLatch callersReady,
-            CountDownLatch issueRequests,
+            AtomicInteger callerPid,
             TaskLocationReportRequest request) {
-        callersReady.countDown();
-        await(issueRequests);
-        return taskExecutionService.start(ACTOR_ID, taskId, request);
+        return new TransactionTemplate(transactionManager).execute(status -> {
+            callerPid.set(backendPid());
+            return taskExecutionService.start(ACTOR_ID, taskId, request);
+        });
     }
 
-    private void awaitBlockedTaskRequests(int expected) throws InterruptedException {
+    private void awaitBlockedBy(AtomicInteger callerPid, int expectedBlockerPid) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (System.nanoTime() < deadline) {
-            Integer blocked = jdbcTemplate.queryForObject("""
-                    select count(*)
-                    from pg_stat_activity activity
-                    where activity.datname = current_database()
-                      and cardinality(pg_blocking_pids(activity.pid)) > 0
-                      and activity.query ilike '%vehicle_tasks%'
-                    """, Integer.class);
-            if (blocked != null && blocked >= expected) {
+            int pid = callerPid.get();
+            if (pid != 0 && isBlockedBy(pid, expectedBlockerPid)) {
                 return;
             }
             Thread.sleep(20);
         }
-        throw new AssertionError("两个任务动作请求未在 PostgreSQL 任务行锁上形成确定性等待");
+        throw new AssertionError("调用连接未被指定的 PostgreSQL 持锁连接阻塞: blockerPid="
+                + expectedBlockerPid + ", callerPid=" + callerPid.get()
+                + ", caller=" + backendState(callerPid.get())
+                + ", blocker=" + backendState(expectedBlockerPid));
     }
 
-    @SuppressWarnings("unchecked")
-    private AuditLogRepository failingAuditRepository() {
-        return (AuditLogRepository) Proxy.newProxyInstance(
-                AuditLogRepository.class.getClassLoader(),
-                new Class<?>[] {AuditLogRepository.class},
-                (proxy, method, arguments) -> {
-                    if ("save".equals(method.getName())) {
-                        throw new IllegalStateException("模拟任务审计写入失败");
-                    }
-                    return method.invoke(auditLogRepository, arguments);
-                });
+    private String backendState(int pid) {
+        if (pid == 0) {
+            return "pid-not-recorded";
+        }
+        return jdbcTemplate.queryForObject("""
+                select concat(
+                  'blocking=', pg_blocking_pids(pid)::text,
+                  ', state=', state,
+                  ', wait=', coalesce(wait_event_type, ''), '/', coalesce(wait_event, ''),
+                  ', query=', left(query, 200))
+                from pg_stat_activity
+                where pid = ?
+                """, String.class, pid);
+    }
+
+    private boolean isBlockedBy(int callerPid, int expectedBlockerPid) {
+        return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
+                "select ? = any(pg_blocking_pids(?))",
+                Boolean.class,
+                expectedBlockerPid,
+                callerPid));
+    }
+
+    private int backendPid() {
+        return ((Number) entityManager.createNativeQuery("select pg_backend_pid()")
+                .getSingleResult()).intValue();
+    }
+
+    private Trigger installAuditFailureTrigger() {
+        String suffix = taskId.toString().replace("-", "");
+        String functionName = "task4_fail_audit_" + suffix;
+        String triggerName = "task4_fail_audit_" + suffix;
+        jdbcTemplate.execute("""
+                create function %s() returns trigger language plpgsql as $$
+                begin
+                  if new.entity_id = '%s'::uuid then
+                    raise exception 'Task 4 audit flush failure';
+                  end if;
+                  return new;
+                end;
+                $$
+                """.formatted(functionName, taskId));
+        jdbcTemplate.execute("create trigger " + triggerName
+                + " before insert on audit_logs for each row execute function " + functionName + "()");
+        return new Trigger(triggerName, "audit_logs", functionName);
+    }
+
+    private Trigger installSnapshotFailureTrigger() {
+        String suffix = taskId.toString().replace("-", "");
+        String functionName = "task4_fail_snapshot_" + suffix;
+        String triggerName = "task4_fail_snapshot_" + suffix;
+        jdbcTemplate.execute("""
+                create function %s() returns trigger language plpgsql as $$
+                begin
+                  if new.id = '%s'::uuid and new.current_location_event_id is not null then
+                    raise exception 'Task 4 snapshot flush failure';
+                  end if;
+                  return new;
+                end;
+                $$
+                """.formatted(functionName, vehicleId));
+        jdbcTemplate.execute("create trigger " + triggerName
+                + " before update on vehicles for each row execute function " + functionName + "()");
+        return new Trigger(triggerName, "vehicles", functionName);
+    }
+
+    private void assertRollbackStateFromIndependentConnection() {
+        try (Connection connection = dataSource.getConnection()) {
+            assertThat(queryString(connection, "select status from vehicle_tasks where id = ?", taskId))
+                    .isEqualTo("PENDING_DEPARTURE");
+            assertThat(queryString(connection, "select status from task_stops where id = ?", taskStopId))
+                    .isEqualTo("PLANNED");
+            assertThat(queryInt(connection,
+                    "select count(*) from vehicle_location_events where vehicle_task_id = ?", taskId)).isZero();
+            assertThat(queryInt(connection, "select count(*) from audit_logs where entity_id = ?", taskId)).isZero();
+            assertThat(queryUuid(connection,
+                    "select current_location_event_id from vehicles where id = ?", vehicleId)).isNull();
+        } catch (SQLException exception) {
+            throw new IllegalStateException("无法从独立连接核对回滚状态", exception);
+        }
+    }
+
+    private static String queryString(Connection connection, String sql, UUID id) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, id);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                return resultSet.getString(1);
+            }
+        }
+    }
+
+    private static int queryInt(Connection connection, String sql, UUID id) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, id);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                return resultSet.getInt(1);
+            }
+        }
+    }
+
+    private static UUID queryUuid(Connection connection, String sql, UUID id) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, id);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                return resultSet.getObject(1, UUID.class);
+            }
+        }
     }
 
     private TaskLocationReportRequest request(UUID idempotencyKey, String note) {
+        return request(idempotencyKey, OffsetDateTime.now().minusMinutes(1), note);
+    }
+
+    private TaskLocationReportRequest request(UUID idempotencyKey, OffsetDateTime reportedAt, String note) {
         return new TaskLocationReportRequest(
                 new BigDecimal("116.3200000"),
                 new BigDecimal("39.9300000"),
                 "北京市朝阳区 Task 4 PostgreSQL 测试点",
-                OffsetDateTime.now().minusMinutes(1),
+                reportedAt,
                 null,
                 note,
                 idempotencyKey);
@@ -275,9 +463,19 @@ class PostgisTaskLocationTransactionTest {
                 "select status from vehicle_tasks where id = ?", String.class, taskId);
     }
 
-    private int eventCount() {
+    private String taskStopStatus() {
+        return jdbcTemplate.queryForObject(
+                "select status from task_stops where id = ?", String.class, taskStopId);
+    }
+
+    private int eventCountForTask() {
         return jdbcTemplate.queryForObject(
                 "select count(*) from vehicle_location_events where vehicle_task_id = ?", Integer.class, taskId);
+    }
+
+    private int eventCountForKey(UUID key) {
+        return jdbcTemplate.queryForObject(
+                "select count(*) from vehicle_location_events where idempotency_key = ?", Integer.class, key);
     }
 
     private int auditCount() {
@@ -290,14 +488,49 @@ class PostgisTaskLocationTransactionTest {
                 "select current_location_event_id from vehicles where id = ?", UUID.class, vehicleId);
     }
 
-    private static void await(CountDownLatch latch) {
+    private <T> T withLocationReportAuthority(Supplier<T> action) {
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                ACTOR_ID,
+                "not-used",
+                List.of(new SimpleGrantedAuthority("LOCATION_REPORT"))));
+        SecurityContextHolder.setContext(context);
         try {
-            if (!latch.await(10, TimeUnit.SECONDS)) {
+            return action.get();
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        await(latch, 10);
+    }
+
+    private static void await(CountDownLatch latch, int timeoutSeconds) {
+        try {
+            if (!latch.await(timeoutSeconds, TimeUnit.SECONDS)) {
                 throw new AssertionError("等待 PostgreSQL 并发协调信号超时");
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("等待 PostgreSQL 并发协调信号被中断", exception);
+        }
+    }
+
+    private final class Trigger {
+        private final String triggerName;
+        private final String tableName;
+        private final String functionName;
+
+        private Trigger(String triggerName, String tableName, String functionName) {
+            this.triggerName = triggerName;
+            this.tableName = tableName;
+            this.functionName = functionName;
+        }
+
+        private void drop() {
+            jdbcTemplate.execute("drop trigger if exists " + triggerName + " on " + tableName);
+            jdbcTemplate.execute("drop function if exists " + functionName + "()");
         }
     }
 }

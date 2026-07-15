@@ -42,6 +42,7 @@ public class VehicleLocationCommandService {
     public LocationReportResponse report(UUID vehicleId, UUID actorId, LocationReportRequest request) {
         validateAssociations(vehicleId, request);
         LocationReportResult result = recorder.append(new LocationReportCommand(
+                LocationReportScope.INDEPENDENT_REPORT,
                 vehicleId, request.vehicleTaskId(), request.taskStopId(), request.virtualStopId(), request.eventType(),
                 request.longitude(), request.latitude(), request.standardizedAddress(), request.driverReportedAt(), actorId,
                 request.note(), request.correctionReason(), request.correctsEventId(), request.idempotencyKey()));

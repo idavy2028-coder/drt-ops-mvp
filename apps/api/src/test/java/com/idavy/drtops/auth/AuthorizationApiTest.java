@@ -21,6 +21,7 @@ import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.order.RideOrderRepository;
+import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
@@ -259,6 +260,38 @@ class AuthorizationApiTest {
         mockMvc.perform(get("/api/vehicles/locations/latest")
                         .header(HttpHeaders.AUTHORIZATION, bearer(operatorToken)))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void enforcesTaskActionPermissionBeforeProcessingRequiredLocationBody() throws Exception {
+        UUID taskId = vehicleTaskRepository.save(VehicleTask.pendingDeparture(
+                VEHICLE_ID,
+                DRIVER_ID,
+                OffsetDateTime.now().minusMinutes(5),
+                "MANUAL")).getId();
+        String request = """
+                {
+                  "locationReport": {
+                    "longitude": 120.1550,
+                    "latitude": 30.2741,
+                    "standardizedAddress": "演示服务区",
+                    "driverReportedAt": "%s",
+                    "idempotencyKey": "%s"
+                  }
+                }
+                """.formatted(OffsetDateTime.now().minusMinutes(1), UUID.randomUUID());
+
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/start")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(operatorToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/start")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.task.status").value("IN_PROGRESS"));
     }
 
     private UserAccount account(String username, RoleCode role) {
