@@ -138,6 +138,33 @@ describe("LocationReportPanel", () => {
     expect(screen.getByLabelText("纬度")).toHaveValue(35.23);
     expect(screen.getByLabelText("标准化地址")).toHaveValue("通渭县中医院");
   });
+
+  it("shows a recoverable provider error and keeps manual input when search or map pick fails", async () => {
+    const provider: LocationPickerProvider = {
+      search: vi.fn().mockRejectedValue(new Error("provider unavailable")),
+      pickOnMap: vi.fn().mockRejectedValue(new Error("provider unavailable"))
+    };
+    render(LocationReportPanel, {
+      props: {
+        actionLabel: "发车",
+        initialLocation: candidate(104.63, 35.21, "通渭县客运中心"),
+        virtualStops: [],
+        provider
+      }
+    });
+
+    await fireEvent.update(screen.getByLabelText("标准化地址"), "手工保留地址");
+    await fireEvent.update(screen.getByLabelText("地址搜索"), "中医院");
+    await fireEvent.click(screen.getByRole("button", { name: "搜索" }));
+
+    expect(await screen.findByText("地图交互失败，请稍后重试或手工录入。")).toBeInTheDocument();
+    expect(screen.getByLabelText("标准化地址")).toHaveValue("手工保留地址");
+
+    await fireEvent.click(screen.getByRole("button", { name: "地图选点" }));
+
+    expect(await screen.findByText("地图交互失败，请稍后重试或手工录入。")).toBeInTheDocument();
+    expect(screen.getByLabelText("标准化地址")).toHaveValue("手工保留地址");
+  });
 });
 
 function candidate(longitude: number, latitude: number, standardizedAddress: string): LocationCandidate {

@@ -52,6 +52,7 @@ export interface LocationCandidate {
   standardizedAddress: string;
   virtualStopId?: UUID;
   providerDegraded?: boolean;
+  outsideServiceArea?: boolean;
 }
 
 export interface LocationReportInput extends LocationCandidate {
@@ -82,6 +83,7 @@ export interface VehicleLocationView {
   recordedBy: UUID;
   correctsEventId?: UUID;
   snapshotApplied: boolean;
+  outsideServiceArea?: boolean;
 }
 
 export interface VehicleLocationSnapshot {
@@ -94,6 +96,7 @@ export interface VehicleLocationSnapshot {
   recordedAt: IsoDateTime;
   eventId: UUID;
   vehicleTaskId?: UUID;
+  outsideServiceArea?: boolean;
 }
 
 export interface VehicleLocationSnapshotItem {
@@ -181,7 +184,7 @@ export interface VehicleTask {
 
 export interface TaskActionResponse {
   task: VehicleTask;
-  locationEvent: VehicleLocationView;
+  locationEvent?: VehicleLocationView;
   snapshotApplied: boolean;
   warnings: string[];
   replayed: boolean;

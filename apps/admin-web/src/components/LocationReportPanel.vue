@@ -27,6 +27,7 @@ const searchResults = ref<LocationCandidate[]>([]);
 const errorMessage = ref("");
 const outsideWarningVisible = ref(false);
 const outsideConfirmed = ref(false);
+const candidateOutsideServiceArea = ref(props.initialLocation?.outsideServiceArea === true);
 const mapContainer = ref<HTMLElement | null>(null);
 
 const form = reactive({
@@ -61,7 +62,7 @@ function submit() {
     outsideWarningVisible.value = true;
     return;
   }
-  const { providerDegraded: _providerDegraded, ...reportCandidate } = candidate;
+  const { providerDegraded: _providerDegraded, outsideServiceArea: _outsideServiceArea, ...reportCandidate } = candidate;
   emit("submit", {
     ...reportCandidate,
     driverReportedAt: new Date(`${form.driverReportedAt}:00`).toISOString(),
@@ -90,7 +91,8 @@ function currentCandidate(): LocationCandidate | null {
     latitude,
     standardizedAddress: form.standardizedAddress.trim(),
     virtualStopId: form.virtualStopId || undefined,
-    providerDegraded: degraded.value
+    providerDegraded: degraded.value,
+    outsideServiceArea: candidateOutsideServiceArea.value
   };
 }
 
@@ -98,15 +100,25 @@ async function searchAddress() {
   if (props.provider === null || searchKeyword.value.trim() === "") {
     return;
   }
-  searchResults.value = await props.provider.search(searchKeyword.value.trim());
+  errorMessage.value = "";
+  try {
+    searchResults.value = await props.provider.search(searchKeyword.value.trim());
+  } catch {
+    errorMessage.value = "地图交互失败，请稍后重试或手工录入。";
+  }
 }
 
 async function pickOnMap() {
   if (props.provider === null || mapContainer.value === null) {
     return;
   }
-  const selected = await props.provider.pickOnMap(mapContainer.value, currentCandidate() ?? undefined);
-  applyCandidate(selected);
+  errorMessage.value = "";
+  try {
+    const selected = await props.provider.pickOnMap(mapContainer.value, currentCandidate() ?? undefined);
+    applyCandidate(selected);
+  } catch {
+    errorMessage.value = "地图交互失败，请稍后重试或手工录入。";
+  }
 }
 
 function selectVirtualStop() {
@@ -120,6 +132,7 @@ function selectVirtualStop() {
     form.longitude = coordinates.longitude.toString();
     form.latitude = coordinates.latitude.toString();
   }
+  candidateOutsideServiceArea.value = false;
   outsideWarningVisible.value = false;
   outsideConfirmed.value = false;
 }
@@ -129,6 +142,7 @@ function applyCandidate(candidate: LocationCandidate) {
   form.latitude = candidate.latitude.toString();
   form.standardizedAddress = candidate.standardizedAddress;
   form.virtualStopId = candidate.virtualStopId ?? "";
+  candidateOutsideServiceArea.value = candidate.outsideServiceArea === true;
   outsideWarningVisible.value = false;
   outsideConfirmed.value = false;
 }

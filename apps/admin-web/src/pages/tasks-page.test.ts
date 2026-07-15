@@ -129,6 +129,60 @@ describe("TasksPage", () => {
     expect(requestHeaders.get("Authorization")).toBe("Bearer dispatcher-token");
     expect(await screen.findByText("执行中")).toBeInTheDocument();
   });
+
+  it("accepts a legacy plain task action response without warnings", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("33333333-3333-4333-8333-333333333333");
+    const fetchMock = taskPageFetchMock({ actionResponse: legacyPlainStartedTaskResponse() });
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = render(TasksPage);
+
+    const dispatchedTaskRow = (await screen.findByText("task-dis")).closest("tr");
+    expect(dispatchedTaskRow).not.toBeNull();
+    await fireEvent.click(within(dispatchedTaskRow!).getByRole("button", { name: "选择" }));
+    await fireEvent.click(container.querySelector<HTMLButtonElement>(".toolbar .primary-button")!);
+
+    await fireEvent.update(await screen.findByLabelText("经度"), "104.6378");
+    await fireEvent.update(screen.getByLabelText("纬度"), "35.2109");
+    await fireEvent.update(screen.getByLabelText("标准化地址"), "通渭县客运中心");
+    await fireEvent.update(screen.getByLabelText("驾驶员反馈时间"), "2026-07-13T02:00");
+    await fireEvent.click(screen.getByRole("button", { name: "确认发车" }));
+
+    expect(await screen.findByText("执行中")).toBeInTheDocument();
+    expect(screen.queryByText("确认发车位置")).not.toBeInTheDocument();
+  });
+
+  it("passes outside-service-area candidates to the confirmation panel", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    const fetchMock = taskPageFetchMock({ latestLocations: [latestLocationItem("vehicle-2", true)] });
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = render(TasksPage);
+
+    const dispatchedTaskRow = (await screen.findByText("task-dis")).closest("tr");
+    expect(dispatchedTaskRow).not.toBeNull();
+    await fireEvent.click(within(dispatchedTaskRow!).getByRole("button", { name: "选择" }));
+    await fireEvent.click(container.querySelector<HTMLButtonElement>(".toolbar .primary-button")!);
+    await fireEvent.click(await screen.findByRole("button", { name: "确认发车" }));
+
+    expect(await screen.findByText("当前位置可能在服务区外，请确认后再保存。")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/vehicle-tasks/task-dispatched/start"))).toBe(false);
+
+    await fireEvent.click(screen.getByLabelText("确认服务区外位置仍需保存"));
+    await fireEvent.click(screen.getByRole("button", { name: "确认发车" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/vehicle-tasks/task-dispatched/start"))).toBe(true));
+  });
+
+  it("shows manual location source, driver reported time, and a clear empty-location placeholder", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", taskPageFetchMock({ latestLocations: [latestLocationItem("vehicle-2", false)] }));
+    render(TasksPage);
+
+    expect(await screen.findByText("人工上报")).toBeInTheDocument();
+    expect(screen.getByText("07/13 10:05")).toBeInTheDocument();
+    expect(screen.getByText("通渭县客运中心")).toBeInTheDocument();
+    expect(screen.getByText("无位置上报")).toBeInTheDocument();
+  });
 });
 
 function completedTaskResponse(): Response {
@@ -176,16 +230,22 @@ function emptyListResponse(): Response {
   return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
-function taskPageFetchMock() {
+function taskPageFetchMock(options: {
+  actionResponse?: Response;
+  latestLocations?: Array<ReturnType<typeof latestLocationItem>>;
+} = {}) {
   return vi.fn((url: string, _options?: RequestInit) => {
     if (url === "/api/vehicle-tasks") {
       return Promise.resolve(multipleTaskResponse());
     }
-    if (url === "/api/virtual-stops" || url === "/api/vehicles/locations/latest") {
+    if (url === "/api/virtual-stops") {
       return Promise.resolve(emptyListResponse());
     }
+    if (url === "/api/vehicles/locations/latest") {
+      return Promise.resolve(new Response(JSON.stringify({ data: options.latestLocations ?? [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
     if (url === "/api/vehicle-tasks/task-dispatched/start") {
-      return Promise.resolve(dispatchedTaskStartedActionResponse());
+      return Promise.resolve(options.actionResponse ?? dispatchedTaskStartedActionResponse());
     }
     return Promise.resolve(emptyListResponse());
   });
@@ -214,7 +274,7 @@ function dispatchedTaskStartedActionResponse(): Response {
       standardizedAddress: "通渭县客运中心",
       source: "MANUAL_DISPATCHER",
       coordinateSystem: "GCJ02",
-      driverReportedAt: "2026-07-13T02:00:00Z",
+      driverReportedAt: "2026-07-13T02:05:00Z",
       recordedAt: "2026-07-13T02:00:05Z",
       recordedBy: "dispatcher-1",
       snapshotApplied: true
@@ -223,4 +283,38 @@ function dispatchedTaskStartedActionResponse(): Response {
     warnings: [],
     replayed: false
   } }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function legacyPlainStartedTaskResponse(): Response {
+  return new Response(JSON.stringify({ data: {
+    id: "task-dispatched",
+    vehicleId: "vehicle-2",
+    driverId: "driver-2",
+    status: "IN_PROGRESS",
+    plannedStartAt: "2026-07-13T02:00:00Z",
+    stops: [
+      { id: "dispatched-boarding", virtualStopId: "virtual-stop-3", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T02:01:00Z", status: "PLANNED" },
+      { id: "dispatched-alighting", virtualStopId: "virtual-stop-4", sequenceNumber: 2, stopType: "ALIGHTING", plannedArrivalAt: "2026-07-13T02:11:00Z", status: "PLANNED" }
+    ]
+  } }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function latestLocationItem(vehicleId: string, outsideServiceArea: boolean) {
+  return {
+    vehicleId,
+    plateNumber: vehicleId === "vehicle-2" ? "甘E-T002" : "甘E-T001",
+    currentStatus: "IN_SERVICE",
+    latestLocation: {
+      longitude: 104.6378,
+      latitude: 35.2109,
+      standardizedAddress: "通渭县客运中心",
+      source: "MANUAL_DISPATCHER",
+      coordinateSystem: "GCJ02",
+      driverReportedAt: "2026-07-13T02:05:00Z",
+      recordedAt: "2026-07-13T02:00:05Z",
+      eventId: "loc-vehicle-2",
+      vehicleTaskId: "task-dispatched",
+      outsideServiceArea
+    }
+  };
 }

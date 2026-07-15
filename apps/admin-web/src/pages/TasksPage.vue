@@ -80,6 +80,14 @@ function formatDateTime(value?: string) {
   });
 }
 
+function locationSnapshot(vehicleId: UUID) {
+  return latestLocationItems.value.find((location) => location.vehicleId === vehicleId)?.latestLocation;
+}
+
+function locationSourceLabel() {
+  return "人工上报";
+}
+
 async function loadVehicleTasks() {
   status.value = "";
   loading.value = true;
@@ -257,7 +265,8 @@ function snapshotCandidate(vehicleId: UUID): LocationCandidate | undefined {
   return {
     longitude: Number(item.latestLocation.longitude),
     latitude: Number(item.latestLocation.latitude),
-    standardizedAddress: item.latestLocation.standardizedAddress
+    standardizedAddress: item.latestLocation.standardizedAddress,
+    outsideServiceArea: item.latestLocation.outsideServiceArea === true
   };
 }
 
@@ -284,7 +293,7 @@ function stopCandidate(stop: TaskStop): LocationCandidate | undefined {
 }
 
 function applyLocationEvent(response: TaskActionResponse) {
-  if (!response.snapshotApplied) {
+  if (!response.snapshotApplied || !response.locationEvent) {
     return;
   }
   const item: VehicleLocationSnapshotItem = {
@@ -300,7 +309,8 @@ function applyLocationEvent(response: TaskActionResponse) {
       driverReportedAt: response.locationEvent.driverReportedAt,
       recordedAt: response.locationEvent.recordedAt,
       eventId: response.locationEvent.id,
-      vehicleTaskId: response.locationEvent.vehicleTaskId
+      vehicleTaskId: response.locationEvent.vehicleTaskId,
+      outsideServiceArea: response.locationEvent.outsideServiceArea === true
     }
   };
   latestLocationItems.value = [
@@ -315,6 +325,10 @@ function parsePoint(value: string): { longitude: number; latitude: number } | nu
     return null;
   }
   return { longitude: Number(matched[1]), latitude: Number(matched[2]) };
+}
+
+function isOutsideServiceArea(location: LocationCandidate) {
+  return location.outsideServiceArea === true;
 }
 
 onMounted(() => {
@@ -360,6 +374,7 @@ onMounted(() => {
             <tr>
               <th>任务</th>
               <th>车辆</th>
+              <th>位置</th>
               <th>状态</th>
               <th>计划发车</th>
               <th>操作</th>
@@ -369,6 +384,14 @@ onMounted(() => {
             <tr v-for="task in tasks" :key="task.id" :class="{ 'is-selected': task.id === selectedTaskId }">
               <td>{{ taskLabel(task) }}</td>
               <td>{{ task.vehicleId }}</td>
+              <td>
+                <div v-if="locationSnapshot(task.vehicleId)" class="location-cell">
+                  <strong>{{ locationSourceLabel() }}</strong>
+                  <span>{{ formatDateTime(locationSnapshot(task.vehicleId)?.driverReportedAt) }}</span>
+                  <small>{{ locationSnapshot(task.vehicleId)?.standardizedAddress }}</small>
+                </div>
+                <span v-else class="location-placeholder">无位置上报</span>
+              </td>
               <td><StatusBadge :code="task.status" /></td>
               <td>{{ formatDateTime(task.plannedStartAt) }}</td>
               <td>
@@ -376,7 +399,7 @@ onMounted(() => {
               </td>
             </tr>
             <tr v-if="tasks.length === 0">
-              <td colspan="5">暂无车辆任务</td>
+              <td colspan="6">暂无车辆任务</td>
             </tr>
           </tbody>
         </table>
@@ -395,6 +418,7 @@ onMounted(() => {
           :initial-location="pendingAction.initialLocation"
           :virtual-stops="virtualStops"
           :submitting="submittingLocation"
+          :is-outside-service-area="isOutsideServiceArea"
           @close="pendingAction = null"
           @submit="submitPendingLocation"
         />
