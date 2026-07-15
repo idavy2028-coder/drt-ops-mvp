@@ -184,6 +184,19 @@ class ManualReviewApiTest {
     }
 
     @Test
+    void approveManualReviewRejectsMissingSelectedExistingTask() throws Exception {
+        UUID decisionId = createManualReviewDecision(UUID.randomUUID());
+
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                .andExpect(status().isConflict());
+
+        assertThat(vehicleTaskRepository.findAll()).isEmpty();
+        assertThat(rideOrderRepository.findAll().getFirst().getStatus())
+                .isEqualTo(OrderStatus.PENDING_MANUAL_REVIEW);
+    }
+
+    @Test
     void rejectManualReviewMarksOrderUnserviceable() throws Exception {
         UUID decisionId = createManualReviewDecision();
 

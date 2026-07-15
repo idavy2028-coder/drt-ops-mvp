@@ -178,7 +178,7 @@ public class TaskExecutionService {
     }
 
     private VehicleTask closeTaskAsException(UUID actorId, UUID taskId, String reason, String auditAction) {
-        VehicleTask task = task(taskId);
+        VehicleTask task = taskForExecution(taskId);
         task.markException(reason);
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() != OrderStatus.COMPLETED
@@ -263,11 +263,6 @@ public class TaskExecutionService {
 
     private VehicleTask taskForExecution(UUID taskId) {
         return vehicleTaskRepository.findByIdForExecution(taskId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "车辆任务不存在"));
-    }
-
-    private VehicleTask task(UUID taskId) {
-        return vehicleTaskRepository.findWithStopsById(taskId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "车辆任务不存在"));
     }
 

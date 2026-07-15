@@ -3,11 +3,23 @@ package com.idavy.drtops.domain.task;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.idavy.drtops.domain.dispatch.DispatchDecision;
+import com.idavy.drtops.domain.dispatch.DispatchDecisionRepository;
+import com.idavy.drtops.domain.dispatch.DispatchDecisionType;
+import com.idavy.drtops.domain.dispatch.DispatchOrchestrator;
+import com.idavy.drtops.domain.dispatch.DispatchResult;
+import com.idavy.drtops.domain.dispatch.ManualReviewService;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
 import com.idavy.drtops.domain.location.LocationEventType;
 import com.idavy.drtops.domain.location.LocationReportRequest;
 import com.idavy.drtops.domain.location.LocationReportResponse;
 import com.idavy.drtops.domain.location.VehicleLocationCommandService;
+import com.idavy.drtops.domain.order.OrderStatus;
+import com.idavy.drtops.domain.order.RideOrder;
+import com.idavy.drtops.domain.order.RideOrderRepository;
+import com.idavy.drtops.integration.algorithm.AlgorithmClient;
+import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
+import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -15,6 +27,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -30,8 +43,14 @@ import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -48,13 +67,19 @@ import org.springframework.web.server.ResponseStatusException;
         "spring.datasource.username=drt_ops",
         "spring.datasource.password=drt_ops"
 })
+@Import(PostgisTaskLocationTransactionTest.DispatchTestConfiguration.class)
 class PostgisTaskLocationTransactionTest {
 
     private static final UUID ACTOR_ID = UUID.fromString("77777777-7777-7777-7777-777777777704");
 
     @Autowired TaskExecutionService taskExecutionService;
     @Autowired VehicleLocationCommandService locationCommandService;
+    @Autowired DispatchOrchestrator dispatchOrchestrator;
+    @Autowired ManualReviewService manualReviewService;
     @Autowired VehicleTaskRepository vehicleTaskRepository;
+    @Autowired RideOrderRepository rideOrderRepository;
+    @Autowired DispatchDecisionRepository dispatchDecisionRepository;
+    @Autowired StubAlgorithmClient algorithmClient;
     @Autowired IdempotencyKeyLock idempotencyKeyLock;
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired JdbcTemplate jdbcTemplate;
@@ -65,12 +90,13 @@ class PostgisTaskLocationTransactionTest {
     private UUID driverId;
     private UUID taskId;
     private UUID taskStopId;
+    private UUID virtualStopId;
 
     @BeforeEach
     void setUpFixture() {
         UUID ruleSetId = UUID.randomUUID();
         UUID serviceAreaId = UUID.randomUUID();
-        UUID virtualStopId = UUID.randomUUID();
+        virtualStopId = UUID.randomUUID();
         vehicleId = UUID.randomUUID();
         driverId = UUID.randomUUID();
         taskId = UUID.randomUUID();
@@ -132,16 +158,19 @@ class PostgisTaskLocationTransactionTest {
 
     @Test
     void auditFlushFailureThroughProductionProxyRollsBackTaskNodeEventSnapshotAndAudit() {
+        prepareTaskForArrival();
         Trigger trigger = installAuditFailureTrigger();
         try {
-            assertThatThrownBy(() -> taskExecutionService.start(
-                            ACTOR_ID, taskId, request(UUID.randomUUID(), "审计 flush 失败回滚")))
-                    .isInstanceOf(RuntimeException.class);
+            assertThatThrownBy(() -> taskExecutionService.arrive(
+                            ACTOR_ID, taskId, taskStopId, request(UUID.randomUUID(), "审计 flush 失败回滚")))
+                    .isInstanceOf(RuntimeException.class)
+                    .satisfies(exception -> assertThat(rootCause(exception).getMessage())
+                            .contains("Task 4 audit flush failure"));
         } finally {
             trigger.drop();
         }
 
-        assertRollbackStateFromIndependentConnection();
+        assertRollbackStateFromIndependentConnection("IN_PROGRESS");
     }
 
     @Test
@@ -158,21 +187,24 @@ class PostgisTaskLocationTransactionTest {
         assertThatThrownBy(() -> taskExecutionService.start(ACTOR_ID, taskId, invalid))
                 .isInstanceOf(RuntimeException.class);
 
-        assertRollbackStateFromIndependentConnection();
+        assertRollbackStateFromIndependentConnection("PENDING_DEPARTURE");
     }
 
     @Test
     void snapshotFlushFailureThroughProductionProxyRollsBackTaskNodeEventAndAudit() {
+        prepareTaskForArrival();
         Trigger trigger = installSnapshotFailureTrigger();
         try {
-            assertThatThrownBy(() -> taskExecutionService.start(
-                            ACTOR_ID, taskId, request(UUID.randomUUID(), "快照 flush 失败回滚")))
-                    .isInstanceOf(RuntimeException.class);
+            assertThatThrownBy(() -> taskExecutionService.arrive(
+                            ACTOR_ID, taskId, taskStopId, request(UUID.randomUUID(), "快照 flush 失败回滚")))
+                    .isInstanceOf(RuntimeException.class)
+                    .satisfies(exception -> assertThat(rootCause(exception).getMessage())
+                            .contains("Task 4 snapshot flush failure"));
         } finally {
             trigger.drop();
         }
 
-        assertRollbackStateFromIndependentConnection();
+        assertRollbackStateFromIndependentConnection("IN_PROGRESS");
     }
 
     @Test
@@ -196,6 +228,103 @@ class PostgisTaskLocationTransactionTest {
         assertThat(eventCountForTask()).isOne();
         assertThat(auditCount()).isOne();
         assertThat(currentLocationEventId()).isEqualTo(first.locationEvent().id());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"VEHICLE_EXCEPTION", "SEVERE_DELAY"})
+    void completionSerializesBeforeExceptionClosuresAndCannotBeOverwritten(String closure) throws Exception {
+        AtomicInteger closurePid = new AtomicInteger();
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(3)) {
+            CompletionRace race = startBlockedCompletion(executor);
+            Future<VehicleTask> closureResult = submitTransactional(
+                    executor,
+                    closurePid,
+                    () -> "VEHICLE_EXCEPTION".equals(closure)
+                            ? taskExecutionService.markException(ACTOR_ID, taskId, "车辆故障并发")
+                            : taskExecutionService.markSevereDelay(ACTOR_ID, taskId, "严重延误并发"));
+            try {
+                awaitBlockedBy(closurePid, race.completionPid().get());
+                assertThat(isBlockedBy(closurePid.get(), race.completionPid().get())).isTrue();
+            } finally {
+                race.releaseBlocker().countDown();
+            }
+
+            race.completion().get(10, TimeUnit.SECONDS);
+            race.blocker().get(10, TimeUnit.SECONDS);
+            assertThatThrownBy(() -> closureResult.get(10, TimeUnit.SECONDS))
+                    .isInstanceOfSatisfying(ExecutionException.class, exception ->
+                            assertThat(exception.getCause()).isInstanceOf(IllegalStateException.class));
+        }
+
+        assertThat(taskStatus()).isEqualTo("COMPLETED");
+        assertThat(taskStopStatus()).isEqualTo("BOARDED");
+        assertThat(eventCountForTask()).isOne();
+        assertThat(taskAuditCount(closure.equals("VEHICLE_EXCEPTION")
+                ? "TASK_EXCEPTION" : "TASK_SEVERE_DELAY")).isZero();
+    }
+
+    @Test
+    void autoInsertionQueuedBehindCompletionCannotAddStopsToCompletedTask() throws Exception {
+        RideOrder order = createPendingOrder("138" + randomDigits());
+        algorithmClient.stubAutoDispatchIntoTask(taskId, vehicleId);
+        AtomicInteger dispatchPid = new AtomicInteger();
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(3)) {
+            CompletionRace race = startBlockedCompletion(executor);
+            Future<DispatchResult> dispatch = submitTransactional(
+                    executor,
+                    dispatchPid,
+                    () -> dispatchOrchestrator.dispatchOrder(order.getId()));
+            try {
+                awaitBlockedBy(dispatchPid, race.completionPid().get());
+                assertThat(isBlockedBy(dispatchPid.get(), race.completionPid().get())).isTrue();
+            } finally {
+                race.releaseBlocker().countDown();
+            }
+
+            race.completion().get(10, TimeUnit.SECONDS);
+            race.blocker().get(10, TimeUnit.SECONDS);
+            assertFutureConflict(dispatch);
+        }
+
+        assertCompletedWithoutInsertedStops(order.getId(), OrderStatus.PENDING_DISPATCH);
+    }
+
+    @Test
+    void manualInsertionQueuedBehindCompletionCannotAddStopsToCompletedTask() throws Exception {
+        RideOrder order = createPendingOrder("137" + randomDigits());
+        order.markPendingManualReview("Task 4 PostgreSQL 人工审核并发");
+        order = rideOrderRepository.save(order);
+        DispatchDecision decision = dispatchDecisionRepository.save(DispatchDecision.manualReview(
+                order.getId(),
+                1,
+                vehicleId,
+                taskId,
+                "task-4-test",
+                "SYSTEM",
+                "task-4-test"));
+        AtomicInteger approvalPid = new AtomicInteger();
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(3)) {
+            CompletionRace race = startBlockedCompletion(executor);
+            Future<DispatchResult> approval = submitTransactional(
+                    executor,
+                    approvalPid,
+                    () -> manualReviewService.approve(ACTOR_ID, decision.getId()));
+            try {
+                awaitBlockedBy(approvalPid, race.completionPid().get());
+                assertThat(isBlockedBy(approvalPid.get(), race.completionPid().get())).isTrue();
+            } finally {
+                race.releaseBlocker().countDown();
+            }
+
+            race.completion().get(10, TimeUnit.SECONDS);
+            race.blocker().get(10, TimeUnit.SECONDS);
+            assertFutureConflict(approval);
+        }
+
+        assertCompletedWithoutInsertedStops(order.getId(), OrderStatus.PENDING_MANUAL_REVIEW);
     }
 
     @Test
@@ -307,6 +436,93 @@ class PostgisTaskLocationTransactionTest {
         assertThat(auditCount()).isOne();
     }
 
+    private CompletionRace startBlockedCompletion(ExecutorService executor) throws Exception {
+        prepareTaskForCompletion();
+        CountDownLatch taskLocked = new CountDownLatch(1);
+        CountDownLatch releaseBlocker = new CountDownLatch(1);
+        AtomicInteger blockerPid = new AtomicInteger();
+        AtomicInteger completionPid = new AtomicInteger();
+
+        Future<?> blocker = executor.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            vehicleTaskRepository.findByIdForExecution(taskId).orElseThrow();
+            blockerPid.set(backendPid());
+            taskLocked.countDown();
+            await(releaseBlocker, 30);
+        }));
+        assertThat(taskLocked.await(10, TimeUnit.SECONDS)).isTrue();
+
+        Future<TaskActionResponse> completion = submitTransactional(
+                executor,
+                completionPid,
+                () -> taskExecutionService.complete(
+                        ACTOR_ID, taskId, request(UUID.randomUUID(), "完成与其他任务写入并发")));
+        awaitBlockedBy(completionPid, blockerPid.get());
+        assertThat(isBlockedBy(completionPid.get(), blockerPid.get())).isTrue();
+        return new CompletionRace(blocker, completion, completionPid, releaseBlocker);
+    }
+
+    private <T> Future<T> submitTransactional(
+            ExecutorService executor,
+            AtomicInteger callerPid,
+            Supplier<T> action) {
+        return executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+            callerPid.set(backendPid());
+            return action.get();
+        }));
+    }
+
+    private static void assertFutureConflict(Future<?> future) {
+        assertThatThrownBy(() -> future.get(10, TimeUnit.SECONDS))
+                .isInstanceOfSatisfying(ExecutionException.class, exception ->
+                        assertThat(exception.getCause())
+                                .isInstanceOfSatisfying(ResponseStatusException.class, cause ->
+                                        assertThat(cause.getStatusCode()).isEqualTo(HttpStatus.CONFLICT)));
+    }
+
+    private void assertCompletedWithoutInsertedStops(UUID orderId, OrderStatus expectedOrderStatus) {
+        assertThat(taskStatus()).isEqualTo("COMPLETED");
+        assertThat(taskStopStatus()).isEqualTo("BOARDED");
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from task_stops where vehicle_task_id = ?",
+                Integer.class,
+                taskId)).isOne();
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from task_stops where ride_order_id = ? and status = 'PLANNED'",
+                Integer.class,
+                orderId)).isZero();
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(expectedOrderStatus);
+    }
+
+    private RideOrder createPendingOrder(String phone) {
+        return rideOrderRepository.save(RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
+                "Task 4 PostgreSQL 并发乘客",
+                phone,
+                1,
+                "IMMEDIATE",
+                new BigDecimal("116.3200000"),
+                new BigDecimal("39.9300000"),
+                new BigDecimal("116.3210000"),
+                new BigDecimal("39.9310000"),
+                virtualStopId,
+                virtualStopId,
+                OffsetDateTime.now().plusMinutes(15))));
+    }
+
+    private static String randomDigits() {
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    }
+
+    private void prepareTaskForArrival() {
+        jdbcTemplate.update("update vehicle_tasks set status = 'IN_PROGRESS', current_stop_id = null where id = ?", taskId);
+        jdbcTemplate.update("update task_stops set status = 'PLANNED', actual_arrival_at = null where id = ?", taskStopId);
+    }
+
+    private void prepareTaskForCompletion() {
+        jdbcTemplate.update("update vehicle_tasks set status = 'IN_PROGRESS', current_stop_id = null where id = ?", taskId);
+        jdbcTemplate.update("update task_stops set status = 'BOARDED' where id = ?", taskStopId);
+    }
+
     private TaskActionResponse concurrentStart(
             AtomicInteger callerPid,
             TaskLocationReportRequest request) {
@@ -397,20 +613,33 @@ class PostgisTaskLocationTransactionTest {
         return new Trigger(triggerName, "vehicles", functionName);
     }
 
-    private void assertRollbackStateFromIndependentConnection() {
+    private void assertRollbackStateFromIndependentConnection(String expectedTaskStatus) {
         try (Connection connection = dataSource.getConnection()) {
             assertThat(queryString(connection, "select status from vehicle_tasks where id = ?", taskId))
-                    .isEqualTo("PENDING_DEPARTURE");
+                    .isEqualTo(expectedTaskStatus);
             assertThat(queryString(connection, "select status from task_stops where id = ?", taskStopId))
                     .isEqualTo("PLANNED");
+            assertThat(queryInt(connection,
+                    "select count(*) from task_stops where id = ? and actual_arrival_at is not null", taskStopId))
+                    .isZero();
             assertThat(queryInt(connection,
                     "select count(*) from vehicle_location_events where vehicle_task_id = ?", taskId)).isZero();
             assertThat(queryInt(connection, "select count(*) from audit_logs where entity_id = ?", taskId)).isZero();
             assertThat(queryUuid(connection,
                     "select current_location_event_id from vehicles where id = ?", vehicleId)).isNull();
+            assertThat(queryUuid(connection,
+                    "select current_stop_id from vehicle_tasks where id = ?", taskId)).isNull();
         } catch (SQLException exception) {
             throw new IllegalStateException("无法从独立连接核对回滚状态", exception);
         }
+    }
+
+    private static Throwable rootCause(Throwable throwable) {
+        Throwable cause = throwable;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     private static String queryString(Connection connection, String sql, UUID id) throws SQLException {
@@ -483,6 +712,14 @@ class PostgisTaskLocationTransactionTest {
                 "select count(*) from audit_logs where entity_id = ?", Integer.class, taskId);
     }
 
+    private int taskAuditCount(String action) {
+        return jdbcTemplate.queryForObject(
+                "select count(*) from audit_logs where entity_id = ? and action = ?",
+                Integer.class,
+                taskId,
+                action);
+    }
+
     private UUID currentLocationEventId() {
         return jdbcTemplate.queryForObject(
                 "select current_location_event_id from vehicles where id = ?", UUID.class, vehicleId);
@@ -514,6 +751,53 @@ class PostgisTaskLocationTransactionTest {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("等待 PostgreSQL 并发协调信号被中断", exception);
+        }
+    }
+
+    private record CompletionRace(
+            Future<?> blocker,
+            Future<TaskActionResponse> completion,
+            AtomicInteger completionPid,
+            CountDownLatch releaseBlocker) {
+    }
+
+    @TestConfiguration
+    static class DispatchTestConfiguration {
+
+        @Bean
+        @Primary
+        StubAlgorithmClient algorithmClient() {
+            return new StubAlgorithmClient();
+        }
+    }
+
+    static final class StubAlgorithmClient implements AlgorithmClient {
+
+        private volatile DispatchEvaluateResponse response;
+
+        @Override
+        public DispatchEvaluateResponse evaluate(DispatchEvaluateRequest request) {
+            if (response == null) {
+                throw new IllegalStateException("Task 4 PostgreSQL 算法响应未配置");
+            }
+            return response;
+        }
+
+        void stubAutoDispatchIntoTask(UUID selectedTaskId, UUID selectedVehicleId) {
+            response = new DispatchEvaluateResponse(
+                    DispatchDecisionType.AUTO_DISPATCH,
+                    new DispatchEvaluateResponse.BestPlan(
+                            selectedTaskId,
+                            selectedVehicleId,
+                            new BigDecimal("90.00"),
+                            6,
+                            3,
+                            "SAME_DIRECTION",
+                            new BigDecimal("0.25")),
+                    1,
+                    0,
+                    List.of(),
+                    Map.of("reason", "Task 4 PostgreSQL 自动插单并发"));
         }
     }
 
