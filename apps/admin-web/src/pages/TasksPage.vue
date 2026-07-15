@@ -10,9 +10,12 @@ import {
   markTaskSevereDelay,
   startTask
 } from "../api/tasks";
-import type { TaskStop, VehicleTask } from "../api/types";
+import { listVirtualStops } from "../api/resources";
+import { listLatestVehicleLocations } from "../api/vehicleLocations";
+import type { LocationCandidate, LocationReportInput, TaskActionResponse, TaskStop, UUID, VehicleLocationSnapshotItem, VehicleTask, VirtualStop } from "../api/types";
 import TaskStopTimeline from "../components/TaskStopTimeline.vue";
 import StatusBadge from "../components/StatusBadge.vue";
+import LocationReportPanel from "../components/LocationReportPanel.vue";
 import { authStore } from "../auth/authStore";
 import { userMessage } from "../api/errors";
 import { feedbackStore } from "../stores/feedbackStore";
@@ -22,6 +25,18 @@ const selectedTaskId = ref("");
 const status = ref("");
 const lastAction = ref("等待操作");
 const loading = ref(false);
+const submittingLocation = ref(false);
+const virtualStops = ref<VirtualStop[]>([]);
+const latestLocationItems = ref<VehicleLocationSnapshotItem[]>([]);
+
+type PendingTaskAction =
+  | { type: "start"; label: "发车"; task: VehicleTask; initialLocation?: LocationCandidate }
+  | { type: "arrive"; label: "到站"; task: VehicleTask; stop: TaskStop; initialLocation?: LocationCandidate }
+  | { type: "board"; label: "上车"; task: VehicleTask; stop: TaskStop; initialLocation?: LocationCandidate }
+  | { type: "alight"; label: "下车"; task: VehicleTask; stop: TaskStop; initialLocation?: LocationCandidate }
+  | { type: "complete"; label: "完成"; task: VehicleTask; initialLocation?: LocationCandidate };
+
+const pendingAction = ref<PendingTaskAction | null>(null);
 
 const selectedTask = computed(() => {
   return tasks.value.find((task) => task.id === selectedTaskId.value) ?? tasks.value[0];
@@ -80,6 +95,20 @@ async function loadVehicleTasks() {
   }
 }
 
+async function loadLocationReferenceData() {
+  try {
+    const [stops, locations] = await Promise.all([
+      listVirtualStops(),
+      listLatestVehicleLocations()
+    ]);
+    virtualStops.value = stops;
+    latestLocationItems.value = locations;
+  } catch {
+    virtualStops.value = [];
+    latestLocationItems.value = [];
+  }
+}
+
 function updateTask(task: VehicleTask, action: string) {
   const index = tasks.value.findIndex((candidate) => candidate.id === task.id);
   if (index >= 0) {
@@ -102,39 +131,68 @@ async function runTaskAction(action: string, operation: () => Promise<VehicleTas
   }
 }
 
-async function startSelectedTask() {
+function openStartTaskPanel() {
   if (!selectedTask.value) {
     return;
   }
-  await runTaskAction("发车", () => startTask(selectedTask.value!.id));
+  pendingAction.value = {
+    type: "start",
+    label: "发车",
+    task: selectedTask.value,
+    initialLocation: snapshotCandidate(selectedTask.value.vehicleId)
+  };
 }
 
-async function arriveNextStop() {
+function openArriveStopPanel() {
   if (!selectedTask.value || !nextPlannedStop.value) {
     return;
   }
-  await runTaskAction("到站", () => arriveStop(selectedTask.value!.id, nextPlannedStop.value!.id));
+  pendingAction.value = {
+    type: "arrive",
+    label: "到站",
+    task: selectedTask.value,
+    stop: nextPlannedStop.value,
+    initialLocation: stopCandidate(nextPlannedStop.value)
+  };
 }
 
-async function boardNextPassenger() {
+function openBoardStopPanel() {
   if (!selectedTask.value || !nextBoardingStop.value) {
     return;
   }
-  await runTaskAction("上车", () => boardStop(selectedTask.value!.id, nextBoardingStop.value!.id));
+  pendingAction.value = {
+    type: "board",
+    label: "上车",
+    task: selectedTask.value,
+    stop: nextBoardingStop.value,
+    initialLocation: stopCandidate(nextBoardingStop.value)
+  };
 }
 
-async function alightNextPassenger() {
+function openAlightStopPanel() {
   if (!selectedTask.value || !nextAlightingStop.value) {
     return;
   }
-  await runTaskAction("下车", () => alightStop(selectedTask.value!.id, nextAlightingStop.value!.id));
+  pendingAction.value = {
+    type: "alight",
+    label: "下车",
+    task: selectedTask.value,
+    stop: nextAlightingStop.value,
+    initialLocation: stopCandidate(nextAlightingStop.value)
+  };
 }
 
-async function completeSelectedTask() {
+function openCompleteTaskPanel() {
   if (!selectedTask.value) {
     return;
   }
-  await runTaskAction("完成", () => completeTask(selectedTask.value!.id));
+  const lastStop = selectedStops.value[selectedStops.value.length - 1];
+  pendingAction.value = {
+    type: "complete",
+    label: "完成",
+    task: selectedTask.value,
+    initialLocation: lastStop ? stopCandidate(lastStop) : snapshotCandidate(selectedTask.value.vehicleId)
+  };
 }
 
 async function failSelectedTask() {
@@ -151,8 +209,117 @@ async function delaySelectedTask() {
   await runTaskAction("严重延误", () => markTaskSevereDelay(selectedTask.value!.id, "预计到达严重延误"));
 }
 
+async function submitPendingLocation(locationReport: LocationReportInput) {
+  const action = pendingAction.value;
+  if (!action) {
+    return;
+  }
+  status.value = "";
+  submittingLocation.value = true;
+  try {
+    const response = await runPendingOperation(action, locationReport);
+    updateTask(response.task, action.label);
+    applyLocationEvent(response);
+    pendingAction.value = null;
+    if (response.warnings.includes("OUTSIDE_SERVICE_AREA")) {
+      feedbackStore.success(`任务已${lastAction.value}，位置在服务区外`);
+    } else {
+      feedbackStore.success(`任务已${lastAction.value}`);
+    }
+  } catch (error) {
+    status.value = userMessage(error, `${action.label}失败`);
+    feedbackStore.error(status.value);
+  } finally {
+    submittingLocation.value = false;
+  }
+}
+
+function runPendingOperation(action: PendingTaskAction, locationReport: LocationReportInput): Promise<TaskActionResponse> {
+  switch (action.type) {
+    case "start":
+      return startTask(action.task.id, locationReport);
+    case "arrive":
+      return arriveStop(action.task.id, action.stop.id, locationReport);
+    case "board":
+      return boardStop(action.task.id, action.stop.id, locationReport);
+    case "alight":
+      return alightStop(action.task.id, action.stop.id, locationReport);
+    case "complete":
+      return completeTask(action.task.id, locationReport);
+  }
+}
+
+function snapshotCandidate(vehicleId: UUID): LocationCandidate | undefined {
+  const item = latestLocationItems.value.find((location) => location.vehicleId === vehicleId);
+  if (!item) {
+    return undefined;
+  }
+  return {
+    longitude: Number(item.latestLocation.longitude),
+    latitude: Number(item.latestLocation.latitude),
+    standardizedAddress: item.latestLocation.standardizedAddress
+  };
+}
+
+function stopCandidate(stop: TaskStop): LocationCandidate | undefined {
+  const virtualStop = virtualStops.value.find((candidate) => candidate.id === stop.virtualStopId);
+  if (!virtualStop) {
+    return undefined;
+  }
+  const coordinates = parsePoint(virtualStop.location);
+  if (!coordinates) {
+    return {
+      longitude: 0,
+      latitude: 0,
+      standardizedAddress: virtualStop.name,
+      virtualStopId: virtualStop.id,
+      providerDegraded: true
+    };
+  }
+  return {
+    ...coordinates,
+    standardizedAddress: virtualStop.name,
+    virtualStopId: virtualStop.id
+  };
+}
+
+function applyLocationEvent(response: TaskActionResponse) {
+  if (!response.snapshotApplied) {
+    return;
+  }
+  const item: VehicleLocationSnapshotItem = {
+    vehicleId: response.locationEvent.vehicleId,
+    plateNumber: "",
+    currentStatus: "",
+    latestLocation: {
+      longitude: response.locationEvent.longitude,
+      latitude: response.locationEvent.latitude,
+      standardizedAddress: response.locationEvent.standardizedAddress,
+      source: response.locationEvent.source,
+      coordinateSystem: response.locationEvent.coordinateSystem,
+      driverReportedAt: response.locationEvent.driverReportedAt,
+      recordedAt: response.locationEvent.recordedAt,
+      eventId: response.locationEvent.id,
+      vehicleTaskId: response.locationEvent.vehicleTaskId
+    }
+  };
+  latestLocationItems.value = [
+    item,
+    ...latestLocationItems.value.filter((location) => location.vehicleId !== item.vehicleId)
+  ];
+}
+
+function parsePoint(value: string): { longitude: number; latitude: number } | null {
+  const matched = value.match(/POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\)/i);
+  if (!matched) {
+    return null;
+  }
+  return { longitude: Number(matched[1]), latitude: Number(matched[2]) };
+}
+
 onMounted(() => {
   void loadVehicleTasks();
+  void loadLocationReferenceData();
 });
 </script>
 
@@ -214,14 +381,23 @@ onMounted(() => {
           </tbody>
         </table>
         <div v-if="authStore.has('TASK_EXECUTE')" class="toolbar">
-          <button class="primary-button" type="button" :disabled="!canStartTask" @click="startSelectedTask">发车</button>
-          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextPlannedStop" @click="arriveNextStop">到站</button>
-          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextBoardingStop" @click="boardNextPassenger">上车</button>
-          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextAlightingStop" @click="alightNextPassenger">下车</button>
-          <button class="secondary-button" type="button" :disabled="!canOperateStops || !canComplete" @click="completeSelectedTask">完成</button>
+          <button class="primary-button" type="button" :disabled="!canStartTask" @click="openStartTaskPanel">发车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextPlannedStop" @click="openArriveStopPanel">到站</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextBoardingStop" @click="openBoardStopPanel">上车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextAlightingStop" @click="openAlightStopPanel">下车</button>
+          <button class="secondary-button" type="button" :disabled="!canOperateStops || !canComplete" @click="openCompleteTaskPanel">完成</button>
           <button class="danger-button" type="button" :disabled="!canHandleException" @click="failSelectedTask">车辆故障</button>
           <button class="danger-button" type="button" :disabled="!canHandleException" @click="delaySelectedTask">严重延误</button>
         </div>
+        <LocationReportPanel
+          v-if="pendingAction"
+          :action-label="pendingAction.label"
+          :initial-location="pendingAction.initialLocation"
+          :virtual-stops="virtualStops"
+          :submitting="submittingLocation"
+          @close="pendingAction = null"
+          @submit="submitPendingLocation"
+        />
       </section>
 
       <section class="work-panel">

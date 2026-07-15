@@ -46,6 +46,63 @@ export interface VirtualStop {
   enabled: boolean;
 }
 
+export interface LocationCandidate {
+  longitude: number;
+  latitude: number;
+  standardizedAddress: string;
+  virtualStopId?: UUID;
+  providerDegraded?: boolean;
+}
+
+export interface LocationReportInput extends LocationCandidate {
+  driverReportedAt: IsoDateTime;
+  note?: string;
+  idempotencyKey: UUID;
+}
+
+export interface LocationPickerProvider {
+  search(keyword: string): Promise<LocationCandidate[]>;
+  pickOnMap(container: HTMLElement, initial?: LocationCandidate): Promise<LocationCandidate>;
+}
+
+export interface VehicleLocationView {
+  id: UUID;
+  vehicleId: UUID;
+  vehicleTaskId?: UUID;
+  taskStopId?: UUID;
+  virtualStopId?: UUID;
+  eventType: string;
+  longitude: DecimalValue;
+  latitude: DecimalValue;
+  standardizedAddress: string;
+  source: string;
+  coordinateSystem: string;
+  driverReportedAt: IsoDateTime;
+  recordedAt: IsoDateTime;
+  recordedBy: UUID;
+  correctsEventId?: UUID;
+  snapshotApplied: boolean;
+}
+
+export interface VehicleLocationSnapshot {
+  longitude: DecimalValue;
+  latitude: DecimalValue;
+  standardizedAddress: string;
+  source: string;
+  coordinateSystem: string;
+  driverReportedAt: IsoDateTime;
+  recordedAt: IsoDateTime;
+  eventId: UUID;
+  vehicleTaskId?: UUID;
+}
+
+export interface VehicleLocationSnapshotItem {
+  vehicleId: UUID;
+  plateNumber: string;
+  currentStatus: string;
+  latestLocation: VehicleLocationSnapshot;
+}
+
 export interface Vehicle {
   id: UUID;
   plateNumber: string;
@@ -54,6 +111,7 @@ export interface Vehicle {
   currentStatus: string;
   fleetName: string;
   dispatchable: boolean;
+  latestLocation?: VehicleLocationSnapshot;
 }
 
 export interface Driver {
@@ -119,6 +177,14 @@ export interface VehicleTask {
   status: string;
   plannedStartAt: IsoDateTime;
   stops: TaskStop[];
+}
+
+export interface TaskActionResponse {
+  task: VehicleTask;
+  locationEvent: VehicleLocationView;
+  snapshotApplied: boolean;
+  warnings: string[];
+  replayed: boolean;
 }
 
 export interface DispatchResult {

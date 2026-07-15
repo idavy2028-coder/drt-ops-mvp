@@ -67,11 +67,9 @@ describe("TasksPage", () => {
     }
   });
 
-  it("starts the selected non-first dispatched task", async () => {
+  it("opens a location confirmation panel instead of directly starting the selected task", async () => {
     authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(multipleTaskResponse())
-      .mockResolvedValueOnce(dispatchedTaskStartedResponse());
+    const fetchMock = taskPageFetchMock();
     vi.stubGlobal("fetch", fetchMock);
     const { container } = render(TasksPage);
 
@@ -84,16 +82,52 @@ describe("TasksPage", () => {
     expect(startButton).not.toBeNull();
     await fireEvent.click(startButton!);
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(fetchMock).toHaveBeenLastCalledWith(
+    expect(await screen.findByText("确认发车位置")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/vehicle-tasks/task-dispatched/start"))).toBe(false);
+  });
+
+  it("submits a task action with the confirmed location report and updates from response.task", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-4222-8222-222222222222");
+    const fetchMock = taskPageFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = render(TasksPage);
+
+    const dispatchedTaskRow = (await screen.findByText("task-dis")).closest("tr");
+    expect(dispatchedTaskRow).not.toBeNull();
+    await fireEvent.click(within(dispatchedTaskRow!).getByRole("button", { name: "选择" }));
+    const startButton = container.querySelector<HTMLButtonElement>(".toolbar .primary-button");
+    expect(startButton).not.toBeNull();
+    await fireEvent.click(startButton!);
+
+    await fireEvent.update(await screen.findByLabelText("经度"), "104.6378");
+    await fireEvent.update(screen.getByLabelText("纬度"), "35.2109");
+    await fireEvent.update(screen.getByLabelText("标准化地址"), "通渭县客运中心");
+    await fireEvent.update(screen.getByLabelText("驾驶员反馈时间"), "2026-07-13T02:00");
+    await fireEvent.click(screen.getByRole("button", { name: "确认发车" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/vehicle-tasks/task-dispatched/start"))).toBe(true));
+    const startCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/api/vehicle-tasks/task-dispatched/start"));
+    expect(startCall).toEqual([
       "/api/vehicle-tasks/task-dispatched/start",
       expect.objectContaining({
         method: "POST",
         headers: expect.any(Headers)
       })
-    );
-    const requestHeaders = fetchMock.mock.calls[1][1]?.headers as Headers;
+    ]);
+    const startOptions = startCall?.[1] as RequestInit;
+    expect(JSON.parse(startOptions.body as string)).toEqual({
+      locationReport: {
+        longitude: 104.6378,
+        latitude: 35.2109,
+        standardizedAddress: "通渭县客运中心",
+        driverReportedAt: "2026-07-12T18:00:00.000Z",
+        idempotencyKey: "22222222-2222-4222-8222-222222222222"
+      }
+    });
+    const requestHeaders = startOptions.headers as Headers;
     expect(requestHeaders.get("Authorization")).toBe("Bearer dispatcher-token");
+    expect(await screen.findByText("执行中")).toBeInTheDocument();
   });
 });
 
@@ -138,16 +172,55 @@ function multipleTaskResponse(): Response {
   ] }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
-function dispatchedTaskStartedResponse(): Response {
+function emptyListResponse(): Response {
+  return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function taskPageFetchMock() {
+  return vi.fn((url: string, _options?: RequestInit) => {
+    if (url === "/api/vehicle-tasks") {
+      return Promise.resolve(multipleTaskResponse());
+    }
+    if (url === "/api/virtual-stops" || url === "/api/vehicles/locations/latest") {
+      return Promise.resolve(emptyListResponse());
+    }
+    if (url === "/api/vehicle-tasks/task-dispatched/start") {
+      return Promise.resolve(dispatchedTaskStartedActionResponse());
+    }
+    return Promise.resolve(emptyListResponse());
+  });
+}
+
+function dispatchedTaskStartedActionResponse(): Response {
   return new Response(JSON.stringify({ data: {
-    id: "task-dispatched",
-    vehicleId: "vehicle-2",
-    driverId: "driver-2",
-    status: "IN_PROGRESS",
-    plannedStartAt: "2026-07-13T02:00:00Z",
-    stops: [
-      { id: "dispatched-boarding", virtualStopId: "virtual-stop-3", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T02:01:00Z", status: "PLANNED" },
-      { id: "dispatched-alighting", virtualStopId: "virtual-stop-4", sequenceNumber: 2, stopType: "ALIGHTING", plannedArrivalAt: "2026-07-13T02:11:00Z", status: "PLANNED" }
-    ]
+    task: {
+      id: "task-dispatched",
+      vehicleId: "vehicle-2",
+      driverId: "driver-2",
+      status: "IN_PROGRESS",
+      plannedStartAt: "2026-07-13T02:00:00Z",
+      stops: [
+        { id: "dispatched-boarding", virtualStopId: "virtual-stop-3", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T02:01:00Z", status: "PLANNED" },
+        { id: "dispatched-alighting", virtualStopId: "virtual-stop-4", sequenceNumber: 2, stopType: "ALIGHTING", plannedArrivalAt: "2026-07-13T02:11:00Z", status: "PLANNED" }
+      ]
+    },
+    locationEvent: {
+      id: "loc-1",
+      vehicleId: "vehicle-2",
+      vehicleTaskId: "task-dispatched",
+      eventType: "TASK_STARTED",
+      longitude: 104.6378,
+      latitude: 35.2109,
+      standardizedAddress: "通渭县客运中心",
+      source: "MANUAL_DISPATCHER",
+      coordinateSystem: "GCJ02",
+      driverReportedAt: "2026-07-13T02:00:00Z",
+      recordedAt: "2026-07-13T02:00:05Z",
+      recordedBy: "dispatcher-1",
+      snapshotApplied: true
+    },
+    snapshotApplied: true,
+    warnings: [],
+    replayed: false
   } }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
