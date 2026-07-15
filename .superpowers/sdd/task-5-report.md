@@ -68,6 +68,51 @@ git diff --check
 
 结果：通过，仅有既有/平台行尾提示，无空白错误。
 
+## 第二轮 Review 修复摘要
+
+- `LocationReportPanel` 不再直接对经纬度输入使用 `Number(...)`；空字符串、空值和非数字会显示“请填写有效经纬度”，不会提交 `0,0`。
+- `LocationCandidate` 允许作为“待确认候选位置”携带地址但暂缺经纬度；`LocationReportInput` 仍要求提交时经纬度为数字。
+- `TasksPage` 在车辆最新位置快照或虚拟站点坐标无法解析时，不再构造 `0,0` 默认位置；面板保留可用地址/站点名，坐标留空由调度员手工录入。
+- 虚拟站点选择解析失败时会清空经纬度，避免沿用前一次输入的旧坐标。
+
+## 第二轮红绿测试证据
+
+RED：
+
+```powershell
+npm.cmd --prefix apps/admin-web run test -- location-report-panel.test.ts tasks-page.test.ts
+```
+
+结果：失败，符合预期；2 个新增回归测试失败：只填地址不填经纬度时未显示错误且会提交、虚拟站点坐标解析失败时到站面板预填了 `0`。
+
+GREEN：
+
+```powershell
+npm.cmd --prefix apps/admin-web run test -- location-report-panel.test.ts tasks-page.test.ts
+```
+
+结果：通过，2 个测试文件、19 条测试通过。
+
+第二轮最终验证：
+
+```powershell
+npm.cmd --prefix apps/admin-web run test -- location-report-panel.test.ts tasks-page.test.ts
+```
+
+结果：通过，2 个测试文件、19 条测试通过。
+
+```powershell
+npm.cmd --prefix apps/admin-web run typecheck
+```
+
+结果：通过。
+
+```powershell
+npm.cmd --prefix apps/admin-web run test
+```
+
+结果：通过，14 个测试文件、53 条测试通过。
+
 ## 提交 SHA
 
 提交完成后由最终回复给出。Git 提交哈希依赖本文件内容，无法在同一个提交内写入自身最终 SHA。

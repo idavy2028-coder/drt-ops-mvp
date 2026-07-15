@@ -56,6 +56,21 @@ describe("LocationReportPanel", () => {
     expect(screen.getByText("经度必须在 -180 到 180 之间")).toBeInTheDocument();
   });
 
+  it("does not submit when only address is filled without coordinates", async () => {
+    const view = render(LocationReportPanel, {
+      props: {
+        actionLabel: "发车",
+        virtualStops: []
+      }
+    });
+
+    await fireEvent.update(screen.getByLabelText("标准化地址"), "通渭县客运中心");
+    await fireEvent.click(screen.getByRole("button", { name: "确认发车" }));
+
+    expect(screen.getByText("请填写有效经纬度")).toBeInTheDocument();
+    expect(view.emitted("submit")).toBeUndefined();
+  });
+
   it("fills coordinates and address from a virtual stop", async () => {
     render(LocationReportPanel, {
       props: {

@@ -2,6 +2,11 @@
 import { computed, reactive, ref, watch } from "vue";
 import type { LocationCandidate, LocationPickerProvider, LocationReportInput, VirtualStop } from "../api/types";
 
+type ConfirmedLocationCandidate = LocationCandidate & {
+  longitude: number;
+  latitude: number;
+};
+
 const props = withDefaults(defineProps<{
   actionLabel: string;
   initialLocation?: LocationCandidate;
@@ -71,15 +76,13 @@ function submit() {
   });
 }
 
-function currentCandidate(): LocationCandidate | null {
-  const longitude = Number(form.longitude);
-  const latitude = Number(form.latitude);
-  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
-    errorMessage.value = "经度必须在 -180 到 180 之间";
+function currentCandidate(): ConfirmedLocationCandidate | null {
+  const longitude = parseCoordinateInput(form.longitude, "longitude");
+  if (longitude === null) {
     return null;
   }
-  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
-    errorMessage.value = "纬度必须在 -90 到 90 之间";
+  const latitude = parseCoordinateInput(form.latitude, "latitude");
+  if (latitude === null) {
     return null;
   }
   if (!form.standardizedAddress.trim()) {
@@ -131,6 +134,9 @@ function selectVirtualStop() {
   if (coordinates !== null) {
     form.longitude = coordinates.longitude.toString();
     form.latitude = coordinates.latitude.toString();
+  } else {
+    form.longitude = "";
+    form.latitude = "";
   }
   candidateOutsideServiceArea.value = false;
   outsideWarningVisible.value = false;
@@ -138,13 +144,35 @@ function selectVirtualStop() {
 }
 
 function applyCandidate(candidate: LocationCandidate) {
-  form.longitude = candidate.longitude.toString();
-  form.latitude = candidate.latitude.toString();
+  form.longitude = candidate.longitude === undefined ? "" : candidate.longitude.toString();
+  form.latitude = candidate.latitude === undefined ? "" : candidate.latitude.toString();
   form.standardizedAddress = candidate.standardizedAddress;
   form.virtualStopId = candidate.virtualStopId ?? "";
   candidateOutsideServiceArea.value = candidate.outsideServiceArea === true;
   outsideWarningVisible.value = false;
   outsideConfirmed.value = false;
+}
+
+function parseCoordinateInput(value: number | string | null | undefined, coordinate: "longitude" | "latitude"): number | null {
+  const trimmed = String(value ?? "").trim();
+  if (trimmed === "") {
+    errorMessage.value = "请填写有效经纬度";
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    errorMessage.value = "请填写有效经纬度";
+    return null;
+  }
+  if (coordinate === "longitude" && (parsed < -180 || parsed > 180)) {
+    errorMessage.value = "经度必须在 -180 到 180 之间";
+    return null;
+  }
+  if (coordinate === "latitude" && (parsed < -90 || parsed > 90)) {
+    errorMessage.value = "纬度必须在 -90 到 90 之间";
+    return null;
+  }
+  return parsed;
 }
 
 function parsePoint(value: string): { longitude: number; latitude: number } | null {

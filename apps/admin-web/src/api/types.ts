@@ -47,15 +47,17 @@ export interface VirtualStop {
 }
 
 export interface LocationCandidate {
-  longitude: number;
-  latitude: number;
+  longitude?: number;
+  latitude?: number;
   standardizedAddress: string;
   virtualStopId?: UUID;
   providerDegraded?: boolean;
   outsideServiceArea?: boolean;
 }
 
-export interface LocationReportInput extends LocationCandidate {
+export interface LocationReportInput extends Omit<LocationCandidate, "longitude" | "latitude"> {
+  longitude: number;
+  latitude: number;
   driverReportedAt: IsoDateTime;
   note?: string;
   idempotencyKey: UUID;

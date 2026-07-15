@@ -262,9 +262,15 @@ function snapshotCandidate(vehicleId: UUID): LocationCandidate | undefined {
   if (!item) {
     return undefined;
   }
+  const coordinates = parseCoordinatePair(item.latestLocation.longitude, item.latestLocation.latitude);
+  if (!coordinates) {
+    return {
+      standardizedAddress: item.latestLocation.standardizedAddress,
+      outsideServiceArea: item.latestLocation.outsideServiceArea === true
+    };
+  }
   return {
-    longitude: Number(item.latestLocation.longitude),
-    latitude: Number(item.latestLocation.latitude),
+    ...coordinates,
     standardizedAddress: item.latestLocation.standardizedAddress,
     outsideServiceArea: item.latestLocation.outsideServiceArea === true
   };
@@ -278,8 +284,6 @@ function stopCandidate(stop: TaskStop): LocationCandidate | undefined {
   const coordinates = parsePoint(virtualStop.location);
   if (!coordinates) {
     return {
-      longitude: 0,
-      latitude: 0,
       standardizedAddress: virtualStop.name,
       virtualStopId: virtualStop.id,
       providerDegraded: true
@@ -325,6 +329,23 @@ function parsePoint(value: string): { longitude: number; latitude: number } | nu
     return null;
   }
   return { longitude: Number(matched[1]), latitude: Number(matched[2]) };
+}
+
+function parseCoordinatePair(longitudeValue: number | string, latitudeValue: number | string): { longitude: number; latitude: number } | null {
+  const longitude = parseCoordinateValue(longitudeValue);
+  const latitude = parseCoordinateValue(latitudeValue);
+  if (longitude === null || latitude === null) {
+    return null;
+  }
+  return { longitude, latitude };
+}
+
+function parseCoordinateValue(value: number | string): number | null {
+  if (typeof value === "string" && value.trim() === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isOutsideServiceArea(location: LocationCandidate) {

@@ -183,6 +183,23 @@ describe("TasksPage", () => {
     expect(screen.getByText("通渭县客运中心")).toBeInTheDocument();
     expect(screen.getByText("无位置上报")).toBeInTheDocument();
   });
+
+  it("does not prefill zero coordinates when virtual stop coordinates cannot be parsed", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", taskPageFetchMock({
+      taskResponse: inProgressTaskResponse(),
+      virtualStops: [virtualStopFixture("virtual-stop-invalid", "解析失败站", "POINT INVALID")]
+    }));
+    render(TasksPage);
+
+    expect(await screen.findByText("执行中")).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "到站" }));
+
+    expect(await screen.findByText("确认到站位置")).toBeInTheDocument();
+    expect((screen.getByLabelText("经度") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("纬度") as HTMLInputElement).value).toBe("");
+    expect(screen.getByLabelText("标准化地址")).toHaveValue("解析失败站");
+  });
 });
 
 function completedTaskResponse(): Response {
@@ -226,20 +243,35 @@ function multipleTaskResponse(): Response {
   ] }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
+function inProgressTaskResponse(): Response {
+  return new Response(JSON.stringify({ data: [{
+    id: "task-in-progress",
+    vehicleId: "vehicle-3",
+    driverId: "driver-3",
+    status: "IN_PROGRESS",
+    plannedStartAt: "2026-07-13T03:00:00Z",
+    stops: [
+      { id: "invalid-stop", virtualStopId: "virtual-stop-invalid", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T03:01:00Z", status: "PLANNED" }
+    ]
+  }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
 function emptyListResponse(): Response {
   return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
 function taskPageFetchMock(options: {
+  taskResponse?: Response;
   actionResponse?: Response;
   latestLocations?: Array<ReturnType<typeof latestLocationItem>>;
+  virtualStops?: Array<ReturnType<typeof virtualStopFixture>>;
 } = {}) {
   return vi.fn((url: string, _options?: RequestInit) => {
     if (url === "/api/vehicle-tasks") {
-      return Promise.resolve(multipleTaskResponse());
+      return Promise.resolve(options.taskResponse ?? multipleTaskResponse());
     }
     if (url === "/api/virtual-stops") {
-      return Promise.resolve(emptyListResponse());
+      return Promise.resolve(new Response(JSON.stringify({ data: options.virtualStops ?? [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     if (url === "/api/vehicles/locations/latest") {
       return Promise.resolve(new Response(JSON.stringify({ data: options.latestLocations ?? [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -316,5 +348,19 @@ function latestLocationItem(vehicleId: string, outsideServiceArea: boolean) {
       vehicleTaskId: "task-dispatched",
       outsideServiceArea
     }
+  };
+}
+
+function virtualStopFixture(id: string, name: string, location: string) {
+  return {
+    id,
+    name,
+    location,
+    serviceAreaId: "area-1",
+    serviceRadiusMeters: 300,
+    boardingEnabled: true,
+    alightingEnabled: true,
+    safetyNote: "",
+    enabled: true
   };
 }
