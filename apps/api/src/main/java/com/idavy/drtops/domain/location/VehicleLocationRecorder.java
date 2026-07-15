@@ -51,8 +51,9 @@ public class VehicleLocationRecorder {
         this.clock = clock;
     }
 
-    public Optional<LocationReportResult> findReplay(UUID idempotencyKey, String requestFingerprint) {
-        return eventRepository.findByIdempotencyKey(idempotencyKey)
+    public Optional<LocationReportResult> findReplay(LocationReportCommand command) {
+        String requestFingerprint = requestFingerprint(command);
+        return eventRepository.findByIdempotencyKey(command.idempotencyKey())
                 .map(event -> {
                     if (!event.getRequestFingerprint().equals(requestFingerprint)) {
                         throw new ResponseStatusException(HttpStatus.CONFLICT, "幂等编号已用于不同的位置请求");
@@ -62,9 +63,8 @@ public class VehicleLocationRecorder {
     }
 
     public LocationReportResult append(LocationReportCommand command) {
-        String requestFingerprint = requestFingerprint(command);
         idempotencyKeyLock.acquire(command.idempotencyKey());
-        Optional<LocationReportResult> replay = findReplay(command.idempotencyKey(), requestFingerprint);
+        Optional<LocationReportResult> replay = findReplay(command);
         if (replay.isPresent()) {
             return replay.get();
         }
@@ -99,7 +99,7 @@ public class VehicleLocationRecorder {
                 command.correctionReason(),
                 command.correctsEventId(),
                 command.idempotencyKey(),
-                requestFingerprint,
+                requestFingerprint(command),
                 snapshotApplied,
                 outsideServiceArea);
         eventRepository.save(event);

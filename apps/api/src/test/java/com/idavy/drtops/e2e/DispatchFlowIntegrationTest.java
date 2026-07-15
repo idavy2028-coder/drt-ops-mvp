@@ -19,6 +19,8 @@ import com.idavy.drtops.domain.fleet.Driver;
 import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.location.IdempotencyKeyLock;
+import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
@@ -201,27 +203,38 @@ class DispatchFlowIntegrationTest {
         VehicleTask task = vehicleTaskRepository.findAll().getFirst();
         List<TaskStop> stops = vehicleTaskRepository.findWithStopsById(task.getId()).orElseThrow().getStops();
         mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/start")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(actionRequest(null, 0)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"));
+                .andExpect(jsonPath("$.data.task.status").value("IN_PROGRESS"));
+        int actionSequence = 1;
         for (TaskStop stop : stops) {
             mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/arrive")
-                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(actionRequest(stop.getVirtualStopId(), actionSequence++)))
                     .andExpect(status().isOk());
             if ("BOARDING".equals(stop.getStopType())) {
                 mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/board")
-                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(actionRequest(stop.getVirtualStopId(), actionSequence++)))
                         .andExpect(status().isOk());
             } else {
                 mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/alight")
-                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                                .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(actionRequest(stop.getVirtualStopId(), actionSequence++)))
                         .andExpect(status().isOk());
             }
         }
         mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/complete")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(actionRequest(null, actionSequence)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("COMPLETED"));
+                .andExpect(jsonPath("$.data.task.status").value("COMPLETED"));
 
         assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus()).isEqualTo(OrderStatus.COMPLETED);
         assertThat(vehicleTaskRepository.findById(task.getId()).orElseThrow().getStatus()).isEqualTo(TaskStatus.COMPLETED);
@@ -243,6 +256,23 @@ class DispatchFlowIntegrationTest {
                 """;
     }
 
+    private String actionRequest(UUID virtualStopId, int sequence) {
+        String virtualStop = virtualStopId == null ? "null" : "\"" + virtualStopId + "\"";
+        return """
+                {
+                  "locationReport": {
+                    "longitude": 120.1550000,
+                    "latitude": 30.2741000,
+                    "standardizedAddress": "杭州市端到端任务位置 %d",
+                    "driverReportedAt": "2026-07-14T02:%02d:00Z",
+                    "virtualStopId": %s,
+                    "note": "端到端任务动作",
+                    "idempotencyKey": "%s"
+                  }
+                }
+                """.formatted(sequence, sequence, virtualStop, UUID.randomUUID());
+    }
+
     @TestConfiguration
     static class FakeAlgorithmClientConfiguration {
 
@@ -250,6 +280,18 @@ class DispatchFlowIntegrationTest {
         @Primary
         FakeAlgorithmClient fakeAlgorithmClient() {
             return new FakeAlgorithmClient();
+        }
+
+        @Bean
+        @Primary
+        IdempotencyKeyLock idempotencyKeyLock() {
+            return idempotencyKey -> { };
+        }
+
+        @Bean
+        @Primary
+        ServiceAreaLocationChecker serviceAreaLocationChecker() {
+            return (longitude, latitude) -> true;
         }
     }
 

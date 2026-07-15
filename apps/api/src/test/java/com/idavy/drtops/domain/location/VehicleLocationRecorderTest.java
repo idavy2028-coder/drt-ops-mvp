@@ -126,7 +126,7 @@ class VehicleLocationRecorderTest {
         assertThat(first.replayed()).isFalse();
         assertThat(replay.replayed()).isTrue();
         assertThat(replay.event().getId()).isEqualTo(first.event().getId());
-        assertThat(recorder.findReplay(idempotencyKey, first.event().getRequestFingerprint()))
+        assertThat(recorder.findReplay(command))
                 .hasValueSatisfying(result -> assertThat(result.replayed()).isTrue());
     }
 
@@ -164,6 +164,8 @@ class VehicleLocationRecorderTest {
                 original.correctsEventId(),
                 original.idempotencyKey());
 
+        assertThat(recorder.findReplay(equivalent))
+                .hasValueSatisfying(replay -> assertThat(replay.event().getId()).isEqualTo(first.event().getId()));
         LocationReportResult replay = recorder.append(equivalent);
 
         assertThat(replay.replayed()).isTrue();

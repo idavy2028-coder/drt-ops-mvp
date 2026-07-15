@@ -22,7 +22,7 @@ public record VehicleLocationView(
         UUID correctsEventId,
         boolean snapshotApplied) {
 
-    static VehicleLocationView from(VehicleLocationEvent event) {
+    public static VehicleLocationView from(VehicleLocationEvent event) {
         return new VehicleLocationView(
                 event.getId(), event.getVehicleId(), event.getVehicleTaskId(), event.getTaskStopId(),
                 event.getVirtualStopId(), event.getEventType(),
