@@ -56,6 +56,18 @@
 - 后端真实 PostGIS 持久化测试：先启动本地 `infra/docker-compose.yml`，再运行 `mvn -pl apps/api -Dtest=PostgisDispatchPersistenceIntegrationTest -Ddrt.integration.postgis=true test`
 - 后端 Testcontainers 版 PostGIS 迁移测试：Docker/Testcontainers 环境可用时运行 `mvn -pl apps/api -Dtest=DatabaseMigrationTest -Ddrt.integration.postgis=true test`。在部分 Windows Docker Desktop named pipe 环境下，Docker CLI 可用但 Java Testcontainers 仍可能无法连接，此时测试会跳过，应以 Docker-capable CI 或 Linux 环境补跑。
 
+### 车辆位置管理自动化验证
+
+```powershell
+mvn -q -pl apps/api test
+npm.cmd --prefix apps/admin-web run typecheck
+npm.cmd --prefix apps/admin-web run test
+npm.cmd --prefix apps/admin-web run build
+npm.cmd --prefix apps/admin-web run e2e -- vehicle-location-flow.spec.ts
+```
+
+车辆位置模块的人工上报、异常处置和试点前待关闭项见[通渭县车辆位置管理试点运行手册](docs/release/tongwei-vehicle-location-runbook.md)；本机自动化验收范围与未关闭风险见[车辆位置管理模块本机验收记录（2026-07）](docs/release/vehicle-location-acceptance-2026-07.md)。模块自动化验证不代表真实高德、生产 PostGIS、容量验证或备份恢复演练已经通过。
+
 ## 端到端演示链路
 
 完整演示建议按下面顺序启动本地服务：
