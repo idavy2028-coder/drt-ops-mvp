@@ -5,12 +5,12 @@ public class MapProviderException extends RuntimeException {
     private final MapProviderStatus status;
 
     public MapProviderException(MapProviderStatus status) {
-        super(status.provider() + " map provider unavailable: " + status.degradedReason());
+        super("地图服务暂不可用，请稍后重试");
         this.status = status;
     }
 
     public MapProviderException(MapProviderStatus status, Throwable cause) {
-        super(status.provider() + " map provider unavailable: " + status.degradedReason(), cause);
+        super("地图服务暂不可用，请稍后重试", cause);
         this.status = status;
     }
 

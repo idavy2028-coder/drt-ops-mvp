@@ -1,5 +1,6 @@
 package com.idavy.drtops.common;
 
+import com.idavy.drtops.domain.map.MapProviderException;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -11,6 +12,12 @@ import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(MapProviderException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> handleMapProvider(MapProviderException exception) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.ok(Map.of("message", "地图服务暂不可用，请稍后重试")));
+    }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<ApiResponse<Map<String, String>>> handleValidation(MethodArgumentNotValidException exception) {

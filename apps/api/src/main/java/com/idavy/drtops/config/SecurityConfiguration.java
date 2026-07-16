@@ -66,7 +66,8 @@ public class SecurityConfiguration {
                                 "/api/vehicles/**",
                                 "/api/drivers/**",
                                 "/api/service-areas/**",
-                                "/api/virtual-stops/**")
+                                "/api/virtual-stops/**",
+                                "/api/map/**")
                         .hasAuthority("RESOURCE_MANAGE")
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().denyAll())
