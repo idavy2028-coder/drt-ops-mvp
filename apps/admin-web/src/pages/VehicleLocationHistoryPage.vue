@@ -14,9 +14,12 @@ const events = ref<VehicleLocationEventView[]>([]);
 const status = ref("请输入车辆编号或任务编号后查询位置历史。");
 const loading = ref(false);
 const exporting = ref(false);
+const vehicleExportUnsupportedMessage = "车辆维度导出需后端支持，请改用任务编号或清空车辆筛选";
 
 const canExport = computed(() => authStore.has("LOCATION_EXPORT"));
 const canCorrect = computed(() => authStore.has("LOCATION_CORRECT"));
+const vehicleOnlyExportUnsupported = computed(() => vehicleId.value.trim() !== "" && taskId.value.trim() === "");
+const exportDisabled = computed(() => exporting.value || vehicleOnlyExportUnsupported.value);
 
 async function search() {
   const filters = buildFilters();
@@ -40,6 +43,10 @@ async function search() {
 }
 
 async function exportCsv() {
+  if (vehicleOnlyExportUnsupported.value) {
+    feedbackStore.info(vehicleExportUnsupportedMessage);
+    return;
+  }
   exporting.value = true;
   try {
     await exportVehicleLocationEvents(buildFilters());
@@ -115,9 +122,10 @@ function delayMinutes(event: VehicleLocationEventView): number {
       </div>
       <div class="toolbar">
         <button v-if="canCorrect" class="secondary-button" type="button">修正位置</button>
-        <button v-if="canExport" class="secondary-button" type="button" :disabled="exporting" @click="exportCsv">{{ exporting ? "导出中" : "导出 CSV" }}</button>
+        <button v-if="canExport" class="secondary-button" type="button" :disabled="exportDisabled" :title="vehicleOnlyExportUnsupported ? vehicleExportUnsupportedMessage : undefined" @click="exportCsv">{{ exporting ? "导出中" : "导出 CSV" }}</button>
       </div>
     </header>
+    <p v-if="canExport && vehicleOnlyExportUnsupported" class="page-state">{{ vehicleExportUnsupportedMessage }}</p>
 
     <section class="work-panel filter-panel" aria-label="位置历史筛选">
       <label>

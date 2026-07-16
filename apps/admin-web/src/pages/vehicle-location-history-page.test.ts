@@ -67,6 +67,15 @@ describe("VehicleLocationHistoryPage", () => {
     expect(screen.queryByRole("button", { name: "导出 CSV" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "修正位置" })).not.toBeInTheDocument();
   });
+
+  it("disables export for vehicle-only filters because the backend export endpoint does not support vehicle scope", async () => {
+    render(VehicleLocationHistoryPage);
+
+    await fireEvent.update(screen.getByLabelText("车辆编号"), "vehicle-1");
+
+    expect(screen.getByRole("button", { name: "导出 CSV" })).toBeDisabled();
+    expect(screen.getByText("车辆维度导出需后端支持，请改用任务编号或清空车辆筛选")).toBeInTheDocument();
+  });
 });
 
 function locationEvent() {

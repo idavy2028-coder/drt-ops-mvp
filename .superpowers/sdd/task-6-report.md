@@ -75,3 +75,57 @@ npm.cmd --prefix apps/admin-web run build
 
 - 位置历史导出客户端会调用 CSV 接口并消费响应 Blob，但本任务未解析文件内容，符合 brief。
 - 如果后端要求“无 vehicleId/taskId 的历史查询”，当前页面会提示至少输入车辆或任务编号；这是基于现有后端历史接口路径需要车辆或任务上下文的保守处理。
+
+## 本轮契约修复（2026-07-16）
+
+- 修正任务历史查询客户端契约：`/api/vehicle-tasks/{taskId}/location-events` 只发送后端支持的 `from`、`to`、`date`，不再发送 `eventType` 或 `vehicleId`。
+- 当用户同时输入 `taskId` 与 `eventType`/`vehicleId` 时，任务历史结果由前端在返回后做二次过滤，避免让用户误以为后端已处理不支持的筛选条件。
+- 修正导出客户端契约：`/api/vehicle-locations/export.csv` 不再发送 `vehicleId`。
+- 历史页在仅车辆筛选且无任务编号时禁用“导出 CSV”，并提示“车辆维度导出需后端支持，请改用任务编号或清空车辆筛选”，避免导出范围大于用户预期。
+- 新增 `apps/admin-web/src/api/vehicleLocations.test.ts`，用真实 `fetch` 拦截验证 URL/query 契约和任务历史客户端过滤行为。
+
+红测证据：
+
+```powershell
+npm.cmd --prefix apps/admin-web run test -- vehicle-location-history-page.test.ts vehicleLocations.test.ts
+```
+
+结果：失败符合预期。失败点为任务历史 URL 仍包含 `eventType`、导出 URL 仍包含 `vehicleId`、车辆-only 导出按钮未禁用。
+
+绿测与最终验证：
+
+```powershell
+npm.cmd --prefix apps/admin-web run test -- vehicle-location-history-page.test.ts vehicleLocations.test.ts
+```
+
+结果：2 个测试文件，5 条测试全部通过。
+
+```powershell
+npm.cmd --prefix apps/admin-web run test -- vehicle-location-history-page.test.ts
+```
+
+结果：1 个测试文件，3 条测试全部通过。
+
+```powershell
+npm.cmd --prefix apps/admin-web run test -- dispatch-map.test.ts dispatch-workbench.test.ts vehicle-location-history-page.test.ts app-layout.test.ts
+```
+
+结果：4 个测试文件，12 条测试全部通过。
+
+```powershell
+npm.cmd --prefix apps/admin-web run typecheck
+```
+
+结果：通过。
+
+```powershell
+npm.cmd --prefix apps/admin-web run test
+```
+
+结果：17 个测试文件，63 条测试全部通过。
+
+```powershell
+npm.cmd --prefix apps/admin-web run build
+```
+
+结果：通过。Vite 仍提示 `maplibre-gl` chunk 超过 500 kB，属于既有构建体积警告。

@@ -7,9 +7,10 @@ export function listLatestVehicleLocations(): Promise<VehicleLocationSnapshotIte
   return request<VehicleLocationSnapshotItem[]>("/api/vehicles/locations/latest");
 }
 
-export function listVehicleLocationEvents(filters: VehicleLocationEventFilters): Promise<VehicleLocationEventView[]> {
+export async function listVehicleLocationEvents(filters: VehicleLocationEventFilters): Promise<VehicleLocationEventView[]> {
   if (filters.taskId) {
-    return request<VehicleLocationEventView[]>(`/api/vehicle-tasks/${filters.taskId}/location-events${queryString(filters, ["taskId", "vehicleId"])}`);
+    const events = await request<VehicleLocationEventView[]>(`/api/vehicle-tasks/${filters.taskId}/location-events${queryString(filters, ["taskId", "vehicleId", "eventType"])}`);
+    return filterTaskHistoryEvents(events, filters);
   }
   if (filters.vehicleId) {
     return request<VehicleLocationEventView[]>(`/api/vehicles/${filters.vehicleId}/location-events${queryString(filters, ["vehicleId"])}`);
@@ -18,13 +19,25 @@ export function listVehicleLocationEvents(filters: VehicleLocationEventFilters):
 }
 
 export async function exportVehicleLocationEvents(filters: VehicleLocationEventFilters): Promise<void> {
-  const response = await fetch(buildUrl(`/api/vehicle-locations/export.csv${queryString(filters)}`), {
+  const response = await fetch(buildUrl(`/api/vehicle-locations/export.csv${queryString(filters, ["vehicleId"])}`), {
     headers: authStore.accessToken === null ? undefined : { Authorization: `Bearer ${authStore.accessToken}` }
   });
   if (!response.ok) {
     throw await apiErrorFromResponse(response);
   }
   await response.blob();
+}
+
+function filterTaskHistoryEvents(events: VehicleLocationEventView[], filters: VehicleLocationEventFilters): VehicleLocationEventView[] {
+  return events.filter((event) => {
+    if (filters.eventType && event.eventType !== filters.eventType) {
+      return false;
+    }
+    if (filters.vehicleId && event.vehicleId !== filters.vehicleId) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function queryString(filters: VehicleLocationEventFilters, omittedKeys: Array<keyof VehicleLocationEventFilters> = []): string {
