@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.VehicleTask;
+import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
@@ -40,6 +43,9 @@ class VehicleLocationMetricsTest {
     private VehicleRepository vehicleRepository;
 
     @Autowired
+    private VehicleTaskRepository vehicleTaskRepository;
+
+    @Autowired
     private EntityManager entityManager;
 
     private SimpleMeterRegistry registry;
@@ -62,7 +68,7 @@ class VehicleLocationMetricsTest {
                 "浦东车队",
                 true));
         registry = new SimpleMeterRegistry();
-        metrics = new VehicleLocationMetrics(registry, eventRepository, vehicleRepository);
+        metrics = new VehicleLocationMetrics(registry, eventRepository, vehicleRepository, vehicleTaskRepository);
         ServiceAreaLocationChecker checker = (longitude, latitude) ->
                 longitude.compareTo(new BigDecimal("122.0000000")) < 0;
         recorder = new VehicleLocationRecorder(
@@ -104,7 +110,6 @@ class VehicleLocationMetricsTest {
 
         queryService.history(vehicleId, null, null, null, null, null);
         queryService.latest();
-        metrics.updateMissingTaskNodes(2);
         entityManager.flush();
 
         assertThat(counter("drt.vehicle.location.report.total", "result", "success")).isEqualTo(3.0);
@@ -119,7 +124,34 @@ class VehicleLocationMetricsTest {
         assertThat(counter("drt.vehicle.location.correction.total")).isEqualTo(1.0);
         assertThat(timer("drt.vehicle.location.query.duration").count()).isEqualTo(2);
         assertThat(gauge("drt.vehicle.location.stale.count")).isEqualTo(1.0);
-        assertThat(gauge("drt.vehicle.location.missing_task_nodes")).isEqualTo(2.0);
+    }
+
+    @Test
+    void updatesMissingTaskNodesFromTaskHistoryQuery() {
+        VehicleTask task = VehicleTask.pendingDeparture(
+                vehicleId,
+                UUID.randomUUID(),
+                REPORTED_AT.plusMinutes(1),
+                "METRICS_TEST");
+        task.addStop(TaskStop.planned(UUID.randomUUID(), UUID.randomUUID(), 1, "BOARDING", REPORTED_AT.plusMinutes(5)));
+        task.addStop(TaskStop.planned(UUID.randomUUID(), UUID.randomUUID(), 2, "ALIGHTING", REPORTED_AT.plusMinutes(15)));
+        vehicleTaskRepository.save(task);
+
+        recorder.append(commandForTask(
+                UUID.randomUUID(),
+                task.getId(),
+                null,
+                null,
+                LocationEventType.TASK_STARTED,
+                REPORTED_AT,
+                INSIDE_LONGITUDE));
+        task.startExecution();
+        vehicleTaskRepository.save(task);
+        entityManager.flush();
+
+        queryService.taskHistory(task.getId(), null, null, null);
+
+        assertThat(gauge("drt.vehicle.location.missing_task_nodes")).isEqualTo(5.0);
     }
 
     private double counter(String name, String tagName, String tagValue) {
@@ -160,6 +192,32 @@ class VehicleLocationMetricsTest {
                 "指标测试位置",
                 correctionReason,
                 correctsEventId,
+                idempotencyKey);
+    }
+
+    private LocationReportCommand commandForTask(
+            UUID idempotencyKey,
+            UUID taskId,
+            UUID taskStopId,
+            UUID virtualStopId,
+            LocationEventType eventType,
+            OffsetDateTime reportedAt,
+            BigDecimal longitude) {
+        return new LocationReportCommand(
+                LocationReportScope.TASK_ACTION_START,
+                vehicleId,
+                taskId,
+                taskStopId,
+                virtualStopId,
+                eventType,
+                longitude,
+                LATITUDE,
+                "上海市浦东新区世纪大道 100 号",
+                reportedAt,
+                UUID.randomUUID(),
+                "指标测试任务节点",
+                null,
+                null,
                 idempotencyKey);
     }
 }

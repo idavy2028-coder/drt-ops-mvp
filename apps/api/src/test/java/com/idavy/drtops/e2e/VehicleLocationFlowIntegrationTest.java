@@ -28,7 +28,6 @@ import com.idavy.drtops.domain.location.LocationEventType;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.location.VehicleLocationEvent;
 import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
-import com.idavy.drtops.domain.location.VehicleLocationMetrics;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStatus;
@@ -89,7 +88,6 @@ class VehicleLocationFlowIntegrationTest {
     @Autowired VehicleLocationEventRepository eventRepository;
     @Autowired JwtTokenService jwtTokenService;
     @Autowired MeterRegistry meterRegistry;
-    @Autowired VehicleLocationMetrics locationMetrics;
     @Autowired FakeAlgorithmClient algorithmClient;
 
     private String dispatcherToken;
@@ -183,6 +181,23 @@ class VehicleLocationFlowIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.replayed").value(true));
 
+        mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stops.getFirst().getId() + "/arrive")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(actionRequest(stops.getFirst().getVirtualStopId(), UUID.randomUUID(), 99,
+                                "120.1560000", "30.2750000", OffsetDateTime.now().plusDays(1).toString())))
+                .andExpect(status().isBadRequest());
+        assertThat(meterRegistry.find("drt.vehicle.location.report.total")
+                .tag("result", "failure")
+                .tag("source", "MANUAL_DISPATCHER")
+                .counter().count()).isEqualTo(1.0);
+
+        mockMvc.perform(get("/api/vehicle-tasks/" + task.getId() + "/location-events")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1));
+        assertThat(meterRegistry.find("drt.vehicle.location.missing_task_nodes").gauge().value()).isEqualTo(5.0);
+
         int actionSequence = 1;
         for (TaskStop stop : stops) {
             mockMvc.perform(post("/api/vehicle-tasks/" + task.getId() + "/stops/" + stop.getId() + "/arrive")
@@ -268,8 +283,7 @@ class VehicleLocationFlowIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(8));
-        assertThat(meterRegistry.find("drt.vehicle.location.query.duration").timer().count()).isEqualTo(1);
-        locationMetrics.updateMissingTaskNodes(0);
+        assertThat(meterRegistry.find("drt.vehicle.location.query.duration").timer().count()).isEqualTo(2);
         assertThat(meterRegistry.find("drt.vehicle.location.missing_task_nodes").gauge().value()).isZero();
     }
 
@@ -290,6 +304,17 @@ class VehicleLocationFlowIntegrationTest {
     }
 
     private String actionRequest(UUID virtualStopId, UUID idempotencyKey, int sequence, String longitude, String latitude) {
+        return actionRequest(virtualStopId, idempotencyKey, sequence, longitude, latitude,
+                "2026-07-14T01:%02d:00Z".formatted(sequence));
+    }
+
+    private String actionRequest(
+            UUID virtualStopId,
+            UUID idempotencyKey,
+            int sequence,
+            String longitude,
+            String latitude,
+            String driverReportedAt) {
         String virtualStop = virtualStopId == null ? "null" : "\"" + virtualStopId + "\"";
         return """
                 {
@@ -297,13 +322,13 @@ class VehicleLocationFlowIntegrationTest {
                     "longitude": %s,
                     "latitude": %s,
                     "standardizedAddress": "通渭县任务节点 %d",
-                    "driverReportedAt": "2026-07-14T01:%02d:00Z",
+                    "driverReportedAt": "%s",
                     "virtualStopId": %s,
                     "note": "电话反馈后由调度员录入",
                     "idempotencyKey": "%s"
                   }
                 }
-                """.formatted(longitude, latitude, sequence, sequence, virtualStop, idempotencyKey);
+                """.formatted(longitude, latitude, sequence, driverReportedAt, virtualStop, idempotencyKey);
     }
 
     private String independentReportRequest(UUID taskId, String reportedAt, UUID idempotencyKey) {

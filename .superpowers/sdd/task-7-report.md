@@ -54,5 +54,25 @@
 
 ## 顾虑
 
-- `missing_task_nodes` 当前提供指标组件更新入口，并在全链路测试中按完整任务链计算为 0；后续若要实时生产统计，需要在任务/调度汇总任务中接入定时计算。
+- `missing_task_nodes` 本轮已接入查询路径同步计算；后续若要脱离查询访问进行实时生产统计，可再接入任务/调度汇总或定时计算。
 - `stale.count` 以“已有关联任务位置快照且超过 30 分钟未更新”的车辆为统计对象，避免把普通空闲车辆快照误计入告警。
+
+## 2026-07-16 修复复核
+
+- 修复 `missing_task_nodes` 从手动写入改为真实计算路径：`VehicleLocationMetrics` 现在基于 `vehicle_tasks` / `task_stops` 读取 IN_PROGRESS、COMPLETED 任务的期望任务节点，并与 `vehicle_location_events` 中的六类任务动作/站点事件比对后刷新 gauge。
+- 查询路径会在 `VehicleLocationQueryService` 记录查询耗时的同时刷新缺失节点 gauge；测试不再调用 `updateMissingTaskNodes(...)`。
+- `VehicleLocationFlowIntegrationTest` 通过 MockMvc 对任务到站动作提交未来 `driverReportedAt`，断言 HTTP 400，并断言 `drt.vehicle.location.report.total{result=failure,source=MANUAL_DISPATCHER}` 增加。
+- 清理了 `VehicleLocationMetrics` 中未使用的事件仓库构造参数问题：事件仓库现在用于缺失任务节点计算，同时移除手动 gauge 更新入口。
+
+### 红绿测试证据
+
+- RED：`& $env:MAVEN_CMD -q -pl apps/api '-Dtest=VehicleLocationMetricsTest,VehicleLocationFlowIntegrationTest' test`
+  - 结果：失败，`VehicleLocationMetricsTest.updatesMissingTaskNodesFromTaskHistoryQuery` 与 `VehicleLocationFlowIntegrationTest.verifiesVehicleLocationOperationsAcrossTaskHistorySnapshotAuditAndMetrics` 均期望 `missing_task_nodes=5.0`，实际为 `0.0`。
+- GREEN：同一聚焦命令重跑通过。
+
+### 本轮验证结果
+
+- `& $env:MAVEN_CMD -q -pl apps/api '-Dtest=VehicleLocationMetricsTest,VehicleLocationFlowIntegrationTest' test`
+  - 结果：通过。
+- `& $env:MAVEN_CMD -q -pl apps/api test`
+  - 结果：通过；Surefire XML 报告 42 个 test suite。

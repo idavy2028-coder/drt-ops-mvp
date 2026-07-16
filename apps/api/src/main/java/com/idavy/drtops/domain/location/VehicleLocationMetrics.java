@@ -1,6 +1,10 @@
 package com.idavy.drtops.domain.location;
 
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.task.TaskStatus;
+import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.VehicleTask;
+import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -9,6 +13,9 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,9 +26,13 @@ public class VehicleLocationMetrics {
 
     private static final String MANUAL_SOURCE = LocationSource.MANUAL_DISPATCHER.name();
     private static final Duration STALE_THRESHOLD = Duration.ofMinutes(30);
+    private static final Set<TaskStatus> TRACKED_TASK_STATUSES =
+            EnumSet.of(TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED);
 
     private final MeterRegistry registry;
+    private final VehicleLocationEventRepository eventRepository;
     private final VehicleRepository vehicleRepository;
+    private final VehicleTaskRepository vehicleTaskRepository;
     private final Clock clock;
     private final AtomicInteger missingTaskNodes = new AtomicInteger();
     private final boolean enabled;
@@ -30,17 +41,22 @@ public class VehicleLocationMetrics {
     public VehicleLocationMetrics(
             MeterRegistry registry,
             VehicleLocationEventRepository eventRepository,
-            VehicleRepository vehicleRepository) {
-        this(registry, vehicleRepository, Clock.systemUTC(), true);
+            VehicleRepository vehicleRepository,
+            VehicleTaskRepository vehicleTaskRepository) {
+        this(registry, eventRepository, vehicleRepository, vehicleTaskRepository, Clock.systemUTC(), true);
     }
 
     VehicleLocationMetrics(
             MeterRegistry registry,
+            VehicleLocationEventRepository eventRepository,
             VehicleRepository vehicleRepository,
+            VehicleTaskRepository vehicleTaskRepository,
             Clock clock,
             boolean enabled) {
         this.registry = registry;
+        this.eventRepository = eventRepository;
         this.vehicleRepository = vehicleRepository;
+        this.vehicleTaskRepository = vehicleTaskRepository;
         this.clock = clock;
         this.enabled = enabled;
         if (enabled) {
@@ -52,7 +68,7 @@ public class VehicleLocationMetrics {
     }
 
     static VehicleLocationMetrics noop() {
-        return new VehicleLocationMetrics(new SimpleMeterRegistry(), null, Clock.systemUTC(), false);
+        return new VehicleLocationMetrics(new SimpleMeterRegistry(), null, null, null, Clock.systemUTC(), false);
     }
 
     void recordSuccess(VehicleLocationEvent event) {
@@ -89,13 +105,10 @@ public class VehicleLocationMetrics {
         }
         return Timer.builder("drt.vehicle.location.query.duration")
                 .register(registry)
-                .record(supplier);
-    }
-
-    public void updateMissingTaskNodes(int count) {
-        if (enabled) {
-            missingTaskNodes.set(Math.max(0, count));
-        }
+                .record(() -> {
+                    refreshMissingTaskNodes();
+                    return supplier.get();
+                });
     }
 
     private Counter reportCounter(String result) {
@@ -107,6 +120,51 @@ public class VehicleLocationMetrics {
                 .tag("result", result)
                 .tag("source", source == null ? MANUAL_SOURCE : source.name())
                 .register(registry);
+    }
+
+    private void refreshMissingTaskNodes() {
+        if (vehicleTaskRepository == null || eventRepository == null) {
+            return;
+        }
+        int missingCount = vehicleTaskRepository.findAllByOrderByPlannedStartAtAsc().stream()
+                .filter(task -> TRACKED_TASK_STATUSES.contains(task.getStatus()))
+                .mapToInt(this::missingTaskNodeCount)
+                .sum();
+        missingTaskNodes.set(missingCount);
+    }
+
+    private int missingTaskNodeCount(VehicleTask task) {
+        List<VehicleLocationEvent> events = eventRepository.findByVehicleTaskIdOrderByDriverReportedAtAsc(task.getId());
+        int missing = 0;
+        if (missingTaskLevelEvent(events, LocationEventType.TASK_STARTED)) {
+            missing++;
+        }
+        for (TaskStop stop : task.getStops()) {
+            if ("BOARDING".equals(stop.getStopType())) {
+                missing += missingStopEvent(events, stop, LocationEventType.PICKUP_ARRIVED);
+                missing += missingStopEvent(events, stop, LocationEventType.PASSENGER_BOARDED);
+            } else if ("ALIGHTING".equals(stop.getStopType())) {
+                missing += missingStopEvent(events, stop, LocationEventType.DROPOFF_ARRIVED);
+                missing += missingStopEvent(events, stop, LocationEventType.PASSENGER_ALIGHTED);
+            }
+        }
+        if (missingTaskLevelEvent(events, LocationEventType.TASK_COMPLETED)) {
+            missing++;
+        }
+        return missing;
+    }
+
+    private static boolean missingTaskLevelEvent(List<VehicleLocationEvent> events, LocationEventType eventType) {
+        return events.stream().noneMatch(event -> event.getEventType() == eventType);
+    }
+
+    private static int missingStopEvent(
+            List<VehicleLocationEvent> events,
+            TaskStop stop,
+            LocationEventType eventType) {
+        boolean present = events.stream().anyMatch(event ->
+                event.getEventType() == eventType && stop.getId().equals(event.getTaskStopId()));
+        return present ? 0 : 1;
     }
 
     private double staleVehicleCount() {
