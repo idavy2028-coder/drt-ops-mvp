@@ -37,3 +37,4 @@ Vehicle location management Task 7: complete (commits 68df8d3..2f2e0bb, task rev
 Vehicle location management Task 8: complete (documentation-only readiness record; local automation verification recorded, with real AMap, production PostGIS, 10000-event capacity validation, and backup/restore exercise still pending before pilot)
 AMap virtual stop pilot Task 1: complete (commits a84df4c..f97b848, review approved after status contract fix; Maven AmapPropertiesTest, frontend amap-loader tests, and typecheck passed)
 AMap virtual stop pilot Task 2: complete (commits b0616ae..a1a9c37, task review approved after error-handling and request-parameter coverage fixes; focused Maven provider/controller tests passed locally)
+AMap virtual stop pilot Task 3: complete (commits 4024cab..2c1a3a7, service area geofence review approved after three fix rounds; focused H2/API tests passed; isolated PostGIS tests safely skipped without Docker and require pre-pilot Docker verification)
