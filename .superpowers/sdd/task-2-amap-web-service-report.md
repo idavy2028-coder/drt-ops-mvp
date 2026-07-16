@@ -43,3 +43,14 @@
   ```
 
   Surefire 结果：地址搜索 8 项、路径规划 6 项、控制器 6 项，均为 0 failures / 0 errors。
+
+## 复审补充覆盖（2026-07-16）
+
+- 新增 `MapProviderControllerTest` 回归：已认证且具备 `RESOURCE_MANAGE` 权限的运营角色省略 `GET /api/map/address-suggestions` 的必填 `keyword` 时，断言 HTTP 400 与稳定中文消息 `缺少请求参数：keyword`。
+- 验证命令：
+
+  ```powershell
+  .\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api '-Dtest=MapProviderControllerTest' test
+  ```
+
+  结果：通过（0 failures / 0 errors）。既有 `GlobalExceptionHandler` 已处理 `MissingServletRequestParameterException`，因此无需调整生产代码。

@@ -62,6 +62,14 @@ class MapProviderControllerTest {
 
     @Test
     @WithMockUser(authorities = "RESOURCE_MANAGE")
+    void returnsChineseValidationMessageWhenRequiredKeywordIsOmitted() throws Exception {
+        mockMvc.perform(get("/api/map/address-suggestions").param("city", "通渭县"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.message").value("缺少请求参数：keyword"));
+    }
+
+    @Test
+    @WithMockUser(authorities = "RESOURCE_MANAGE")
     void returnsChineseValidationMessageForBlankCityParameter() throws Exception {
         mockMvc.perform(get("/api/map/address-suggestions").param("keyword", "人民政府").param("city", ""))
                 .andExpect(status().isBadRequest())
