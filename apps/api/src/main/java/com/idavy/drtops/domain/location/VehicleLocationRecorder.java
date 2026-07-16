@@ -27,6 +27,7 @@ public class VehicleLocationRecorder {
     private final VehicleRepository vehicleRepository;
     private final IdempotencyKeyLock idempotencyKeyLock;
     private final ServiceAreaLocationChecker serviceAreaLocationChecker;
+    private final VehicleLocationMetrics metrics;
     private final Clock clock;
 
     @Autowired
@@ -34,8 +35,9 @@ public class VehicleLocationRecorder {
             VehicleLocationEventRepository eventRepository,
             VehicleRepository vehicleRepository,
             IdempotencyKeyLock idempotencyKeyLock,
-            ServiceAreaLocationChecker serviceAreaLocationChecker) {
-        this(eventRepository, vehicleRepository, idempotencyKeyLock, serviceAreaLocationChecker, Clock.systemUTC());
+            ServiceAreaLocationChecker serviceAreaLocationChecker,
+            VehicleLocationMetrics metrics) {
+        this(eventRepository, vehicleRepository, idempotencyKeyLock, serviceAreaLocationChecker, Clock.systemUTC(), metrics);
     }
 
     VehicleLocationRecorder(
@@ -44,66 +46,94 @@ public class VehicleLocationRecorder {
             IdempotencyKeyLock idempotencyKeyLock,
             ServiceAreaLocationChecker serviceAreaLocationChecker,
             Clock clock) {
+        this(eventRepository, vehicleRepository, idempotencyKeyLock, serviceAreaLocationChecker, clock, VehicleLocationMetrics.noop());
+    }
+
+    VehicleLocationRecorder(
+            VehicleLocationEventRepository eventRepository,
+            VehicleRepository vehicleRepository,
+            IdempotencyKeyLock idempotencyKeyLock,
+            ServiceAreaLocationChecker serviceAreaLocationChecker,
+            Clock clock,
+            VehicleLocationMetrics metrics) {
         this.eventRepository = eventRepository;
         this.vehicleRepository = vehicleRepository;
         this.idempotencyKeyLock = idempotencyKeyLock;
         this.serviceAreaLocationChecker = serviceAreaLocationChecker;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     public Optional<LocationReportResult> findReplay(LocationReportCommand command) {
+        return findReplay(command, true);
+    }
+
+    private Optional<LocationReportResult> findReplay(LocationReportCommand command, boolean recordMetrics) {
         String requestFingerprint = requestFingerprint(command);
         return eventRepository.findByIdempotencyKey(command.idempotencyKey())
                 .map(event -> {
                     if (!event.getRequestFingerprint().equals(requestFingerprint)) {
+                        if (recordMetrics) {
+                            metrics.recordFailure(LocationSource.MANUAL_DISPATCHER);
+                        }
                         throw new ResponseStatusException(HttpStatus.CONFLICT, "幂等编号已用于不同的位置请求");
+                    }
+                    if (recordMetrics) {
+                        metrics.recordReplay(event.getSource());
                     }
                     return new LocationReportResult(event, warnings(event), true);
                 });
     }
 
     public LocationReportResult append(LocationReportCommand command) {
-        idempotencyKeyLock.acquire(command.idempotencyKey());
-        Optional<LocationReportResult> replay = findReplay(command);
-        if (replay.isPresent()) {
-            return replay.get();
+        try {
+            idempotencyKeyLock.acquire(command.idempotencyKey());
+            Optional<LocationReportResult> replay = findReplay(command, false);
+            if (replay.isPresent()) {
+                metrics.recordReplay(replay.get().event().getSource());
+                return replay.get();
+            }
+
+            validateReportedAt(command.driverReportedAt());
+            validateCorrection(command);
+
+            Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(command.vehicleId())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "车辆不存在"));
+            boolean snapshotApplied = vehicle.getCurrentLocationReportedAt() == null
+                    || !command.driverReportedAt().isBefore(vehicle.getCurrentLocationReportedAt());
+            boolean outsideServiceArea = !serviceAreaLocationChecker.isInsideEnabledArea(
+                    command.longitude(), command.latitude());
+            OffsetDateTime recordedAt = OffsetDateTime.now(clock);
+
+            VehicleLocationEvent event = VehicleLocationEvent.record(
+                    command.vehicleId(),
+                    command.vehicleTaskId(),
+                    command.taskStopId(),
+                    command.virtualStopId(),
+                    command.eventType(),
+                    LocationSource.MANUAL_DISPATCHER,
+                    pointWkt(command),
+                    command.longitude(),
+                    command.latitude(),
+                    COORDINATE_SYSTEM,
+                    command.standardizedAddress(),
+                    command.driverReportedAt(),
+                    recordedAt,
+                    command.recordedBy(),
+                    command.note(),
+                    command.correctionReason(),
+                    command.correctsEventId(),
+                    command.idempotencyKey(),
+                    requestFingerprint(command),
+                    snapshotApplied,
+                    outsideServiceArea);
+            eventRepository.save(event);
+            metrics.recordSuccess(event);
+            return new LocationReportResult(event, warnings(event), false);
+        } catch (RuntimeException exception) {
+            metrics.recordFailure(LocationSource.MANUAL_DISPATCHER);
+            throw exception;
         }
-
-        validateReportedAt(command.driverReportedAt());
-        validateCorrection(command);
-
-        Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(command.vehicleId())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "车辆不存在"));
-        boolean snapshotApplied = vehicle.getCurrentLocationReportedAt() == null
-                || !command.driverReportedAt().isBefore(vehicle.getCurrentLocationReportedAt());
-        boolean outsideServiceArea = !serviceAreaLocationChecker.isInsideEnabledArea(
-                command.longitude(), command.latitude());
-        OffsetDateTime recordedAt = OffsetDateTime.now(clock);
-
-        VehicleLocationEvent event = VehicleLocationEvent.record(
-                command.vehicleId(),
-                command.vehicleTaskId(),
-                command.taskStopId(),
-                command.virtualStopId(),
-                command.eventType(),
-                LocationSource.MANUAL_DISPATCHER,
-                pointWkt(command),
-                command.longitude(),
-                command.latitude(),
-                COORDINATE_SYSTEM,
-                command.standardizedAddress(),
-                command.driverReportedAt(),
-                recordedAt,
-                command.recordedBy(),
-                command.note(),
-                command.correctionReason(),
-                command.correctsEventId(),
-                command.idempotencyKey(),
-                requestFingerprint(command),
-                snapshotApplied,
-                outsideServiceArea);
-        eventRepository.save(event);
-        return new LocationReportResult(event, warnings(event), false);
     }
 
     private void validateReportedAt(OffsetDateTime driverReportedAt) {

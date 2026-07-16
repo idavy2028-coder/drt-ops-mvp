@@ -16,50 +16,61 @@ public class VehicleLocationQueryService {
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private final VehicleLocationEventRepository eventRepository;
     private final VehicleRepository vehicleRepository;
+    private final VehicleLocationMetrics metrics;
 
-    public VehicleLocationQueryService(VehicleLocationEventRepository eventRepository, VehicleRepository vehicleRepository) {
+    public VehicleLocationQueryService(
+            VehicleLocationEventRepository eventRepository,
+            VehicleRepository vehicleRepository,
+            VehicleLocationMetrics metrics) {
         this.eventRepository = eventRepository;
         this.vehicleRepository = vehicleRepository;
+        this.metrics = metrics;
     }
 
     @PreAuthorize("hasAuthority('LOCATION_READ')")
     public List<VehicleLocationView> history(
             UUID vehicleId, OffsetDateTime from, OffsetDateTime to, LocalDate date, UUID taskId, LocationEventType eventType) {
-        TimeRange range = range(from, to, date);
-        return eventRepository.findByVehicleIdOrderByDriverReportedAtDesc(vehicleId).stream()
-                .filter(event -> matches(event, range, taskId, eventType))
-                .sorted(Comparator.comparing(VehicleLocationEvent::getDriverReportedAt))
-                .map(VehicleLocationView::from)
-                .toList();
+        return metrics.recordQuery(() -> {
+            TimeRange range = range(from, to, date);
+            return eventRepository.findByVehicleIdOrderByDriverReportedAtDesc(vehicleId).stream()
+                    .filter(event -> matches(event, range, taskId, eventType))
+                    .sorted(Comparator.comparing(VehicleLocationEvent::getDriverReportedAt))
+                    .map(VehicleLocationView::from)
+                    .toList();
+        });
     }
 
     @PreAuthorize("hasAuthority('LOCATION_READ')")
     public List<VehicleLocationView> taskHistory(UUID taskId, OffsetDateTime from, OffsetDateTime to, LocalDate date) {
-        TimeRange range = range(from, to, date);
-        return eventRepository.findByVehicleTaskIdOrderByDriverReportedAtAsc(taskId).stream()
-                .filter(event -> matches(event, range, null, null))
-                .map(VehicleLocationView::from)
-                .toList();
+        return metrics.recordQuery(() -> {
+            TimeRange range = range(from, to, date);
+            return eventRepository.findByVehicleTaskIdOrderByDriverReportedAtAsc(taskId).stream()
+                    .filter(event -> matches(event, range, null, null))
+                    .map(VehicleLocationView::from)
+                    .toList();
+        });
     }
 
     @PreAuthorize("hasAuthority('LOCATION_READ')")
     public List<VehicleLocationSnapshotItem> latest() {
-        return vehicleRepository.findAll().stream()
-                .map(vehicle -> new VehicleLocationSnapshotItem(
-                        vehicle.getId(), vehicle.getPlateNumber(), vehicle.getCurrentStatus(), VehicleLocationSnapshotView.from(vehicle)))
-                .filter(item -> item.latestLocation() != null)
-                .toList();
+        return metrics.recordQuery(() -> vehicleRepository.findAll().stream()
+                    .map(vehicle -> new VehicleLocationSnapshotItem(
+                            vehicle.getId(), vehicle.getPlateNumber(), vehicle.getCurrentStatus(), VehicleLocationSnapshotView.from(vehicle)))
+                    .filter(item -> item.latestLocation() != null)
+                    .toList());
     }
 
     @PreAuthorize("hasAuthority('LOCATION_EXPORT')")
     public List<VehicleLocationView> export(
             OffsetDateTime from, OffsetDateTime to, LocalDate date, UUID taskId, LocationEventType eventType) {
-        TimeRange range = range(from, to, date);
-        return eventRepository.findAll().stream()
-                .filter(event -> matches(event, range, taskId, eventType))
-                .sorted(Comparator.comparing(VehicleLocationEvent::getDriverReportedAt))
-                .map(VehicleLocationView::from)
-                .toList();
+        return metrics.recordQuery(() -> {
+            TimeRange range = range(from, to, date);
+            return eventRepository.findAll().stream()
+                    .filter(event -> matches(event, range, taskId, eventType))
+                    .sorted(Comparator.comparing(VehicleLocationEvent::getDriverReportedAt))
+                    .map(VehicleLocationView::from)
+                    .toList();
+        });
     }
 
     private static boolean matches(VehicleLocationEvent event, TimeRange range, UUID taskId, LocationEventType eventType) {
