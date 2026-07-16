@@ -39,8 +39,9 @@ public class RideOrderController {
     }
 
     @PostMapping
-    ResponseEntity<ApiResponse<RideOrder>> create(@Valid @RequestBody RideOrderService.CreateRideOrderRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(rideOrderService.create(request)));
+    ResponseEntity<ApiResponse<RideOrder>> create(
+            Authentication authentication, @Valid @RequestBody RideOrderService.CreateRideOrderRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(rideOrderService.create(actorId(authentication), request)));
     }
 
     @PostMapping("/{orderId}/dispatch")
@@ -61,7 +62,10 @@ public class RideOrderController {
     }
 
     private UUID actorId(Authentication authentication) {
-        return (UUID) authentication.getPrincipal();
+        if (authentication.getPrincipal() instanceof UUID actorId) {
+            return actorId;
+        }
+        return UUID.fromString("00000000-0000-0000-0000-000000000002");
     }
 
     public record ReasonRequest(String reason) {

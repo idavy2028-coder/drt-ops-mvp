@@ -1,0 +1,166 @@
+package com.idavy.drtops.domain.area;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.domain.audit.AuditLog;
+import com.idavy.drtops.domain.audit.AuditLogRepository;
+import com.idavy.drtops.domain.dispatch.DispatchRuleSetRepository;
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+
+@Service
+public class ServiceAreaCommandService {
+
+    private static final String COORDINATE_SYSTEM = "GCJ02";
+
+    private final ServiceAreaRepository serviceAreaRepository;
+    private final DispatchRuleSetRepository dispatchRuleSetRepository;
+    private final AuditLogRepository auditLogRepository;
+    private final ObjectMapper objectMapper;
+
+    public ServiceAreaCommandService(
+            ServiceAreaRepository serviceAreaRepository,
+            DispatchRuleSetRepository dispatchRuleSetRepository,
+            AuditLogRepository auditLogRepository,
+            ObjectMapper objectMapper) {
+        this.serviceAreaRepository = serviceAreaRepository;
+        this.dispatchRuleSetRepository = dispatchRuleSetRepository;
+        this.auditLogRepository = auditLogRepository;
+        this.objectMapper = objectMapper;
+    }
+
+    @Transactional
+    public ServiceAreaView saveBoundary(UUID serviceAreaId, ServiceAreaBoundaryRequest request, UUID actorId) {
+        ServiceArea serviceArea = findServiceArea(serviceAreaId);
+        serviceArea.replaceBoundary(normalize(request), "MANUAL");
+        ServiceArea saved = serviceAreaRepository.save(serviceArea);
+        recordAudit(saved, "SERVICE_AREA_BOUNDARY_SAVED", actorId, null);
+        return ServiceAreaView.from(saved);
+    }
+
+    @Transactional
+    public ServiceAreaView importDistrictDraft(String keyword, String boundaryWkt, UUID actorId) {
+        String normalized = normalize(new ServiceAreaBoundaryRequest(boundaryWkt, null));
+        ServiceArea serviceArea = serviceAreaRepository.findFirstByName(keyword).orElseGet(() -> ServiceArea.create(
+                UUID.randomUUID(), keyword, normalized, "06:00:00", "23:00:00", dispatchRuleSetRepository.findAll().stream()
+                        .findFirst()
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先配置调度规则"))
+                        .getId()));
+        serviceArea.replaceBoundary(normalized, "AMAP_DISTRICT");
+        ServiceArea saved = serviceAreaRepository.save(serviceArea);
+        recordAudit(saved, "SERVICE_AREA_DISTRICT_BOUNDARY_IMPORTED", actorId, "行政区边界草稿");
+        return ServiceAreaView.from(saved);
+    }
+
+    @Transactional
+    public ServiceAreaView publish(UUID serviceAreaId, UUID actorId) {
+        ServiceArea serviceArea = findServiceArea(serviceAreaId);
+        normalize(new ServiceAreaBoundaryRequest(serviceArea.getBoundary(), null));
+        serviceArea.publish();
+        ServiceArea saved = serviceAreaRepository.save(serviceArea);
+        recordAudit(saved, "SERVICE_AREA_PUBLISHED", actorId, null);
+        return ServiceAreaView.from(saved);
+    }
+
+    private ServiceArea findServiceArea(UUID serviceAreaId) {
+        return serviceAreaRepository.findById(serviceAreaId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "服务区不存在"));
+    }
+
+    private void recordAudit(ServiceArea serviceArea, String action, UUID actorId, String reason) {
+        auditLogRepository.save(AuditLog.record(
+                "SERVICE_AREA",
+                serviceArea.getId(),
+                action,
+                "USER",
+                actorId.toString(),
+                reason,
+                "{\"boundaryVersion\":" + serviceArea.getBoundaryVersion() + ",\"coordinateSystem\":\""
+                        + COORDINATE_SYSTEM + "\"}"));
+    }
+
+    private String normalize(ServiceAreaBoundaryRequest request) {
+        if (request == null) {
+            throw invalid("服务区边界不能为空");
+        }
+        String wkt = hasText(request.boundaryWkt()) ? request.boundaryWkt().trim() : geoJsonToWkt(request.geoJson());
+        if (!hasText(wkt)) {
+            throw invalid("服务区边界不能为空");
+        }
+        if (!wkt.startsWith("POLYGON((") || !wkt.endsWith("))")) {
+            throw invalid("服务区边界必须是Polygon");
+        }
+        String body = wkt.substring("POLYGON((".length(), wkt.length() - 2);
+        List<Point> points = new ArrayList<>();
+        for (String value : body.split(",")) {
+            String[] parts = value.trim().split("\\s+");
+            if (parts.length != 2) {
+                throw invalid("服务区边界坐标格式不合法");
+            }
+            try {
+                Point point = new Point(new BigDecimal(parts[0]), new BigDecimal(parts[1]));
+                if (point.longitude().compareTo(BigDecimal.valueOf(-180)) < 0
+                        || point.longitude().compareTo(BigDecimal.valueOf(180)) > 0
+                        || point.latitude().compareTo(BigDecimal.valueOf(-90)) < 0
+                        || point.latitude().compareTo(BigDecimal.valueOf(90)) > 0) {
+                    throw invalid("服务区边界坐标范围不合法");
+                }
+                points.add(point);
+            } catch (NumberFormatException exception) {
+                throw invalid("服务区边界坐标格式不合法");
+            }
+        }
+        if (points.size() < 4 || points.stream().limit(points.size() - 1).distinct().count() < 3) {
+            throw invalid("服务区边界至少需要三个点");
+        }
+        if (!points.getFirst().equals(points.getLast())) {
+            throw invalid("服务区边界必须闭合");
+        }
+        return "POLYGON((" + points.stream()
+                .map(point -> point.longitude().toPlainString() + " " + point.latitude().toPlainString())
+                .reduce((left, right) -> left + "," + right)
+                .orElseThrow() + "))";
+    }
+
+    private String geoJsonToWkt(String geoJson) {
+        if (!hasText(geoJson)) {
+            return null;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(geoJson);
+            if (!"Polygon".equals(root.path("type").asText())) {
+                throw invalid("服务区边界必须是Polygon");
+            }
+            JsonNode ring = root.path("coordinates").path(0);
+            List<String> coordinates = new ArrayList<>();
+            for (JsonNode coordinate : ring) {
+                if (coordinate.size() != 2) {
+                    throw invalid("服务区边界坐标格式不合法");
+                }
+                coordinates.add(coordinate.get(0).asText() + " " + coordinate.get(1).asText());
+            }
+            return "POLYGON((" + String.join(",", coordinates) + "))";
+        } catch (ResponseStatusException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalid("服务区边界GeoJSON格式不合法");
+        }
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private ResponseStatusException invalid(String message) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
+    }
+
+    private record Point(BigDecimal longitude, BigDecimal latitude) {
+    }
+}

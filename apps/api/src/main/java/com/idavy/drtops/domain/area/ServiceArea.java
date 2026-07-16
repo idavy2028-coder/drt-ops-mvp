@@ -33,8 +33,22 @@ public class ServiceArea {
     @Column(nullable = false)
     private boolean enabled;
 
+    @Column(nullable = false, length = 40)
+    private String boundarySource;
+
+    @Column(nullable = false)
+    private int boundaryVersion;
+
+    @Column(length = 20, nullable = false)
+    private String coordinateSystem;
+
+    private OffsetDateTime publishedAt;
+
     @Column(nullable = false)
     private OffsetDateTime createdAt;
+
+    @Column(nullable = false)
+    private OffsetDateTime updatedAt;
 
     protected ServiceArea() {
     }
@@ -47,7 +61,11 @@ public class ServiceArea {
         this.serviceEnd = serviceEnd;
         this.ruleSetId = ruleSetId;
         this.enabled = true;
+        this.boundarySource = "LEGACY";
+        this.boundaryVersion = 0;
+        this.coordinateSystem = "GCJ02";
         this.createdAt = OffsetDateTime.now();
+        this.updatedAt = createdAt;
     }
 
     public static ServiceArea create(
@@ -92,5 +110,41 @@ public class ServiceArea {
 
     public boolean isEnabled() {
         return enabled;
+    }
+
+    public String getBoundarySource() {
+        return boundarySource;
+    }
+
+    public int getBoundaryVersion() {
+        return boundaryVersion;
+    }
+
+    public String getCoordinateSystem() {
+        return coordinateSystem;
+    }
+
+    public OffsetDateTime getPublishedAt() {
+        return publishedAt;
+    }
+
+    public OffsetDateTime getUpdatedAt() {
+        return updatedAt;
+    }
+
+    void replaceBoundary(String boundaryWkt, String source) {
+        boundary = boundaryWkt;
+        boundarySource = source;
+        boundaryVersion++;
+        publishedAt = null;
+        coordinateSystem = "GCJ02";
+        updatedAt = OffsetDateTime.now();
+    }
+
+    void publish() {
+        publishedAt = OffsetDateTime.now();
+        enabled = true;
+        coordinateSystem = "GCJ02";
+        updatedAt = publishedAt;
     }
 }
