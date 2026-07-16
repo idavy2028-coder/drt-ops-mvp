@@ -70,7 +70,7 @@ export interface LocationPickerProvider {
 
 export interface MapProviderStatus {
   provider: string;
-  available: boolean;
+  enabled: boolean;
   degradedReason?: string;
   coordinateSystem: "GCJ-02";
 }

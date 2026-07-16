@@ -2,7 +2,7 @@ package com.idavy.drtops.domain.map;
 
 public record MapProviderStatus(
         String provider,
-        boolean available,
+        boolean enabled,
         String degradedReason,
         String coordinateSystem) {
 

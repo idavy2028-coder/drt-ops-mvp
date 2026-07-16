@@ -22,10 +22,21 @@
   - `npm.cmd --prefix apps/admin-web run test -- amap-loader` 失败，原因为缺少 `./amapLoader`。
 - 随后实现生产代码并重新运行验证。
 
+## 修复审阅发现
+
+- 将后端 `MapProviderStatus` record 字段从 `available` 调整为 `enabled`，保留 `available(...)` 静态工厂方法名，序列化状态字段改为 `enabled`。
+- 将前端 `MapProviderStatus`、`AmapRuntime`、`amapLoader` 返回对象和 loader 测试统一调整为 `enabled` 字段。
+- 补充 `amap-loader.test.ts` 脚本 `error` 分支覆盖，验证脚本加载失败时 resolve 降级结果 `degradedReason: "js-api-load-failed"`，不向调用方抛异常。
+- 补充 `AmapPropertiesTest` 中包含 `AmapClientConfig` 的上下文启动覆盖，验证默认禁用且无 Key 时 `amapWebClient` 可创建，配置加载不失败。
+- 修复后验证：
+  - `.\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api -Dtest=AmapPropertiesTest test`：通过，退出码 0。
+  - `npm.cmd --prefix apps/admin-web run test -- amap-loader`：通过，1 个测试文件、4 个用例通过，退出码 0。
+  - `npm.cmd --prefix apps/admin-web run typecheck`：通过，退出码 0。
+
 ## 验证结果
 
 - `.\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api -Dtest=AmapPropertiesTest test`：通过，退出码 0。
-- `npm.cmd --prefix apps/admin-web run test -- amap-loader`：通过，1 个测试文件、3 个用例通过，退出码 0。
+- `npm.cmd --prefix apps/admin-web run test -- amap-loader`：通过，1 个测试文件、4 个用例通过，退出码 0。
 - `npm.cmd --prefix apps/admin-web run typecheck`：通过，退出码 0。
 
 ## 风险与后续

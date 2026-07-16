@@ -6,6 +6,8 @@ import com.idavy.drtops.domain.map.MapProviderStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.web.reactive.function.client.WebClient;
 
 class AmapPropertiesTest {
 
@@ -24,6 +26,7 @@ class AmapPropertiesTest {
             assertThat(properties.getReadTimeoutMs()).isEqualTo(5_000);
             assertThat(properties.providerStatus()).isEqualTo(
                     MapProviderStatus.degraded("AMAP", "disabled", "GCJ-02"));
+            assertThat(properties.providerStatus().enabled()).isFalse();
         });
     }
 
@@ -37,6 +40,7 @@ class AmapPropertiesTest {
                     assertThat(properties.isAvailable()).isFalse();
                     assertThat(properties.providerStatus()).isEqualTo(
                             MapProviderStatus.degraded("AMAP", "missing-web-service-key", "GCJ-02"));
+                    assertThat(properties.providerStatus().enabled()).isFalse();
                 });
     }
 
@@ -59,10 +63,31 @@ class AmapPropertiesTest {
                     assertThat(properties.getReadTimeoutMs()).isEqualTo(6_789);
                     assertThat(properties.providerStatus()).isEqualTo(
                             MapProviderStatus.available("AMAP", "GCJ-02"));
+                    assertThat(properties.providerStatus().enabled()).isTrue();
+                });
+    }
+
+    @Test
+    void createsAmapWebClientWhenDisabledByDefaultAndKeyIsMissing() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(AmapClientConfig.class, WebClientBuilderConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(AmapProperties.class);
+                    assertThat(context).hasBean("amapWebClient");
+                    assertThat(context.getBean("amapWebClient", WebClient.class)).isNotNull();
                 });
     }
 
     @EnableConfigurationProperties(AmapProperties.class)
     static class TestConfiguration {
+    }
+
+    static class WebClientBuilderConfiguration {
+
+        @Bean
+        WebClient.Builder webClientBuilder() {
+            return WebClient.builder();
+        }
     }
 }

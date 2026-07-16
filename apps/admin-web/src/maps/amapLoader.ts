@@ -67,7 +67,7 @@ function buildScriptUrl(jsApiKey: string): string {
 function available(AMap: unknown): AmapRuntime {
   return {
     provider: "AMAP",
-    available: true,
+    enabled: true,
     coordinateSystem: COORDINATE_SYSTEM,
     AMap
   };
@@ -76,7 +76,7 @@ function available(AMap: unknown): AmapRuntime {
 function degraded(degradedReason: string): AmapRuntime {
   return {
     provider: "AMAP",
-    available: false,
+    enabled: false,
     degradedReason,
     coordinateSystem: COORDINATE_SYSTEM
   };

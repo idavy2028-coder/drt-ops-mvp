@@ -7,6 +7,7 @@ describe("loadAmap", () => {
     resetAmapLoaderForTest();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     document.head.innerHTML = "";
   });
 
@@ -16,7 +17,7 @@ describe("loadAmap", () => {
 
     await expect(loadAmap()).resolves.toEqual({
       provider: "AMAP",
-      available: false,
+      enabled: false,
       degradedReason: "disabled",
       coordinateSystem: "GCJ-02"
     });
@@ -28,7 +29,7 @@ describe("loadAmap", () => {
 
     await expect(loadAmap()).resolves.toEqual({
       provider: "AMAP",
-      available: false,
+      enabled: false,
       degradedReason: "missing-js-api-key",
       coordinateSystem: "GCJ-02"
     });
@@ -54,10 +55,28 @@ describe("loadAmap", () => {
 
     await expect(loadPromise).resolves.toEqual({
       provider: "AMAP",
-      available: true,
+      enabled: true,
       coordinateSystem: "GCJ-02",
       AMap: { version: "2.0" }
     });
     expect(appendChild).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a degraded runtime when the JS API script fails to load", async () => {
+    vi.stubEnv("VITE_AMAP_ENABLED", "true");
+    vi.stubEnv("VITE_AMAP_JS_API_KEY", "test-js-key");
+
+    const appendChild = vi.spyOn(document.head, "appendChild");
+    const loadPromise = loadAmap();
+    const script = appendChild.mock.calls[0]?.[0] as HTMLScriptElement;
+
+    script.dispatchEvent(new Event("error"));
+
+    await expect(loadPromise).resolves.toEqual({
+      provider: "AMAP",
+      enabled: false,
+      degradedReason: "js-api-load-failed",
+      coordinateSystem: "GCJ-02"
+    });
   });
 });
