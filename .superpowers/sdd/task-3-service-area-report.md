@@ -1,43 +1,38 @@
 DONE_WITH_CONCERNS
 
-提交 SHA：待提交。
+本轮代码提交：`4891cbcf1d4254774e072ff2f852f87d9e9c1a21`（`fix: persist service area geofences as geography`）。
 
-审阅修复：
-- 已发布 `boundary` 与 `draft_boundary` 分离。手工保存和高德导入仅更新草稿；发布事务才原子复制草稿至已发布边界、更新发布版本和时间。V7 兼容已有非空 boundary，将其标记为已发布 legacy 边界。
-- `POST /api/service-areas` 现在复用命令服务的 WKT/GeoJSON 正规化及稳定中文校验。
-- `/api/service-areas/{id}/contains` 使用带 serviceAreaId 过滤的 PostGIS 查询，响应保留 inside、serviceAreaId、distanceToBoundaryMeters 和 GCJ02。
-- Polygon 闭合判断改为 BigDecimal.compareTo，避免小数 scale 差异造成误拒绝。
-- 增加服务区 API 的 RESOURCE_MANAGE 权限、无高德 Key 导入失败、创建校验、contains 响应测试；增加服务区导入/发布审计、订单区外拒绝及草稿不替换已发布边界测试。
-- PostGIS 条件集成测试覆盖 published_at 过滤、指定服务区、多服务区距离、无已发布围栏兼容和草稿 B 不影响已发布 A。
+## 审阅修复
 
-测试隔离根因与修复：
-- 根因：Docker 不可用时 DatabaseMigrationTest 和 PostgisServiceAreaLocationCheckerTest 回退连接固定共享库 jdbc:postgresql://127.0.0.1:15432/drt_ops，Flyway 不清理历史数据，破坏新库种子断言。
-- 修复：两个测试现在仅在 Docker/Testcontainers 可用时启动隔离 PostGIS；设置 drt.integration.postgis=true 但 Docker 不可用时，以“需要 Docker/Testcontainers 提供隔离 PostGIS 数据库”明确跳过，绝不再迁移或写入共享库。
+- `ServiceArea.boundary` 和 `draftBoundary` 已改为 JTS `Polygon`，使用项目既有的 `@JdbcTypeCode(SqlTypes.GEOGRAPHY)` 持久化范式；DTO/API 继续返回 WKT。新增 `GeographyPolygon` 负责边界 WKT 与 JTS 的转换。
+- 已发布边界与草稿边界仍严格隔离。手工保存和高德导入只更新草稿；发布时才将草稿复制为已发布边界。命令服务及真实 PostGIS 条件测试覆盖 A 已发布、B 草稿不影响本地判定、发布 B 后再切换。
+- V7 对旧非空边界回填为已发布基线版本 1；新建草稿版本从 1 开始，首次导入或保存不再显示为 2；每次实际发布使已发布版本单调递增。
+- `ServiceArea` 增加 `@Version`。保存草稿和发布经 `saveAndFlush` 执行，乐观锁冲突转换为中文 409 错误“服务区边界已被其他操作更新，请刷新后重试”；单测覆盖并发旧实体提交失败。
+- 保留首轮修复：创建入口复用 WKT 正规化和中文校验、contains 严格按 `serviceAreaId` 查询、闭合点使用 `BigDecimal.compareTo`、RBAC/审计、订单区外拒绝与 Docker 不可用时不访问共享数据库。
 
-TDD 红绿证据：
-- RED 1：新增草稿/已发布分离测试后，指定测试编译失败，缺少 CreateServiceAreaCommand 和草稿视图字段。
-- GREEN 1：补齐实体、命令服务、V7 和 compareTo 后，ServiceAreaCommandServiceTest 与 RideOrderServiceAreaValidationTest 通过。
-- RED 2：新增指定 serviceAreaId 的真实 PostGIS 测试后，编译失败，checker 缺少带 ID 的查询签名。
-- GREEN 2：补齐带 ID 的 PostGIS SQL 和 contains 调用后，H2 定向/API 测试通过；Docker 不可用时真实 PostGIS 断言按隔离策略跳过。
+## TDD 红绿证据
 
-测试命令与结果：
-- `& '.\\.tools\\apache-maven-3.9.11\\bin\\mvn.cmd' -q -pl apps/api '-Dtest=ServiceAreaCommandServiceTest,RideOrderServiceAreaValidationTest' test`：通过，exit code 0。
-- `& '.\\.tools\\apache-maven-3.9.11\\bin\\mvn.cmd' -q -pl apps/api '-Dtest=ServiceAreaCommandServiceTest,RideOrderServiceAreaValidationTest,ServiceAreaApiTest' test`：通过，exit code 0，16 个测试通过。
-- `& '.\\.tools\\apache-maven-3.9.11\\bin\\mvn.cmd' -q -pl apps/api '-Ddrt.integration.postgis=true' '-Dtest=PostgisServiceAreaLocationCheckerTest,DatabaseMigrationTest' test`：通过，exit code 0；1 个迁移测试和 2 个 PostGIS 空间测试因 Docker 不可用按 assumption 跳过，静态迁移脚本断言通过。
+- RED：先增加 JTS 持久化、首次导入草稿版本、发布版本递增及并发冲突测试；实现前缺少 JTS 几何转换/实体版本字段及相应命令行为，测试无法通过。
+- GREEN：补齐 `GeographyPolygon`、实体 geography 映射、版本规则和乐观锁翻译后，H2/API 定向测试退出码为 0。
+- RED：新增命令端真实 PostGIS 测试首次运行时，静态构造容器使 Docker 不可用场景出现 `ExceptionInInitializerError`，且 PostGIS 镜像未声明 PostgreSQL 兼容性。
+- GREEN：容器改为条件满足后延迟创建，并使用 `asCompatibleSubstituteFor("postgres")`；Docker 不可用时隔离测试退出码为 0 且按 assumption 跳过。
 
-改动文件：
-- apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceArea.java
-- apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceAreaCommandService.java
-- apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceAreaController.java
-- apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceAreaView.java
-- apps/api/src/main/java/com/idavy/drtops/domain/location/PostgisServiceAreaLocationChecker.java
-- apps/api/src/main/java/com/idavy/drtops/domain/location/ServiceAreaLocationChecker.java
-- apps/api/src/main/resources/db/migration/V7__enhance_service_area_boundaries.sql
-- apps/api/src/test/java/com/idavy/drtops/DatabaseMigrationTest.java
-- apps/api/src/test/java/com/idavy/drtops/domain/area/ServiceAreaApiTest.java
-- apps/api/src/test/java/com/idavy/drtops/domain/area/ServiceAreaCommandServiceTest.java
-- apps/api/src/test/java/com/idavy/drtops/domain/location/PostgisServiceAreaLocationCheckerTest.java
+## 测试命令与结果
 
-已知限制：
-- 本机 Docker/Testcontainers 不可用，隔离 PostGIS 容器中的迁移与空间断言未实际执行；这是试点前必须恢复的环境验证项。
-- 高德行政区返回多片区边界时仍稳定拒绝，需人工拆分或调整表类型后再导入；不会影响手工草稿保存、本地已发布围栏判定或既有流程。
+- `& '.\\.tools\\apache-maven-3.9.11\\bin\\mvn.cmd' -q -pl apps/api '-Dtest=ServiceAreaCommandServiceTest,RideOrderServiceAreaValidationTest,ServiceAreaApiTest' test`：通过，exit code 0。
+- `& '.\\.tools\\apache-maven-3.9.11\\bin\\mvn.cmd' -q -pl apps/api '-Ddrt.integration.postgis=true' '-Dtest=PostgisServiceAreaLocationCheckerTest,DatabaseMigrationTest,ServiceAreaCommandPostgisIntegrationTest' test`：通过，exit code 0。Docker 不可用时三个隔离测试按 assumption 跳过，没有迁移或写入共享 `drt_ops` 库。
+- `git diff --check`：通过。
+
+## 改动文件
+
+- `apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceArea.java`
+- `apps/api/src/main/java/com/idavy/drtops/domain/area/ServiceAreaCommandService.java`
+- `apps/api/src/main/java/com/idavy/drtops/domain/location/GeographyPolygon.java`
+- `apps/api/src/main/resources/db/migration/V7__enhance_service_area_boundaries.sql`
+- `apps/api/src/test/java/com/idavy/drtops/domain/area/ServiceAreaCommandServiceTest.java`
+- `apps/api/src/test/java/com/idavy/drtops/domain/area/ServiceAreaCommandPostgisIntegrationTest.java`
+
+## 已知限制
+
+- 本机 Docker/Testcontainers 不可用。真实隔离 PostGIS 容器内的 migration、空间查询及命令端点 geography 写读/发布切换测试已安全跳过，必须在试点前具备 Docker 的环境执行。
+- 高德多片行政区边界仍要求人工拆分或调整模型后导入；这不影响手工草稿保存和本地已发布围栏判定。
