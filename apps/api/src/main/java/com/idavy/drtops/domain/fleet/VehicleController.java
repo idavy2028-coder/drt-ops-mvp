@@ -29,12 +29,12 @@ public class VehicleController {
     }
 
     @GetMapping
-    ApiResponse<List<Vehicle>> list() {
-        return ApiResponse.ok(repository.findAll());
+    ApiResponse<List<VehicleView>> list() {
+        return ApiResponse.ok(repository.findAll().stream().map(VehicleView::from).toList());
     }
 
     @PostMapping
-    ResponseEntity<ApiResponse<Vehicle>> create(@Valid @RequestBody CreateVehicleRequest request) {
+    ResponseEntity<ApiResponse<VehicleView>> create(@Valid @RequestBody CreateVehicleRequest request) {
         Vehicle vehicle = Vehicle.create(
                 UUID.randomUUID(),
                 request.plateNumber(),
@@ -44,7 +44,7 @@ public class VehicleController {
                 "POINT(" + request.lng().toPlainString() + " " + request.lat().toPlainString() + ")",
                 request.fleetName(),
                 request.dispatchable());
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(repository.save(vehicle)));
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(VehicleView.from(repository.save(vehicle))));
     }
 
     public record CreateVehicleRequest(

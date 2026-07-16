@@ -58,6 +58,9 @@ class AuditLogApiTest {
 
     @Test
     void listsAuditLogsByEntityId() throws Exception {
+        UserAccount dispatcher = UserAccount.create("dispatcher01", "dispatcher01", "not-used-in-audit-test");
+        dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER));
+        dispatcher = userAccountRepository.save(dispatcher);
         auditLogRepository.save(AuditLog.record(
                 "RIDE_ORDER",
                 ORDER_ID,
@@ -74,6 +77,7 @@ class AuditLogApiTest {
                 "manual-review",
                 null,
                 "{}"));
+        auditLogRepository.save(AuditLog.record("RIDE_ORDER", ORDER_ID, "TASK_STARTED", "USER", dispatcher.getId().toString(), null, "{}"));
         auditLogRepository.save(AuditLog.record(
                 "RIDE_ORDER",
                 OTHER_ORDER_ID,
@@ -87,10 +91,12 @@ class AuditLogApiTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + auditorToken)
                         .param("entityId", ORDER_ID.toString()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data.length()").value(3))
                 .andExpect(jsonPath("$.data[*].entityId", hasItems(ORDER_ID.toString())))
                 .andExpect(jsonPath("$.data[*].action", hasItems(
                         "DISPATCH_DECISION",
-                        "MANUAL_REVIEW_APPROVED")));
+                        "MANUAL_REVIEW_APPROVED",
+                        "TASK_STARTED")))
+                .andExpect(jsonPath("$.data[2].actorDisplayName").value("dispatcher01"));
     }
 }

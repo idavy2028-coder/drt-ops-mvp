@@ -19,7 +19,7 @@ public class AuditLogController {
     }
 
     @GetMapping
-    ApiResponse<List<AuditLog>> list(@RequestParam(required = false) UUID entityId) {
+    ApiResponse<List<AuditLogView>> list(@RequestParam(required = false) UUID entityId) {
         return ApiResponse.ok(auditLogService.list(entityId));
     }
 }

@@ -2,21 +2,29 @@
 import { computed } from "vue";
 import { RouterLink, RouterView, useRouter } from "vue-router";
 import { authStore } from "../auth/authStore";
+import type { PermissionCode } from "../auth/permissions";
 
-const navItems = [
+const navItems: Array<{ label: string; to: string; permission: PermissionCode }> = [
   { label: "运营看板", to: "/", permission: "METRICS_READ" },
   { label: "调度工作台", to: "/dispatch", permission: "DISPATCH_EXECUTE" },
   { label: "订单中心", to: "/orders", permission: "ORDER_READ" },
   { label: "车辆任务", to: "/tasks", permission: "TASK_READ" },
+  { label: "位置历史", to: "/vehicle-locations", permission: "LOCATION_READ" },
   { label: "资源配置", to: "/resources", permission: "RESOURCE_MANAGE" },
   { label: "规则配置", to: "/rules", permission: "RULE_MANAGE" },
   { label: "审计日志", to: "/audit-logs", permission: "AUDIT_READ" },
   { label: "用户与权限", to: "/users", permission: "USER_MANAGE" }
 ];
 
-const visibleNavItems = computed(() => navItems.filter((item) => authStore.has(item.permission as never)));
+const visibleNavItems = computed(() => navItems.filter((item) => authStore.has(item.permission)));
 const router = useRouter();
-async function signOut() { await authStore.logout(); await router.replace("/login"); }
+async function signOut() {
+  try {
+    await authStore.logout();
+  } finally {
+    await router.replace("/login");
+  }
+}
 
 const today = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
@@ -62,11 +70,7 @@ const today = new Intl.DateTimeFormat("zh-CN", {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   min-height: 100vh;
-  background:
-    linear-gradient(90deg, rgba(23, 32, 28, 0.04) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(23, 32, 28, 0.04) 1px, transparent 1px),
-    #eef2ef;
-  background-size: 32px 32px;
+  background: var(--canvas);
 }
 
 .sidebar {
@@ -145,10 +149,19 @@ const today = new Intl.DateTimeFormat("zh-CN", {
   font-size: 14px;
   font-weight: 800;
 }
-.account-summary { display: flex; align-items: center; gap: 12px; color: #4d5b54; font-size: 14px; font-weight: 800; }
+
+.account-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #4d5b54;
+  font-size: 14px;
+  font-weight: 800;
+}
 
 .content-surface {
-  padding: 28px;
+  max-width: 1640px;
+  padding: 32px;
 }
 
 @media (max-width: 900px) {

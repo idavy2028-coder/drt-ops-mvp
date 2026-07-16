@@ -2,12 +2,15 @@
 import { computed, onMounted, ref } from "vue";
 import { listAuditLogs } from "../api/metrics";
 import type { AuditLog } from "../api/types";
+import { auditReasonFor, displayDateTime, labelFor, shortId } from "../presentation/operations";
+import { userMessage } from "../api/errors";
 
 const logs = ref<AuditLog[]>([]);
 const entityTypeFilter = ref("");
 const actionFilter = ref("");
 const dateFilter = ref("");
 const status = ref("");
+const loading = ref(false);
 
 const filteredLogs = computed(() => {
   return logs.value.filter((log) => {
@@ -20,10 +23,13 @@ const filteredLogs = computed(() => {
 
 async function loadLogs() {
   status.value = "";
+  loading.value = true;
   try {
     logs.value = await listAuditLogs();
   } catch (error) {
-    status.value = error instanceof Error ? error.message : "审计日志加载失败";
+    status.value = userMessage(error, "审计日志加载失败");
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -40,7 +46,7 @@ onMounted(() => {
         <h2 class="page-title">审计日志</h2>
         <p class="page-subtitle">保留调度决策、人工确认、任务执行和异常处理的关键操作记录。</p>
       </div>
-      <button class="secondary-button" type="button" @click="loadLogs">刷新</button>
+      <button class="secondary-button" type="button" :disabled="loading" @click="loadLogs">{{ loading ? "同步中" : "刷新" }}</button>
     </header>
 
     <section class="work-panel">
@@ -60,7 +66,8 @@ onMounted(() => {
       </div>
     </section>
 
-    <p v-if="status" class="section-copy">状态：{{ status }}</p>
+    <p v-if="loading" class="page-state">正在读取审计记录…</p>
+    <p v-else-if="status" class="page-state">{{ status }}</p>
 
     <section class="table-panel">
       <table class="data-table">
@@ -75,11 +82,11 @@ onMounted(() => {
         </thead>
         <tbody>
           <tr v-for="log in filteredLogs" :key="log.id">
-            <td>{{ log.createdAt }}</td>
-            <td>{{ log.entityType }} · {{ log.entityId.slice(0, 8) }}</td>
-            <td>{{ log.action }}</td>
-            <td>{{ log.actorType }} / {{ log.actorId }}</td>
-            <td>{{ log.reason ?? "--" }}</td>
+            <td>{{ displayDateTime(log.createdAt) }}</td>
+            <td :title="log.entityId">{{ labelFor(log.entityType) }} · {{ shortId(log.entityId) }}</td>
+            <td :title="log.action">{{ labelFor(log.action) }}</td>
+            <td :title="log.actorId">{{ labelFor(log.actorType) }} · {{ log.actorDisplayName ?? shortId(log.actorId) }}</td>
+            <td :title="log.reason ?? undefined">{{ auditReasonFor(log.reason) }}</td>
           </tr>
           <tr v-if="filteredLogs.length === 0">
             <td colspan="5">暂无审计日志</td>

@@ -80,6 +80,7 @@ class ManualReviewApiTest {
     JwtTokenService jwtTokenService;
 
     private String dispatcherToken;
+    private UUID dispatcherId;
 
     @BeforeEach
     void setUp() {
@@ -93,7 +94,9 @@ class ManualReviewApiTest {
 
         UserAccount dispatcher = UserAccount.create("dispatcher01", "dispatcher01", "not-used-in-manual-review-test");
         dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER));
-        dispatcherToken = jwtTokenService.issue(userAccountRepository.save(dispatcher)).value();
+        dispatcher = userAccountRepository.save(dispatcher);
+        dispatcherId = dispatcher.getId();
+        dispatcherToken = jwtTokenService.issue(dispatcher).value();
 
         vehicleRepository.save(Vehicle.create(
                 VEHICLE_ID,
@@ -127,7 +130,9 @@ class ManualReviewApiTest {
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
         assertThat(vehicleTaskRepository.findAll()).hasSize(1);
         assertThat(auditLogRepository.findByEntityId(order.getId()))
-                .anyMatch(log -> log.getAction().equals("MANUAL_REVIEW_APPROVED"));
+                .anyMatch(log -> log.getAction().equals("MANUAL_REVIEW_APPROVED")
+                        && log.getActorType().equals("USER")
+                        && log.getActorId().equals(dispatcherId.toString()));
     }
 
     @Test
@@ -176,6 +181,19 @@ class ManualReviewApiTest {
 
         VehicleTask task = vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow();
         assertThat(task.getStops()).hasSize(2);
+    }
+
+    @Test
+    void approveManualReviewRejectsMissingSelectedExistingTask() throws Exception {
+        UUID decisionId = createManualReviewDecision(UUID.randomUUID());
+
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                .andExpect(status().isConflict());
+
+        assertThat(vehicleTaskRepository.findAll()).isEmpty();
+        assertThat(rideOrderRepository.findAll().getFirst().getStatus())
+                .isEqualTo(OrderStatus.PENDING_MANUAL_REVIEW);
     }
 
     @Test

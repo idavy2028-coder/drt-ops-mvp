@@ -16,7 +16,11 @@ public enum Permission {
     TASK_EXECUTE,
     AUDIT_READ,
     METRICS_READ,
-    DECISION_READ;
+    DECISION_READ,
+    LOCATION_READ,
+    LOCATION_REPORT,
+    LOCATION_CORRECT,
+    LOCATION_EXPORT;
 
     private static final Map<RoleCode, Set<Permission>> ROLE_PERMISSIONS = Map.of(
             RoleCode.SYSTEM_ADMIN, Set.of(
@@ -27,14 +31,20 @@ public enum Permission {
                     TASK_READ,
                     AUDIT_READ,
                     METRICS_READ,
-                    DECISION_READ),
+                    DECISION_READ,
+                    LOCATION_READ,
+                    LOCATION_REPORT,
+                    LOCATION_CORRECT,
+                    LOCATION_EXPORT),
             RoleCode.DISPATCHER, Set.of(
                     ORDER_READ,
                     DISPATCH_EXECUTE,
                     MANUAL_REVIEW,
                     TASK_READ,
                     TASK_EXECUTE,
-                    DECISION_READ),
+                    DECISION_READ,
+                    LOCATION_READ,
+                    LOCATION_REPORT),
             RoleCode.OPERATOR, Set.of(
                     RESOURCE_MANAGE,
                     ORDER_CREATE,

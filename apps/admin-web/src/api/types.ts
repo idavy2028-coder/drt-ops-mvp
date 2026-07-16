@@ -46,6 +46,79 @@ export interface VirtualStop {
   enabled: boolean;
 }
 
+export interface LocationCandidate {
+  longitude?: number;
+  latitude?: number;
+  standardizedAddress: string;
+  virtualStopId?: UUID;
+  providerDegraded?: boolean;
+  outsideServiceArea?: boolean;
+}
+
+export interface LocationReportInput extends Omit<LocationCandidate, "longitude" | "latitude"> {
+  longitude: number;
+  latitude: number;
+  driverReportedAt: IsoDateTime;
+  note?: string;
+  idempotencyKey: UUID;
+}
+
+export interface LocationPickerProvider {
+  search(keyword: string): Promise<LocationCandidate[]>;
+  pickOnMap(container: HTMLElement, initial?: LocationCandidate): Promise<LocationCandidate>;
+}
+
+export interface VehicleLocationView {
+  id: UUID;
+  vehicleId: UUID;
+  vehicleTaskId?: UUID;
+  taskStopId?: UUID;
+  virtualStopId?: UUID;
+  eventType: string;
+  longitude: DecimalValue;
+  latitude: DecimalValue;
+  standardizedAddress: string;
+  source: string;
+  coordinateSystem: string;
+  driverReportedAt: IsoDateTime;
+  recordedAt: IsoDateTime;
+  recordedBy: UUID;
+  correctsEventId?: UUID;
+  snapshotApplied: boolean;
+  outsideServiceArea?: boolean;
+}
+
+export type VehicleLocationEventView = VehicleLocationView;
+
+export interface VehicleLocationEventFilters {
+  vehicleId?: UUID;
+  taskId?: UUID;
+  date?: string;
+  eventType?: string;
+  from?: IsoDateTime;
+  to?: IsoDateTime;
+}
+
+export interface VehicleLocationSnapshot {
+  longitude: DecimalValue;
+  latitude: DecimalValue;
+  standardizedAddress: string;
+  source: string;
+  coordinateSystem: string;
+  driverReportedAt: IsoDateTime;
+  recordedAt: IsoDateTime;
+  eventId: UUID;
+  vehicleTaskId?: UUID;
+  outsideServiceArea?: boolean;
+}
+
+export interface VehicleLocationSnapshotItem {
+  vehicleId: UUID;
+  plateNumber: string;
+  currentStatus: string;
+  latestLocation: VehicleLocationSnapshot;
+}
+
 export interface Vehicle {
   id: UUID;
   plateNumber: string;
@@ -54,6 +127,7 @@ export interface Vehicle {
   currentStatus: string;
   fleetName: string;
   dispatchable: boolean;
+  latestLocation?: VehicleLocationSnapshot;
 }
 
 export interface Driver {
@@ -121,6 +195,14 @@ export interface VehicleTask {
   stops: TaskStop[];
 }
 
+export interface TaskActionResponse {
+  task: VehicleTask;
+  locationEvent?: VehicleLocationView;
+  snapshotApplied: boolean;
+  warnings: string[];
+  replayed: boolean;
+}
+
 export interface DispatchResult {
   rideOrderId: UUID;
   decision: "AUTO_DISPATCH" | "MANUAL_REVIEW" | "NO_FEASIBLE_PLAN";
@@ -145,6 +227,7 @@ export interface AuditLog {
   action: string;
   actorType: string;
   actorId: string;
+  actorDisplayName?: string;
   reason?: string;
   metadataJson: string;
   createdAt: IsoDateTime;

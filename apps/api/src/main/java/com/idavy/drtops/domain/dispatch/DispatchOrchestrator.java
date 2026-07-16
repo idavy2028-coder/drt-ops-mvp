@@ -18,6 +18,7 @@ import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
+import jakarta.persistence.EntityManager;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -45,6 +46,7 @@ public class DispatchOrchestrator {
     private final CandidateTaskAssembler candidateTaskAssembler;
     private final AlgorithmClient algorithmClient;
     private final ObjectMapper objectMapper;
+    private final EntityManager entityManager;
 
     public DispatchOrchestrator(
             RideOrderRepository rideOrderRepository,
@@ -56,7 +58,8 @@ public class DispatchOrchestrator {
             AuditLogRepository auditLogRepository,
             CandidateTaskAssembler candidateTaskAssembler,
             AlgorithmClient algorithmClient,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            EntityManager entityManager) {
         this.rideOrderRepository = rideOrderRepository;
         this.ruleSetRepository = ruleSetRepository;
         this.dispatchDecisionRepository = dispatchDecisionRepository;
@@ -67,6 +70,7 @@ public class DispatchOrchestrator {
         this.candidateTaskAssembler = candidateTaskAssembler;
         this.algorithmClient = algorithmClient;
         this.objectMapper = objectMapper;
+        this.entityManager = entityManager;
     }
 
     @Transactional
@@ -149,16 +153,15 @@ public class DispatchOrchestrator {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "算法自动派发结果缺少最优方案");
         }
 
+        VehicleTask existingTask = bestPlan.taskId() == null
+                ? null : taskForInsertion(bestPlan.taskId());
         Vehicle vehicle = vehicleRepository.findById(bestPlan.vehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的车辆不存在"));
         OffsetDateTime estimatedBoardingAt = order.getRequestedDepartureAt().plusMinutes(bestPlan.estimatedWaitMinutes());
         OffsetDateTime estimatedArrivalAt = estimatedBoardingAt.plusMinutes(bestPlan.estimatedDetourMinutes() + 10L);
 
-        if (bestPlan.taskId() != null) {
-            VehicleTask existingTask = vehicleTaskRepository.findWithStopsById(bestPlan.taskId()).orElse(null);
-            if (existingTask != null) {
-                return insertIntoExistingTask(order, vehicle, existingTask, estimatedBoardingAt, estimatedArrivalAt);
-            }
+        if (existingTask != null) {
+            return insertIntoExistingTask(order, vehicle, existingTask, estimatedBoardingAt, estimatedArrivalAt);
         }
 
         Driver driver = availableDriver();
@@ -184,6 +187,13 @@ public class DispatchOrchestrator {
         VehicleTask savedTask = vehicleTaskRepository.save(task);
         order.confirm(new RideOrder.OrderPromise(estimatedBoardingAt, estimatedArrivalAt));
         return savedTask;
+    }
+
+    private VehicleTask taskForInsertion(UUID taskId) {
+        VehicleTask task = vehicleTaskRepository.findByIdForExecution(taskId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务不存在"));
+        entityManager.refresh(task);
+        return task;
     }
 
     private VehicleTask insertIntoExistingTask(

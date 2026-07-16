@@ -7,6 +7,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -16,6 +17,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfiguration {
 
     @Bean
@@ -52,6 +54,11 @@ public class SecurityConfiguration {
                         .requestMatchers("/api/audit-logs/**").hasAuthority("AUDIT_READ")
                         .requestMatchers("/api/metrics/**").hasAuthority("METRICS_READ")
                         .requestMatchers("/api/users/**").hasAuthority("USER_MANAGE")
+                        .requestMatchers(HttpMethod.POST, "/api/vehicles/*/location-reports").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/vehicles/locations/latest").hasAuthority("LOCATION_READ")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicles/*/location-events").hasAuthority("LOCATION_READ")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicle-tasks/*/location-events").hasAuthority("LOCATION_READ")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicle-locations/export.csv").hasAuthority("LOCATION_EXPORT")
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-tasks/**").hasAuthority("TASK_READ")
                         .requestMatchers(HttpMethod.POST, "/api/vehicle-tasks/**").hasAuthority("TASK_EXECUTE")
                         .requestMatchers("/api/dispatch-rule-sets/**").hasAuthority("RULE_MANAGE")

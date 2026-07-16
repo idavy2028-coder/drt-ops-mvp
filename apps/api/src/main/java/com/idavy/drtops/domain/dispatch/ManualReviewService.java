@@ -13,6 +13,7 @@ import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
+import jakarta.persistence.EntityManager;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -25,15 +26,13 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class ManualReviewService {
 
-    private static final String SYSTEM_ACTOR_TYPE = "SYSTEM";
-    private static final String SYSTEM_ACTOR_ID = "manual-review";
-
     private final DispatchDecisionRepository dispatchDecisionRepository;
     private final RideOrderRepository rideOrderRepository;
     private final VehicleRepository vehicleRepository;
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
     private final AuditLogRepository auditLogRepository;
+    private final EntityManager entityManager;
 
     public ManualReviewService(
             DispatchDecisionRepository dispatchDecisionRepository,
@@ -41,33 +40,35 @@ public class ManualReviewService {
             VehicleRepository vehicleRepository,
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
-            AuditLogRepository auditLogRepository) {
+            AuditLogRepository auditLogRepository,
+            EntityManager entityManager) {
         this.dispatchDecisionRepository = dispatchDecisionRepository;
         this.rideOrderRepository = rideOrderRepository;
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.auditLogRepository = auditLogRepository;
+        this.entityManager = entityManager;
     }
 
     @Transactional
-    public DispatchResult approve(UUID decisionId) {
+    public DispatchResult approve(UUID actorId, UUID decisionId) {
         DispatchDecision decision = decision(decisionId);
         RideOrder order = pendingManualReviewOrder(decision);
         VehicleTask task = createTask(order, decision);
         order.confirm(new RideOrder.OrderPromise(
                 task.getStops().getFirst().getPlannedArrivalAt(),
                 task.getStops().getLast().getPlannedArrivalAt()));
-        audit(order.getId(), "MANUAL_REVIEW_APPROVED", null);
+        audit(actorId, order.getId(), "MANUAL_REVIEW_APPROVED", null);
         return new DispatchResult(order.getId(), DispatchDecisionType.MANUAL_REVIEW, decision.getId(), task.getId());
     }
 
     @Transactional
-    public DispatchResult reject(UUID decisionId, String reason) {
+    public DispatchResult reject(UUID actorId, UUID decisionId, String reason) {
         DispatchDecision decision = decision(decisionId);
         RideOrder order = pendingManualReviewOrder(decision);
         order.markUnserviceable(reason);
-        audit(order.getId(), "MANUAL_REVIEW_REJECTED", reason);
+        audit(actorId, order.getId(), "MANUAL_REVIEW_REJECTED", reason);
         return new DispatchResult(order.getId(), DispatchDecisionType.NO_FEASIBLE_PLAN, decision.getId(), null);
     }
 
@@ -75,6 +76,8 @@ public class ManualReviewService {
         if (decision.getBestVehicleId() == null) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "人工确认缺少候选车辆");
         }
+        VehicleTask existingTask = decision.getBestTaskId() == null
+                ? null : taskForInsertion(decision.getBestTaskId());
         Vehicle vehicle = vehicleRepository.findById(decision.getBestVehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "候选车辆不存在"));
 
@@ -83,11 +86,8 @@ public class ManualReviewService {
         OffsetDateTime boardingAt = order.getRequestedDepartureAt().plusMinutes(waitMinutes);
         OffsetDateTime alightingAt = boardingAt.plusMinutes(detourMinutes + 10L);
 
-        if (decision.getBestTaskId() != null) {
-            VehicleTask existingTask = vehicleTaskRepository.findWithStopsById(decision.getBestTaskId()).orElse(null);
-            if (existingTask != null) {
-                return insertIntoExistingTask(order, vehicle, existingTask, boardingAt, alightingAt);
-            }
+        if (existingTask != null) {
+            return insertIntoExistingTask(order, vehicle, existingTask, boardingAt, alightingAt);
         }
 
         Driver driver = driverRepository.findAll().stream()
@@ -101,6 +101,13 @@ public class ManualReviewService {
         task.addStop(TaskStop.planned(order.getAlightingStopId(), order.getId(), 2, "ALIGHTING", alightingAt));
         task.dispatch();
         return vehicleTaskRepository.save(task);
+    }
+
+    private VehicleTask taskForInsertion(UUID taskId) {
+        VehicleTask task = vehicleTaskRepository.findByIdForExecution(taskId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "候选任务不存在"));
+        entityManager.refresh(task);
+        return task;
     }
 
     private VehicleTask insertIntoExistingTask(
@@ -168,13 +175,13 @@ public class ManualReviewService {
         return decision;
     }
 
-    private void audit(UUID orderId, String action, String reason) {
+    private void audit(UUID actorId, UUID orderId, String action, String reason) {
         auditLogRepository.save(AuditLog.record(
                 "RIDE_ORDER",
                 orderId,
                 action,
-                SYSTEM_ACTOR_TYPE,
-                SYSTEM_ACTOR_ID,
+                "USER",
+                actorId.toString(),
                 reason,
                 "{}"));
     }

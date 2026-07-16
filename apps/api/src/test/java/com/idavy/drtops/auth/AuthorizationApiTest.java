@@ -18,7 +18,10 @@ import com.idavy.drtops.domain.fleet.Driver;
 import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.location.IdempotencyKeyLock;
+import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.order.RideOrderRepository;
+import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
@@ -106,6 +109,7 @@ class AuthorizationApiTest {
     private String dispatcherToken;
     private String auditorToken;
     private String disabledUserToken;
+    private String systemAdminToken;
 
     @BeforeEach
     void setUp() {
@@ -131,6 +135,7 @@ class AuthorizationApiTest {
         dispatcherToken = jwtTokenService.issue(dispatcher).value();
         auditorToken = jwtTokenService.issue(auditor).value();
         disabledUserToken = jwtTokenService.issue(disabled).value();
+        systemAdminToken = jwtTokenService.issue(account("admin01", RoleCode.SYSTEM_ADMIN)).value();
 
         ruleSetRepository.save(DispatchRuleSet.defaultRules(RULE_SET_ID));
         serviceAreaRepository.save(ServiceArea.create(
@@ -227,6 +232,68 @@ class AuthorizationApiTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void enforcesVehicleLocationRoleMatrix() throws Exception {
+        String report = """
+                {"eventType":"TASK_STARTED","longitude":120.1550,"latitude":30.2741,
+                 "standardizedAddress":"演示服务区","driverReportedAt":"2026-07-08T10:30:00+08:00",
+                 "idempotencyKey":"11111111-1111-1111-1111-111111111199"}
+                """;
+        mockMvc.perform(post("/api/vehicles/" + VEHICLE_ID + "/location-reports")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(report))
+                .andExpect(status().isCreated());
+        mockMvc.perform(get("/api/vehicles/locations/latest")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/vehicles/" + VEHICLE_ID + "/location-reports")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(report.replace("TASK_STARTED", "MANUAL_CORRECTION")
+                                .replace("11111111-1111-1111-1111-111111111199", "11111111-1111-1111-1111-111111111198")
+                                .replace("\"idempotencyKey\"", "\"correctsEventId\":\"11111111-1111-1111-1111-111111111197\",\"correctionReason\":\"修正\",\"idempotencyKey\"")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/vehicle-locations/export.csv")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(systemAdminToken)))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/vehicles/locations/latest")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(operatorToken)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void enforcesTaskActionPermissionBeforeProcessingRequiredLocationBody() throws Exception {
+        UUID taskId = vehicleTaskRepository.save(VehicleTask.pendingDeparture(
+                VEHICLE_ID,
+                DRIVER_ID,
+                OffsetDateTime.now().minusMinutes(5),
+                "MANUAL")).getId();
+        String request = """
+                {
+                  "locationReport": {
+                    "longitude": 120.1550,
+                    "latitude": 30.2741,
+                    "standardizedAddress": "演示服务区",
+                    "driverReportedAt": "%s",
+                    "idempotencyKey": "%s"
+                  }
+                }
+                """.formatted(OffsetDateTime.now().minusMinutes(1), UUID.randomUUID());
+
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/start")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(operatorToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/start")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.task.status").value("IN_PROGRESS"));
+    }
+
     private UserAccount account(String username, RoleCode role) {
         UserAccount account = UserAccount.create(username, username, "not-used-in-authorization-test");
         account.assignRoles(Set.of(role));
@@ -260,6 +327,18 @@ class AuthorizationApiTest {
         @Primary
         FakeAlgorithmClient fakeAlgorithmClient() {
             return new FakeAlgorithmClient();
+        }
+
+        @Bean
+        @Primary
+        IdempotencyKeyLock idempotencyKeyLock() {
+            return idempotencyKey -> { };
+        }
+
+        @Bean
+        @Primary
+        ServiceAreaLocationChecker serviceAreaLocationChecker() {
+            return (longitude, latitude) -> true;
         }
     }
 

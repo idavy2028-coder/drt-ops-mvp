@@ -1,4 +1,5 @@
 import type { AuthSession, CurrentUser } from "./types";
+import { apiErrorFromResponse } from "./errors";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -25,7 +26,7 @@ async function authRequest<T>(path: string, options: RequestInit): Promise<T> {
   }
   const response = await fetch(buildUrl(path), { ...options, headers, credentials: "include" });
   if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
+    throw await apiErrorFromResponse(response);
   }
   if (response.status === 204) {
     return undefined as T;

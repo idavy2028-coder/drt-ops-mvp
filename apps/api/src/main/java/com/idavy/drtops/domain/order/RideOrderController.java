@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -48,13 +49,19 @@ public class RideOrderController {
     }
 
     @PostMapping("/{orderId}/cancel")
-    ApiResponse<RideOrder> cancel(@PathVariable UUID orderId, @RequestBody ReasonRequest request) {
-        return ApiResponse.ok(orderExceptionService.cancel(orderId, request.reason()));
+    ApiResponse<RideOrder> cancel(
+            Authentication authentication, @PathVariable UUID orderId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(orderExceptionService.cancel(actorId(authentication), orderId, request.reason()));
     }
 
     @PostMapping("/{orderId}/no-show")
-    ApiResponse<RideOrder> noShow(@PathVariable UUID orderId, @RequestBody ReasonRequest request) {
-        return ApiResponse.ok(orderExceptionService.noShow(orderId, request.reason()));
+    ApiResponse<RideOrder> noShow(
+            Authentication authentication, @PathVariable UUID orderId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(orderExceptionService.noShow(actorId(authentication), orderId, request.reason()));
+    }
+
+    private UUID actorId(Authentication authentication) {
+        return (UUID) authentication.getPrincipal();
     }
 
     public record ReasonRequest(String reason) {
