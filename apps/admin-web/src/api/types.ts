@@ -68,6 +68,13 @@ export interface LocationPickerProvider {
   pickOnMap(container: HTMLElement, initial?: LocationCandidate): Promise<LocationCandidate>;
 }
 
+export interface MapProviderStatus {
+  provider: string;
+  available: boolean;
+  degradedReason?: string;
+  coordinateSystem: "GCJ-02";
+}
+
 export interface VehicleLocationView {
   id: UUID;
   vehicleId: UUID;

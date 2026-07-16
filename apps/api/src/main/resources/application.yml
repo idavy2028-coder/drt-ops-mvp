@@ -26,6 +26,13 @@ management:
         enabled: true
 
 drt:
+  map:
+    amap:
+      enabled: ${DRT_AMAP_ENABLED:false}
+      web-service-key: ${DRT_AMAP_WEB_SERVICE_KEY:}
+      base-url: ${DRT_AMAP_BASE_URL:https://restapi.amap.com}
+      connect-timeout-ms: ${DRT_AMAP_CONNECT_TIMEOUT_MS:2000}
+      read-timeout-ms: ${DRT_AMAP_READ_TIMEOUT_MS:5000}
   auth:
     jwt-secret: ${DRT_AUTH_JWT_SECRET:}
     access-token-minutes: 15
