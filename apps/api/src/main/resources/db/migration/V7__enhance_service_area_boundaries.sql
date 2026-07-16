@@ -6,7 +6,8 @@ ALTER TABLE service_areas
     ADD COLUMN draft_boundary_version INTEGER NOT NULL DEFAULT 0 CHECK (draft_boundary_version >= 0),
     ADD COLUMN published_at TIMESTAMPTZ,
     ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    ADD COLUMN coordinate_system VARCHAR(20) NOT NULL DEFAULT 'GCJ02';
+    ADD COLUMN coordinate_system VARCHAR(20) NOT NULL DEFAULT 'GCJ02',
+    ADD COLUMN version BIGINT NOT NULL DEFAULT 0;
 
 ALTER TABLE service_areas ALTER COLUMN boundary DROP NOT NULL;
 

@@ -7,11 +7,15 @@ import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.dispatch.DispatchRuleSet;
 import com.idavy.drtops.domain.dispatch.DispatchRuleSetRepository;
 import java.util.UUID;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
+import org.locationtech.jts.geom.Polygon;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.server.ResponseStatusException;
 
 @SpringBootTest(properties = {
@@ -42,6 +46,9 @@ class ServiceAreaCommandServiceTest {
     @Autowired
     AuditLogRepository auditLogRepository;
 
+    @Autowired
+    EntityManagerFactory entityManagerFactory;
+
     @BeforeEach
     void setUp() {
         auditLogRepository.deleteAll();
@@ -58,7 +65,7 @@ class ServiceAreaCommandServiceTest {
                 AREA_ID, new ServiceAreaBoundaryRequest(BOUNDARY_B, null), ACTOR_ID);
 
         assertThat(view.boundaryWkt()).isNull();
-        assertThat(view.draftBoundaryWkt()).startsWith("POLYGON((105.40 35.40");
+        assertThat(view.draftBoundaryWkt()).contains("105.4 35.4");
         assertThat(view.draftBoundarySource()).isEqualTo("MANUAL");
         assertThat(view.draftBoundaryVersion()).isEqualTo(2);
         assertThat(view.coordinateSystem()).isEqualTo("GCJ02");
@@ -74,12 +81,12 @@ class ServiceAreaCommandServiceTest {
 
         assertThat(draftB.boundaryWkt()).isEqualTo(publishedA.boundaryWkt());
         assertThat(draftB.boundaryVersion()).isEqualTo(publishedA.boundaryVersion());
-        assertThat(draftB.draftBoundaryWkt()).contains("105.40 35.40");
+        assertThat(draftB.draftBoundaryWkt()).contains("105.4 35.4");
         assertThat(draftB.publishedAt()).isNotNull();
 
         ServiceAreaView publishedB = commandService.publish(AREA_ID, ACTOR_ID);
 
-        assertThat(publishedB.boundaryWkt()).contains("105.40 35.40");
+        assertThat(publishedB.boundaryWkt()).contains("105.4 35.4");
         assertThat(publishedB.boundaryVersion()).isEqualTo(2);
         assertThat(publishedB.publishedAt()).isAfterOrEqualTo(publishedA.publishedAt());
         assertThat(auditLogRepository.findByEntityId(AREA_ID))
@@ -92,11 +99,72 @@ class ServiceAreaCommandServiceTest {
 
         ServiceAreaView imported = commandService.importDistrictDraft("通渭县试点服务区", BOUNDARY_B, ACTOR_ID);
 
-        assertThat(imported.boundaryWkt()).contains("105.20 35.20");
-        assertThat(imported.draftBoundaryWkt()).contains("105.40 35.40");
+        assertThat(imported.boundaryWkt()).contains("105.2 35.2");
+        assertThat(imported.draftBoundaryWkt()).contains("105.4 35.4");
         assertThat(imported.draftBoundarySource()).isEqualTo("AMAP_DISTRICT");
         assertThat(auditLogRepository.findByEntityId(AREA_ID))
                 .anyMatch(log -> log.getAction().equals("SERVICE_AREA_DISTRICT_BOUNDARY_IMPORTED"));
+    }
+
+    @Test
+    void createsFirstImportedDraftAtVersionOne() {
+        serviceAreaRepository.deleteAll();
+
+        ServiceAreaView imported = commandService.importDistrictDraft("通渭县", BOUNDARY_A, ACTOR_ID);
+
+        assertThat(imported.draftBoundaryVersion()).isEqualTo(1);
+        assertThat(imported.boundaryVersion()).isZero();
+    }
+
+    @Test
+    void persistsPublishedAndDraftBoundariesAsJtsPolygons() {
+        commandService.publish(AREA_ID, ACTOR_ID);
+        commandService.saveBoundary(AREA_ID, new ServiceAreaBoundaryRequest(BOUNDARY_B, null), ACTOR_ID);
+
+        ServiceArea reloaded = serviceAreaRepository.findById(AREA_ID).orElseThrow();
+
+        assertThat(reloaded.getPublishedBoundaryGeometry()).isInstanceOf(Polygon.class);
+        assertThat(reloaded.getDraftBoundaryGeometry()).isInstanceOf(Polygon.class);
+        assertThat(reloaded.getBoundary()).contains("105.2 35.2");
+        assertThat(reloaded.getDraftBoundary()).contains("105.4 35.4");
+    }
+
+    @Test
+    void rejectsConcurrentDraftUpdateWithOptimisticLock() {
+        EntityManager first = entityManagerFactory.createEntityManager();
+        EntityManager second = entityManagerFactory.createEntityManager();
+        try {
+            first.getTransaction().begin();
+            second.getTransaction().begin();
+            ServiceArea firstCopy = first.find(ServiceArea.class, AREA_ID);
+            ServiceArea staleCopy = second.find(ServiceArea.class, AREA_ID);
+
+            firstCopy.replaceDraftBoundary(BOUNDARY_B, "MANUAL");
+            first.getTransaction().commit();
+
+            staleCopy.replaceDraftBoundary(BOUNDARY_A, "MANUAL");
+            assertThatThrownBy(second::flush)
+                    .isInstanceOfAny(jakarta.persistence.OptimisticLockException.class,
+                            ObjectOptimisticLockingFailureException.class);
+        } finally {
+            if (first.getTransaction().isActive()) {
+                first.getTransaction().rollback();
+            }
+            if (second.getTransaction().isActive()) {
+                second.getTransaction().rollback();
+            }
+            first.close();
+            second.close();
+        }
+    }
+
+    @Test
+    void exposesConcurrentUpdateAsChineseBusinessError() {
+        assertThatThrownBy(() -> {
+            throw ServiceAreaCommandService.concurrentUpdateException();
+        }).isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getReason())
+                        .isEqualTo("服务区边界已被其他操作更新，请刷新后重试"));
     }
 
     @Test
@@ -104,7 +172,7 @@ class ServiceAreaCommandServiceTest {
         ServiceAreaView view = commandService.saveBoundary(AREA_ID, new ServiceAreaBoundaryRequest(
                 "POLYGON((105.20 35.20,105.30 35.20,105.30 35.30,105.20 35.30,105.200 35.200))", null), ACTOR_ID);
 
-        assertThat(view.draftBoundaryWkt()).contains("105.200 35.200");
+        assertThat(view.draftBoundaryWkt()).contains("105.2 35.2");
     }
 
     @Test

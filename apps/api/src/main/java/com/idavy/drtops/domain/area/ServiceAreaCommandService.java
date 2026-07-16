@@ -8,8 +8,10 @@ import com.idavy.drtops.domain.dispatch.DispatchRuleSetRepository;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
@@ -37,11 +39,15 @@ public class ServiceAreaCommandService {
 
     @Transactional
     public ServiceAreaView saveBoundary(UUID serviceAreaId, ServiceAreaBoundaryRequest request, UUID actorId) {
-        ServiceArea serviceArea = findServiceArea(serviceAreaId);
-        serviceArea.replaceDraftBoundary(normalize(request), "MANUAL");
-        ServiceArea saved = serviceAreaRepository.save(serviceArea);
-        recordAudit(saved, "SERVICE_AREA_BOUNDARY_SAVED", actorId, null);
-        return ServiceAreaView.from(saved);
+        try {
+            ServiceArea serviceArea = findServiceArea(serviceAreaId);
+            serviceArea.replaceDraftBoundary(normalize(request), "MANUAL");
+            ServiceArea saved = serviceAreaRepository.saveAndFlush(serviceArea);
+            recordAudit(saved, "SERVICE_AREA_BOUNDARY_SAVED", actorId, null);
+            return ServiceAreaView.from(saved);
+        } catch (ObjectOptimisticLockingFailureException | jakarta.persistence.OptimisticLockException exception) {
+            throw concurrentUpdateException();
+        }
     }
 
     @Transactional
@@ -49,34 +55,37 @@ public class ServiceAreaCommandService {
         String normalized = normalize(new ServiceAreaBoundaryRequest(boundaryWkt, null));
         ServiceArea serviceArea = serviceAreaRepository.findFirstByName(keyword).orElse(null);
         if (serviceArea == null) {
-            serviceArea = ServiceArea.create(
+            serviceArea = ServiceArea.createImportedDraft(
                     UUID.randomUUID(), keyword, normalized, "06:00:00", "23:00:00", dispatchRuleSetRepository.findAll().stream()
                             .findFirst()
                             .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先配置调度规则"))
                             .getId());
-            serviceArea.replaceDraftBoundary(normalized, "AMAP_DISTRICT");
         } else {
             serviceArea.replaceDraftBoundary(normalized, "AMAP_DISTRICT");
         }
-        ServiceArea saved = serviceAreaRepository.save(serviceArea);
+        ServiceArea saved = saveAndTranslateConflict(serviceArea);
         recordAudit(saved, "SERVICE_AREA_DISTRICT_BOUNDARY_IMPORTED", actorId, "行政区边界草稿");
         return ServiceAreaView.from(saved);
     }
 
     @Transactional
     public ServiceAreaView publish(UUID serviceAreaId, UUID actorId) {
-        ServiceArea serviceArea = findServiceArea(serviceAreaId);
-        normalize(new ServiceAreaBoundaryRequest(serviceArea.getDraftBoundary(), null));
-        serviceArea.publishDraft();
-        ServiceArea saved = serviceAreaRepository.save(serviceArea);
-        recordAudit(saved, "SERVICE_AREA_PUBLISHED", actorId, null);
-        return ServiceAreaView.from(saved);
+        try {
+            ServiceArea serviceArea = findServiceArea(serviceAreaId);
+            normalize(new ServiceAreaBoundaryRequest(serviceArea.getDraftBoundary(), null));
+            serviceArea.publishDraft();
+            ServiceArea saved = serviceAreaRepository.saveAndFlush(serviceArea);
+            recordAudit(saved, "SERVICE_AREA_PUBLISHED", actorId, null);
+            return ServiceAreaView.from(saved);
+        } catch (ObjectOptimisticLockingFailureException | jakarta.persistence.OptimisticLockException exception) {
+            throw concurrentUpdateException();
+        }
     }
 
     @Transactional
     public ServiceAreaView create(CreateServiceAreaCommand command, UUID actorId) {
         String boundary = normalize(new ServiceAreaBoundaryRequest(command.boundaryWkt(), null));
-        ServiceArea saved = serviceAreaRepository.save(ServiceArea.create(
+        ServiceArea saved = saveAndTranslateConflict(ServiceArea.create(
                 command.id(), command.name(), boundary, command.serviceStart(), command.serviceEnd(), command.ruleSetId()));
         recordAudit(saved, "SERVICE_AREA_CREATED", actorId, "服务区边界草稿");
         return ServiceAreaView.from(saved);
@@ -85,6 +94,18 @@ public class ServiceAreaCommandService {
     private ServiceArea findServiceArea(UUID serviceAreaId) {
         return serviceAreaRepository.findById(serviceAreaId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "服务区不存在"));
+    }
+
+    static ResponseStatusException concurrentUpdateException() {
+        return new ResponseStatusException(HttpStatus.CONFLICT, "服务区边界已被其他操作更新，请刷新后重试");
+    }
+
+    private ServiceArea saveAndTranslateConflict(ServiceArea serviceArea) {
+        try {
+            return serviceAreaRepository.saveAndFlush(serviceArea);
+        } catch (ObjectOptimisticLockingFailureException | jakarta.persistence.OptimisticLockException exception) {
+            throw concurrentUpdateException();
+        }
     }
 
     private void recordAudit(ServiceArea serviceArea, String action, UUID actorId, String reason) {
@@ -107,10 +128,12 @@ public class ServiceAreaCommandService {
         if (!hasText(wkt)) {
             throw invalid("服务区边界不能为空");
         }
-        if (!wkt.startsWith("POLYGON((") || !wkt.endsWith("))")) {
+        String upperCaseWkt = wkt.toUpperCase(Locale.ROOT);
+        int ringStart = upperCaseWkt.indexOf("((");
+        if (!upperCaseWkt.startsWith("POLYGON") || ringStart < 0 || !wkt.endsWith("))")) {
             throw invalid("服务区边界必须是Polygon");
         }
-        String body = wkt.substring("POLYGON((".length(), wkt.length() - 2);
+        String body = wkt.substring(ringStart + 2, wkt.length() - 2);
         List<Point> points = new ArrayList<>();
         for (String value : body.split(",")) {
             String[] parts = value.trim().split("\\s+");

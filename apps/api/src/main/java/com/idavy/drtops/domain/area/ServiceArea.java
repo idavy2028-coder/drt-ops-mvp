@@ -1,12 +1,17 @@
 package com.idavy.drtops.domain.area;
 
+import com.idavy.drtops.domain.location.GeographyPolygon;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+import org.locationtech.jts.geom.Polygon;
 
 @Entity
 @Table(name = "service_areas")
@@ -18,11 +23,13 @@ public class ServiceArea {
     @Column(nullable = false, length = 100)
     private String name;
 
-    @Column(length = 1000)
-    private String boundary;
+    @JdbcTypeCode(SqlTypes.GEOGRAPHY)
+    @Column(columnDefinition = "geometry")
+    private Polygon boundary;
 
-    @Column(length = 1000)
-    private String draftBoundary;
+    @JdbcTypeCode(SqlTypes.GEOGRAPHY)
+    @Column(columnDefinition = "geometry")
+    private Polygon draftBoundary;
 
     @Column(nullable = false)
     private LocalTime serviceStart;
@@ -59,21 +66,31 @@ public class ServiceArea {
     @Column(nullable = false)
     private OffsetDateTime updatedAt;
 
+    @Version
+    private long version;
+
     protected ServiceArea() {
     }
 
-    private ServiceArea(UUID id, String name, String boundary, LocalTime serviceStart, LocalTime serviceEnd, UUID ruleSetId) {
+    private ServiceArea(
+            UUID id,
+            String name,
+            String boundary,
+            String draftSource,
+            LocalTime serviceStart,
+            LocalTime serviceEnd,
+            UUID ruleSetId) {
         this.id = id;
         this.name = name;
         this.boundary = null;
-        this.draftBoundary = boundary;
+        this.draftBoundary = GeographyPolygon.fromWkt(boundary);
         this.serviceStart = serviceStart;
         this.serviceEnd = serviceEnd;
         this.ruleSetId = ruleSetId;
         this.enabled = true;
         this.boundarySource = "LEGACY";
         this.boundaryVersion = 0;
-        this.draftBoundarySource = "MANUAL";
+        this.draftBoundarySource = draftSource;
         this.draftBoundaryVersion = 1;
         this.coordinateSystem = "GCJ02";
         this.createdAt = OffsetDateTime.now();
@@ -91,6 +108,24 @@ public class ServiceArea {
                 id,
                 name,
                 boundaryWkt,
+                "MANUAL",
+                LocalTime.parse(serviceStart),
+                LocalTime.parse(serviceEnd),
+                ruleSetId);
+    }
+
+    static ServiceArea createImportedDraft(
+            UUID id,
+            String name,
+            String boundaryWkt,
+            String serviceStart,
+            String serviceEnd,
+            UUID ruleSetId) {
+        return new ServiceArea(
+                id,
+                name,
+                boundaryWkt,
+                "AMAP_DISTRICT",
                 LocalTime.parse(serviceStart),
                 LocalTime.parse(serviceEnd),
                 ruleSetId);
@@ -105,11 +140,11 @@ public class ServiceArea {
     }
 
     public String getBoundary() {
-        return boundary;
+        return GeographyPolygon.toWkt(boundary);
     }
 
     public String getDraftBoundary() {
-        return draftBoundary;
+        return GeographyPolygon.toWkt(draftBoundary);
     }
 
     public LocalTime getServiceStart() {
@@ -156,8 +191,20 @@ public class ServiceArea {
         return updatedAt;
     }
 
+    Polygon getPublishedBoundaryGeometry() {
+        return boundary;
+    }
+
+    Polygon getDraftBoundaryGeometry() {
+        return draftBoundary;
+    }
+
+    long getVersion() {
+        return version;
+    }
+
     void replaceDraftBoundary(String boundaryWkt, String source) {
-        draftBoundary = boundaryWkt;
+        draftBoundary = GeographyPolygon.fromWkt(boundaryWkt);
         draftBoundarySource = source;
         draftBoundaryVersion++;
         coordinateSystem = "GCJ02";
@@ -170,7 +217,7 @@ public class ServiceArea {
         }
         boundary = draftBoundary;
         boundarySource = draftBoundarySource;
-        boundaryVersion = draftBoundaryVersion;
+        boundaryVersion++;
         publishedAt = OffsetDateTime.now();
         enabled = true;
         coordinateSystem = "GCJ02";
