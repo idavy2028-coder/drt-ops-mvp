@@ -22,9 +22,6 @@ class DatabaseMigrationTest {
 
     private static final String POSTGIS_INTEGRATION_PROPERTY = "drt.integration.postgis";
     private static final Path MIGRATION_DIR = Path.of("src/main/resources/db/migration");
-    private static final String LOCAL_POSTGIS_URL = "jdbc:postgresql://127.0.0.1:15432/drt_ops";
-    private static final String LOCAL_POSTGIS_USERNAME = "drt_ops";
-    private static final String LOCAL_POSTGIS_PASSWORD = "drt_ops";
 
     @Test
     void migrationScriptsDeclareCoreTablesAndSeedData() throws IOException {
@@ -77,19 +74,15 @@ class DatabaseMigrationTest {
     void migrationsCreateCoreTablesAndSeedAreaWhenDockerIsAvailable() throws Exception {
         Assumptions.assumeTrue(Boolean.getBoolean(POSTGIS_INTEGRATION_PROPERTY),
                 "Set -D" + POSTGIS_INTEGRATION_PROPERTY + "=true to run the PostGIS migration test");
+        Assumptions.assumeTrue(dockerIsAvailable(), "需要 Docker/Testcontainers 提供隔离 PostGIS 数据库");
 
-        if (dockerIsAvailable()) {
-            try (PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgis/postgis:16-3.5")
-                    .withDatabaseName("drt_ops")
-                    .withUsername("drt_ops")
-                    .withPassword("drt_ops")) {
-                postgres.start();
-                verifyMigrations(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
-            }
-            return;
+        try (PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgis/postgis:16-3.5")
+                .withDatabaseName("drt_ops")
+                .withUsername("drt_ops")
+                .withPassword("drt_ops")) {
+            postgres.start();
+            verifyMigrations(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
         }
-
-        verifyMigrations(LOCAL_POSTGIS_URL, LOCAL_POSTGIS_USERNAME, LOCAL_POSTGIS_PASSWORD);
     }
 
     private static void verifyMigrations(String jdbcUrl, String username, String password) throws Exception {

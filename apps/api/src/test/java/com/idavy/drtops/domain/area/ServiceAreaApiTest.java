@@ -2,17 +2,24 @@ package com.idavy.drtops.domain.area;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.idavy.drtops.domain.dispatch.DispatchRuleSet;
 import com.idavy.drtops.domain.dispatch.DispatchRuleSetRepository;
+import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import java.math.BigDecimal;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,6 +34,7 @@ import org.springframework.test.web.servlet.MockMvc;
 })
 @AutoConfigureMockMvc
 @WithMockUser(authorities = "RESOURCE_MANAGE")
+@Import(ServiceAreaApiTest.ServiceAreaCheckerConfiguration.class)
 class ServiceAreaApiTest {
 
     private static final UUID DEMO_RULE_SET_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
@@ -94,6 +102,47 @@ class ServiceAreaApiTest {
     }
 
     @Test
+    void rejectsInvalidServiceAreaBoundaryAtCreateEndpointWithChineseMessage() throws Exception {
+        mockMvc.perform(post("/api/service-areas")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"非法服务区",
+                                 "boundaryWkt":"POLYGON((116.3700 39.9000,116.3900 39.9000,116.3700 39.9000))",
+                                 "serviceStart":"07:00:00","serviceEnd":"21:30:00",
+                                 "ruleSetId":"11111111-1111-1111-1111-111111111111"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.message").value("服务区边界至少需要三个点"));
+    }
+
+    @Test
+    void rejectsDistrictImportWithoutAmapKeyUsingStableChineseMessage() throws Exception {
+        mockMvc.perform(post("/api/service-areas/import-district-boundary").param("keyword", "通渭县"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.data.message").value("行政区边界导入暂不可用，请稍后重试"));
+    }
+
+    @Test
+    @WithMockUser(authorities = "ORDER_READ")
+    void requiresResourceManagePermissionForBoundaryUpdate() throws Exception {
+        mockMvc.perform(put("/api/service-areas/{serviceAreaId}/boundary", DEMO_AREA_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"boundaryWkt\":\"POLYGON((116.30 39.90,116.31 39.90,116.31 39.91,116.30 39.90))\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void returnsContainsResultForRequestedServiceArea() throws Exception {
+        mockMvc.perform(post("/api/service-areas/{serviceAreaId}/contains", DEMO_AREA_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"longitude\":116.3200,\"latitude\":39.9300}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.inside").value(true))
+                .andExpect(jsonPath("$.data.serviceAreaId").value(DEMO_AREA_ID.toString()))
+                .andExpect(jsonPath("$.data.distanceToBoundaryMeters").value(0.0));
+    }
+
+    @Test
     void rejectsVirtualStopWithInvalidRadius() throws Exception {
         mockMvc.perform(post("/api/virtual-stops")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -105,5 +154,26 @@ class ServiceAreaApiTest {
                                  "safetyNote":"安全候车点"}
                                 """))
                 .andExpect(status().isBadRequest());
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class ServiceAreaCheckerConfiguration {
+
+        @Bean
+        @Primary
+        ServiceAreaLocationChecker serviceAreaLocationChecker() {
+            return new ServiceAreaLocationChecker() {
+                @Override
+                public boolean isInsideEnabledArea(BigDecimal longitude, BigDecimal latitude) {
+                    return true;
+                }
+
+                @Override
+                public PublishedAreaCheck checkPublishedArea(
+                        UUID serviceAreaId, BigDecimal longitude, BigDecimal latitude) {
+                    return new PublishedAreaCheck(true, serviceAreaId, 0.0);
+                }
+            };
+        }
     }
 }

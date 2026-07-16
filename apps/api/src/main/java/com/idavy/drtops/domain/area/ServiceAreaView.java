@@ -9,6 +9,9 @@ public record ServiceAreaView(
         String boundaryWkt,
         String boundarySource,
         int boundaryVersion,
+        String draftBoundaryWkt,
+        String draftBoundarySource,
+        int draftBoundaryVersion,
         OffsetDateTime publishedAt,
         OffsetDateTime updatedAt,
         String coordinateSystem) {
@@ -20,6 +23,9 @@ public record ServiceAreaView(
                 serviceArea.getBoundary(),
                 serviceArea.getBoundarySource(),
                 serviceArea.getBoundaryVersion(),
+                serviceArea.getDraftBoundary(),
+                serviceArea.getDraftBoundarySource(),
+                serviceArea.getDraftBoundaryVersion(),
                 serviceArea.getPublishedAt(),
                 serviceArea.getUpdatedAt(),
                 serviceArea.getCoordinateSystem());

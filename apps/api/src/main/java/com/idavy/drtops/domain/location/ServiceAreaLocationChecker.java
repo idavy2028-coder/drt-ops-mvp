@@ -11,6 +11,12 @@ public interface ServiceAreaLocationChecker {
         return new PublishedAreaCheck(isInsideEnabledArea(longitude, latitude), null, null);
     }
 
+    default PublishedAreaCheck checkPublishedArea(
+            UUID serviceAreaId, BigDecimal longitude, BigDecimal latitude) {
+        PublishedAreaCheck check = checkPublishedArea(longitude, latitude);
+        return serviceAreaId.equals(check.serviceAreaId()) ? check : new PublishedAreaCheck(false, null, null);
+    }
+
     record PublishedAreaCheck(boolean inside, UUID serviceAreaId, Double distanceToBoundaryMeters) {
     }
 }

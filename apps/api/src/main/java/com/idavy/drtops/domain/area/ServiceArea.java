@@ -18,8 +18,11 @@ public class ServiceArea {
     @Column(nullable = false, length = 100)
     private String name;
 
-    @Column(nullable = false, length = 1000)
+    @Column(length = 1000)
     private String boundary;
+
+    @Column(length = 1000)
+    private String draftBoundary;
 
     @Column(nullable = false)
     private LocalTime serviceStart;
@@ -39,6 +42,12 @@ public class ServiceArea {
     @Column(nullable = false)
     private int boundaryVersion;
 
+    @Column(length = 40)
+    private String draftBoundarySource;
+
+    @Column(nullable = false)
+    private int draftBoundaryVersion;
+
     @Column(length = 20, nullable = false)
     private String coordinateSystem;
 
@@ -56,13 +65,16 @@ public class ServiceArea {
     private ServiceArea(UUID id, String name, String boundary, LocalTime serviceStart, LocalTime serviceEnd, UUID ruleSetId) {
         this.id = id;
         this.name = name;
-        this.boundary = boundary;
+        this.boundary = null;
+        this.draftBoundary = boundary;
         this.serviceStart = serviceStart;
         this.serviceEnd = serviceEnd;
         this.ruleSetId = ruleSetId;
         this.enabled = true;
         this.boundarySource = "LEGACY";
         this.boundaryVersion = 0;
+        this.draftBoundarySource = "MANUAL";
+        this.draftBoundaryVersion = 1;
         this.coordinateSystem = "GCJ02";
         this.createdAt = OffsetDateTime.now();
         this.updatedAt = createdAt;
@@ -96,6 +108,10 @@ public class ServiceArea {
         return boundary;
     }
 
+    public String getDraftBoundary() {
+        return draftBoundary;
+    }
+
     public LocalTime getServiceStart() {
         return serviceStart;
     }
@@ -120,6 +136,14 @@ public class ServiceArea {
         return boundaryVersion;
     }
 
+    public String getDraftBoundarySource() {
+        return draftBoundarySource;
+    }
+
+    public int getDraftBoundaryVersion() {
+        return draftBoundaryVersion;
+    }
+
     public String getCoordinateSystem() {
         return coordinateSystem;
     }
@@ -132,16 +156,21 @@ public class ServiceArea {
         return updatedAt;
     }
 
-    void replaceBoundary(String boundaryWkt, String source) {
-        boundary = boundaryWkt;
-        boundarySource = source;
-        boundaryVersion++;
-        publishedAt = null;
+    void replaceDraftBoundary(String boundaryWkt, String source) {
+        draftBoundary = boundaryWkt;
+        draftBoundarySource = source;
+        draftBoundaryVersion++;
         coordinateSystem = "GCJ02";
         updatedAt = OffsetDateTime.now();
     }
 
-    void publish() {
+    void publishDraft() {
+        if (draftBoundary == null) {
+            throw new IllegalStateException("服务区没有可发布的边界草稿");
+        }
+        boundary = draftBoundary;
+        boundarySource = draftBoundarySource;
+        boundaryVersion = draftBoundaryVersion;
         publishedAt = OffsetDateTime.now();
         enabled = true;
         coordinateSystem = "GCJ02";

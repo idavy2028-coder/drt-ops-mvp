@@ -38,7 +38,7 @@ public class ServiceAreaCommandService {
     @Transactional
     public ServiceAreaView saveBoundary(UUID serviceAreaId, ServiceAreaBoundaryRequest request, UUID actorId) {
         ServiceArea serviceArea = findServiceArea(serviceAreaId);
-        serviceArea.replaceBoundary(normalize(request), "MANUAL");
+        serviceArea.replaceDraftBoundary(normalize(request), "MANUAL");
         ServiceArea saved = serviceAreaRepository.save(serviceArea);
         recordAudit(saved, "SERVICE_AREA_BOUNDARY_SAVED", actorId, null);
         return ServiceAreaView.from(saved);
@@ -47,12 +47,17 @@ public class ServiceAreaCommandService {
     @Transactional
     public ServiceAreaView importDistrictDraft(String keyword, String boundaryWkt, UUID actorId) {
         String normalized = normalize(new ServiceAreaBoundaryRequest(boundaryWkt, null));
-        ServiceArea serviceArea = serviceAreaRepository.findFirstByName(keyword).orElseGet(() -> ServiceArea.create(
-                UUID.randomUUID(), keyword, normalized, "06:00:00", "23:00:00", dispatchRuleSetRepository.findAll().stream()
-                        .findFirst()
-                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先配置调度规则"))
-                        .getId()));
-        serviceArea.replaceBoundary(normalized, "AMAP_DISTRICT");
+        ServiceArea serviceArea = serviceAreaRepository.findFirstByName(keyword).orElse(null);
+        if (serviceArea == null) {
+            serviceArea = ServiceArea.create(
+                    UUID.randomUUID(), keyword, normalized, "06:00:00", "23:00:00", dispatchRuleSetRepository.findAll().stream()
+                            .findFirst()
+                            .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先配置调度规则"))
+                            .getId());
+            serviceArea.replaceDraftBoundary(normalized, "AMAP_DISTRICT");
+        } else {
+            serviceArea.replaceDraftBoundary(normalized, "AMAP_DISTRICT");
+        }
         ServiceArea saved = serviceAreaRepository.save(serviceArea);
         recordAudit(saved, "SERVICE_AREA_DISTRICT_BOUNDARY_IMPORTED", actorId, "行政区边界草稿");
         return ServiceAreaView.from(saved);
@@ -61,10 +66,19 @@ public class ServiceAreaCommandService {
     @Transactional
     public ServiceAreaView publish(UUID serviceAreaId, UUID actorId) {
         ServiceArea serviceArea = findServiceArea(serviceAreaId);
-        normalize(new ServiceAreaBoundaryRequest(serviceArea.getBoundary(), null));
-        serviceArea.publish();
+        normalize(new ServiceAreaBoundaryRequest(serviceArea.getDraftBoundary(), null));
+        serviceArea.publishDraft();
         ServiceArea saved = serviceAreaRepository.save(serviceArea);
         recordAudit(saved, "SERVICE_AREA_PUBLISHED", actorId, null);
+        return ServiceAreaView.from(saved);
+    }
+
+    @Transactional
+    public ServiceAreaView create(CreateServiceAreaCommand command, UUID actorId) {
+        String boundary = normalize(new ServiceAreaBoundaryRequest(command.boundaryWkt(), null));
+        ServiceArea saved = serviceAreaRepository.save(ServiceArea.create(
+                command.id(), command.name(), boundary, command.serviceStart(), command.serviceEnd(), command.ruleSetId()));
+        recordAudit(saved, "SERVICE_AREA_CREATED", actorId, "服务区边界草稿");
         return ServiceAreaView.from(saved);
     }
 
@@ -119,7 +133,8 @@ public class ServiceAreaCommandService {
         if (points.size() < 4 || points.stream().limit(points.size() - 1).distinct().count() < 3) {
             throw invalid("服务区边界至少需要三个点");
         }
-        if (!points.getFirst().equals(points.getLast())) {
+        if (points.getFirst().longitude().compareTo(points.getLast().longitude()) != 0
+                || points.getFirst().latitude().compareTo(points.getLast().latitude()) != 0) {
             throw invalid("服务区边界必须闭合");
         }
         return "POLYGON((" + points.stream()
@@ -162,5 +177,14 @@ public class ServiceAreaCommandService {
     }
 
     private record Point(BigDecimal longitude, BigDecimal latitude) {
+    }
+
+    public record CreateServiceAreaCommand(
+            UUID id,
+            String name,
+            String boundaryWkt,
+            String serviceStart,
+            String serviceEnd,
+            UUID ruleSetId) {
     }
 }

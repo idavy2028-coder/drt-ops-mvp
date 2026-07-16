@@ -44,15 +44,16 @@ public class ServiceAreaController {
     }
 
     @PostMapping
-    ResponseEntity<ApiResponse<ServiceArea>> create(@Valid @RequestBody CreateServiceAreaRequest request) {
-        ServiceArea area = ServiceArea.create(
+    ResponseEntity<ApiResponse<ServiceAreaView>> create(
+            Authentication authentication, @Valid @RequestBody CreateServiceAreaRequest request) {
+        ServiceAreaView area = commandService.create(new ServiceAreaCommandService.CreateServiceAreaCommand(
                 UUID.randomUUID(),
                 request.name(),
                 request.boundaryWkt(),
                 request.serviceStart(),
                 request.serviceEnd(),
-                request.ruleSetId());
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(repository.save(area)));
+                request.ruleSetId()), actorId(authentication));
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(area));
     }
 
     @PostMapping("/import-district-boundary")
@@ -81,9 +82,9 @@ public class ServiceAreaController {
             @org.springframework.web.bind.annotation.PathVariable UUID serviceAreaId,
             @Valid @RequestBody ContainsRequest request) {
         ServiceAreaLocationChecker.PublishedAreaCheck check = serviceAreaLocationChecker.checkPublishedArea(
-                request.longitude(), request.latitude());
-        boolean inside = serviceAreaId.equals(check.serviceAreaId()) && check.inside();
-        Double distance = serviceAreaId.equals(check.serviceAreaId()) ? check.distanceToBoundaryMeters() : null;
+                serviceAreaId, request.longitude(), request.latitude());
+        boolean inside = check.inside();
+        Double distance = check.distanceToBoundaryMeters();
         return ApiResponse.ok(new ContainsResponse(inside, check.serviceAreaId(), distance, "GCJ02"));
     }
 
