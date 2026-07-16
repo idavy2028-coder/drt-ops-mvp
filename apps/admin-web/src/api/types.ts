@@ -88,6 +88,17 @@ export interface VehicleLocationView {
   outsideServiceArea?: boolean;
 }
 
+export type VehicleLocationEventView = VehicleLocationView;
+
+export interface VehicleLocationEventFilters {
+  vehicleId?: UUID;
+  taskId?: UUID;
+  date?: string;
+  eventType?: string;
+  from?: IsoDateTime;
+  to?: IsoDateTime;
+}
+
 export interface VehicleLocationSnapshot {
   longitude: DecimalValue;
   latitude: DecimalValue;

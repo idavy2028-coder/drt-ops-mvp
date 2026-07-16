@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { approveManualReview, listManualReviews, rejectManualReview } from "../api/manualReviews";
 import { listOrders } from "../api/orders";
 import { listTasks } from "../api/tasks";
-import type { ManualReviewQueueItem, RideOrder, UUID, VehicleTask } from "../api/types";
+import { listLatestVehicleLocations } from "../api/vehicleLocations";
+import type { ManualReviewQueueItem, RideOrder, UUID, VehicleLocationSnapshotItem, VehicleTask } from "../api/types";
 import DispatchMap from "../components/DispatchMap.vue";
 import ManualReviewQueuePanel from "../components/ManualReviewQueuePanel.vue";
 import RealtimeOrderList from "../components/RealtimeOrderList.vue";
@@ -11,30 +12,63 @@ import VehicleTaskList from "../components/VehicleTaskList.vue";
 import { userMessage } from "../api/errors";
 import { feedbackStore } from "../stores/feedbackStore";
 
+const LOCATION_POLL_INTERVAL_MS = 15_000;
+
 const orders = ref<RideOrder[]>([]);
 const tasks = ref<VehicleTask[]>([]);
 const reviews = ref<ManualReviewQueueItem[]>([]);
+const latestLocations = ref<VehicleLocationSnapshotItem[]>([]);
 const processingDecisionId = ref<UUID>();
 const status = ref("");
+const locationStatus = ref("");
 const actionError = ref("");
 const loading = ref(false);
+let locationPollTimer: number | undefined;
+
+const staleThresholdMinutes = computed(() => {
+  const configured = Number(import.meta.env.VITE_MANUAL_LOCATION_STALE_MINUTES);
+  return Number.isFinite(configured) && configured > 0 ? configured : 30;
+});
+
+const staleLocations = computed(() => {
+  const now = Date.now();
+  const thresholdMs = staleThresholdMinutes.value * 60_000;
+  return latestLocations.value.filter((item) => {
+    if (!isActiveVehicle(item)) {
+      return false;
+    }
+    return now - new Date(item.latestLocation.driverReportedAt).getTime() > thresholdMs;
+  });
+});
 
 async function loadWorkbench() {
   try {
     status.value = "";
     loading.value = true;
-    const [loadedOrders, loadedTasks, loadedReviews] = await Promise.all([
+    const [loadedOrders, loadedTasks, loadedReviews, loadedLocations] = await Promise.all([
       listOrders(),
       listTasks(),
-      listManualReviews()
+      listManualReviews(),
+      listLatestVehicleLocations()
     ]);
     orders.value = loadedOrders;
     tasks.value = loadedTasks;
     reviews.value = loadedReviews;
+    latestLocations.value = loadedLocations;
+    locationStatus.value = "";
   } catch (error) {
     status.value = userMessage(error, "工作台数据加载失败");
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadLatestLocations() {
+  try {
+    latestLocations.value = await listLatestVehicleLocations();
+    locationStatus.value = "";
+  } catch (error) {
+    locationStatus.value = userMessage(error, "车辆位置加载失败，已保留上次快照");
   }
 }
 
@@ -72,8 +106,21 @@ async function reject(payload: { decisionId: UUID; reason: string }) {
   }
 }
 
+function isActiveVehicle(item: VehicleLocationSnapshotItem): boolean {
+  return item.latestLocation.vehicleTaskId !== undefined && !["IDLE", "OFFLINE", "COMPLETED"].includes(item.currentStatus);
+}
+
 onMounted(() => {
   void loadWorkbench();
+  locationPollTimer = window.setInterval(() => {
+    void loadLatestLocations();
+  }, LOCATION_POLL_INTERVAL_MS);
+});
+
+onBeforeUnmount(() => {
+  if (locationPollTimer !== undefined) {
+    window.clearInterval(locationPollTimer);
+  }
 });
 </script>
 
@@ -108,10 +155,16 @@ onMounted(() => {
 
     <p v-if="loading" class="page-state">正在汇总实时订单、车辆任务与人工复核队列…</p>
     <p v-else-if="status" class="page-state">{{ status }}</p>
+    <p v-if="locationStatus" class="page-state">{{ locationStatus }}</p>
+
+    <section v-if="staleLocations.length > 0" class="stale-panel" aria-label="位置较久未更新">
+      <strong>位置较久未更新</strong>
+      <p v-for="item in staleLocations" :key="item.vehicleId">{{ item.plateNumber }} 超过 {{ staleThresholdMinutes }} 分钟未更新位置</p>
+    </section>
 
     <div class="dispatch-grid">
       <RealtimeOrderList :orders="orders" />
-      <DispatchMap />
+      <DispatchMap :locations="latestLocations" />
       <ManualReviewQueuePanel
         :items="reviews"
         :processing-decision-id="processingDecisionId"
@@ -134,6 +187,24 @@ onMounted(() => {
 
 .dispatch-grid > :nth-child(4) {
   grid-column: 1 / -1;
+}
+
+.stale-panel {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  border: 1px solid #edc8c8;
+  border-radius: 8px;
+  background: #fff7f7;
+  padding: 12px 14px;
+  color: #9f2424;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.stale-panel strong,
+.stale-panel p {
+  margin: 0;
 }
 
 @media (max-width: 1180px) {
