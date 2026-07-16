@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.map;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -19,6 +20,7 @@ import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 
 @WebMvcTest(value = MapProviderController.class,
         excludeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = JwtAuthenticationFilter.class))
@@ -36,12 +38,44 @@ class MapProviderControllerTest {
     }
 
     @Test
+    void deniesAnonymousUsers() throws Exception {
+        mockMvc.perform(get("/api/map/address-suggestions").param("keyword", "人民政府").param("city", "通渭县"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     @WithMockUser(authorities = "RESOURCE_MANAGE")
     void allowsAuthorizedOperationsUsersAndReturnsInternalDto() throws Exception {
         mockMvc.perform(get("/api/map/address-suggestions").param("keyword", "人民政府").param("city", "通渭县"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].name").value("通渭县人民政府"))
                 .andExpect(jsonPath("$.data[0].location.coordinateSystem").value("GCJ-02"));
+    }
+
+    @Test
+    @WithMockUser(authorities = "RESOURCE_MANAGE")
+    void returnsChineseValidationMessageForBlankRequestParameter() throws Exception {
+        mockMvc.perform(get("/api/map/address-suggestions").param("keyword", "").param("city", "通渭县"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.message").value("keyword不能为空"));
+    }
+
+    @Test
+    @WithMockUser(authorities = "RESOURCE_MANAGE")
+    void returnsChineseValidationMessageForBlankCityParameter() throws Exception {
+        mockMvc.perform(get("/api/map/address-suggestions").param("keyword", "人民政府").param("city", ""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.message").value("city不能为空"));
+    }
+
+    @Test
+    @WithMockUser(authorities = "RESOURCE_MANAGE")
+    void returnsChineseValidationMessageWhenDistanceDestinationIsMissing() throws Exception {
+        mockMvc.perform(post("/api/map/distance")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"origin\":{\"longitude\":105.24,\"latitude\":35.21}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.data.message").value("destination不能为空"));
     }
 
     @TestConfiguration

@@ -8,13 +8,17 @@ import com.idavy.drtops.domain.map.GeocodeResult;
 import com.idavy.drtops.domain.map.MapProviderException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import io.netty.handler.timeout.ReadTimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import reactor.core.publisher.Mono;
@@ -106,10 +110,55 @@ class AmapMapSearchProviderTest {
 
         assertThatThrownBy(() -> provider.geocode("文化街", "通渭县"))
                 .isInstanceOfSatisfying(MapProviderException.class, exception -> {
-                    assertThat(exception).hasMessage("地图服务暂不可用，请稍后重试");
+                    assertThat(exception).hasMessage("地图服务请求超时，请稍后重试");
                     assertThat(exception.getMessage()).doesNotContain("socket timeout details");
                     assertThat(exception.getStatus().degradedReason()).isEqualTo("request-timeout");
                 });
+    }
+
+    @Test
+    void classifiesReactorNettyReadTimeoutAsTimeoutAndRecordsMatchingDegradationMetric() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AmapMapSearchProvider provider = provider(webClientRequestFailure(ReadTimeoutException.INSTANCE), registry);
+
+        assertThatThrownBy(() -> provider.geocode("文化街", "通渭县"))
+                .isInstanceOfSatisfying(MapProviderException.class, exception -> {
+                    assertThat(exception).hasMessage("地图服务请求超时，请稍后重试");
+                    assertThat(exception.getStatus().degradedReason()).isEqualTo("request-timeout");
+                });
+        assertThat(registry.get("drt.map.provider.degraded.total")
+                .tag("operation", "geocode").tag("reason", "request-timeout").counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    void classifiesWebClientDnsFailureAsNetworkUnavailableAndRecordsMatchingDegradationMetric() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AmapMapSearchProvider provider = provider(webClientRequestFailure(new UnknownHostException("amap.internal")), registry);
+
+        assertThatThrownBy(() -> provider.suggest("人民政府", "通渭县"))
+                .isInstanceOfSatisfying(MapProviderException.class, exception -> {
+                    assertThat(exception).hasMessage("地图上游网络不可用，请稍后重试");
+                    assertThat(exception.getStatus().degradedReason()).isEqualTo("upstream-network-unavailable");
+                    assertThat(exception.getMessage()).doesNotContain("amap.internal");
+                });
+        assertThat(registry.get("drt.map.provider.degraded.total")
+                .tag("operation", "suggest").tag("reason", "upstream-network-unavailable").counter().count())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void classifiesWebClientConnectionFailureAsNetworkUnavailable() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AmapMapSearchProvider provider = provider(webClientRequestFailure(new ConnectException("connection refused")), registry);
+
+        assertThatThrownBy(() -> provider.geocode("文化街", "通渭县"))
+                .isInstanceOfSatisfying(MapProviderException.class, exception -> {
+                    assertThat(exception).hasMessage("地图上游网络不可用，请稍后重试");
+                    assertThat(exception.getStatus().degradedReason()).isEqualTo("upstream-network-unavailable");
+                });
+        assertThat(registry.get("drt.map.provider.degraded.total")
+                .tag("operation", "geocode").tag("reason", "upstream-network-unavailable").counter().count())
+                .isEqualTo(1);
     }
 
     @Test
@@ -138,6 +187,11 @@ class AmapMapSearchProviderTest {
         properties.setEnabled(true);
         properties.setWebServiceKey("test-web-service-key");
         return properties;
+    }
+
+    private WebClient webClientRequestFailure(Throwable cause) {
+        return WebClient.builder().exchangeFunction(request -> Mono.error(new WebClientRequestException(
+                cause, request.method(), request.url(), request.headers()))).build();
     }
 
     private void startServer(ExchangeHandler handler) throws IOException {

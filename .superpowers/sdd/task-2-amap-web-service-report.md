@@ -30,3 +30,16 @@
 - 未调用真实高德，测试仅使用本地 HTTP 服务和 WebClient 超时桩。
 - 高德 Key 仅从服务端 `AmapProperties` 读取并作为 Web Service 请求参数使用；没有客户端 Key、真实 Key 或付费服务调用。
 - 全量 `apps/api` 回归需要在未中断环境中补跑。
+
+## 独立审阅修复（2026-07-16）
+
+- 网络失败分类：`ReadTimeoutException` 和 `WebClientRequestException` 包装的读超时归为 `request-timeout`，返回“地图服务请求超时，请稍后重试”；DNS、连接和 Socket 失败归为 `upstream-network-unavailable`，返回“地图上游网络不可用，请稍后重试”。两类均记录对应的降级指标，且不泄漏主机名或上游细节。
+- 请求校验：`ConstraintViolationException`、缺少查询参数、不可读请求体和请求体字段校验统一产生中文业务错误。空 `keyword`/`city` 分别返回 `keyword不能为空`/`city不能为空`，缺失距离终点返回 `destination不能为空`。
+- 边界与权限：新增 16 个途经点的完整请求编码断言，保留 17 个途经点拒绝测试；新增匿名用户访问地图端点被拒绝的覆盖。
+- 本轮 TDD：先运行新增测试，确认 Reactor Netty 读超时/DNS 异常被错误归类、空查询参数未处理且请求体缺失返回英文文案（RED）；修复后运行以下命令通过（GREEN）：
+
+  ```powershell
+  .\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api '-Dtest=AmapMapSearchProviderTest,AmapRoutePlanningProviderTest,MapProviderControllerTest' test
+  ```
+
+  Surefire 结果：地址搜索 8 项、路径规划 6 项、控制器 6 项，均为 0 failures / 0 errors。

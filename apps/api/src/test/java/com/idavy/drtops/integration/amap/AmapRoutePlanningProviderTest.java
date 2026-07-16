@@ -94,6 +94,26 @@ class AmapRoutePlanningProviderTest {
     }
 
     @Test
+    void sendsExactlySixteenWaypoints() throws Exception {
+        AtomicReference<String> query = new AtomicReference<>();
+        startServer(exchange -> {
+            query.set(exchange.getRequestURI().getRawQuery());
+            respond(exchange, 200, "{\"status\":\"1\",\"route\":{\"paths\":[{\"distance\":\"1\",\"duration\":\"1\",\"steps\":[]}]}}");
+        });
+        AmapRoutePlanningProvider provider = provider(new SimpleMeterRegistry());
+        List<Coordinate> waypoints = java.util.stream.IntStream.range(0, 16)
+                .mapToObj(index -> new Coordinate("105." + (241000 + index), "35.211000"))
+                .toList();
+
+        provider.drivingRoute(new Coordinate("105.240000", "35.210000"),
+                new Coordinate("105.242000", "35.212000"), waypoints);
+
+        String waypointParameter = query.get().split("waypoints=", 2)[1];
+        assertThat(waypointParameter.split(";", -1)).hasSize(16);
+        assertThat(waypointParameter).contains("105.241000,35.211000", "105.241015,35.211000");
+    }
+
+    @Test
     void hidesAmapFailureMessageForRouteCalls() throws Exception {
         startServer(exchange -> respond(exchange, 200,
                 "{\"status\":\"0\",\"info\":\"DAILY_QUERY_OVER_LIMIT\",\"infocode\":\"10003\"}"));
