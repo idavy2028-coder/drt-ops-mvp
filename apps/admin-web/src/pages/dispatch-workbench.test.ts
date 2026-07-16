@@ -5,16 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DispatchWorkbenchPage from "./DispatchWorkbenchPage.vue";
 
 const mapConstructor = vi.hoisted(() => vi.fn(() => ({ remove: vi.fn() })));
-const orderApi = vi.hoisted(() => ({
-  listOrders: vi.fn()
-}));
-const taskApi = vi.hoisted(() => ({
-  listTasks: vi.fn()
-}));
+const orderApi = vi.hoisted(() => ({ listOrders: vi.fn() }));
+const taskApi = vi.hoisted(() => ({ listTasks: vi.fn() }));
 const manualReviewApi = vi.hoisted(() => ({
   listManualReviews: vi.fn(),
   approveManualReview: vi.fn(),
   rejectManualReview: vi.fn()
+}));
+const vehicleLocationApi = vi.hoisted(() => ({
+  listLatestVehicleLocations: vi.fn()
 }));
 
 vi.mock("maplibre-gl", () => ({
@@ -26,11 +25,12 @@ vi.mock("maplibre-gl", () => ({
 vi.mock("../api/orders", () => orderApi);
 vi.mock("../api/tasks", () => taskApi);
 vi.mock("../api/manualReviews", () => manualReviewApi);
+vi.mock("../api/vehicleLocations", () => vehicleLocationApi);
 
 const review = {
   decisionId: "decision-1",
   orderId: "order-1",
-  passengerName: "Manual review rider",
+  passengerName: "张三",
   passengerCount: 2,
   requestedDepartureAt: "2026-07-08T02:30:00Z",
   bestVehicleId: "vehicle-1",
@@ -41,7 +41,7 @@ beforeEach(() => {
   orderApi.listOrders.mockResolvedValue([
     {
       id: "order-1",
-      passengerName: "Manual review rider",
+      passengerName: "张三",
       passengerPhone: "13800000000",
       passengerCount: 2,
       requestType: "IMMEDIATE",
@@ -57,12 +57,15 @@ beforeEach(() => {
   manualReviewApi.listManualReviews.mockResolvedValue([review]);
   manualReviewApi.approveManualReview.mockResolvedValue({ vehicleTaskId: "task-1" });
   manualReviewApi.rejectManualReview.mockResolvedValue({ vehicleTaskId: undefined });
+  vehicleLocationApi.listLatestVehicleLocations.mockResolvedValue([latestLocation()]);
   mapConstructor.mockClear();
 });
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 describe("DispatchWorkbenchPage", () => {
@@ -77,10 +80,45 @@ describe("DispatchWorkbenchPage", () => {
     expect(mapConstructor).not.toHaveBeenCalled();
   });
 
+  it("loads latest vehicle locations when the workbench mounts", async () => {
+    render(DispatchWorkbenchPage);
+
+    expect(await screen.findByText("甘E-T001")).toBeInTheDocument();
+    expect(screen.getAllByText("人工上报").length).toBeGreaterThan(0);
+    expect(vehicleLocationApi.listLatestVehicleLocations).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls latest vehicle locations every 15 seconds and clears the timer after unmount", async () => {
+    vi.useFakeTimers();
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval");
+    const { unmount } = render(DispatchWorkbenchPage);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(vehicleLocationApi.listLatestVehicleLocations).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(vehicleLocationApi.listLatestVehicleLocations).toHaveBeenCalledTimes(2);
+
+    unmount();
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+
+  it("warns when an active vehicle location is stale and allows overriding the stale threshold", async () => {
+    vi.setSystemTime(new Date("2026-07-13T01:10:00Z"));
+    vi.stubEnv("VITE_MANUAL_LOCATION_STALE_MINUTES", "20");
+    vehicleLocationApi.listLatestVehicleLocations.mockResolvedValue([latestLocation({ currentStatus: "IN_SERVICE", driverReportedAt: "2026-07-13T00:33:00Z" })]);
+
+    render(DispatchWorkbenchPage);
+
+    expect(await screen.findByText("位置较久未更新")).toBeInTheDocument();
+    expect(screen.getByText("甘E-T001 超过 20 分钟未更新位置")).toBeInTheDocument();
+  });
+
   it("approves manual review and reloads workbench data", async () => {
     render(DispatchWorkbenchPage);
 
-    expect(await screen.findByText("Manual review rider")).toBeInTheDocument();
+    expect(await screen.findByText("张三")).toBeInTheDocument();
     await fireEvent.click(screen.getByRole("button", { name: "确认派单" }));
 
     expect(manualReviewApi.approveManualReview).toHaveBeenCalledWith(review.decisionId);
@@ -92,13 +130,32 @@ describe("DispatchWorkbenchPage", () => {
     manualReviewApi.rejectManualReview.mockRejectedValue(new Error("人工拒绝失败"));
     render(DispatchWorkbenchPage);
 
-    expect(await screen.findByText("Manual review rider")).toBeInTheDocument();
+    expect(await screen.findByText("张三")).toBeInTheDocument();
     await fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
     await fireEvent.update(screen.getByLabelText("拒绝原因"), "车辆临时不可用");
     await fireEvent.click(screen.getByRole("button", { name: "确认拒绝" }));
 
     expect(manualReviewApi.rejectManualReview).toHaveBeenCalledWith(review.decisionId, "车辆临时不可用");
     expect(await screen.findByText("人工拒绝失败")).toBeInTheDocument();
-    expect(screen.getByText("Manual review rider")).toBeInTheDocument();
+    expect(screen.getByText("张三")).toBeInTheDocument();
   });
 });
+
+function latestLocation(overrides: { currentStatus?: string; driverReportedAt?: string } = {}) {
+  return {
+    vehicleId: "vehicle-1",
+    plateNumber: "甘E-T001",
+    currentStatus: overrides.currentStatus ?? "IN_SERVICE",
+    latestLocation: {
+      longitude: 104.6378,
+      latitude: 35.2109,
+      standardizedAddress: "通渭县客运中心",
+      source: "MANUAL_DISPATCHER",
+      coordinateSystem: "GCJ02",
+      driverReportedAt: overrides.driverReportedAt ?? "2026-07-13T00:33:00Z",
+      recordedAt: "2026-07-13T00:35:00Z",
+      eventId: "loc-1",
+      vehicleTaskId: "task-1"
+    }
+  };
+}

@@ -14,4 +14,11 @@ describe("AppLayout", () => {
     expect(screen.getByRole("link", { name: "用户与权限" })).toBeInTheDocument();
     expect(screen.getByText("admin01")).toBeInTheDocument();
   });
+
+  it("shows the vehicle location history navigation to users with location read permission", () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    render(AppLayout, { global: { stubs: { RouterLink: { template: "<a href='#'><slot /></a>" }, RouterView: true } } });
+
+    expect(screen.getByRole("link", { name: "位置历史" })).toBeInTheDocument();
+  });
 });

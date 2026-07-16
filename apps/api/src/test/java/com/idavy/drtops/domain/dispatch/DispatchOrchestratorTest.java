@@ -187,6 +187,21 @@ class DispatchOrchestratorTest {
     }
 
     @Test
+    void autoDispatchRejectsMissingSelectedExistingTask() {
+        UUID missingTaskId = UUID.randomUUID();
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatchIntoTask(missingTaskId, VEHICLE_ID);
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> orchestrator.dispatchOrder(orderId));
+
+        assertThat(vehicleTaskRepository.findAll()).isEmpty();
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.PENDING_DISPATCH);
+    }
+
+    @Test
     void manualReviewKeepsOrderPendingManualReview() {
         UUID orderId = createPendingOrder();
         algorithmClient.stubManualReview(VEHICLE_ID);
