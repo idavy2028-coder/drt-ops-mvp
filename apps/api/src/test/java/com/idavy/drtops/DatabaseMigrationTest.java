@@ -30,6 +30,7 @@ class DatabaseMigrationTest {
         String authSchema = readMigration("V3__create_auth_schema.sql");
         String refreshTokenVersion = readMigration("V4__add_refresh_token_version.sql");
         String dispatchMapEstimates = readMigration("V10__add_dispatch_map_estimates.sql");
+        String pilotVirtualStops = readMigration("V11__enhance_virtual_stops_for_pilot.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -76,6 +77,16 @@ class DatabaseMigrationTest {
                 "map_degraded BOOLEAN NOT NULL DEFAULT FALSE",
                 "vehicle_to_pickup_duration_seconds INTEGER",
                 "pickup_to_destination_duration_seconds INTEGER");
+
+        assertThat(pilotVirtualStops).contains(
+                "ALTER TABLE virtual_stops",
+                "address VARCHAR(300)",
+                "area_name VARCHAR(120)",
+                "coordinate_system VARCHAR(20)",
+                "verified_at TIMESTAMPTZ",
+                "verified_by UUID",
+                "updated_at TIMESTAMPTZ",
+                "idx_virtual_stops_area_enabled");
     }
 
     @Test
@@ -153,6 +164,9 @@ class DatabaseMigrationTest {
                     "current_location_coordinate_system", "current_location_reported_at",
                     "current_location_recorded_at", "current_location_event_id",
                     "current_location_task_id");
+            assertColumns(connection, "virtual_stops",
+                    "address", "area_name", "coordinate_system", "source",
+                    "verified_at", "verified_by", "updated_at");
         }
 
         assertMutationRejected(

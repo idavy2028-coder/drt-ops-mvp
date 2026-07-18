@@ -7,4 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface VirtualStopRepository extends JpaRepository<VirtualStop, UUID> {
 
     List<VirtualStop> findByServiceAreaId(UUID serviceAreaId);
+
+    boolean existsByServiceAreaIdAndNameIgnoreCase(UUID serviceAreaId, String name);
 }

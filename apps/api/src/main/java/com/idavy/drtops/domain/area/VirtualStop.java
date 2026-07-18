@@ -23,6 +23,24 @@ public class VirtualStop {
     @Column(nullable = false, length = 120)
     private String location;
 
+    @Column(length = 300)
+    private String address;
+
+    @Column(length = 120)
+    private String areaName;
+
+    @Column(length = 20)
+    private String coordinateSystem;
+
+    @Column(length = 40)
+    private String source;
+
+    private OffsetDateTime verifiedAt;
+
+    private UUID verifiedBy;
+
+    private OffsetDateTime updatedAt;
+
     @Column(nullable = false)
     private int serviceRadiusMeters;
 
@@ -63,6 +81,7 @@ public class VirtualStop {
         this.safetyNote = safetyNote;
         this.enabled = true;
         this.createdAt = OffsetDateTime.now();
+        this.updatedAt = this.createdAt;
     }
 
     public static VirtualStop create(
@@ -86,6 +105,59 @@ public class VirtualStop {
                 boardingEnabled,
                 alightingEnabled,
                 safetyNote);
+    }
+
+    public static VirtualStop createForPilot(
+            UUID serviceAreaId,
+            String serviceAreaName,
+            String name,
+            String address,
+            String locationWkt,
+            int serviceRadiusMeters,
+            boolean boardingEnabled,
+            boolean alightingEnabled,
+            String safetyNote,
+            boolean enabled,
+            String source,
+            UUID verifiedBy) {
+        VirtualStop stop = create(UUID.randomUUID(), serviceAreaId, name, locationWkt, serviceRadiusMeters,
+                boardingEnabled, alightingEnabled, safetyNote);
+        stop.address = address;
+        stop.areaName = serviceAreaName;
+        stop.coordinateSystem = "GCJ-02";
+        stop.source = source;
+        stop.enabled = enabled;
+        stop.verifiedAt = OffsetDateTime.now();
+        stop.verifiedBy = verifiedBy;
+        return stop;
+    }
+
+    void updateForPilot(
+            String name,
+            String address,
+            String locationWkt,
+            int serviceRadiusMeters,
+            boolean boardingEnabled,
+            boolean alightingEnabled,
+            String safetyNote,
+            boolean enabled,
+            UUID verifiedBy) {
+        if (serviceRadiusMeters <= 0) {
+            throw new IllegalArgumentException("服务半径必须为正数");
+        }
+        this.name = name;
+        this.address = address;
+        this.location = locationWkt;
+        this.serviceRadiusMeters = serviceRadiusMeters;
+        this.boardingEnabled = boardingEnabled;
+        this.alightingEnabled = alightingEnabled;
+        this.safetyNote = safetyNote;
+        this.enabled = enabled;
+        this.coordinateSystem = "GCJ-02";
+        this.source = "MANUAL";
+        this.verifiedAt = OffsetDateTime.now();
+        this.verifiedBy = verifiedBy;
+        this.updatedAt = this.verifiedAt;
     }
 
     public UUID getId() {
@@ -123,4 +195,18 @@ public class VirtualStop {
     public boolean isEnabled() {
         return enabled;
     }
+
+    public String getAddress() { return address; }
+
+    public String getAreaName() { return areaName; }
+
+    public String getCoordinateSystem() { return coordinateSystem; }
+
+    public String getSource() { return source; }
+
+    public OffsetDateTime getVerifiedAt() { return verifiedAt; }
+
+    public UUID getVerifiedBy() { return verifiedBy; }
+
+    public OffsetDateTime getUpdatedAt() { return updatedAt; }
 }

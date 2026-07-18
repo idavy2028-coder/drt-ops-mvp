@@ -65,12 +65,38 @@ export interface VirtualStop {
   id: UUID;
   serviceAreaId: UUID;
   name: string;
+  address?: string;
   location: string;
+  longitude?: number;
+  latitude?: number;
   serviceRadiusMeters: number;
   boardingEnabled: boolean;
   alightingEnabled: boolean;
   safetyNote: string;
   enabled: boolean;
+  coordinateSystem?: "GCJ-02";
+  source?: string;
+  verifiedAt?: IsoDateTime;
+  updatedAt?: IsoDateTime;
+}
+
+export interface VirtualStopDraft {
+  serviceAreaId: UUID;
+  name: string;
+  address?: string;
+  longitude: number;
+  latitude: number;
+  serviceRadiusMeters: number;
+  boardingEnabled: boolean;
+  alightingEnabled: boolean;
+  safetyNote?: string;
+  enabled: boolean;
+}
+
+export interface VirtualStopImportResult {
+  createdCount: number;
+  skippedCount: number;
+  issues: Array<{ rowNumber: number; message: string }>;
 }
 
 export interface MapCoordinate {
