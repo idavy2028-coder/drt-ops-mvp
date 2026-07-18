@@ -20,6 +20,8 @@ import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import jakarta.persistence.EntityManager;
 import java.time.OffsetDateTime;
+import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -82,16 +84,19 @@ public class DispatchOrchestrator {
         }
 
         DispatchRuleSet ruleSet = enabledRuleSet();
-        DispatchEvaluateRequest request = candidateTaskAssembler.assemble(order, ruleSet);
-        DispatchEvaluateResponse response = algorithmClient.evaluate(request);
+        CandidateTaskAssembler.Assembly assembly = candidateTaskAssembler.assembleWithTravelEstimates(order, ruleSet);
+        DispatchEvaluateResponse response = algorithmClient.evaluate(assembly.request());
+        response = forceManualReviewWhenRequired(response, assembly);
+        CandidateTaskAssembler.CandidateTravelEstimates travelEstimates = assembly.estimatesFor(response.bestPlan());
 
-        VehicleTask vehicleTask = applyDecision(order, response);
+        VehicleTask vehicleTask = applyDecision(order, response, travelEstimates);
         DispatchDecision decision = dispatchDecisionRepository.save(DispatchDecision.fromAlgorithm(
                 order.getId(),
                 response,
                 persistedTaskId(response, vehicleTask),
+                travelEstimates,
                 toJson(response.rejectedCandidates()),
-                toJson(response.explanation()),
+                toJson(explanationWithTravelEstimates(response, travelEstimates, assembly.manualReviewReason())),
                 ALGORITHM_VERSION,
                 SYSTEM_ACTOR_TYPE,
                 SYSTEM_ACTOR_ID));
@@ -134,9 +139,33 @@ public class DispatchOrchestrator {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "未配置启用的调度规则组"));
     }
 
-    private VehicleTask applyDecision(RideOrder order, DispatchEvaluateResponse response) {
+    private DispatchEvaluateResponse forceManualReviewWhenRequired(
+            DispatchEvaluateResponse response,
+            CandidateTaskAssembler.Assembly assembly) {
+        if (!assembly.requiresManualReview() || response.decision() == DispatchDecisionType.MANUAL_REVIEW) {
+            return response;
+        }
+        Map<String, Object> explanation = new LinkedHashMap<>();
+        if (response.explanation() != null) {
+            explanation.putAll(response.explanation());
+        }
+        explanation.put("reason", assembly.manualReviewReason());
+        explanation.put("manualReviewRequired", true);
+        return new DispatchEvaluateResponse(
+                DispatchDecisionType.MANUAL_REVIEW,
+                response.bestPlan(),
+                response.candidateCount(),
+                response.rejectedCount(),
+                response.rejectedCandidates(),
+                explanation);
+    }
+
+    private VehicleTask applyDecision(
+            RideOrder order,
+            DispatchEvaluateResponse response,
+            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates) {
         return switch (response.decision()) {
-            case AUTO_DISPATCH -> autoDispatch(order, response.bestPlan());
+            case AUTO_DISPATCH -> autoDispatch(order, response.bestPlan(), travelEstimates);
             case MANUAL_REVIEW -> {
                 order.markPendingManualReview(explanationReason(response));
                 yield null;
@@ -148,7 +177,10 @@ public class DispatchOrchestrator {
         };
     }
 
-    private VehicleTask autoDispatch(RideOrder order, DispatchEvaluateResponse.BestPlan bestPlan) {
+    private VehicleTask autoDispatch(
+            RideOrder order,
+            DispatchEvaluateResponse.BestPlan bestPlan,
+            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates) {
         if (bestPlan == null) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "算法自动派发结果缺少最优方案");
         }
@@ -157,8 +189,13 @@ public class DispatchOrchestrator {
                 ? null : taskForInsertion(bestPlan.taskId());
         Vehicle vehicle = vehicleRepository.findById(bestPlan.vehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的车辆不存在"));
-        OffsetDateTime estimatedBoardingAt = order.getRequestedDepartureAt().plusMinutes(bestPlan.estimatedWaitMinutes());
-        OffsetDateTime estimatedArrivalAt = estimatedBoardingAt.plusMinutes(bestPlan.estimatedDetourMinutes() + 10L);
+        int waitMinutes = travelEstimates == null || travelEstimates.vehicleToPickup() == null
+                ? bestPlan.estimatedWaitMinutes()
+                : (int) Math.max(1, Math.ceil(travelEstimates.vehicleToPickup().durationSeconds() / 60D));
+        OffsetDateTime estimatedBoardingAt = order.getRequestedDepartureAt().plusMinutes(waitMinutes);
+        OffsetDateTime estimatedArrivalAt = travelEstimates == null || travelEstimates.pickupToDestination() == null
+                ? estimatedBoardingAt.plusMinutes(bestPlan.estimatedDetourMinutes() + 10L)
+                : estimatedBoardingAt.plus(Duration.ofSeconds(travelEstimates.pickupToDestination().durationSeconds()));
 
         if (existingTask != null) {
             return insertIntoExistingTask(order, vehicle, existingTask, estimatedBoardingAt, estimatedArrivalAt);
@@ -273,6 +310,37 @@ public class DispatchOrchestrator {
     private String explanationReason(DispatchEvaluateResponse response) {
         Object reason = response.explanation() == null ? null : response.explanation().get("reason");
         return reason == null ? response.decision().name() : reason.toString();
+    }
+
+    private Map<String, Object> explanationWithTravelEstimates(
+            DispatchEvaluateResponse response,
+            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates,
+            String manualReviewReason) {
+        Map<String, Object> explanation = new LinkedHashMap<>();
+        if (response.explanation() != null) {
+            explanation.putAll(response.explanation());
+        }
+        if (travelEstimates != null) {
+            explanation.put("vehicleToPickup", estimateDetails(travelEstimates.vehicleToPickup()));
+            explanation.put("pickupToDestination", estimateDetails(travelEstimates.pickupToDestination()));
+        }
+        if (manualReviewReason != null) {
+            explanation.put("manualReviewReason", manualReviewReason);
+        }
+        return explanation;
+    }
+
+    private Map<String, Object> estimateDetails(TravelEstimate estimate) {
+        if (estimate == null) {
+            return Map.of("available", false);
+        }
+        return Map.of(
+                "available", true,
+                "distanceMeters", estimate.distanceMeters(),
+                "durationSeconds", estimate.durationSeconds(),
+                "provider", estimate.provider(),
+                "degraded", estimate.degraded(),
+                "degradedReason", estimate.degradedReason() == null ? "" : estimate.degradedReason());
     }
 
     private String toJson(Object value) {

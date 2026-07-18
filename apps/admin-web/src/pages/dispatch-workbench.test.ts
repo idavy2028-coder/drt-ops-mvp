@@ -13,8 +13,10 @@ const manualReviewApi = vi.hoisted(() => ({
   rejectManualReview: vi.fn()
 }));
 const vehicleLocationApi = vi.hoisted(() => ({
-  listLatestVehicleLocations: vi.fn()
+  listLatestVehicleLocations: vi.fn(),
+  listVehicleLocationEvents: vi.fn()
 }));
+const resourceApi = vi.hoisted(() => ({ listServiceAreas: vi.fn(), listVirtualStops: vi.fn() }));
 
 vi.mock("maplibre-gl", () => ({
   default: {
@@ -26,6 +28,7 @@ vi.mock("../api/orders", () => orderApi);
 vi.mock("../api/tasks", () => taskApi);
 vi.mock("../api/manualReviews", () => manualReviewApi);
 vi.mock("../api/vehicleLocations", () => vehicleLocationApi);
+vi.mock("../api/resources", () => resourceApi);
 
 const review = {
   decisionId: "decision-1",
@@ -58,6 +61,9 @@ beforeEach(() => {
   manualReviewApi.approveManualReview.mockResolvedValue({ vehicleTaskId: "task-1" });
   manualReviewApi.rejectManualReview.mockResolvedValue({ vehicleTaskId: undefined });
   vehicleLocationApi.listLatestVehicleLocations.mockResolvedValue([latestLocation()]);
+  vehicleLocationApi.listVehicleLocationEvents.mockResolvedValue([]);
+  resourceApi.listServiceAreas.mockResolvedValue([]);
+  resourceApi.listVirtualStops.mockResolvedValue([]);
   mapConstructor.mockClear();
 });
 
@@ -86,6 +92,31 @@ describe("DispatchWorkbenchPage", () => {
     expect(await screen.findByText("甘E-T001")).toBeInTheDocument();
     expect(screen.getAllByText("人工上报").length).toBeGreaterThan(0);
     expect(vehicleLocationApi.listLatestVehicleLocations).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads pilot map resources and requests a selected task location chain", async () => {
+    taskApi.listTasks.mockResolvedValue([{ id: "task-1", vehicleId: "vehicle-1", driverId: "driver-1", status: "DISPATCHED", plannedStartAt: "2026-07-18T00:00:00Z", stops: [] }]);
+    resourceApi.listServiceAreas.mockResolvedValue([{ id: "area-1", name: "通渭县试点服务区", boundary: null, boundarySource: null, boundaryVersion: 0, draftBoundary: null, draftBoundarySource: null, draftBoundaryVersion: 0, publishedAt: null, updatedAt: null, coordinateSystem: "GCJ02", serviceStart: "06:30", serviceEnd: "19:00", ruleSetId: "rule-1", enabled: true }]);
+    resourceApi.listVirtualStops.mockResolvedValue([]);
+
+    render(DispatchWorkbenchPage);
+
+    expect(await screen.findByText("通渭县试点服务区")).toBeInTheDocument();
+    expect(resourceApi.listVirtualStops).toHaveBeenCalledTimes(1);
+    expect(vehicleLocationApi.listVehicleLocationEvents).toHaveBeenCalledWith({ taskId: "task-1" });
+  });
+
+  it("switches the map location chain when the dispatcher selects another task", async () => {
+    taskApi.listTasks.mockResolvedValue([
+      { id: "task-1", vehicleId: "vehicle-1", driverId: "driver-1", status: "DISPATCHED", plannedStartAt: "2026-07-18T00:00:00Z", stops: [] },
+      { id: "task-2", vehicleId: "vehicle-2", driverId: "driver-2", status: "DISPATCHED", plannedStartAt: "2026-07-18T00:10:00Z", stops: [] }
+    ]);
+    render(DispatchWorkbenchPage);
+
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "查看地图" })).toHaveLength(2));
+    await fireEvent.click(screen.getAllByRole("button", { name: "查看地图" })[1]);
+
+    await waitFor(() => expect(vehicleLocationApi.listVehicleLocationEvents).toHaveBeenLastCalledWith({ taskId: "task-2" }));
   });
 
   it("polls latest vehicle locations every 15 seconds and clears the timer after unmount", async () => {

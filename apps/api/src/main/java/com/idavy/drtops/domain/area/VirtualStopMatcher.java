@@ -26,8 +26,23 @@ public class VirtualStopMatcher {
             BigDecimal destinationLng,
             BigDecimal destinationLat,
             Instant requestedDepartureAt) {
-        MatchedStop boarding = matchNearest(originLng, originLat, true);
-        MatchedStop alighting = matchNearest(destinationLng, destinationLat, false);
+        return matchStops(originLng, originLat, destinationLng, destinationLat, requestedDepartureAt, null, null);
+    }
+
+    public VirtualStopMatch matchStops(
+            BigDecimal originLng,
+            BigDecimal originLat,
+            BigDecimal destinationLng,
+            BigDecimal destinationLat,
+            Instant requestedDepartureAt,
+            UUID requestedBoardingStopId,
+            UUID requestedAlightingStopId) {
+        MatchedStop boarding = requestedBoardingStopId == null
+                ? matchNearest(originLng, originLat, true)
+                : matchSelected(requestedBoardingStopId, originLng, originLat, true);
+        MatchedStop alighting = requestedAlightingStopId == null
+                ? matchNearest(destinationLng, destinationLat, false)
+                : matchSelected(requestedAlightingStopId, destinationLng, destinationLat, false);
         return new VirtualStopMatch(
                 boarding.stopId(),
                 alighting.stopId(),
@@ -43,6 +58,25 @@ public class VirtualStopMatcher {
                 .filter(match -> match.distanceMeters() <= match.serviceRadiusMeters())
                 .min(Comparator.comparingDouble(MatchedStop::distanceMeters))
                 .orElseThrow(() -> new NoMatchedStopException(boarding ? "boarding stop not found" : "alighting stop not found"));
+    }
+
+    private MatchedStop matchSelected(UUID stopId, BigDecimal lng, BigDecimal lat, boolean boarding) {
+        VirtualStop stop = virtualStopRepository.findById(stopId)
+                .orElseThrow(() -> new NoMatchedStopException(boarding
+                        ? "所选上车虚拟站点不存在"
+                        : "所选下车虚拟站点不存在"));
+        if (!stop.isEnabled() || (boarding ? !stop.isBoardingEnabled() : !stop.isAlightingEnabled())) {
+            throw new NoMatchedStopException(boarding
+                    ? "所选上车虚拟站点不可用"
+                    : "所选下车虚拟站点不可用");
+        }
+        MatchedStop match = toMatchedStop(stop, lng.doubleValue(), lat.doubleValue());
+        if (match.distanceMeters() > match.serviceRadiusMeters()) {
+            throw new NoMatchedStopException(boarding
+                    ? "所选上车虚拟站点不在服务半径内"
+                    : "所选下车虚拟站点不在服务半径内");
+        }
+        return match;
     }
 
     private MatchedStop toMatchedStop(VirtualStop stop, double lng, double lat) {

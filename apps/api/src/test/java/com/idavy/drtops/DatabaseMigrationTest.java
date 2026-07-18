@@ -22,9 +22,6 @@ class DatabaseMigrationTest {
 
     private static final String POSTGIS_INTEGRATION_PROPERTY = "drt.integration.postgis";
     private static final Path MIGRATION_DIR = Path.of("src/main/resources/db/migration");
-    private static final String LOCAL_POSTGIS_URL = "jdbc:postgresql://127.0.0.1:15432/drt_ops";
-    private static final String LOCAL_POSTGIS_USERNAME = "drt_ops";
-    private static final String LOCAL_POSTGIS_PASSWORD = "drt_ops";
 
     @Test
     void migrationScriptsDeclareCoreTablesAndSeedData() throws IOException {
@@ -32,6 +29,8 @@ class DatabaseMigrationTest {
         String seedData = readMigration("V2__seed_demo_operations.sql");
         String authSchema = readMigration("V3__create_auth_schema.sql");
         String refreshTokenVersion = readMigration("V4__add_refresh_token_version.sql");
+        String dispatchMapEstimates = readMigration("V10__add_dispatch_map_estimates.sql");
+        String pilotVirtualStops = readMigration("V11__enhance_virtual_stops_for_pilot.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -71,25 +70,38 @@ class DatabaseMigrationTest {
                 "ALTER TABLE refresh_tokens",
                 "token_version BIGINT NOT NULL",
                 "FROM user_accounts");
+
+        assertThat(dispatchMapEstimates).contains(
+                "ALTER TABLE dispatch_decisions",
+                "map_provider VARCHAR(40)",
+                "map_degraded BOOLEAN NOT NULL DEFAULT FALSE",
+                "vehicle_to_pickup_duration_seconds INTEGER",
+                "pickup_to_destination_duration_seconds INTEGER");
+
+        assertThat(pilotVirtualStops).contains(
+                "ALTER TABLE virtual_stops",
+                "address VARCHAR(300)",
+                "area_name VARCHAR(120)",
+                "coordinate_system VARCHAR(20)",
+                "verified_at TIMESTAMPTZ",
+                "verified_by UUID",
+                "updated_at TIMESTAMPTZ",
+                "idx_virtual_stops_area_enabled");
     }
 
     @Test
     void migrationsCreateCoreTablesAndSeedAreaWhenDockerIsAvailable() throws Exception {
         Assumptions.assumeTrue(Boolean.getBoolean(POSTGIS_INTEGRATION_PROPERTY),
                 "Set -D" + POSTGIS_INTEGRATION_PROPERTY + "=true to run the PostGIS migration test");
+        Assumptions.assumeTrue(dockerIsAvailable(), "需要 Docker/Testcontainers 提供隔离 PostGIS 数据库");
 
-        if (dockerIsAvailable()) {
-            try (PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgis/postgis:16-3.5")
-                    .withDatabaseName("drt_ops")
-                    .withUsername("drt_ops")
-                    .withPassword("drt_ops")) {
-                postgres.start();
-                verifyMigrations(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
-            }
-            return;
+        try (PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgis/postgis:16-3.5")
+                .withDatabaseName("drt_ops")
+                .withUsername("drt_ops")
+                .withPassword("drt_ops")) {
+            postgres.start();
+            verifyMigrations(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
         }
-
-        verifyMigrations(LOCAL_POSTGIS_URL, LOCAL_POSTGIS_USERNAME, LOCAL_POSTGIS_PASSWORD);
     }
 
     private static void verifyMigrations(String jdbcUrl, String username, String password) throws Exception {
@@ -152,6 +164,9 @@ class DatabaseMigrationTest {
                     "current_location_coordinate_system", "current_location_reported_at",
                     "current_location_recorded_at", "current_location_event_id",
                     "current_location_task_id");
+            assertColumns(connection, "virtual_stops",
+                    "address", "area_name", "coordinate_system", "source",
+                    "verified_at", "verified_by", "updated_at");
         }
 
         assertMutationRejected(

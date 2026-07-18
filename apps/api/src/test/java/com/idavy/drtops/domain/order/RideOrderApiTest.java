@@ -7,12 +7,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.idavy.drtops.domain.area.VirtualStop;
 import com.idavy.drtops.domain.area.VirtualStopRepository;
+import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import java.math.BigDecimal;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,6 +33,7 @@ import org.springframework.test.web.servlet.MockMvc;
 })
 @AutoConfigureMockMvc
 @WithMockUser(authorities = {"ORDER_CREATE", "ORDER_READ"})
+@Import(RideOrderApiTest.NoPublishedAreaConfiguration.class)
 class RideOrderApiTest {
 
     private static final UUID DEMO_AREA_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
@@ -97,5 +104,25 @@ class RideOrderApiTest {
         mockMvc.perform(get("/api/orders"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1));
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class NoPublishedAreaConfiguration {
+
+        @Bean
+        @Primary
+        ServiceAreaLocationChecker serviceAreaLocationChecker() {
+            return new ServiceAreaLocationChecker() {
+                @Override
+                public boolean isInsideEnabledArea(BigDecimal longitude, BigDecimal latitude) {
+                    return true;
+                }
+
+                @Override
+                public PublishedAreaCheck checkPublishedArea(BigDecimal longitude, BigDecimal latitude) {
+                    return new PublishedAreaCheck(true, null, null);
+                }
+            };
+        }
     }
 }

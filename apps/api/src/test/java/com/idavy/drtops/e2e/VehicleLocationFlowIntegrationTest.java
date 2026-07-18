@@ -25,9 +25,14 @@ import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
 import com.idavy.drtops.domain.location.LocationEventType;
+import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.location.VehicleLocationEvent;
 import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
+import com.idavy.drtops.domain.map.Coordinate;
+import com.idavy.drtops.domain.map.DistanceResult;
+import com.idavy.drtops.domain.map.RoutePlanResult;
+import com.idavy.drtops.domain.map.RoutePlanningProvider;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStatus;
@@ -145,6 +150,9 @@ class VehicleLocationFlowIntegrationTest {
                     "AVAILABLE",
                     "通渭试点车队"));
         }
+        List<Vehicle> vehicles = vehicleRepository.findAll();
+        vehicles.forEach(this::applyLocationSnapshot);
+        vehicleRepository.saveAll(vehicles);
     }
 
     @Test
@@ -303,6 +311,13 @@ class VehicleLocationFlowIntegrationTest {
                 """;
     }
 
+    private void applyLocationSnapshot(Vehicle vehicle) {
+        OffsetDateTime reportedAt = OffsetDateTime.parse("2026-07-14T00:20:00Z");
+        vehicle.applyLocationSnapshot(
+                "POINT(120.1550000 30.2741000)", "通渭县车辆初始位置", LocationSource.MANUAL_DISPATCHER, "GCJ-02",
+                reportedAt, reportedAt, UUID.randomUUID(), null);
+    }
+
     private String actionRequest(UUID virtualStopId, UUID idempotencyKey, int sequence, String longitude, String latitude) {
         return actionRequest(virtualStopId, idempotencyKey, sequence, longitude, latitude,
                 "2026-07-14T01:%02d:00Z".formatted(sequence));
@@ -382,6 +397,22 @@ class VehicleLocationFlowIntegrationTest {
         @Primary
         ServiceAreaLocationChecker serviceAreaLocationChecker() {
             return (longitude, latitude) -> longitude.compareTo(new BigDecimal("122.0000000")) < 0;
+        }
+
+        @Bean
+        @Primary
+        RoutePlanningProvider routePlanningProvider() {
+            return new RoutePlanningProvider() {
+                @Override
+                public RoutePlanResult drivingRoute(Coordinate origin, Coordinate destination, List<Coordinate> waypoints) {
+                    return new RoutePlanResult(1_200, 360, List.of(origin, destination));
+                }
+
+                @Override
+                public DistanceResult distance(Coordinate origin, Coordinate destination) {
+                    return new DistanceResult(1_200, 360);
+                }
+            };
         }
     }
 

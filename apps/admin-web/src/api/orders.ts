@@ -10,6 +10,11 @@ export interface CreateRideOrderInput {
   originLat: number;
   destinationLng: number;
   destinationLat: number;
+  originAddress?: string;
+  destinationAddress?: string;
+  originVirtualStopId?: UUID;
+  destinationVirtualStopId?: UUID;
+  coordinateSystem: "GCJ02";
   requestedDepartureAt: string;
 }
 

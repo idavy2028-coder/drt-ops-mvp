@@ -41,6 +41,21 @@ public class RideOrder {
     @Column(nullable = false, precision = 10, scale = 7)
     private BigDecimal destinationLat;
 
+    @Column(nullable = false, length = 300)
+    private String originAddress;
+
+    @Column(nullable = false, length = 300)
+    private String destinationAddress;
+
+    @Column(nullable = false, length = 20)
+    private String coordinateSystem;
+
+    @Column(nullable = false, length = 40)
+    private String originAddressSource;
+
+    @Column(nullable = false, length = 40)
+    private String destinationAddressSource;
+
     private UUID boardingStopId;
 
     private UUID alightingStopId;
@@ -79,6 +94,11 @@ public class RideOrder {
         this.originLat = command.originLat();
         this.destinationLng = command.destinationLng();
         this.destinationLat = command.destinationLat();
+        this.originAddress = command.originAddress();
+        this.destinationAddress = command.destinationAddress();
+        this.coordinateSystem = command.coordinateSystem();
+        this.originAddressSource = command.originAddressSource();
+        this.destinationAddressSource = command.destinationAddressSource();
         this.boardingStopId = command.boardingStopId();
         this.alightingStopId = command.alightingStopId();
         this.requestedDepartureAt = command.requestedDepartureAt();
@@ -179,6 +199,26 @@ public class RideOrder {
         return destinationLat;
     }
 
+    public String getOriginAddress() {
+        return originAddress;
+    }
+
+    public String getDestinationAddress() {
+        return destinationAddress;
+    }
+
+    public String getCoordinateSystem() {
+        return coordinateSystem;
+    }
+
+    public String getOriginAddressSource() {
+        return originAddressSource;
+    }
+
+    public String getDestinationAddressSource() {
+        return destinationAddressSource;
+    }
+
     public UUID getBoardingStopId() {
         return boardingStopId;
     }
@@ -231,7 +271,47 @@ public class RideOrder {
             BigDecimal destinationLat,
             UUID boardingStopId,
             UUID alightingStopId,
-            OffsetDateTime requestedDepartureAt) {
+            OffsetDateTime requestedDepartureAt,
+            String originAddress,
+            String destinationAddress,
+            String coordinateSystem,
+            String originAddressSource,
+            String destinationAddressSource) {
+
+        public CreateOrderCommand(
+                String passengerName,
+                String passengerPhone,
+                int passengerCount,
+                String requestType,
+                BigDecimal originLng,
+                BigDecimal originLat,
+                BigDecimal destinationLng,
+                BigDecimal destinationLat,
+                UUID boardingStopId,
+                UUID alightingStopId,
+                OffsetDateTime requestedDepartureAt) {
+            this(
+                    passengerName,
+                    passengerPhone,
+                    passengerCount,
+                    requestType,
+                    originLng,
+                    originLat,
+                    destinationLng,
+                    destinationLat,
+                    boardingStopId,
+                    alightingStopId,
+                    requestedDepartureAt,
+                    coordinateAddress(originLng, originLat),
+                    coordinateAddress(destinationLng, destinationLat),
+                    "GCJ02",
+                    "MANUAL_COORDINATE",
+                    "MANUAL_COORDINATE");
+        }
+
+        private static String coordinateAddress(BigDecimal longitude, BigDecimal latitude) {
+            return "坐标定位 " + longitude.toPlainString() + "," + latitude.toPlainString();
+        }
     }
 
     public record OrderPromise(

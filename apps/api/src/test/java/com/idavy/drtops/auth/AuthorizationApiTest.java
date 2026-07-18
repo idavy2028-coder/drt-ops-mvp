@@ -19,7 +19,12 @@ import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
+import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import com.idavy.drtops.domain.map.Coordinate;
+import com.idavy.drtops.domain.map.DistanceResult;
+import com.idavy.drtops.domain.map.RoutePlanResult;
+import com.idavy.drtops.domain.map.RoutePlanningProvider;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
@@ -172,6 +177,9 @@ class AuthorizationApiTest {
                 "POINT(120.1550000 30.2741000)",
                 "演示车队",
                 true));
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        applyLocationSnapshot(vehicle);
+        vehicleRepository.save(vehicle);
         driverRepository.save(Driver.create(
                 DRIVER_ID,
                 "王师傅",
@@ -304,6 +312,13 @@ class AuthorizationApiTest {
         return "Bearer " + token;
     }
 
+    private void applyLocationSnapshot(Vehicle vehicle) {
+        OffsetDateTime reportedAt = OffsetDateTime.parse("2026-07-08T02:20:00Z");
+        vehicle.applyLocationSnapshot(
+                "POINT(120.1550000 30.2741000)", "测试车辆位置", LocationSource.MANUAL_DISPATCHER, "GCJ-02",
+                reportedAt, reportedAt, UUID.randomUUID(), null);
+    }
+
     private String sampleDemand() {
         return """
                 {
@@ -339,6 +354,22 @@ class AuthorizationApiTest {
         @Primary
         ServiceAreaLocationChecker serviceAreaLocationChecker() {
             return (longitude, latitude) -> true;
+        }
+
+        @Bean
+        @Primary
+        RoutePlanningProvider routePlanningProvider() {
+            return new RoutePlanningProvider() {
+                @Override
+                public RoutePlanResult drivingRoute(Coordinate origin, Coordinate destination, List<Coordinate> waypoints) {
+                    return new RoutePlanResult(1_200, 360, List.of(origin, destination));
+                }
+
+                @Override
+                public DistanceResult distance(Coordinate origin, Coordinate destination) {
+                    return new DistanceResult(1_200, 360);
+                }
+            };
         }
     }
 

@@ -27,23 +27,97 @@ export interface UserAccount {
 export interface ServiceArea {
   id: UUID;
   name: string;
-  boundary: string;
+  boundary: string | null;
+  boundarySource: string | null;
+  boundaryVersion: number;
+  draftBoundary: string | null;
+  draftBoundarySource: string | null;
+  draftBoundaryVersion: number;
+  publishedAt: IsoDateTime | null;
+  updatedAt: IsoDateTime | null;
+  coordinateSystem: "GCJ02" | "GCJ-02";
   serviceStart: string;
   serviceEnd: string;
   ruleSetId: UUID;
   enabled: boolean;
 }
 
+export interface ServiceAreaBoundaryView {
+  id: UUID;
+  name: string;
+  boundaryWkt: string | null;
+  boundarySource: string | null;
+  boundaryVersion: number;
+  draftBoundaryWkt: string | null;
+  draftBoundarySource: string | null;
+  draftBoundaryVersion: number;
+  publishedAt: IsoDateTime | null;
+  updatedAt: IsoDateTime | null;
+  coordinateSystem: "GCJ02" | "GCJ-02";
+}
+
+export interface ServiceAreaBoundaryDraft {
+  boundaryWkt?: string;
+  geoJson?: string;
+}
+
 export interface VirtualStop {
   id: UUID;
   serviceAreaId: UUID;
   name: string;
+  address?: string;
   location: string;
+  longitude?: number;
+  latitude?: number;
   serviceRadiusMeters: number;
   boardingEnabled: boolean;
   alightingEnabled: boolean;
   safetyNote: string;
   enabled: boolean;
+  coordinateSystem?: "GCJ-02";
+  source?: string;
+  verifiedAt?: IsoDateTime;
+  updatedAt?: IsoDateTime;
+}
+
+export interface VirtualStopDraft {
+  serviceAreaId: UUID;
+  name: string;
+  address?: string;
+  longitude: number;
+  latitude: number;
+  serviceRadiusMeters: number;
+  boardingEnabled: boolean;
+  alightingEnabled: boolean;
+  safetyNote?: string;
+  enabled: boolean;
+}
+
+export interface VirtualStopImportResult {
+  createdCount: number;
+  skippedCount: number;
+  issues: Array<{ rowNumber: number; message: string }>;
+}
+
+export interface MapCoordinate {
+  longitude: number;
+  latitude: number;
+  coordinateSystem: "GCJ-02";
+}
+
+export interface AddressSuggestion {
+  id: string;
+  name: string;
+  address: string;
+  district: string;
+  location: MapCoordinate;
+}
+
+export interface ServiceAreaContainment {
+  inside: boolean;
+  serviceAreaId: UUID | null;
+  distanceToBoundaryMeters: number | null;
+  coordinateSystem: "GCJ02" | "GCJ-02";
 }
 
 export interface LocationCandidate {
@@ -66,6 +140,13 @@ export interface LocationReportInput extends Omit<LocationCandidate, "longitude"
 export interface LocationPickerProvider {
   search(keyword: string): Promise<LocationCandidate[]>;
   pickOnMap(container: HTMLElement, initial?: LocationCandidate): Promise<LocationCandidate>;
+}
+
+export interface MapProviderStatus {
+  provider: string;
+  enabled: boolean;
+  degradedReason?: string;
+  coordinateSystem: "GCJ-02";
 }
 
 export interface VehicleLocationView {
@@ -167,6 +248,11 @@ export interface RideOrder {
   originLat: DecimalValue;
   destinationLng: DecimalValue;
   destinationLat: DecimalValue;
+  originAddress: string;
+  destinationAddress: string;
+  coordinateSystem: "GCJ02" | "GCJ-02";
+  originAddressSource: string;
+  destinationAddressSource: string;
   boardingStopId?: UUID;
   alightingStopId?: UUID;
   requestedDepartureAt: IsoDateTime;

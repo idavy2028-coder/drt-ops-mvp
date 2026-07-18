@@ -50,6 +50,34 @@
 - 算法: `GET http://localhost:8090/health`
 - 前端: `GET http://localhost:5173/`
 
+## 高德地图本机配置
+
+默认不开启高德能力，本机无 Key 时后端和前端都会降级，继续使用虚拟站点与人工位置流程。坐标系统一按 GCJ-02 处理。
+
+后端 Web 服务 Key：
+
+```powershell
+$env:DRT_AMAP_ENABLED = "true"
+$env:DRT_AMAP_WEB_SERVICE_KEY = "replace-with-local-amap-web-service-key"
+```
+
+前端 JS API Key 与安全密钥：
+
+```powershell
+$env:VITE_AMAP_ENABLED = "true"
+$env:VITE_AMAP_JS_API_KEY = "replace-with-local-amap-js-api-key"
+$env:VITE_AMAP_SECURITY_JS_CODE = "replace-with-local-amap-security-js-code"
+```
+
+不要提交真实高德 Key 或安全密钥；仅在个人本机或受控部署环境注入。试点前优先使用免费/基础配额，不得擅自开启付费服务或扩大调用配额。
+
+## 通渭县地图与虚拟站点试点准备
+
+- [试点准备清单](docs/pilot/tongwei-amap-virtual-stop-readiness.md)
+- [虚拟站点采集与导入指南](docs/pilot/tongwei-virtual-stop-collection-guide.md)
+- [高德地图免费配额检查表](docs/pilot/tongwei-map-quota-checklist.md)
+- [地图与站点验收记录](docs/pilot/tongwei-map-and-stop-acceptance-record.md)
+
 ## 本地验证
 
 - 后端普通测试：`mvn -pl apps/api test`
