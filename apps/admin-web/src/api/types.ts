@@ -27,11 +27,38 @@ export interface UserAccount {
 export interface ServiceArea {
   id: UUID;
   name: string;
-  boundary: string;
+  boundary: string | null;
+  boundarySource: string | null;
+  boundaryVersion: number;
+  draftBoundary: string | null;
+  draftBoundarySource: string | null;
+  draftBoundaryVersion: number;
+  publishedAt: IsoDateTime | null;
+  updatedAt: IsoDateTime | null;
+  coordinateSystem: "GCJ02" | "GCJ-02";
   serviceStart: string;
   serviceEnd: string;
   ruleSetId: UUID;
   enabled: boolean;
+}
+
+export interface ServiceAreaBoundaryView {
+  id: UUID;
+  name: string;
+  boundaryWkt: string | null;
+  boundarySource: string | null;
+  boundaryVersion: number;
+  draftBoundaryWkt: string | null;
+  draftBoundarySource: string | null;
+  draftBoundaryVersion: number;
+  publishedAt: IsoDateTime | null;
+  updatedAt: IsoDateTime | null;
+  coordinateSystem: "GCJ02" | "GCJ-02";
+}
+
+export interface ServiceAreaBoundaryDraft {
+  boundaryWkt?: string;
+  geoJson?: string;
 }
 
 export interface VirtualStop {

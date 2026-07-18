@@ -1,7 +1,7 @@
 import type { AmapRuntime } from "./amapTypes";
 
 const AMAP_JS_API_URL = "https://webapi.amap.com/maps";
-const DEFAULT_PLUGINS = ["AMap.PlaceSearch", "AMap.Geocoder"];
+const DEFAULT_PLUGINS = ["AMap.PlaceSearch", "AMap.Geocoder", "AMap.MouseTool", "AMap.PolygonEditor"];
 const COORDINATE_SYSTEM = "GCJ-02";
 
 let cachedRuntime: Promise<AmapRuntime> | undefined;
