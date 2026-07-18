@@ -71,6 +71,13 @@ $env:VITE_AMAP_SECURITY_JS_CODE = "replace-with-local-amap-security-js-code"
 
 不要提交真实高德 Key 或安全密钥；仅在个人本机或受控部署环境注入。试点前优先使用免费/基础配额，不得擅自开启付费服务或扩大调用配额。
 
+## 通渭县地图与虚拟站点试点准备
+
+- [试点准备清单](docs/pilot/tongwei-amap-virtual-stop-readiness.md)
+- [虚拟站点采集与导入指南](docs/pilot/tongwei-virtual-stop-collection-guide.md)
+- [高德地图免费配额检查表](docs/pilot/tongwei-map-quota-checklist.md)
+- [地图与站点验收记录](docs/pilot/tongwei-map-and-stop-acceptance-record.md)
+
 ## 本地验证
 
 - 后端普通测试：`mvn -pl apps/api test`
