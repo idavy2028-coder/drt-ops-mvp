@@ -10,6 +10,11 @@ import com.idavy.drtops.domain.fleet.Driver;
 import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.location.LocationSource;
+import com.idavy.drtops.domain.map.Coordinate;
+import com.idavy.drtops.domain.map.DistanceResult;
+import com.idavy.drtops.domain.map.RoutePlanResult;
+import com.idavy.drtops.domain.map.RoutePlanningProvider;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
@@ -96,7 +101,7 @@ class DispatchOrchestratorTest {
         algorithmClient.reset();
 
         ruleSetRepository.save(DispatchRuleSet.defaultRules(RULE_SET_ID));
-        vehicleRepository.save(Vehicle.create(
+        Vehicle vehicle = Vehicle.create(
                 VEHICLE_ID,
                 "DRT-201",
                 "Microbus",
@@ -104,7 +109,9 @@ class DispatchOrchestratorTest {
                 "IDLE",
                 "POINT(120.1550000 30.2741000)",
                 "演示车队",
-                true));
+                true);
+        applyLocationSnapshot(vehicle);
+        vehicleRepository.save(vehicle);
         driverRepository.save(Driver.create(
                 DRIVER_ID,
                 "王师傅",
@@ -163,7 +170,7 @@ class DispatchOrchestratorTest {
     @Test
     void autoDispatchRejectsInsertWhenExistingTaskHasNoSeats() {
         vehicleRepository.deleteAll();
-        vehicleRepository.save(Vehicle.create(
+        Vehicle vehicle = Vehicle.create(
                 VEHICLE_ID,
                 "DRT-201",
                 "Microbus",
@@ -171,7 +178,9 @@ class DispatchOrchestratorTest {
                 "IDLE",
                 "POINT(120.1550000 30.2741000)",
                 "演示车队",
-                true));
+                true);
+        applyLocationSnapshot(vehicle);
+        vehicleRepository.save(vehicle);
         UUID existingTaskId = createInProgressTaskWithOneOrder();
         UUID orderId = createPendingOrder();
         algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
@@ -255,6 +264,19 @@ class DispatchOrchestratorTest {
         return rideOrderRepository.save(order).getId();
     }
 
+    private void applyLocationSnapshot(Vehicle vehicle) {
+        OffsetDateTime reportedAt = OffsetDateTime.parse("2026-07-08T02:20:00Z");
+        vehicle.applyLocationSnapshot(
+                "POINT(120.1550000 30.2741000)",
+                "测试车辆位置",
+                LocationSource.MANUAL_DISPATCHER,
+                "GCJ-02",
+                reportedAt,
+                reportedAt,
+                UUID.randomUUID(),
+                null);
+    }
+
     private UUID createInProgressTaskWithOneOrder() {
         RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
                 "李四",
@@ -303,6 +325,22 @@ class DispatchOrchestratorTest {
         @Primary
         FakeAlgorithmClient fakeAlgorithmClient() {
             return new FakeAlgorithmClient();
+        }
+
+        @Bean
+        @Primary
+        RoutePlanningProvider routePlanningProvider() {
+            return new RoutePlanningProvider() {
+                @Override
+                public RoutePlanResult drivingRoute(Coordinate origin, Coordinate destination, List<Coordinate> waypoints) {
+                    return new RoutePlanResult(1_200, 360, List.of(origin, destination));
+                }
+
+                @Override
+                public DistanceResult distance(Coordinate origin, Coordinate destination) {
+                    return new DistanceResult(1_200, 360);
+                }
+            };
         }
     }
 

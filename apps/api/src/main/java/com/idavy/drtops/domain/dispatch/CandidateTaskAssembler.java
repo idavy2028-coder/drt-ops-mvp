@@ -4,6 +4,7 @@ import com.idavy.drtops.domain.fleet.Driver;
 import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.map.Coordinate;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStatus;
@@ -11,6 +12,7 @@ import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
+import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -31,20 +33,38 @@ public class CandidateTaskAssembler {
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
     private final RideOrderRepository rideOrderRepository;
+    private final TravelEstimateService travelEstimateService;
 
     public CandidateTaskAssembler(
             VehicleRepository vehicleRepository,
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
-            RideOrderRepository rideOrderRepository) {
+            RideOrderRepository rideOrderRepository,
+            TravelEstimateService travelEstimateService) {
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.rideOrderRepository = rideOrderRepository;
+        this.travelEstimateService = travelEstimateService;
     }
 
     public DispatchEvaluateRequest assemble(RideOrder order, DispatchRuleSet ruleSet) {
-        return new DispatchEvaluateRequest(
+        return assembleWithTravelEstimates(order, ruleSet).request();
+    }
+
+    public Assembly assembleWithTravelEstimates(RideOrder order, DispatchRuleSet ruleSet) {
+        Coordinate pickupCoordinate = new Coordinate(order.getOriginLng(), order.getOriginLat());
+        Coordinate destinationCoordinate = new Coordinate(order.getDestinationLng(), order.getDestinationLat());
+        TravelEstimate pickupToDestination = travelEstimateService.estimatePickupToDestination(
+                pickupCoordinate, destinationCoordinate);
+        List<String> manualReviewReasons = new ArrayList<>();
+        if (pickupToDestination.degraded()) {
+            manualReviewReasons.add("MAP_ROUTE_UNAVAILABLE");
+        }
+        Map<UUID, CandidateTravelEstimates> candidateEstimates = new HashMap<>();
+        List<DispatchEvaluateRequest.CandidateTask> candidates = toCandidateTasks(
+                order, ruleSet, pickupCoordinate, pickupToDestination, candidateEstimates, manualReviewReasons);
+        DispatchEvaluateRequest request = new DispatchEvaluateRequest(
                 new DispatchEvaluateRequest.Order(
                         order.getId(),
                         order.getPassengerCount(),
@@ -53,7 +73,12 @@ public class CandidateTaskAssembler {
                         order.getBoardingStopId(),
                         order.getAlightingStopId()),
                 toRuleSet(ruleSet),
-                toCandidateTasks(order, ruleSet));
+                candidates);
+        return new Assembly(
+                request,
+                Map.copyOf(candidateEstimates),
+                pickupToDestination,
+                manualReviewReasons.isEmpty() ? null : manualReviewReasons.getFirst());
     }
 
     private DispatchEvaluateRequest.RuleSet toRuleSet(DispatchRuleSet ruleSet) {
@@ -72,7 +97,11 @@ public class CandidateTaskAssembler {
 
     private List<DispatchEvaluateRequest.CandidateTask> toCandidateTasks(
             RideOrder order,
-            DispatchRuleSet ruleSet) {
+            DispatchRuleSet ruleSet,
+            Coordinate pickupCoordinate,
+            TravelEstimate pickupToDestination,
+            Map<UUID, CandidateTravelEstimates> candidateEstimates,
+            List<String> manualReviewReasons) {
         List<Vehicle> dispatchableVehicles = vehicleRepository.findAll().stream()
                 .filter(Vehicle::isDispatchable)
                 .toList();
@@ -92,13 +121,18 @@ public class CandidateTaskAssembler {
         int count = Math.min(idleVehicles.size(), drivers.size());
         List<DispatchEvaluateRequest.CandidateTask> candidates = new ArrayList<>();
         for (int index = 0; index < count; index++) {
-            candidates.add(toNewTaskCandidate(order, ruleSet, idleVehicles.get(index)));
+            Vehicle vehicle = idleVehicles.get(index);
+            addCandidateWithTravelEstimate(
+                    candidates, candidateEstimates, manualReviewReasons, order, ruleSet, vehicle,
+                    pickupCoordinate, pickupToDestination, null);
         }
 
         for (VehicleTask task : vehicleTaskRepository.findAllByOrderByPlannedStartAtAsc()) {
             Vehicle vehicle = vehiclesById.get(task.getVehicleId());
             if (vehicle != null && isInsertable(task)) {
-                candidates.add(toExistingTaskCandidate(order, ruleSet, task, vehicle));
+                addCandidateWithTravelEstimate(
+                        candidates, candidateEstimates, manualReviewReasons, order, ruleSet, vehicle,
+                        pickupCoordinate, pickupToDestination, task);
             }
         }
         return candidates;
@@ -107,8 +141,9 @@ public class CandidateTaskAssembler {
     private DispatchEvaluateRequest.CandidateTask toNewTaskCandidate(
             RideOrder order,
             DispatchRuleSet ruleSet,
-            Vehicle vehicle) {
-        int estimatedWaitMinutes = Math.min(ruleSet.getMaxWaitMinutes(), 6);
+            Vehicle vehicle,
+            TravelEstimate vehicleToPickup) {
+        int estimatedWaitMinutes = estimateWaitMinutes(vehicleToPickup);
         int estimatedDetourMinutes = Math.min(ruleSet.getMaxDetourMinutes(), 3);
         OffsetDateTime boardingAt = order.getRequestedDepartureAt().plusMinutes(estimatedWaitMinutes);
         OffsetDateTime alightingAt = boardingAt.plusMinutes(estimatedDetourMinutes + 10L);
@@ -139,8 +174,9 @@ public class CandidateTaskAssembler {
             RideOrder order,
             DispatchRuleSet ruleSet,
             VehicleTask task,
-            Vehicle vehicle) {
-        int estimatedWaitMinutes = Math.min(ruleSet.getMaxWaitMinutes(), 6);
+            Vehicle vehicle,
+            TravelEstimate vehicleToPickup) {
+        int estimatedWaitMinutes = estimateWaitMinutes(vehicleToPickup);
         int estimatedDetourMinutes = Math.min(ruleSet.getMaxDetourMinutes(), 3);
         OffsetDateTime boardingAt = order.getRequestedDepartureAt().plusMinutes(estimatedWaitMinutes);
         OffsetDateTime alightingAt = boardingAt.plusMinutes(estimatedDetourMinutes + 10L);
@@ -178,6 +214,37 @@ public class CandidateTaskAssembler {
 
     private boolean isInsertable(VehicleTask task) {
         return task.getStatus() == TaskStatus.DISPATCHED || task.getStatus() == TaskStatus.IN_PROGRESS;
+    }
+
+    private void addCandidateWithTravelEstimate(
+            List<DispatchEvaluateRequest.CandidateTask> candidates,
+            Map<UUID, CandidateTravelEstimates> candidateEstimates,
+            List<String> manualReviewReasons,
+            RideOrder order,
+            DispatchRuleSet ruleSet,
+            Vehicle vehicle,
+            Coordinate pickupCoordinate,
+            TravelEstimate pickupToDestination,
+            VehicleTask existingTask) {
+        try {
+            TravelEstimate vehicleToPickup = travelEstimateService.estimateVehicleToPickup(vehicle.getId(), pickupCoordinate);
+            if (vehicleToPickup.degraded() && !manualReviewReasons.contains("MAP_ROUTE_UNAVAILABLE")) {
+                manualReviewReasons.add("MAP_ROUTE_UNAVAILABLE");
+            }
+            DispatchEvaluateRequest.CandidateTask candidate = existingTask == null
+                    ? toNewTaskCandidate(order, ruleSet, vehicle, vehicleToPickup)
+                    : toExistingTaskCandidate(order, ruleSet, existingTask, vehicle, vehicleToPickup);
+            candidates.add(candidate);
+            candidateEstimates.put(candidate.taskId(), new CandidateTravelEstimates(vehicleToPickup, pickupToDestination));
+        } catch (TravelEstimateService.MissingVehicleLocationSnapshotException exception) {
+            if (!manualReviewReasons.contains("VEHICLE_LOCATION_SNAPSHOT_MISSING")) {
+                manualReviewReasons.add("VEHICLE_LOCATION_SNAPSHOT_MISSING");
+            }
+        }
+    }
+
+    private int estimateWaitMinutes(TravelEstimate estimate) {
+        return Math.max(1, (int) Math.ceil(estimate.durationSeconds() / 60D));
     }
 
     private int nextSequence(VehicleTask task) {
@@ -233,7 +300,7 @@ public class CandidateTaskAssembler {
         return utilization.min(BigDecimal.ONE);
     }
 
-    private UUID syntheticTaskId(UUID vehicleId) {
+    private static UUID syntheticTaskId(UUID vehicleId) {
         return UUID.nameUUIDFromBytes(("candidate-task:" + vehicleId).getBytes(StandardCharsets.UTF_8));
     }
 
@@ -247,5 +314,40 @@ public class CandidateTaskAssembler {
             return insertionPolicy;
         }
         return "FLEXIBLE";
+    }
+
+    public record CandidateTravelEstimates(
+            TravelEstimate vehicleToPickup,
+            TravelEstimate pickupToDestination) {
+    }
+
+    public record Assembly(
+            DispatchEvaluateRequest request,
+            Map<UUID, CandidateTravelEstimates> candidateEstimates,
+            TravelEstimate pickupToDestination,
+            String manualReviewReason) {
+
+        public static Assembly requiresManualReview(DispatchEvaluateRequest request, String reason) {
+            return new Assembly(request, Map.of(), null, reason);
+        }
+
+        public boolean requiresManualReview() {
+            return manualReviewReason != null;
+        }
+
+        public CandidateTravelEstimates estimatesFor(DispatchEvaluateResponse.BestPlan bestPlan) {
+            if (bestPlan == null) {
+                return pickupToDestination == null ? null : new CandidateTravelEstimates(null, pickupToDestination);
+            }
+            CandidateTravelEstimates byTask = bestPlan.taskId() == null ? null : candidateEstimates.get(bestPlan.taskId());
+            if (byTask != null) {
+                return byTask;
+            }
+            return candidateEstimates.entrySet().stream()
+                    .filter(entry -> entry.getKey().equals(syntheticTaskId(bestPlan.vehicleId())))
+                    .map(Map.Entry::getValue)
+                    .findFirst()
+                    .orElse(pickupToDestination == null ? null : new CandidateTravelEstimates(null, pickupToDestination));
+        }
     }
 }

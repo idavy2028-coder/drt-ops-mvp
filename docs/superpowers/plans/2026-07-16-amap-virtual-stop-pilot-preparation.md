@@ -316,7 +316,7 @@
 - Create: `apps/api/src/main/java/com/idavy/drtops/domain/area/VirtualStopView.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/area/VirtualStop.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/area/VirtualStopController.java`
-- Create: `apps/api/src/main/resources/db/migration/V10__enhance_virtual_stops_for_pilot.sql`
+- Create: `apps/api/src/main/resources/db/migration/V11__enhance_virtual_stops_for_pilot.sql`
 - Modify: `apps/admin-web/src/api/resources.ts`
 - Modify: `apps/admin-web/src/api/types.ts`
 - Modify: `apps/admin-web/src/components/VirtualStopTable.vue`

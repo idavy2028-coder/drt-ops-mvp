@@ -29,6 +29,7 @@ class DatabaseMigrationTest {
         String seedData = readMigration("V2__seed_demo_operations.sql");
         String authSchema = readMigration("V3__create_auth_schema.sql");
         String refreshTokenVersion = readMigration("V4__add_refresh_token_version.sql");
+        String dispatchMapEstimates = readMigration("V10__add_dispatch_map_estimates.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -68,6 +69,13 @@ class DatabaseMigrationTest {
                 "ALTER TABLE refresh_tokens",
                 "token_version BIGINT NOT NULL",
                 "FROM user_accounts");
+
+        assertThat(dispatchMapEstimates).contains(
+                "ALTER TABLE dispatch_decisions",
+                "map_provider VARCHAR(40)",
+                "map_degraded BOOLEAN NOT NULL DEFAULT FALSE",
+                "vehicle_to_pickup_duration_seconds INTEGER",
+                "pickup_to_destination_duration_seconds INTEGER");
     }
 
     @Test
