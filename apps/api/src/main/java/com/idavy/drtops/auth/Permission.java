@@ -37,6 +37,7 @@ public enum Permission {
                     LOCATION_CORRECT,
                     LOCATION_EXPORT),
             RoleCode.DISPATCHER, Set.of(
+                    ORDER_CREATE,
                     ORDER_READ,
                     DISPATCH_EXECUTE,
                     MANUAL_REVIEW,

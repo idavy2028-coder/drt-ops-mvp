@@ -44,8 +44,8 @@ class MapProviderControllerTest {
     }
 
     @Test
-    @WithMockUser(authorities = "RESOURCE_MANAGE")
-    void allowsAuthorizedOperationsUsersAndReturnsInternalDto() throws Exception {
+    @WithMockUser(authorities = "ORDER_CREATE")
+    void allowsOrderCreationUsersToSearchAddressesAndReturnsInternalDto() throws Exception {
         mockMvc.perform(get("/api/map/address-suggestions").param("keyword", "人民政府").param("city", "通渭县"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].name").value("通渭县人民政府"))

@@ -1,5 +1,27 @@
 import { request } from "./http";
-import type { ServiceAreaBoundaryDraft, ServiceAreaBoundaryView } from "./types";
+import type {
+  AddressSuggestion,
+  ServiceAreaBoundaryDraft,
+  ServiceAreaBoundaryView,
+  ServiceAreaContainment,
+  UUID
+} from "./types";
+
+export function searchAddressSuggestions(keyword: string, city: string): Promise<AddressSuggestion[]> {
+  const query = new URLSearchParams({ keyword, city });
+  return request<AddressSuggestion[]>(`/api/map/address-suggestions?${query.toString()}`);
+}
+
+export function checkServiceAreaContainment(
+  serviceAreaId: UUID,
+  longitude: number,
+  latitude: number
+): Promise<ServiceAreaContainment> {
+  return request<ServiceAreaContainment>(`/api/service-areas/${serviceAreaId}/contains`, {
+    method: "POST",
+    body: JSON.stringify({ longitude, latitude })
+  });
+}
 
 export function importDistrictBoundary(keyword: string): Promise<ServiceAreaBoundaryView> {
   const query = new URLSearchParams({ keyword });

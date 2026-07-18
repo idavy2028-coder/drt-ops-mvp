@@ -82,7 +82,7 @@ class AuthSchemaRepositoryTest {
         userAccountRepository.save(operator);
 
         assertThat(Permission.permissionsFor(Set.of(RoleCode.DISPATCHER)))
-                .doesNotContain(Permission.ORDER_CREATE);
+                .contains(Permission.ORDER_CREATE);
         assertThat(Permission.permissionsFor(Set.of(RoleCode.OPERATOR)))
                 .containsExactlyInAnyOrder(
                         Permission.RESOURCE_MANAGE,

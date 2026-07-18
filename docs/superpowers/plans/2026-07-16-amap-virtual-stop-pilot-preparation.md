@@ -240,7 +240,7 @@
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrder.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderController.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/order/RideOrderService.java`
-- Create: `apps/api/src/main/resources/db/migration/V8__add_order_address_fields.sql`
+- Create: `apps/api/src/main/resources/db/migration/V9__add_order_address_fields.sql`
 - Test: `apps/api/src/test/java/com/idavy/drtops/domain/order/RideOrderAddressApiTest.java`
 
 **Interfaces:**
@@ -279,7 +279,7 @@
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/CandidateTaskAssembler.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchOrchestrator.java`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/domain/dispatch/DispatchDecision.java`
-- Create: `apps/api/src/main/resources/db/migration/V9__add_dispatch_map_estimates.sql`
+- Create: `apps/api/src/main/resources/db/migration/V10__add_dispatch_map_estimates.sql`
 - Test: `apps/api/src/test/java/com/idavy/drtops/domain/dispatch/TravelEstimateServiceTest.java`
 - Test: `apps/api/src/test/java/com/idavy/drtops/domain/dispatch/DispatchOrchestratorMapEstimateTest.java`
 

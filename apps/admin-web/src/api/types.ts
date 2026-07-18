@@ -73,6 +73,27 @@ export interface VirtualStop {
   enabled: boolean;
 }
 
+export interface MapCoordinate {
+  longitude: number;
+  latitude: number;
+  coordinateSystem: "GCJ-02";
+}
+
+export interface AddressSuggestion {
+  id: string;
+  name: string;
+  address: string;
+  district: string;
+  location: MapCoordinate;
+}
+
+export interface ServiceAreaContainment {
+  inside: boolean;
+  serviceAreaId: UUID | null;
+  distanceToBoundaryMeters: number | null;
+  coordinateSystem: "GCJ02" | "GCJ-02";
+}
+
 export interface LocationCandidate {
   longitude?: number;
   latitude?: number;
@@ -201,6 +222,11 @@ export interface RideOrder {
   originLat: DecimalValue;
   destinationLng: DecimalValue;
   destinationLat: DecimalValue;
+  originAddress: string;
+  destinationAddress: string;
+  coordinateSystem: "GCJ02" | "GCJ-02";
+  originAddressSource: string;
+  destinationAddressSource: string;
   boardingStopId?: UUID;
   alightingStopId?: UUID;
   requestedDepartureAt: IsoDateTime;

@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @Validated
 @RequestMapping("/api/map")
-@PreAuthorize("hasAuthority('RESOURCE_MANAGE')")
+@PreAuthorize("hasAnyAuthority('RESOURCE_MANAGE', 'ORDER_CREATE')")
 public class MapProviderController {
 
     private final MapSearchProvider mapSearchProvider;
