@@ -1,57 +1,90 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { loadAmap } from "../maps/amapLoader";
+import * as L from "leaflet";
+import { toLeafletLatLng } from "../maps/coordinateTransform";
+import { createTileMap } from "../maps/tileMapRuntime";
+import type { TileMapHandle } from "../maps/tileMapTypes";
 import type { VirtualStop } from "../api/types";
 
-const props = defineProps<{ stops: VirtualStop[]; amapEnabled: boolean; readonly: boolean }>();
+const props = defineProps<{ stops: VirtualStop[]; readonly: boolean }>();
 const emit = defineEmits<{ pick: [longitude: number, latitude: number] }>();
-const container = ref<HTMLElement>();
-const available = ref(false);
-const feedback = ref("");
-let map: AmapMap | undefined;
-let markers: AmapMarker[] = [];
+const mapContainer = ref<HTMLElement>();
+const mapReady = ref(false);
+const mapWarning = ref("");
+const tileMap = ref<TileMapHandle>();
+let markers: L.Marker[] = [];
+let unsubscribeClick: (() => void) | undefined;
+let unsubscribeBaseLayerError: (() => void) | undefined;
 
 onMounted(() => { void initialize(); });
-onBeforeUnmount(() => map?.destroy?.());
+onBeforeUnmount(() => {
+  unsubscribeClick?.();
+  unsubscribeBaseLayerError?.();
+  clearMarkers();
+  tileMap.value?.destroy();
+});
+
 watch(() => props.stops, () => renderStops(), { deep: true });
 
 async function initialize(): Promise<void> {
-  if (!props.amapEnabled) return;
   await nextTick();
+  if (!mapContainer.value) {
+    return;
+  }
+
   try {
-    const runtime = await loadAmap();
-    if (!runtime.enabled || !runtime.AMap || !container.value) throw new Error("地图不可用");
-    const AMap = runtime.AMap as AmapApi;
-    map = new AMap.Map(container.value, { zoom: 13, center: [105.2421, 35.2103] });
-    map.on("click", (event) => {
-      if (!props.readonly) emit("pick", event.lnglat.lng, event.lnglat.lat);
+    tileMap.value = createTileMap(mapContainer.value, { longitude: 105.2421, latitude: 35.2103 }, 13);
+    unsubscribeClick = tileMap.value.onClick((point) => {
+      if (!props.readonly) {
+        emit("pick", point.longitude, point.latitude);
+      }
     });
-    available.value = true;
+    unsubscribeBaseLayerError = tileMap.value.onBaseLayerError(() => {
+      mapWarning.value = "开放底图暂不可用";
+    });
+    mapReady.value = true;
     renderStops();
   } catch {
-    feedback.value = "高德地图暂不可用，仍可通过经纬度录入和筛选虚拟站点。";
+    mapWarning.value = "开放底图暂不可用";
   }
 }
 
 function renderStops(): void {
-  const AMap = (window.AMap as AmapApi | undefined);
-  if (!AMap || !map) return;
-  const activeMap = map;
-  markers.forEach((marker) => marker.setMap?.(null));
-  markers = props.stops.filter((stop) => Number.isFinite(stop.longitude) && Number.isFinite(stop.latitude)).map((stop) => new AMap.Marker({
-    map: activeMap,
-    position: [stop.longitude!, stop.latitude!],
-    title: `${stop.name} ${stop.enabled ? "已启用" : "未启用"}`,
-    offset: [0, -10]
-  }));
+  if (!tileMap.value) {
+    return;
+  }
+
+  clearMarkers();
+  markers = props.stops
+    .filter((stop) => Number.isFinite(stop.longitude) && Number.isFinite(stop.latitude))
+    .map((stop) => createStopMarker(stop));
+  tileMap.value.fitLayers(markers);
+}
+
+function createStopMarker(stop: VirtualStop): L.Marker {
+  const label = `${stop.name} · ${stop.enabled ? "已启用" : "未启用"}`;
+  return L.marker(toLeafletLatLng({ longitude: stop.longitude!, latitude: stop.latitude! }), { title: label })
+    .bindTooltip(label, { direction: "top" })
+    .addTo(tileMap.value!.map);
+}
+
+function clearMarkers(): void {
+  markers.forEach((marker) => marker.remove());
+  markers = [];
 }
 </script>
 
 <template>
   <section class="stop-map" aria-labelledby="virtual-stop-map-title">
-    <header><div><p class="section-kicker">MAP</p><h3 id="virtual-stop-map-title">虚拟站点地图</h3></div><span>{{ stops.length }} 个站点</span></header>
-    <div v-show="available" ref="container" class="amap-canvas" aria-label="虚拟站点地图，点击可选取站点坐标"></div>
-    <div v-if="!available" class="map-fallback"><strong>地图不可用</strong><span>{{ feedback || "配置高德地图 Key 后可在此显示站点并点击取点。" }}</span></div>
+    <header>
+      <div><p class="section-kicker">MAP</p><h3 id="virtual-stop-map-title">虚拟站点地图</h3></div>
+      <span>{{ stops.length }} 个站点</span>
+    </header>
+    <div class="map-stage">
+      <div ref="mapContainer" class="tile-map-canvas" aria-label="虚拟站点地图，点击可选取站点坐标"></div>
+      <div v-if="!mapReady" class="map-fallback"><strong>开放底图暂不可用</strong><span>仍可通过经纬度录入和筛选虚拟站点。</span></div>
+    </div>
+    <p v-if="mapWarning" class="map-warning">{{ mapWarning }}，仍可通过经纬度录入和筛选虚拟站点。</p>
   </section>
 </template>
 
@@ -61,16 +94,8 @@ header { align-items: center; display: flex; justify-content: space-between; mar
 .section-kicker { color: var(--accent); font-size: 12px; font-weight: 800; margin: 0 0 4px; }
 h3 { font-size: 20px; margin: 0; }
 header span { color: var(--ink-muted); font-weight: 700; }
-.amap-canvas, .map-fallback { border: 1px solid var(--line); height: 300px; width: 100%; }
-.map-fallback { color: var(--ink-muted); display: grid; gap: 6px; place-content: center; text-align: center; }
+.map-stage { border: 1px solid var(--line); height: 300px; position: relative; width: 100%; }
+.tile-map-canvas { height: 100%; width: 100%; }
+.map-fallback { background: var(--surface); color: var(--ink-muted); display: grid; gap: 6px; inset: 0; place-content: center; position: absolute; text-align: center; }
+.map-warning { color: var(--warning, #805b00); font-size: 13px; font-weight: 700; margin: 10px 0 0; }
 </style>
-
-<script lang="ts">
-type AmapCoordinate = [number, number];
-interface AmapMap { on(event: "click", handler: (event: { lnglat: { lng: number; lat: number } }) => void): void; destroy?(): void; }
-interface AmapMarker { setMap?(map: AmapMap | null): void; }
-interface AmapApi {
-  Map: new (container: HTMLElement, options: { zoom: number; center: AmapCoordinate }) => AmapMap;
-  Marker: new (options: { map: AmapMap; position: AmapCoordinate; title: string; offset: AmapCoordinate }) => AmapMarker;
-}
-</script>

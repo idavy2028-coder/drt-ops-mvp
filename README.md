@@ -50,32 +50,25 @@
 - 算法: `GET http://localhost:8090/health`
 - 前端: `GET http://localhost:5173/`
 
-## 高德地图本机配置
+## 开放瓦片地图本机配置
 
-默认不开启高德能力，本机无 Key 时后端和前端都会降级，继续使用虚拟站点与人工位置流程。坐标系统一按 GCJ-02 处理。
+管理端默认使用 Leaflet 加载 OpenStreetMap 标准公开瓦片：`https://tile.openstreetmap.org/{z}/{x}/{y}.png`。页面会显示 `© OpenStreetMap contributors` 归属信息。业务接口、服务区 WKT 与虚拟站点仍统一保存 GCJ-02 坐标；仅在地图显示和点选边界转换为 WGS84。
 
-后端 Web 服务 Key：
-
-```powershell
-$env:DRT_AMAP_ENABLED = "true"
-$env:DRT_AMAP_WEB_SERVICE_KEY = "replace-with-local-amap-web-service-key"
-```
-
-前端 JS API Key 与安全密钥：
+可按受控部署环境配置瓦片地址、归属文本和最大缩放级别：
 
 ```powershell
-$env:VITE_AMAP_ENABLED = "true"
-$env:VITE_AMAP_JS_API_KEY = "replace-with-local-amap-js-api-key"
-$env:VITE_AMAP_SECURITY_JS_CODE = "replace-with-local-amap-security-js-code"
+$env:VITE_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+$env:VITE_TILE_ATTRIBUTION = "&copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\" rel=\"noreferrer\">OpenStreetMap contributors</a>"
+$env:VITE_TILE_MAX_ZOOM = "19"
 ```
 
-不要提交真实高德 Key 或安全密钥；仅在个人本机或受控部署环境注入。试点前优先使用免费/基础配额，不得擅自开启付费服务或扩大调用配额。
+试点只允许交互式浏览器按需请求瓦片，禁止预取、离线下载、服务端代理和批量缓存。公共 OSM 瓦片不提供 SLA；底图不可用时，围栏文本、虚拟站点、手工经纬度和订单/任务操作仍可使用。未来可切换至已获授权的商业瓦片服务，或在完成企业授权后接入官方高德增强能力。
 
 ## 通渭县地图与虚拟站点试点准备
 
 - [试点准备清单](docs/pilot/tongwei-amap-virtual-stop-readiness.md)
 - [虚拟站点采集与导入指南](docs/pilot/tongwei-virtual-stop-collection-guide.md)
-- [高德地图免费配额检查表](docs/pilot/tongwei-map-quota-checklist.md)
+- [开放瓦片合规与运行检查表](docs/pilot/tongwei-map-quota-checklist.md)
 - [地图与站点验收记录](docs/pilot/tongwei-map-and-stop-acceptance-record.md)
 
 ## 本地验证
@@ -94,7 +87,7 @@ npm.cmd --prefix apps/admin-web run build
 npm.cmd --prefix apps/admin-web run e2e -- vehicle-location-flow.spec.ts
 ```
 
-车辆位置模块的人工上报、异常处置和试点前待关闭项见[通渭县车辆位置管理试点运行手册](docs/release/tongwei-vehicle-location-runbook.md)；本机自动化验收范围与未关闭风险见[车辆位置管理模块本机验收记录（2026-07）](docs/release/vehicle-location-acceptance-2026-07.md)。模块自动化验证不代表真实高德、生产 PostGIS、容量验证或备份恢复演练已经通过。
+车辆位置模块的人工上报、异常处置和试点前待关闭项见[通渭县车辆位置管理试点运行手册](docs/release/tongwei-vehicle-location-runbook.md)；本机自动化验收范围与未关闭风险见[车辆位置管理模块本机验收记录（2026-07）](docs/release/vehicle-location-acceptance-2026-07.md)。模块自动化验证不代表真实浏览器瓦片加载、生产 PostGIS、容量验证或备份恢复演练已经通过。
 
 ## 端到端演示链路
 

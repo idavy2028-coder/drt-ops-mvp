@@ -6,9 +6,9 @@ import VehicleTable from "../components/VehicleTable.vue";
 import VirtualStopImportPanel from "../components/VirtualStopImportPanel.vue";
 import VirtualStopMap from "../components/VirtualStopMap.vue";
 import VirtualStopTable from "../components/VirtualStopTable.vue";
-import { importDistrictBoundary, publishServiceAreaBoundary, saveServiceAreaBoundary, searchAddressSuggestions } from "../api/map";
+import { importDistrictBoundary, publishServiceAreaBoundary, saveServiceAreaBoundary } from "../api/map";
 import { createVirtualStop, importVirtualStops, listDrivers, listServiceAreas, listVehicles, listVirtualStops, updateVirtualStop } from "../api/resources";
-import type { AddressSuggestion, Driver, ServiceArea, ServiceAreaBoundaryDraft, ServiceAreaBoundaryView, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "../api/types";
+import type { Driver, ServiceArea, ServiceAreaBoundaryDraft, ServiceAreaBoundaryView, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "../api/types";
 import { authStore } from "../auth/authStore";
 import { userMessage } from "../api/errors";
 
@@ -26,13 +26,11 @@ const stopFeedback = ref("");
 const importResult = ref<VirtualStopImportResult>();
 const stopKeyword = ref("");
 const stopEnabled = ref<"ALL" | "true" | "false">("ALL");
-const stopSuggestions = ref<AddressSuggestion[]>([]);
 const editingStopId = ref<string>();
 const stopDraft = ref<VirtualStopDraft>(emptyStopDraft());
 
 const canManageServiceArea = computed(() => authStore.user?.roles.includes("SYSTEM_ADMIN") ?? false);
 const canManageStops = computed(() => authStore.has("RESOURCE_MANAGE"));
-const amapEnabled = computed(() => import.meta.env.VITE_AMAP_ENABLED === "true" || import.meta.env.VITE_AMAP_ENABLED === "1");
 const filteredStops = computed(() => virtualStops.value.filter((stop) => {
   const keyword = stopKeyword.value.trim();
   const matchKeyword = !keyword || stop.name.includes(keyword) || (stop.address ?? "").includes(keyword);
@@ -94,20 +92,6 @@ async function publishBoundary(): Promise<void> {
   finally { serviceAreaActionLoading.value = false; }
 }
 
-async function searchStopAddress(): Promise<void> {
-  const address = stopDraft.value.address?.trim() ?? "";
-  if (address.length < 2) { stopSuggestions.value = []; return; }
-  try { stopSuggestions.value = await searchAddressSuggestions(address, "甘肃省定西市通渭县"); }
-  catch (actionError) { error.value = userMessage(actionError, "地址搜索暂不可用，可直接录入经纬度或在地图点击取点"); }
-}
-
-function applySuggestion(suggestion: AddressSuggestion): void {
-  stopDraft.value.address = [suggestion.name, suggestion.address].filter(Boolean).join(" ");
-  stopDraft.value.longitude = suggestion.location.longitude;
-  stopDraft.value.latitude = suggestion.location.latitude;
-  stopSuggestions.value = [];
-}
-
 function useMapPoint(longitude: number, latitude: number): void {
   stopDraft.value.longitude = longitude; stopDraft.value.latitude = latitude;
   stopFeedback.value = "已取用地图坐标，请补全站点名称后保存。";
@@ -122,7 +106,6 @@ function editStop(stop: VirtualStop): void {
 function resetStopForm(clearFeedback = true): void {
   editingStopId.value = undefined; stopDraft.value = emptyStopDraft();
   if (serviceAreas.value[0]) stopDraft.value.serviceAreaId = serviceAreas.value[0].id;
-  stopSuggestions.value = [];
   if (clearFeedback) stopFeedback.value = "";
 }
 
@@ -156,14 +139,14 @@ onMounted(() => { void loadResources(); });
     <header class="page-header"><div><p class="page-kicker">RESOURCES</p><h2 class="page-title">资源配置</h2><p class="page-subtitle">维护服务区域、虚拟站点、车辆和驾驶员等基础运营资源。</p></div><button class="secondary-button" type="button" :disabled="loading" @click="loadResources">{{ loading ? "同步中" : "刷新" }}</button></header>
     <div class="summary-grid"><article class="metric-panel"><p class="metric-label">服务区域</p><p class="metric-value">{{ serviceAreas.length }}</p></article><article class="metric-panel"><p class="metric-label">虚拟站点</p><p class="metric-value">{{ virtualStops.length }}</p></article><article class="metric-panel"><p class="metric-label">可调车辆</p><p class="metric-value">{{ vehicles.filter((vehicle) => vehicle.dispatchable).length }}</p></article><article class="metric-panel"><p class="metric-label">驾驶员</p><p class="metric-value">{{ drivers.length }}</p></article></div>
     <p v-if="loading" class="page-state">正在同步服务区、站点、车辆与驾驶员资源。</p><p v-else-if="error" class="page-state error-state">{{ error }}</p>
-    <ServiceAreaMapEditor :service-area="selectedServiceArea" :readonly="!canManageServiceArea || serviceAreaActionLoading" :amap-enabled="amapEnabled" :feedback="serviceAreaFeedback" @import-district="importDistrict" @save-boundary="saveBoundary" @publish="publishBoundary" />
+    <ServiceAreaMapEditor :service-area="selectedServiceArea" :readonly="!canManageServiceArea || serviceAreaActionLoading" :feedback="serviceAreaFeedback" @import-district="importDistrict" @save-boundary="saveBoundary" @publish="publishBoundary" />
     <VirtualStopImportPanel :disabled="!canManageStops" :loading="stopActionLoading" :result="importResult" @import="importStops" />
     <section class="stop-editor" aria-labelledby="virtual-stop-editor-title">
       <header><div><p class="section-kicker">STOP EDITOR</p><h3 id="virtual-stop-editor-title">{{ editingStopId ? "编辑虚拟站点" : "新增虚拟站点" }}</h3></div><button type="button" class="secondary-button" :disabled="!canManageStops || stopActionLoading" @click="() => resetStopForm()">清空</button></header>
-      <div class="stop-editor-grid"><label>所属服务区<select v-model="stopDraft.serviceAreaId" :disabled="!canManageStops || stopActionLoading"><option v-for="area in serviceAreas" :key="area.id" :value="area.id">{{ area.name }}</option></select></label><label>站点名称<input v-model="stopDraft.name" :disabled="!canManageStops || stopActionLoading" required /></label><label class="address-field">地址<div class="address-input"><input v-model="stopDraft.address" :disabled="!canManageStops || stopActionLoading" @input="searchStopAddress" /><button type="button" class="secondary-button" :disabled="!canManageStops || stopActionLoading" @click="searchStopAddress">搜索</button></div><div v-if="stopSuggestions.length" class="suggestions"><button v-for="item in stopSuggestions" :key="item.id" type="button" @click="applySuggestion(item)"><strong>{{ item.name }}</strong><span>{{ item.address || item.district }}</span></button></div></label><label>经度<input v-model.number="stopDraft.longitude" type="number" step="0.000001" :disabled="!canManageStops || stopActionLoading" /></label><label>纬度<input v-model.number="stopDraft.latitude" type="number" step="0.000001" :disabled="!canManageStops || stopActionLoading" /></label><label>服务半径（米）<input v-model.number="stopDraft.serviceRadiusMeters" type="number" min="1" :disabled="!canManageStops || stopActionLoading" /></label><label>安全说明<input v-model="stopDraft.safetyNote" :disabled="!canManageStops || stopActionLoading" /></label><label><span>上下车能力</span><span class="checkbox-row"><input v-model="stopDraft.boardingEnabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />允许上车</span><span class="checkbox-row"><input v-model="stopDraft.alightingEnabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />允许下车</span></label><label><span>启用状态</span><span class="checkbox-row"><input v-model="stopDraft.enabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />保存后启用</span></label></div>
+      <div class="stop-editor-grid"><label>所属服务区<select v-model="stopDraft.serviceAreaId" :disabled="!canManageStops || stopActionLoading"><option v-for="area in serviceAreas" :key="area.id" :value="area.id">{{ area.name }}</option></select></label><label>站点名称<input v-model="stopDraft.name" :disabled="!canManageStops || stopActionLoading" required /></label><label class="address-field">地址<input v-model="stopDraft.address" :disabled="!canManageStops || stopActionLoading" /></label><label>经度<input v-model.number="stopDraft.longitude" type="number" step="0.000001" :disabled="!canManageStops || stopActionLoading" /></label><label>纬度<input v-model.number="stopDraft.latitude" type="number" step="0.000001" :disabled="!canManageStops || stopActionLoading" /></label><label>服务半径（米）<input v-model.number="stopDraft.serviceRadiusMeters" type="number" min="1" :disabled="!canManageStops || stopActionLoading" /></label><label>安全说明<input v-model="stopDraft.safetyNote" :disabled="!canManageStops || stopActionLoading" /></label><label><span>上下车能力</span><span class="checkbox-row"><input v-model="stopDraft.boardingEnabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />允许上车</span><span class="checkbox-row"><input v-model="stopDraft.alightingEnabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />允许下车</span></label><label><span>启用状态</span><span class="checkbox-row"><input v-model="stopDraft.enabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />保存后启用</span></label></div>
       <div class="stop-editor-actions"><button type="button" class="primary-button" :disabled="!canManageStops || stopActionLoading || !stopDraft.serviceAreaId || !stopDraft.name.trim()" @click="saveStop">{{ stopActionLoading ? "正在保存" : editingStopId ? "保存修改" : "新增站点" }}</button><p v-if="stopFeedback" class="stop-feedback">{{ stopFeedback }}</p></div>
     </section>
-    <VirtualStopMap :stops="filteredStops" :amap-enabled="amapEnabled" :readonly="!canManageStops || stopActionLoading" @pick="useMapPoint" />
+    <VirtualStopMap :stops="filteredStops" :readonly="!canManageStops || stopActionLoading" @pick="useMapPoint" />
     <section class="stop-filters"><label>关键词<input v-model="stopKeyword" placeholder="站点名称或地址" /></label><label>状态<select v-model="stopEnabled"><option value="ALL">全部</option><option value="true">已启用</option><option value="false">未启用</option></select></label></section>
     <VirtualStopTable :stops="filteredStops" :can-manage="canManageStops" @edit="editStop" />
     <VehicleTable :vehicles="vehicles" /><DriverTable :drivers="drivers" />
@@ -171,5 +154,5 @@ onMounted(() => { void loadResources(); });
 </template>
 
 <style scoped>
-.error-state { color: var(--danger); }.stop-editor, .stop-filters { border: 1px solid var(--line); background: var(--surface); padding: 18px; }.stop-editor header { align-items: center; display: flex; justify-content: space-between; margin-bottom: 14px; }.section-kicker { color: var(--accent); font-size: 12px; font-weight: 800; margin: 0 0 4px; }h3 { font-size: 20px; margin: 0; }.stop-editor-grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }.stop-editor label, .stop-filters label { color: var(--ink); display: grid; font-size: 13px; font-weight: 700; gap: 6px; }.address-field { grid-column: span 2; }.address-input { display: flex; gap: 8px; }.address-input input { min-width: 0; }.suggestions { border: 1px solid var(--line); display: grid; max-height: 150px; overflow: auto; }.suggestions button { background: var(--surface); border: 0; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; gap: 2px; padding: 8px; text-align: left; }.suggestions span { color: var(--ink-muted); font-size: 12px; }.checkbox-row { align-items: center; display: flex; gap: 6px; font-weight: 500; }.stop-editor-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }.stop-feedback { color: var(--success); font-weight: 700; margin: 0; }.stop-filters { display: flex; gap: 12px; }.stop-filters label { min-width: 220px; }input, select { background: var(--surface); border: 1px solid var(--line); box-sizing: border-box; color: var(--ink); font: inherit; padding: 9px 10px; width: 100%; }@media (max-width: 900px) { .stop-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }.address-field { grid-column: span 2; }@media (max-width: 640px) { .stop-editor-grid { grid-template-columns: 1fr; }.address-field { grid-column: auto; }.stop-filters { flex-direction: column; }.stop-filters label { min-width: 0; } }
+.error-state { color: var(--danger); }.stop-editor, .stop-filters { border: 1px solid var(--line); background: var(--surface); padding: 18px; }.stop-editor header { align-items: center; display: flex; justify-content: space-between; margin-bottom: 14px; }.section-kicker { color: var(--accent); font-size: 12px; font-weight: 800; margin: 0 0 4px; }h3 { font-size: 20px; margin: 0; }.stop-editor-grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }.stop-editor label, .stop-filters label { color: var(--ink); display: grid; font-size: 13px; font-weight: 700; gap: 6px; }.address-field { grid-column: span 2; }.checkbox-row { align-items: center; display: flex; gap: 6px; font-weight: 500; }.stop-editor-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }.stop-feedback { color: var(--success); font-weight: 700; margin: 0; }.stop-filters { display: flex; gap: 12px; }.stop-filters label { min-width: 220px; }input, select { background: var(--surface); border: 1px solid var(--line); box-sizing: border-box; color: var(--ink); font: inherit; padding: 9px 10px; width: 100%; }@media (max-width: 900px) { .stop-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }.address-field { grid-column: span 2; }@media (max-width: 640px) { .stop-editor-grid { grid-template-columns: 1fr; }.address-field { grid-column: auto; }.stop-filters { flex-direction: column; }.stop-filters label { min-width: 0; } }
 </style>

@@ -9,15 +9,12 @@ vi.mock("../api/resources", () => ({
   listVirtualStops: vi.fn().mockResolvedValue([])
 }));
 
-vi.mock("../api/map", () => ({
-  checkServiceAreaContainment: vi.fn(),
-  searchAddressSuggestions: vi.fn().mockResolvedValue([])
-}));
+vi.mock("../api/map", () => ({ checkServiceAreaContainment: vi.fn() }));
 
 describe("OrderCreateDialog", () => {
   afterEach(() => cleanup());
 
-  it("uses address-first entry and keeps manual coordinates as a fallback", () => {
+  it("keeps address text and manual coordinates available without address lookup", () => {
     render(OrderCreateDialog);
 
     expect(screen.getByLabelText("起点地址")).toBeInTheDocument();
@@ -25,7 +22,7 @@ describe("OrderCreateDialog", () => {
     expect(screen.getAllByText("手工输入经纬度")).toHaveLength(2);
   });
 
-  it("emits GCJ02 coordinates after both endpoints are completed", async () => {
+  it("submits manually entered GCJ-02 coordinates for both endpoints", async () => {
     const { emitted } = render(OrderCreateDialog);
     await fireEvent.update(screen.getByLabelText("乘客姓名"), "张三");
     await fireEvent.update(screen.getByLabelText("乘客电话"), "13800000000");
@@ -41,6 +38,8 @@ describe("OrderCreateDialog", () => {
     expect(creates?.[0]?.[0]).toMatchObject({
       originAddress: "通渭县人民医院",
       destinationAddress: "通渭县文化广场",
+      originLng: 105.22,
+      destinationLng: 105.23,
       coordinateSystem: "GCJ02"
     });
   });
