@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { loadAmap } from "../maps/amapLoader";
-import type { AmapRuntime } from "../maps/amapTypes";
+import * as L from "leaflet";
+import "@geoman-io/leaflet-geoman-free";
+import { gcj02ToWgs84, wgs84ToGcj02 } from "../maps/coordinateTransform";
+import { createTileMap } from "../maps/tileMapRuntime";
+import type { TileMapHandle } from "../maps/tileMapTypes";
 import type { ServiceAreaBoundaryDraft, ServiceAreaBoundaryView } from "../api/types";
 
 const props = withDefaults(defineProps<{
   serviceArea?: ServiceAreaBoundaryView;
   readonly: boolean;
-  amapEnabled: boolean;
   feedback?: string;
 }>(), {
   serviceArea: undefined,
@@ -21,14 +23,16 @@ const emit = defineEmits<{
 }>();
 
 const mapContainer = ref<HTMLElement>();
-const runtime = ref<AmapRuntime>();
+const tileMap = ref<TileMapHandle>();
+const mapReady = ref(false);
 const mapError = ref("");
+const mapWarning = ref("");
 const importKeyword = ref("甘肃省定西市通渭县");
 const inputFormat = ref<"wkt" | "geoJson">("wkt");
 const boundaryText = ref("");
-let mapInstance: AmapMap | undefined;
-let polygonOverlay: AmapPolygon | undefined;
-let polygonEditor: AmapPolygonEditor | undefined;
+let polygonLayer: L.Polygon | undefined;
+let unsubscribeBaseLayerError: (() => void) | undefined;
+let boundaryUpdatedByMap = false;
 
 const activeBoundary = computed(() => props.serviceArea?.draftBoundaryWkt || props.serviceArea?.boundaryWkt || "");
 const boundaryVersion = computed(() => {
@@ -41,7 +45,6 @@ const boundaryVersion = computed(() => {
   return "未发布";
 });
 const coordinateSystem = computed(() => props.serviceArea?.coordinateSystem === "GCJ02" ? "GCJ-02" : props.serviceArea?.coordinateSystem ?? "GCJ-02");
-const mapAvailable = computed(() => props.amapEnabled && runtime.value?.enabled === true && runtime.value.AMap !== undefined);
 
 watch(activeBoundary, (value) => {
   if (!boundaryText.value || value) {
@@ -49,105 +52,108 @@ watch(activeBoundary, (value) => {
   }
 }, { immediate: true });
 
-onMounted(async () => {
-  if (!props.amapEnabled) {
-    return;
+watch(boundaryText, () => {
+  if (inputFormat.value === "wkt" && !boundaryUpdatedByMap) {
+    renderWktBoundary();
   }
+  boundaryUpdatedByMap = false;
+});
 
-  runtime.value = await loadAmap();
+onMounted(async () => {
   await nextTick();
-  if (!runtime.value.enabled || !runtime.value.AMap || !mapContainer.value) {
+  if (!mapContainer.value) {
     return;
   }
 
   try {
-    const AMap = runtime.value.AMap as AmapApi;
-    mapInstance = new AMap.Map(mapContainer.value, {
-      zoom: 11,
-      center: [105.24, 35.21],
-      viewMode: "2D"
+    tileMap.value = createTileMap(mapContainer.value, { longitude: 105.24, latitude: 35.21 }, 11);
+    tileMap.value.map.on("pm:create", updateBoundaryFromGeomanEvent);
+    tileMap.value.map.on("pm:edit", updateBoundaryFromGeomanEvent);
+    unsubscribeBaseLayerError = tileMap.value.onBaseLayerError(() => {
+      mapWarning.value = "开放底图暂不可用";
     });
+    mapReady.value = true;
     renderWktBoundary();
   } catch {
-    mapError.value = "高德地图初始化失败，可继续使用边界文本录入。";
+    mapWarning.value = "开放底图暂不可用";
   }
 });
 
 onBeforeUnmount(() => {
-  polygonEditor?.close?.();
-  mapInstance?.destroy?.();
-});
-
-watch(boundaryText, () => {
-  if (inputFormat.value === "wkt") {
-    renderWktBoundary();
+  if (tileMap.value) {
+    tileMap.value.map.off("pm:create", updateBoundaryFromGeomanEvent);
+    tileMap.value.map.off("pm:edit", updateBoundaryFromGeomanEvent);
   }
+  unsubscribeBaseLayerError?.();
+  tileMap.value?.destroy();
 });
 
 function startDrawing(): void {
-  const AMap = runtime.value?.AMap as AmapApi | undefined;
-  if (!AMap || !mapInstance) {
+  const mapPm = tileMap.value?.map.pm;
+  if (!mapPm) {
     mapError.value = "地图绘制工具不可用，可继续粘贴 WKT 或 GeoJSON 草稿。";
     return;
   }
 
-  polygonEditor?.close?.();
-  const mouseTool = new AMap.MouseTool(mapInstance);
-  mouseTool.on("draw", (event: { obj: AmapPolygon }) => {
-    polygonOverlay?.setMap?.(null);
-    polygonOverlay = event.obj;
-    boundaryText.value = toWkt(event.obj.getPath());
-    inputFormat.value = "wkt";
-    mouseTool.close?.();
-    mapError.value = "";
+  polygonLayer?.pm?.disable();
+  mapPm.enableDraw("Polygon", {
+    snappable: true,
+    allowSelfIntersection: false,
+    templineStyle: { color: "#007a5e" },
+    hintlineStyle: { color: "#007a5e" },
+    pathOptions: polygonStyle()
   });
-  mouseTool.polygon({
-    strokeColor: "#007a5e",
-    strokeWeight: 3,
-    fillColor: "#8bd6bc",
-    fillOpacity: 0.26
-  });
+  mapError.value = "";
 }
 
 function startEditing(): void {
-  const AMap = runtime.value?.AMap as AmapApi | undefined;
-  if (!AMap || !mapInstance || !polygonOverlay) {
+  if (!polygonLayer?.pm) {
     mapError.value = "请先绘制或录入一个 WKT 边界后再编辑。";
     return;
   }
 
-  polygonEditor?.close?.();
-  polygonEditor = new AMap.PolygonEditor(mapInstance, polygonOverlay);
-  polygonEditor.on("adjust", () => {
-    if (polygonOverlay) {
-      boundaryText.value = toWkt(polygonOverlay.getPath());
-      inputFormat.value = "wkt";
-    }
-  });
-  polygonEditor.open();
+  polygonLayer.pm.enable({ allowSelfIntersection: false });
+  mapError.value = "";
+}
+
+function updateBoundaryFromGeomanEvent(event: unknown): void {
+  const layer = (event as { layer?: L.Polygon }).layer;
+  if (!layer) {
+    return;
+  }
+
+  if (layer !== polygonLayer) {
+    clearPolygonLayer();
+    polygonLayer = layer;
+  }
+  boundaryUpdatedByMap = true;
+  boundaryText.value = toGcj02Wkt(layer);
+  inputFormat.value = "wkt";
   mapError.value = "";
 }
 
 function renderWktBoundary(): void {
-  const AMap = runtime.value?.AMap as AmapApi | undefined;
   const coordinates = parseWkt(boundaryText.value);
-  if (!AMap || !mapInstance || coordinates.length < 3) {
+  if (!tileMap.value || coordinates.length < 3) {
     return;
   }
 
-  polygonEditor?.close?.();
-  polygonOverlay?.setMap?.(null);
-  polygonOverlay = new AMap.Polygon({
-    map: mapInstance,
-    path: coordinates,
-    strokeColor: "#007a5e",
-    strokeWeight: 3,
-    fillColor: "#8bd6bc",
-    fillOpacity: 0.26
+  clearPolygonLayer();
+  const leafletCoordinates = coordinates.map((coordinate) => {
+    const wgs84 = gcj02ToWgs84(coordinate);
+    return [wgs84.latitude, wgs84.longitude] as L.LatLngTuple;
   });
+  polygonLayer = L.polygon(leafletCoordinates, polygonStyle()).addTo(tileMap.value.map);
+  tileMap.value.fitLayers([polygonLayer]);
 }
 
-function parseWkt(value: string): AmapCoordinate[] {
+function clearPolygonLayer(): void {
+  polygonLayer?.pm?.disable();
+  polygonLayer?.remove();
+  polygonLayer = undefined;
+}
+
+function parseWkt(value: string): Array<{ longitude: number; latitude: number }> {
   const match = value.trim().match(/^POLYGON\s*\(\((.+)\)\)$/i);
   if (!match) {
     return [];
@@ -156,17 +162,28 @@ function parseWkt(value: string): AmapCoordinate[] {
     .split(",")
     .map((pair) => pair.trim().split(/\s+/).map(Number))
     .filter(([longitude, latitude]) => Number.isFinite(longitude) && Number.isFinite(latitude))
-    .map(([longitude, latitude]) => [longitude, latitude] as AmapCoordinate);
+    .map(([longitude, latitude]) => ({ longitude, latitude }));
 }
 
-function toWkt(path: AmapPoint[]): string {
-  const coordinates = path.map((point) => [point.lng, point.lat] as AmapCoordinate);
+function toGcj02Wkt(layer: L.Polygon): string {
+  const rings = layer.getLatLngs() as unknown as L.LatLng[][];
+  const path = Array.isArray(rings[0]) ? rings[0] : [];
+  const coordinates = path.map((point) => wgs84ToGcj02({ longitude: point.lng, latitude: point.lat }));
   const first = coordinates[0];
   const last = coordinates[coordinates.length - 1];
-  if (first && last && (first[0] !== last[0] || first[1] !== last[1])) {
-    coordinates.push(first);
+  if (first && last && (first.longitude !== last.longitude || first.latitude !== last.latitude)) {
+    coordinates.push({ ...first });
   }
-  return `POLYGON((${coordinates.map(([longitude, latitude]) => `${longitude} ${latitude}`).join(", ")}))`;
+  return `POLYGON((${coordinates.map((point) => `${point.longitude} ${point.latitude}`).join(", ")}))`;
+}
+
+function polygonStyle(): L.PathOptions {
+  return {
+    color: "#007a5e",
+    weight: 3,
+    fillColor: "#8bd6bc",
+    fillOpacity: 0.26
+  };
 }
 
 function importDistrict(): void {
@@ -205,14 +222,16 @@ function requestPublish(): void {
 
     <div class="editor-grid">
       <div class="map-shell">
-        <div v-if="mapAvailable" ref="mapContainer" class="amap-canvas" aria-label="服务区电子围栏地图"></div>
-        <div v-else class="map-fallback">
-          <strong>地图不可用，可粘贴边界数据或稍后配置高德 Key。</strong>
-          <span>当前可继续导入行政区、保存草稿和发布围栏。</span>
+        <div class="map-stage">
+          <div ref="mapContainer" class="tile-map-canvas" aria-label="服务区电子围栏地图"></div>
+          <div v-if="!mapReady" class="map-fallback">
+            <strong>开放底图暂不可用</strong>
+            <span>当前可继续导入行政区、录入边界文本、保存草稿和发布围栏。</span>
+          </div>
         </div>
         <div class="map-meta">
           <span>坐标系：{{ coordinateSystem }}</span>
-          <div v-if="mapAvailable" class="map-actions">
+          <div v-if="mapReady" class="map-actions">
             <button type="button" class="secondary-button" :disabled="readonly" @click="startDrawing">开始绘制</button>
             <button type="button" class="secondary-button" :disabled="readonly" @click="startEditing">编辑边界</button>
           </div>
@@ -241,6 +260,7 @@ function requestPublish(): void {
           <textarea v-model="boundaryText" :disabled="readonly" rows="7" aria-label="服务区边界草稿" placeholder="POLYGON((lng lat, lng lat, ...))"></textarea>
         </label>
 
+        <p v-if="mapWarning" class="editor-message warning">{{ mapWarning }}</p>
         <p v-if="mapError" class="editor-message error">{{ mapError }}</p>
         <p v-else-if="feedback" class="editor-message success">{{ feedback }}</p>
 
@@ -265,8 +285,9 @@ h3 { margin: 0; font-size: 22px; }
 .area-status.draft { background: #fff0c7; color: #805b00; }
 .editor-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: 16px; }
 .map-shell { min-height: 360px; border: 1px solid #cbd8d2; background: #edf4f0; display: grid; grid-template-rows: 1fr auto; }
-.amap-canvas { min-height: 310px; }
-.map-fallback { display: grid; place-content: center; gap: 8px; min-height: 310px; padding: 28px; color: #40574e; text-align: center; }
+.map-stage { position: relative; min-height: 310px; }
+.tile-map-canvas { min-height: 310px; }
+.map-fallback { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; padding: 28px; color: #40574e; text-align: center; background: #edf4f0; }
 .map-fallback span { font-size: 14px; }
 .map-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd8d2; background: #f8faf8; padding: 10px 12px; color: #40574e; font-size: 13px; }
 .map-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -278,45 +299,9 @@ textarea { resize: vertical; line-height: 1.45; }
 .editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .editor-message { margin: 0; font-size: 14px; font-weight: 700; }
 .editor-message.success { color: #00745a; }
+.editor-message.warning { color: #805b00; }
 .editor-message.error { color: #ad2a2a; }
 .publish-note { margin: 0; border-left: 3px solid #d59a00; padding-left: 10px; color: #65521f; font-size: 13px; line-height: 1.5; }
-@media (max-width: 900px) { .editor-grid { grid-template-columns: 1fr; } .map-shell { min-height: 280px; } .map-fallback, .amap-canvas { min-height: 230px; } }
+@media (max-width: 900px) { .editor-grid { grid-template-columns: 1fr; } .map-shell { min-height: 280px; } .map-stage, .tile-map-canvas { min-height: 230px; } }
 @media (max-width: 560px) { .editor-header, .map-meta { align-items: stretch; flex-direction: column; } .inline-field { grid-template-columns: 1fr; } }
 </style>
-
-<script lang="ts">
-type AmapCoordinate = [number, number];
-
-interface AmapPoint {
-  lng: number;
-  lat: number;
-}
-
-interface AmapMap {
-  destroy?: () => void;
-}
-
-interface AmapPolygon {
-  getPath: () => AmapPoint[];
-  setMap?: (map: AmapMap | null) => void;
-}
-
-interface AmapMouseTool {
-  on: (event: "draw", listener: (event: { obj: AmapPolygon }) => void) => void;
-  polygon: (options: Record<string, unknown>) => void;
-  close?: () => void;
-}
-
-interface AmapPolygonEditor {
-  on: (event: "adjust", listener: () => void) => void;
-  open: () => void;
-  close?: () => void;
-}
-
-interface AmapApi {
-  Map: new (container: HTMLElement, options: Record<string, unknown>) => AmapMap;
-  Polygon: new (options: Record<string, unknown>) => AmapPolygon;
-  MouseTool: new (map: AmapMap) => AmapMouseTool;
-  PolygonEditor: new (map: AmapMap, polygon: AmapPolygon) => AmapPolygonEditor;
-}
-</script>

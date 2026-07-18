@@ -30,8 +30,6 @@ const virtualStops = ref<VirtualStop[]>([]);
 const setupError = ref("");
 const formError = ref("");
 
-const city = "甘肃省定西市通渭县";
-
 onMounted(() => { void loadReferenceData(); });
 
 async function loadReferenceData(): Promise<void> {
@@ -46,7 +44,7 @@ async function loadReferenceData(): Promise<void> {
 function submit(): void {
   formError.value = "";
   if (!hasCoordinate(origin.value) || !hasCoordinate(destination.value)) {
-    formError.value = "请通过地址搜索、地图点选或手工经纬度补全起点和终点。";
+    formError.value = "请通过地图点选、虚拟站点或手工经纬度补全起点和终点。";
     return;
   }
   emit("create", {
@@ -75,7 +73,7 @@ function hasCoordinate(value: AddressCoordinateValue): boolean {
       <div>
         <p class="section-kicker">IMMEDIATE DEMAND</p>
         <h3 class="section-title">录入需求</h3>
-        <p>先录入地址，系统会提示服务区范围并推荐可用虚拟站点。</p>
+        <p>录入地址文本和坐标，系统会提示服务区范围并推荐可用虚拟站点。</p>
       </div>
     </header>
     <p v-if="setupError" class="page-state">{{ setupError }}</p>
@@ -87,8 +85,8 @@ function hasCoordinate(value: AddressCoordinateValue): boolean {
       <label class="field"><span>预计出发时间</span><input v-model="form.requestedDepartureAt" type="datetime-local" required /></label>
     </div>
     <div class="location-grid">
-      <AddressCoordinateField v-model="origin" label="起点" purpose="BOARDING" :service-area-id="serviceAreas[0]?.id" :virtual-stops="virtualStops" :city="city" />
-      <AddressCoordinateField v-model="destination" label="终点" purpose="ALIGHTING" :service-area-id="serviceAreas[0]?.id" :virtual-stops="virtualStops" :city="city" />
+      <AddressCoordinateField v-model="origin" label="起点" purpose="BOARDING" :service-area-id="serviceAreas[0]?.id" :virtual-stops="virtualStops" />
+      <AddressCoordinateField v-model="destination" label="终点" purpose="ALIGHTING" :service-area-id="serviceAreas[0]?.id" :virtual-stops="virtualStops" />
     </div>
     <p v-if="formError" class="page-state">{{ formError }}</p>
     <div class="toolbar">

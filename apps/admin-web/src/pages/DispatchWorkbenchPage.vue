@@ -29,7 +29,6 @@ const actionError = ref("");
 const loading = ref(false);
 let locationPollTimer: number | undefined;
 
-const amapEnabled = computed(() => import.meta.env.VITE_AMAP_ENABLED === "true" || import.meta.env.VITE_AMAP_ENABLED === "1");
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value));
 const activeServiceArea = computed(() => serviceAreas.value.find((area) => area.enabled) ?? serviceAreas.value[0]);
 const staleThresholdMinutes = computed(() => { const configured = Number(import.meta.env.VITE_MANUAL_LOCATION_STALE_MINUTES); return Number.isFinite(configured) && configured > 0 ? configured : 30; });
@@ -94,7 +93,7 @@ onBeforeUnmount(() => { if (locationPollTimer !== undefined) window.clearInterva
     <div class="summary-grid"><article class="metric-panel"><p class="metric-label">待调度</p><p class="metric-value">{{ orders.filter((order) => order.status === "PENDING_DISPATCH").length }}</p></article><article class="metric-panel"><p class="metric-label">待复核</p><p class="metric-value">{{ reviews.length }}</p></article><article class="metric-panel"><p class="metric-label">车辆任务</p><p class="metric-value">{{ tasks.length }}</p></article></div>
     <p v-if="loading" class="page-state">正在汇总实时订单、车辆任务、人工复核和地图资源。</p><p v-else-if="status" class="page-state">{{ status }}</p><p v-if="locationStatus" class="page-state">{{ locationStatus }}</p>
     <section v-if="staleLocations.length" class="stale-panel" aria-label="位置较久未更新"><strong>位置较久未更新</strong><p v-for="item in staleLocations" :key="item.vehicleId">{{ item.plateNumber }} 超过 {{ staleThresholdMinutes }} 分钟未更新位置</p></section>
-    <div class="dispatch-grid"><RealtimeOrderList :orders="orders" /><DispatchMap :service-area="activeServiceArea" :stops="virtualStops" :locations="latestLocations" :event-chain="eventChain" :selected-task="selectedTask" :amap-enabled="amapEnabled" /><ManualReviewQueuePanel :items="reviews" :processing-decision-id="processingDecisionId" :error="actionError" @approve="approve" @reject="reject" /><VehicleTaskList :tasks="tasks" :selected-task-id="selectedTaskId" @select="selectTask" /></div>
+    <div class="dispatch-grid"><RealtimeOrderList :orders="orders" /><DispatchMap :service-area="activeServiceArea" :stops="virtualStops" :locations="latestLocations" :event-chain="eventChain" :selected-task="selectedTask" /><ManualReviewQueuePanel :items="reviews" :processing-decision-id="processingDecisionId" :error="actionError" @approve="approve" @reject="reject" /><VehicleTaskList :tasks="tasks" :selected-task-id="selectedTaskId" @select="selectTask" /></div>
   </section>
 </template>
 
