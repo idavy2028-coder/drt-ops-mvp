@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.dispatch;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -74,5 +75,54 @@ class DispatchRuleSetApiTest {
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.maxWaitMinutes").value(12));
+    }
+
+    @Test
+    void createsRuleSetForPilotBootstrap() throws Exception {
+        repository.deleteAll();
+
+        mockMvc.perform(post("/api/dispatch-rule-sets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"通渭县试点动态调度规则","maxWaitMinutes":5,
+                                 "maxDetourMinutes":8,"bookingWindowMinutes":60,
+                                 "autoDispatchScoreThreshold":82,"manualReviewScoreThreshold":62,
+                                 "waitWeight":0.35,"detourWeight":0.20,
+                                 "stabilityWeight":0.30,"utilizationWeight":0.15,
+                                 "insertionPolicy":"REALTIME_INSERTION"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.name").value("通渭县试点动态调度规则"))
+                .andExpect(jsonPath("$.data.maxWaitMinutes").value(5))
+                .andExpect(jsonPath("$.data.insertionPolicy").value("REALTIME_INSERTION"));
+    }
+
+    @Test
+    void rejectsCreateWithBlankName() throws Exception {
+        mockMvc.perform(post("/api/dispatch-rule-sets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":" ","maxWaitMinutes":5,"maxDetourMinutes":8,
+                                 "bookingWindowMinutes":60,"autoDispatchScoreThreshold":82,
+                                 "manualReviewScoreThreshold":62,"waitWeight":0.35,
+                                 "detourWeight":0.20,"stabilityWeight":0.30,
+                                 "utilizationWeight":0.15,"insertionPolicy":"REALTIME_INSERTION"}
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @WithMockUser(authorities = "ORDER_READ")
+    void requiresRuleManagePermissionToCreateRuleSet() throws Exception {
+        mockMvc.perform(post("/api/dispatch-rule-sets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"无权限规则","maxWaitMinutes":5,"maxDetourMinutes":8,
+                                 "bookingWindowMinutes":60,"autoDispatchScoreThreshold":82,
+                                 "manualReviewScoreThreshold":62,"waitWeight":0.35,
+                                 "detourWeight":0.20,"stabilityWeight":0.30,
+                                 "utilizationWeight":0.15,"insertionPolicy":"REALTIME_INSERTION"}
+                                """))
+                .andExpect(status().isForbidden());
     }
 }

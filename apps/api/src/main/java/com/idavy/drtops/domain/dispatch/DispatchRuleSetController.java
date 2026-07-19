@@ -14,6 +14,7 @@ import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -34,6 +35,25 @@ public class DispatchRuleSetController {
     @GetMapping
     ApiResponse<List<DispatchRuleSet>> list() {
         return ApiResponse.ok(repository.findAll());
+    }
+
+    @PostMapping
+    ResponseEntity<ApiResponse<DispatchRuleSet>> create(
+            @Valid @RequestBody CreateDispatchRuleSetRequest request) {
+        DispatchRuleSet ruleSet = DispatchRuleSet.create(
+                UUID.randomUUID(),
+                request.name(),
+                request.maxWaitMinutes(),
+                request.maxDetourMinutes(),
+                request.bookingWindowMinutes(),
+                request.autoDispatchScoreThreshold(),
+                request.manualReviewScoreThreshold(),
+                request.waitWeight(),
+                request.detourWeight(),
+                request.stabilityWeight(),
+                request.utilizationWeight(),
+                request.insertionPolicy());
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(repository.save(ruleSet)));
     }
 
     @PutMapping("/{id}")
@@ -57,6 +77,20 @@ public class DispatchRuleSetController {
     }
 
     public record UpdateDispatchRuleSetRequest(
+            @NotNull @Positive Integer maxWaitMinutes,
+            @NotNull @PositiveOrZero Integer maxDetourMinutes,
+            @NotNull @Positive Integer bookingWindowMinutes,
+            @NotNull @DecimalMin("0.00") @DecimalMax("100.00") BigDecimal autoDispatchScoreThreshold,
+            @NotNull @DecimalMin("0.00") @DecimalMax("100.00") BigDecimal manualReviewScoreThreshold,
+            @NotNull @DecimalMin("0.00") BigDecimal waitWeight,
+            @NotNull @DecimalMin("0.00") BigDecimal detourWeight,
+            @NotNull @DecimalMin("0.00") BigDecimal stabilityWeight,
+            @NotNull @DecimalMin("0.00") BigDecimal utilizationWeight,
+            @NotBlank String insertionPolicy) {
+    }
+
+    public record CreateDispatchRuleSetRequest(
+            @NotBlank String name,
             @NotNull @Positive Integer maxWaitMinutes,
             @NotNull @PositiveOrZero Integer maxDetourMinutes,
             @NotNull @Positive Integer bookingWindowMinutes,

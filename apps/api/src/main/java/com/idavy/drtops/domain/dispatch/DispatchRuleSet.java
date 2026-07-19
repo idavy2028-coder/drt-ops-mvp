@@ -80,6 +80,34 @@ public class DispatchRuleSet {
         return ruleSet;
     }
 
+    public static DispatchRuleSet create(
+            UUID id,
+            String name,
+            int maxWaitMinutes,
+            int maxDetourMinutes,
+            int bookingWindowMinutes,
+            BigDecimal autoDispatchScoreThreshold,
+            BigDecimal manualReviewScoreThreshold,
+            BigDecimal waitWeight,
+            BigDecimal detourWeight,
+            BigDecimal stabilityWeight,
+            BigDecimal utilizationWeight,
+            String insertionPolicy) {
+        DispatchRuleSet ruleSet = new DispatchRuleSet(id, name);
+        ruleSet.updateRules(
+                maxWaitMinutes,
+                maxDetourMinutes,
+                bookingWindowMinutes,
+                autoDispatchScoreThreshold,
+                manualReviewScoreThreshold,
+                waitWeight,
+                detourWeight,
+                stabilityWeight,
+                utilizationWeight,
+                insertionPolicy);
+        return ruleSet;
+    }
+
     public void updateRules(
             int maxWaitMinutes,
             int maxDetourMinutes,
