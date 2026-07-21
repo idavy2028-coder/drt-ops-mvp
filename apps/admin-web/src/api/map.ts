@@ -1,11 +1,19 @@
 import { request } from "./http";
 import type {
   AddressSuggestion,
+  CreateServiceAreaInput,
   ServiceAreaBoundaryDraft,
   ServiceAreaBoundaryView,
   ServiceAreaContainment,
   UUID
 } from "./types";
+
+export function createServiceArea(input: CreateServiceAreaInput): Promise<ServiceAreaBoundaryView> {
+  return request<ServiceAreaBoundaryView>("/api/service-areas", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
 
 export function searchAddressSuggestions(keyword: string, city: string): Promise<AddressSuggestion[]> {
   const query = new URLSearchParams({ keyword, city });
