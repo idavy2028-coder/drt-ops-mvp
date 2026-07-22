@@ -1,22 +1,30 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import * as L from "leaflet";
 import "@geoman-io/leaflet-geoman-free";
 import { gcj02ToWgs84, wgs84ToGcj02 } from "../maps/coordinateTransform";
 import { createTileMap } from "../maps/tileMapRuntime";
 import type { TileMapHandle } from "../maps/tileMapTypes";
-import type { ServiceAreaBoundaryDraft, ServiceAreaBoundaryView } from "../api/types";
+import type {
+  CreateServiceAreaInput,
+  DispatchRuleSet,
+  ServiceAreaBoundaryDraft,
+  ServiceAreaBoundaryView
+} from "../api/types";
 
 const props = withDefaults(defineProps<{
   serviceArea?: ServiceAreaBoundaryView;
+  ruleSets?: DispatchRuleSet[];
   readonly: boolean;
   feedback?: string;
 }>(), {
   serviceArea: undefined,
+  ruleSets: () => [],
   feedback: ""
 });
 
 const emit = defineEmits<{
+  create: [input: CreateServiceAreaInput];
   "import-district": [keyword: string];
   "save-boundary": [draft: ServiceAreaBoundaryDraft];
   publish: [];
@@ -30,6 +38,12 @@ const mapWarning = ref("");
 const importKeyword = ref("甘肃省定西市通渭县");
 const inputFormat = ref<"wkt" | "geoJson">("wkt");
 const boundaryText = ref("");
+const createForm = reactive({
+  name: "通渭县试点服务区",
+  serviceStart: "06:30",
+  serviceEnd: "19:00",
+  ruleSetId: ""
+});
 let polygonLayer: L.Polygon | undefined;
 let unsubscribeBaseLayerError: (() => void) | undefined;
 let boundaryUpdatedByMap = false;
@@ -45,6 +59,24 @@ const boundaryVersion = computed(() => {
   return "未发布";
 });
 const coordinateSystem = computed(() => props.serviceArea?.coordinateSystem === "GCJ02" ? "GCJ-02" : props.serviceArea?.coordinateSystem ?? "GCJ-02");
+const createDisabled = computed(() =>
+  props.readonly ||
+  !createForm.name.trim() ||
+  !createForm.serviceStart ||
+  !createForm.serviceEnd ||
+  !createForm.ruleSetId ||
+  !boundaryText.value.trim()
+);
+
+watch(
+  () => props.ruleSets,
+  (rules) => {
+    if (!rules.some((rule) => rule.id === createForm.ruleSetId)) {
+      createForm.ruleSetId = rules[0]?.id ?? "";
+    }
+  },
+  { immediate: true }
+);
 
 watch(activeBoundary, (value) => {
   if (!boundaryText.value || value) {
@@ -202,6 +234,52 @@ function saveBoundary(): void {
   emit("save-boundary", inputFormat.value === "wkt" ? { boundaryWkt: value } : { geoJson: value });
 }
 
+function createServiceAreaDraft(): void {
+  const boundaryWkt = inputFormat.value === "wkt" ? boundaryText.value.trim() : geoJsonToWkt(boundaryText.value);
+  if (!boundaryWkt) {
+    return;
+  }
+
+  mapError.value = "";
+  emit("create", {
+    name: createForm.name.trim(),
+    boundaryWkt,
+    serviceStart: withSeconds(createForm.serviceStart),
+    serviceEnd: withSeconds(createForm.serviceEnd),
+    ruleSetId: createForm.ruleSetId
+  });
+}
+
+function geoJsonToWkt(value: string): string | undefined {
+  try {
+    const geoJson = JSON.parse(value) as { type?: unknown; coordinates?: unknown };
+    const ring = Array.isArray(geoJson.coordinates) ? geoJson.coordinates[0] : undefined;
+    if (geoJson.type !== "Polygon" || !Array.isArray(ring) || ring.length < 3) {
+      throw new Error("invalid GeoJSON");
+    }
+
+    const coordinates = ring.map((point) => {
+      if (!Array.isArray(point) || point.length !== 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+        throw new Error("invalid GeoJSON");
+      }
+      return [point[0], point[1]] as [number, number];
+    });
+    const first = coordinates[0];
+    const last = coordinates[coordinates.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) {
+      coordinates.push([...first]);
+    }
+    return `POLYGON((${coordinates.map(([longitude, latitude]) => `${longitude} ${latitude}`).join(", ")}))`;
+  } catch {
+    mapError.value = "GeoJSON 必须是包含至少三个坐标点的 Polygon。";
+    return undefined;
+  }
+}
+
+function withSeconds(value: string): string {
+  return value.length === 5 ? `${value}:00` : value;
+}
+
 function requestPublish(): void {
   if (window.confirm("发布后，订单录入将按该服务区边界校验起终点。确认发布并启用吗？")) {
     emit("publish");
@@ -264,9 +342,24 @@ function requestPublish(): void {
         <p v-if="mapError" class="editor-message error">{{ mapError }}</p>
         <p v-else-if="feedback" class="editor-message success">{{ feedback }}</p>
 
+        <div v-if="!serviceArea" class="create-fields">
+          <label>服务区名称<input v-model="createForm.name" :disabled="readonly" aria-label="服务区名称" /></label>
+          <label>运营开始时间<input v-model="createForm.serviceStart" :disabled="readonly" type="time" aria-label="运营开始时间" /></label>
+          <label>运营结束时间<input v-model="createForm.serviceEnd" :disabled="readonly" type="time" aria-label="运营结束时间" /></label>
+          <label>调度规则组
+            <select v-model="createForm.ruleSetId" :disabled="readonly" aria-label="调度规则组">
+              <option v-for="rule in ruleSets" :key="rule.id" :value="rule.id">{{ rule.name }}</option>
+            </select>
+          </label>
+          <p v-if="ruleSets.length === 0" class="editor-message warning">请先创建调度规则组，再创建服务区。</p>
+        </div>
+
         <div class="editor-actions">
-          <button type="button" class="secondary-button" :disabled="readonly" @click="saveBoundary">保存草稿</button>
-          <button type="button" class="primary-button" :disabled="readonly || !serviceArea?.draftBoundaryWkt" @click="requestPublish">发布并启用</button>
+          <button v-if="!serviceArea" type="button" class="primary-button" :disabled="createDisabled" @click="createServiceAreaDraft">创建服务区草稿</button>
+          <template v-else>
+            <button type="button" class="secondary-button" :disabled="readonly" @click="saveBoundary">保存草稿</button>
+            <button type="button" class="primary-button" :disabled="readonly || !serviceArea.draftBoundaryWkt" @click="requestPublish">发布并启用</button>
+          </template>
         </div>
         <p class="publish-note">发布后，订单录入将按该边界校验起终点；围栏外位置仍会保留告警记录。</p>
       </div>
@@ -292,6 +385,7 @@ h3 { margin: 0; font-size: 22px; }
 .map-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd8d2; background: #f8faf8; padding: 10px 12px; color: #40574e; font-size: 13px; }
 .map-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .editor-controls { display: grid; align-content: start; gap: 14px; }
+.create-fields { display: grid; gap: 14px; }
 label { display: grid; gap: 6px; color: #263a32; font-size: 14px; font-weight: 700; }
 input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #b9cac2; background: #fff; color: #14231d; font: inherit; padding: 9px 10px; }
 textarea { resize: vertical; line-height: 1.45; }

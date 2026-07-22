@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ServiceAreaBoundaryView } from "../api/types";
+import type { DispatchRuleSet, ServiceAreaBoundaryView } from "../api/types";
 
 const tileMapRuntime = vi.hoisted(() => {
   const mapHandlers = new Map<string, Array<(event: unknown) => void>>();
@@ -84,9 +84,20 @@ const serviceArea: ServiceAreaBoundaryView = {
   coordinateSystem: "GCJ02"
 };
 
+const ruleSet = {
+  id: "rule-1",
+  name: "通渭县试点规则组"
+} as DispatchRuleSet;
+
 function renderEditor(overrides: Partial<ServiceAreaBoundaryView> = {}) {
   return render(ServiceAreaMapEditor, {
     props: { serviceArea: { ...serviceArea, ...overrides }, readonly: false }
+  });
+}
+
+function renderBootstrapEditor(ruleSets: DispatchRuleSet[] = [ruleSet]) {
+  return render(ServiceAreaMapEditor, {
+    props: { serviceArea: undefined, ruleSets, readonly: false }
   });
 }
 
@@ -201,5 +212,66 @@ describe("ServiceAreaMapEditor", () => {
 
     expect(window.confirm).toHaveBeenCalled();
     expect(emitted().publish).toEqual([[]]);
+  });
+
+  it("shows the bootstrap defaults and disables creation until a boundary is provided", () => {
+    renderBootstrapEditor();
+
+    expect(screen.getByLabelText("服务区名称")).toHaveValue("通渭县试点服务区");
+    expect(screen.getByLabelText("运营开始时间")).toHaveValue("06:30");
+    expect(screen.getByLabelText("运营结束时间")).toHaveValue("19:00");
+    expect(screen.getByLabelText("调度规则组")).toHaveValue("rule-1");
+    expect(screen.getByRole("button", { name: "创建服务区草稿" })).toBeDisabled();
+  });
+
+  it("emits a create request with the WKT bootstrap form values", async () => {
+    const { emitted } = renderBootstrapEditor();
+    await fireEvent.update(
+      screen.getByLabelText("服务区边界草稿"),
+      "POLYGON((105.20 35.18,105.30 35.18,105.30 35.26,105.20 35.18))"
+    );
+    await fireEvent.click(screen.getByRole("button", { name: "创建服务区草稿" }));
+
+    expect(emitted().create).toEqual([[{
+      name: "通渭县试点服务区",
+      boundaryWkt: "POLYGON((105.20 35.18,105.30 35.18,105.30 35.26,105.20 35.18))",
+      serviceStart: "06:30:00",
+      serviceEnd: "19:00:00",
+      ruleSetId: "rule-1"
+    }]]);
+  });
+
+  it("blocks bootstrap creation when no dispatch rule set exists", () => {
+    renderBootstrapEditor([]);
+
+    expect(screen.getByText("请先创建调度规则组，再创建服务区。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建服务区草稿" })).toBeDisabled();
+  });
+
+  it("converts a GeoJSON Polygon to closed WKT for bootstrap creation", async () => {
+    const { emitted } = renderBootstrapEditor();
+    await fireEvent.update(screen.getByLabelText("边界格式"), "geoJson");
+    await fireEvent.update(
+      screen.getByLabelText("服务区边界草稿"),
+      JSON.stringify({
+        type: "Polygon",
+        coordinates: [[[105.2, 35.18], [105.3, 35.18], [105.3, 35.26]]]
+      })
+    );
+    await fireEvent.click(screen.getByRole("button", { name: "创建服务区草稿" }));
+
+    expect(emitted().create).toEqual([[expect.objectContaining({
+      boundaryWkt: "POLYGON((105.2 35.18, 105.3 35.18, 105.3 35.26, 105.2 35.18))"
+    })]]);
+  });
+
+  it("shows a Chinese error and does not emit create for invalid GeoJSON", async () => {
+    const { emitted } = renderBootstrapEditor();
+    await fireEvent.update(screen.getByLabelText("边界格式"), "geoJson");
+    await fireEvent.update(screen.getByLabelText("服务区边界草稿"), "{\"type\":\"LineString\"}");
+    await fireEvent.click(screen.getByRole("button", { name: "创建服务区草稿" }));
+
+    expect(screen.getByText("GeoJSON 必须是包含至少三个坐标点的 Polygon。")).toBeInTheDocument();
+    expect(emitted().create).toBeUndefined();
   });
 });
