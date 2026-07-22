@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { listDispatchRuleSets, updateDispatchRuleSet, type UpdateDispatchRuleSetInput } from "../api/rules";
+import { createDispatchRuleSet, listDispatchRuleSets, updateDispatchRuleSet, type CreateDispatchRuleSetInput, type UpdateDispatchRuleSetInput } from "../api/rules";
 import type { DispatchRuleSet } from "../api/types";
+import RuleSetCreateForm from "../components/RuleSetCreateForm.vue";
 import RuleSetForm from "../components/RuleSetForm.vue";
 import { userMessage } from "../api/errors";
 import { feedbackStore } from "../stores/feedbackStore";
@@ -11,6 +12,8 @@ const selectedRuleSetId = ref("");
 const status = ref("");
 const loading = ref(false);
 const saving = ref(false);
+const creating = ref(false);
+const creatingRuleSet = ref(false);
 
 const selectedRuleSet = computed(() => {
   return ruleSets.value.find((ruleSet) => ruleSet.id === selectedRuleSetId.value) ?? ruleSets.value[0] ?? null;
@@ -22,10 +25,29 @@ async function loadRules() {
   try {
     ruleSets.value = await listDispatchRuleSets();
     selectedRuleSetId.value = selectedRuleSet.value?.id ?? "";
+    creating.value = ruleSets.value.length === 0;
   } catch (error) {
     status.value = userMessage(error, "规则数据加载失败");
   } finally {
     loading.value = false;
+  }
+}
+
+async function createRuleSet(input: CreateDispatchRuleSetInput) {
+  creatingRuleSet.value = true;
+  status.value = "";
+  try {
+    const created = await createDispatchRuleSet(input);
+    ruleSets.value = [created, ...ruleSets.value];
+    selectedRuleSetId.value = created.id;
+    creating.value = false;
+    status.value = "调度规则组已创建，可继续保存修改。";
+    feedbackStore.success(status.value);
+  } catch (error) {
+    status.value = userMessage(error, "调度规则组创建失败");
+    feedbackStore.error(status.value);
+  } finally {
+    creatingRuleSet.value = false;
   }
 }
 
@@ -61,12 +83,13 @@ onMounted(() => {
         <p class="page-subtitle">管理等待、绕行、预约窗口、插单策略、派发阈值和评分权重。</p>
       </div>
       <div class="toolbar">
-        <select v-model="selectedRuleSetId" class="secondary-button" :disabled="loading">
-        <option v-for="ruleSet in ruleSets" :key="ruleSet.id" :value="ruleSet.id">
-          {{ ruleSet.name }}
-        </option>
+        <select v-if="ruleSets.length" v-model="selectedRuleSetId" class="secondary-button" :disabled="loading || creatingRuleSet">
+          <option v-for="ruleSet in ruleSets" :key="ruleSet.id" :value="ruleSet.id">
+            {{ ruleSet.name }}
+          </option>
         </select>
-        <button class="secondary-button" type="button" :disabled="loading" @click="loadRules">{{ loading ? "同步中" : "刷新" }}</button>
+        <button class="secondary-button" type="button" :disabled="loading || creatingRuleSet" @click="creating = true">新建规则组</button>
+        <button class="secondary-button" type="button" :disabled="loading || creatingRuleSet" @click="loadRules">{{ loading ? "同步中" : "刷新" }}</button>
       </div>
     </header>
 
@@ -97,7 +120,14 @@ onMounted(() => {
         </table>
       </section>
 
-      <RuleSetForm :rule-set="selectedRuleSet" :saving="saving" @save="saveRuleSet" />
+      <RuleSetCreateForm
+        v-if="creating || ruleSets.length === 0"
+        :saving="creatingRuleSet"
+        :show-cancel="ruleSets.length > 0"
+        @create="createRuleSet"
+        @cancel="creating = false"
+      />
+      <RuleSetForm v-else :rule-set="selectedRuleSet" :saving="saving" @save="saveRuleSet" />
     </div>
 
     <p v-if="loading" class="page-state">正在同步调度规则…</p>

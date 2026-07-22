@@ -42,6 +42,14 @@ export interface ServiceArea {
   enabled: boolean;
 }
 
+export interface CreateServiceAreaInput {
+  name: string;
+  boundaryWkt: string;
+  serviceStart: string;
+  serviceEnd: string;
+  ruleSetId: UUID;
+}
+
 export interface ServiceAreaBoundaryView {
   id: UUID;
   name: string;
