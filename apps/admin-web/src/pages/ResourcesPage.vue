@@ -6,13 +6,15 @@ import VehicleTable from "../components/VehicleTable.vue";
 import VirtualStopImportPanel from "../components/VirtualStopImportPanel.vue";
 import VirtualStopMap from "../components/VirtualStopMap.vue";
 import VirtualStopTable from "../components/VirtualStopTable.vue";
-import { importDistrictBoundary, publishServiceAreaBoundary, saveServiceAreaBoundary } from "../api/map";
+import { createServiceArea, importDistrictBoundary, publishServiceAreaBoundary, saveServiceAreaBoundary } from "../api/map";
 import { createVirtualStop, importVirtualStops, listDrivers, listServiceAreas, listVehicles, listVirtualStops, updateVirtualStop } from "../api/resources";
-import type { Driver, ServiceArea, ServiceAreaBoundaryDraft, ServiceAreaBoundaryView, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "../api/types";
+import { listDispatchRuleSets } from "../api/rules";
+import type { CreateServiceAreaInput, DispatchRuleSet, Driver, ServiceArea, ServiceAreaBoundaryDraft, ServiceAreaBoundaryView, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "../api/types";
 import { authStore } from "../auth/authStore";
 import { userMessage } from "../api/errors";
 
 const serviceAreas = ref<ServiceArea[]>([]);
+const ruleSets = ref<DispatchRuleSet[]>([]);
 const virtualStops = ref<VirtualStop[]>([]);
 const vehicles = ref<Vehicle[]>([]);
 const drivers = ref<Driver[]>([]);
@@ -42,20 +44,23 @@ function emptyStopDraft(): VirtualStopDraft {
   return { serviceAreaId: "", name: "", address: "", longitude: 105.2421, latitude: 35.2103, serviceRadiusMeters: 500, boardingEnabled: true, alightingEnabled: true, safetyNote: "", enabled: true };
 }
 
-async function loadResources() {
+async function loadResources(): Promise<boolean> {
   error.value = "";
   loading.value = true;
   try {
-    const [areas, stops, vehicleRows, driverRows] = await Promise.all([listServiceAreas(), listVirtualStops(), listVehicles(), listDrivers()]);
+    const [areas, stops, vehicleRows, driverRows, dispatchRuleSets] = await Promise.all([listServiceAreas(), listVirtualStops(), listVehicles(), listDrivers(), listDispatchRuleSets()]);
     serviceAreas.value = areas;
+    ruleSets.value = dispatchRuleSets;
     virtualStops.value = stops;
     vehicles.value = vehicleRows;
     drivers.value = driverRows;
     const selectedExists = selectedServiceArea.value && areas.some((area) => area.id === selectedServiceArea.value?.id);
     if (!selectedExists && areas[0]) selectedServiceArea.value = asServiceAreaBoundary(areas[0]);
     if (!stopDraft.value.serviceAreaId && areas[0]) stopDraft.value.serviceAreaId = areas[0].id;
+    return true;
   } catch (loadError) {
     error.value = userMessage(loadError, "资源数据加载失败");
+    return false;
   } finally { loading.value = false; }
 }
 
@@ -67,6 +72,23 @@ function applyServiceAreaUpdate(updated: ServiceAreaBoundaryView): void {
   selectedServiceArea.value = updated;
   const index = serviceAreas.value.findIndex((area) => area.id === updated.id);
   if (index >= 0) serviceAreas.value[index] = { ...serviceAreas.value[index], boundary: updated.boundaryWkt, enabled: updated.publishedAt !== null };
+}
+
+async function createServiceAreaDraft(input: CreateServiceAreaInput): Promise<void> {
+  serviceAreaFeedback.value = "";
+  serviceAreaActionLoading.value = true;
+  try {
+    const created = await createServiceArea(input);
+    const resourcesReloaded = await loadResources();
+    selectedServiceArea.value = created;
+    stopDraft.value.serviceAreaId = created.id;
+    serviceAreaFeedback.value = "服务区草稿已创建，请核对后发布。";
+    if (!resourcesReloaded && !error.value) error.value = "资源数据加载失败，请刷新后重试。";
+  } catch (actionError) {
+    error.value = userMessage(actionError, "服务区草稿创建失败");
+  } finally {
+    serviceAreaActionLoading.value = false;
+  }
 }
 
 async function importDistrict(keyword: string): Promise<void> {
@@ -139,7 +161,7 @@ onMounted(() => { void loadResources(); });
     <header class="page-header"><div><p class="page-kicker">RESOURCES</p><h2 class="page-title">资源配置</h2><p class="page-subtitle">维护服务区域、虚拟站点、车辆和驾驶员等基础运营资源。</p></div><button class="secondary-button" type="button" :disabled="loading" @click="loadResources">{{ loading ? "同步中" : "刷新" }}</button></header>
     <div class="summary-grid"><article class="metric-panel"><p class="metric-label">服务区域</p><p class="metric-value">{{ serviceAreas.length }}</p></article><article class="metric-panel"><p class="metric-label">虚拟站点</p><p class="metric-value">{{ virtualStops.length }}</p></article><article class="metric-panel"><p class="metric-label">可调车辆</p><p class="metric-value">{{ vehicles.filter((vehicle) => vehicle.dispatchable).length }}</p></article><article class="metric-panel"><p class="metric-label">驾驶员</p><p class="metric-value">{{ drivers.length }}</p></article></div>
     <p v-if="loading" class="page-state">正在同步服务区、站点、车辆与驾驶员资源。</p><p v-else-if="error" class="page-state error-state">{{ error }}</p>
-    <ServiceAreaMapEditor :service-area="selectedServiceArea" :readonly="!canManageServiceArea || serviceAreaActionLoading" :feedback="serviceAreaFeedback" @import-district="importDistrict" @save-boundary="saveBoundary" @publish="publishBoundary" />
+    <ServiceAreaMapEditor :service-area="selectedServiceArea" :rule-sets="ruleSets" :readonly="!canManageServiceArea || serviceAreaActionLoading" :feedback="serviceAreaFeedback" @create="createServiceAreaDraft" @import-district="importDistrict" @save-boundary="saveBoundary" @publish="publishBoundary" />
     <VirtualStopImportPanel :disabled="!canManageStops" :loading="stopActionLoading" :result="importResult" @import="importStops" />
     <section class="stop-editor" aria-labelledby="virtual-stop-editor-title">
       <header><div><p class="section-kicker">STOP EDITOR</p><h3 id="virtual-stop-editor-title">{{ editingStopId ? "编辑虚拟站点" : "新增虚拟站点" }}</h3></div><button type="button" class="secondary-button" :disabled="!canManageStops || stopActionLoading" @click="() => resetStopForm()">清空</button></header>
