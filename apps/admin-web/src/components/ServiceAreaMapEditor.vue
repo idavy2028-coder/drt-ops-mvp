@@ -38,6 +38,7 @@ const mapWarning = ref("");
 const importKeyword = ref("甘肃省定西市通渭县");
 const inputFormat = ref<"wkt" | "geoJson">("wkt");
 const boundaryText = ref("");
+const isEditingBoundary = ref(false);
 const createForm = reactive({
   name: "通渭县试点服务区",
   serviceStart: "06:30",
@@ -48,13 +49,23 @@ let polygonLayer: L.Polygon | undefined;
 let unsubscribeBaseLayerError: (() => void) | undefined;
 let boundaryUpdatedByMap = false;
 
-const activeBoundary = computed(() => props.serviceArea?.draftBoundaryWkt || props.serviceArea?.boundaryWkt || "");
+const hasPendingDraft = computed(() => {
+  const serviceArea = props.serviceArea;
+  return Boolean(serviceArea?.draftBoundaryWkt) && serviceArea!.draftBoundaryVersion > serviceArea!.boundaryVersion;
+});
+const activeBoundary = computed(() => hasPendingDraft.value
+  ? props.serviceArea?.draftBoundaryWkt || ""
+  : props.serviceArea?.boundaryWkt || props.serviceArea?.draftBoundaryWkt || "");
+const hasUnsavedBoundaryChanges = computed(() =>
+  Boolean(props.serviceArea) && isEditingBoundary.value && boundaryText.value.trim() !== activeBoundary.value.trim()
+);
 const boundaryVersion = computed(() => {
-  if (props.serviceArea?.draftBoundaryWkt) {
-    return `草稿 v${props.serviceArea.draftBoundaryVersion}`;
+  const serviceArea = props.serviceArea;
+  if (hasPendingDraft.value && serviceArea) {
+    return `草稿 v${serviceArea.draftBoundaryVersion}`;
   }
-  if (props.serviceArea?.publishedAt) {
-    return `已发布 v${props.serviceArea.boundaryVersion}`;
+  if (serviceArea?.publishedAt) {
+    return `已发布 v${serviceArea.boundaryVersion}`;
   }
   return "未发布";
 });
@@ -82,7 +93,17 @@ watch(activeBoundary, (value) => {
   if (!boundaryText.value || value) {
     boundaryText.value = value;
   }
+  finishBoundaryEdit();
 }, { immediate: true });
+
+watch(
+  () => props.feedback,
+  (feedback) => {
+    if (feedback === "服务区草稿已保存。" || feedback === "服务区已发布并启用。") {
+      finishBoundaryEdit();
+    }
+  }
+);
 
 watch(boundaryText, () => {
   if (inputFormat.value === "wkt" && !boundaryUpdatedByMap) {
@@ -100,7 +121,6 @@ onMounted(async () => {
   try {
     tileMap.value = createTileMap(mapContainer.value, { longitude: 105.24, latitude: 35.21 }, 11);
     tileMap.value.map.on("pm:create", updateBoundaryFromGeomanEvent);
-    tileMap.value.map.on("pm:edit", updateBoundaryFromGeomanEvent);
     unsubscribeBaseLayerError = tileMap.value.onBaseLayerError(() => {
       mapWarning.value = "开放底图暂不可用";
     });
@@ -114,7 +134,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (tileMap.value) {
     tileMap.value.map.off("pm:create", updateBoundaryFromGeomanEvent);
-    tileMap.value.map.off("pm:edit", updateBoundaryFromGeomanEvent);
   }
   unsubscribeBaseLayerError?.();
   tileMap.value?.destroy();
@@ -126,6 +145,9 @@ function startDrawing(): void {
     mapError.value = "地图绘制工具不可用，可继续粘贴 WKT 或 GeoJSON 草稿。";
     return;
   }
+  if (!confirmDraftEdit()) {
+    return;
+  }
 
   polygonLayer?.pm?.disable();
   mapPm.enableDraw("Polygon", {
@@ -135,6 +157,7 @@ function startDrawing(): void {
     hintlineStyle: { color: "#007a5e" },
     pathOptions: polygonStyle()
   });
+  isEditingBoundary.value = true;
   mapError.value = "";
 }
 
@@ -143,9 +166,43 @@ function startEditing(): void {
     mapError.value = "请先绘制或录入一个 WKT 边界后再编辑。";
     return;
   }
+  if (!confirmDraftEdit()) {
+    return;
+  }
 
   polygonLayer.pm.enable({ allowSelfIntersection: false });
+  isEditingBoundary.value = true;
   mapError.value = "";
+}
+
+function confirmDraftEdit(): boolean {
+  if (!props.serviceArea?.publishedAt || hasPendingDraft.value) {
+    return true;
+  }
+  return window.confirm("将基于当前已发布围栏创建下一版草稿。保存草稿和再次发布前，当前服务区边界不会变化。是否继续编辑？");
+}
+
+function cancelBoundaryEdit(): void {
+  if (!props.serviceArea) {
+    return;
+  }
+
+  finishBoundaryEdit();
+  boundaryUpdatedByMap = true;
+  inputFormat.value = "wkt";
+  boundaryText.value = activeBoundary.value;
+  renderWktBoundary();
+  isEditingBoundary.value = false;
+  mapError.value = "";
+}
+
+function finishBoundaryEdit(): void {
+  const mapPm = tileMap.value?.map.pm;
+  if (mapPm?.globalDrawModeEnabled?.()) {
+    mapPm.disableDraw("Polygon");
+  }
+  polygonLayer?.pm?.disable();
+  isEditingBoundary.value = false;
 }
 
 function updateBoundaryFromGeomanEvent(event: unknown): void {
@@ -157,6 +214,7 @@ function updateBoundaryFromGeomanEvent(event: unknown): void {
   if (layer !== polygonLayer) {
     clearPolygonLayer();
     polygonLayer = layer;
+    bindPolygonChangeEvents(layer);
   }
   boundaryUpdatedByMap = true;
   boundaryText.value = toGcj02Wkt(layer);
@@ -176,13 +234,25 @@ function renderWktBoundary(): void {
     return [wgs84.latitude, wgs84.longitude] as L.LatLngTuple;
   });
   polygonLayer = L.polygon(leafletCoordinates, polygonStyle()).addTo(tileMap.value.map);
+  bindPolygonChangeEvents(polygonLayer);
   tileMap.value.fitLayers([polygonLayer]);
 }
 
 function clearPolygonLayer(): void {
+  unbindPolygonChangeEvents(polygonLayer);
   polygonLayer?.pm?.disable();
   polygonLayer?.remove();
   polygonLayer = undefined;
+}
+
+function bindPolygonChangeEvents(layer: L.Polygon): void {
+  layer.on("pm:change", updateBoundaryFromGeomanEvent);
+  layer.on("pm:update", updateBoundaryFromGeomanEvent);
+}
+
+function unbindPolygonChangeEvents(layer: L.Polygon | undefined): void {
+  layer?.off("pm:change", updateBoundaryFromGeomanEvent);
+  layer?.off("pm:update", updateBoundaryFromGeomanEvent);
 }
 
 function parseWkt(value: string): Array<{ longitude: number; latitude: number }> {
@@ -295,29 +365,32 @@ function requestPublish(): void {
         <h3 id="service-area-editor-title">服务区电子围栏</h3>
         <p>{{ serviceArea?.name ?? "尚未选择服务区" }} · {{ coordinateSystem }} · {{ boundaryVersion }}</p>
       </div>
-      <span class="area-status" :class="serviceArea?.publishedAt ? 'enabled' : 'draft'">{{ serviceArea?.publishedAt ? "已发布" : "草稿待发布" }}</span>
+      <span class="area-status" :class="hasPendingDraft ? 'draft' : serviceArea?.publishedAt ? 'enabled' : 'draft'">{{ hasPendingDraft ? "草稿待发布" : serviceArea?.publishedAt ? "已发布" : "草稿待发布" }}</span>
     </header>
 
-    <div class="editor-grid">
-      <div class="map-shell">
-        <div class="map-stage">
-          <div ref="mapContainer" class="tile-map-canvas" aria-label="服务区电子围栏地图"></div>
-          <div v-if="!mapReady" class="map-fallback">
-            <strong>开放底图暂不可用</strong>
-            <span>当前可继续导入行政区、录入边界文本、保存草稿和发布围栏。</span>
+    <div class="editor-layout">
+      <div class="editor-map-panel">
+        <div class="map-shell">
+          <div class="map-stage">
+            <div ref="mapContainer" class="tile-map-canvas" aria-label="服务区电子围栏地图"></div>
+            <div v-if="!mapReady" class="map-fallback">
+              <strong>开放底图暂不可用</strong>
+              <span>当前可继续导入行政区、录入边界文本、保存草稿和发布围栏。</span>
+            </div>
           </div>
-        </div>
-        <div class="map-meta">
-          <span>坐标系：{{ coordinateSystem }}</span>
-          <div v-if="mapReady" class="map-actions">
-            <button type="button" class="secondary-button" :disabled="readonly" @click="startDrawing">开始绘制</button>
-            <button type="button" class="secondary-button" :disabled="readonly" @click="startEditing">编辑边界</button>
+          <div class="map-meta">
+            <span>坐标系：{{ coordinateSystem }}</span>
+            <div v-if="mapReady" class="map-actions">
+              <button type="button" class="secondary-button" :disabled="readonly" @click="startDrawing">开始绘制</button>
+              <button type="button" class="secondary-button" :disabled="readonly" @click="startEditing">编辑边界</button>
+              <button v-if="serviceArea && isEditingBoundary" type="button" class="secondary-button" :disabled="readonly" @click="cancelBoundaryEdit">取消编辑</button>
+            </div>
           </div>
         </div>
       </div>
 
       <div class="editor-controls">
-        <label>
+        <label class="district-field">
           行政区检索
           <div class="inline-field">
             <input v-model="importKeyword" :disabled="readonly" aria-label="行政区检索" />
@@ -325,7 +398,7 @@ function requestPublish(): void {
           </div>
         </label>
 
-        <label>
+        <label class="boundary-format-field">
           边界格式
           <select v-model="inputFormat" :disabled="readonly" aria-label="边界格式">
             <option value="wkt">WKT</option>
@@ -333,13 +406,14 @@ function requestPublish(): void {
           </select>
         </label>
 
-        <label>
+        <label class="boundary-draft-field">
           服务区边界草稿
           <textarea v-model="boundaryText" :disabled="readonly" rows="7" aria-label="服务区边界草稿" placeholder="POLYGON((lng lat, lng lat, ...))"></textarea>
         </label>
 
         <p v-if="mapWarning" class="editor-message warning">{{ mapWarning }}</p>
         <p v-if="mapError" class="editor-message error">{{ mapError }}</p>
+        <p v-else-if="hasUnsavedBoundaryChanges" class="editor-message warning">边界修改尚未保存为草稿，当前已发布服务区仍按已发布边界运行。</p>
         <p v-else-if="feedback" class="editor-message success">{{ feedback }}</p>
 
         <div v-if="!serviceArea" class="create-fields">
@@ -358,7 +432,7 @@ function requestPublish(): void {
           <button v-if="!serviceArea" type="button" class="primary-button" :disabled="createDisabled" @click="createServiceAreaDraft">创建服务区草稿</button>
           <template v-else>
             <button type="button" class="secondary-button" :disabled="readonly" @click="saveBoundary">保存草稿</button>
-            <button type="button" class="primary-button" :disabled="readonly || !serviceArea.draftBoundaryWkt" @click="requestPublish">发布并启用</button>
+            <button type="button" class="primary-button" :disabled="readonly || !hasPendingDraft" @click="requestPublish">{{ hasPendingDraft ? "发布并启用" : "已发布并启用" }}</button>
           </template>
         </div>
         <p class="publish-note">发布后，订单录入将按该边界校验起终点；围栏外位置仍会保留告警记录。</p>
@@ -376,16 +450,18 @@ h3 { margin: 0; font-size: 22px; }
 .area-status { border-radius: 999px; padding: 4px 9px; font-size: 13px; font-weight: 700; white-space: nowrap; }
 .area-status.enabled { background: #dff2e9; color: #006a4e; }
 .area-status.draft { background: #fff0c7; color: #805b00; }
-.editor-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: 16px; }
-.map-shell { min-height: 360px; border: 1px solid #cbd8d2; background: #edf4f0; display: grid; grid-template-rows: 1fr auto; }
-.map-stage { position: relative; min-height: 310px; }
-.tile-map-canvas { min-height: 310px; }
+.editor-layout { display: grid; gap: 16px; }
+.editor-map-panel { min-width: 0; }
+.map-shell { border: 1px solid #cbd8d2; background: #edf4f0; display: grid; grid-template-rows: minmax(360px, 1fr) auto; }
+.map-stage { min-height: 360px; position: relative; }
+.tile-map-canvas { height: 100%; min-height: 360px; width: 100%; }
 .map-fallback { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; padding: 28px; color: #40574e; text-align: center; background: #edf4f0; }
 .map-fallback span { font-size: 14px; }
 .map-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd8d2; background: #f8faf8; padding: 10px 12px; color: #40574e; font-size: 13px; }
 .map-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.editor-controls { display: grid; align-content: start; gap: 14px; }
-.create-fields { display: grid; gap: 14px; }
+.editor-controls { display: grid; align-content: start; gap: 14px 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.boundary-draft-field, .editor-message, .create-fields, .editor-actions, .publish-note { grid-column: 1 / -1; }
+.create-fields { display: grid; gap: 14px 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 label { display: grid; gap: 6px; color: #263a32; font-size: 14px; font-weight: 700; }
 input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #b9cac2; background: #fff; color: #14231d; font: inherit; padding: 9px 10px; }
 textarea { resize: vertical; line-height: 1.45; }
@@ -396,6 +472,6 @@ textarea { resize: vertical; line-height: 1.45; }
 .editor-message.warning { color: #805b00; }
 .editor-message.error { color: #ad2a2a; }
 .publish-note { margin: 0; border-left: 3px solid #d59a00; padding-left: 10px; color: #65521f; font-size: 13px; line-height: 1.5; }
-@media (max-width: 900px) { .editor-grid { grid-template-columns: 1fr; } .map-shell { min-height: 280px; } .map-stage, .tile-map-canvas { min-height: 230px; } }
-@media (max-width: 560px) { .editor-header, .map-meta { align-items: stretch; flex-direction: column; } .inline-field { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .map-shell { grid-template-rows: minmax(280px, 1fr) auto; } .map-stage, .tile-map-canvas { min-height: 280px; } }
+@media (max-width: 560px) { .editor-header, .map-meta { align-items: stretch; flex-direction: column; } .editor-controls, .create-fields, .inline-field { grid-template-columns: 1fr; } }
 </style>
