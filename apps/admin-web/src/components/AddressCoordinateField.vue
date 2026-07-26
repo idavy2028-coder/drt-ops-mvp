@@ -38,6 +38,7 @@ const matchingStops = computed(() => props.virtualStops
   .filter((stop) => stop.enabled && (props.purpose === "BOARDING" ? stop.boardingEnabled : stop.alightingEnabled))
   .map((stop) => ({ stop, distanceMeters: distanceMeters(stop.location, props.modelValue.longitude, props.modelValue.latitude) }))
   .filter((candidate) => candidate.distanceMeters !== undefined)
+  .filter((candidate) => candidate.distanceMeters! <= candidate.stop.serviceRadiusMeters)
   .sort((left, right) => (left.distanceMeters ?? Number.MAX_VALUE) - (right.distanceMeters ?? Number.MAX_VALUE)));
 const recommendedStop = computed(() => matchingStops.value.find((candidate) => candidate.distanceMeters! <= candidate.stop.serviceRadiusMeters)?.stop);
 const displayedStopId = computed(() => props.modelValue.virtualStopId ?? recommendedStop.value?.id ?? "");
@@ -54,7 +55,7 @@ function onAddressInput(): void {
 }
 function updateManualCoordinate(field: "longitude" | "latitude", value: string): void {
   const number = Number(value);
-  update({ [field]: Number.isFinite(number) ? number : undefined, virtualStopId: undefined });
+  update({ [field]: Number.isFinite(number) ? normalizeCoordinate(number) : undefined, virtualStopId: undefined });
 }
 function selectStop(value: string): void { update({ virtualStopId: value || undefined }); }
 function update(patch: Partial<AddressCoordinateValue>): void { emit("update:modelValue", { ...props.modelValue, ...patch }); }
@@ -86,7 +87,12 @@ async function openMap(): Promise<void> {
       14
     );
     unsubscribeClick = tileMap.onClick((point) => {
-      update({ address: keyword.value.trim() || "地图点选位置", longitude: point.longitude, latitude: point.latitude, virtualStopId: undefined });
+      update({
+        address: keyword.value.trim() || "地图点选位置",
+        longitude: normalizeCoordinate(point.longitude),
+        latitude: normalizeCoordinate(point.latitude),
+        virtualStopId: undefined
+      });
       closeMap();
     });
     unsubscribeBaseLayerError = tileMap.onBaseLayerError(() => { mapError.value = "开放底图暂不可用"; });
@@ -115,6 +121,7 @@ function distanceMeters(location: string, longitude?: number, latitude?: number)
   return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 function toRadians(value: number): number { return value * Math.PI / 180; }
+function normalizeCoordinate(value: number): number { return Number(value.toFixed(6)); }
 </script>
 
 <template>
@@ -136,8 +143,8 @@ function toRadians(value: number): number { return value * Math.PI / 180; }
     <details class="manual-coordinates">
       <summary>手工输入经纬度</summary>
       <div class="coordinate-grid">
-        <label class="field"><span>{{ label }}经度</span><input :value="modelValue.longitude" :aria-label="`${label}经度`" type="number" min="-180" max="180" step="0.000001" required @input="updateManualCoordinate('longitude', ($event.target as HTMLInputElement).value)" /></label>
-        <label class="field"><span>{{ label }}纬度</span><input :value="modelValue.latitude" :aria-label="`${label}纬度`" type="number" min="-90" max="90" step="0.000001" required @input="updateManualCoordinate('latitude', ($event.target as HTMLInputElement).value)" /></label>
+        <label class="field"><span>{{ label }}经度</span><input :value="modelValue.longitude" :aria-label="`${label}经度`" type="number" min="-180" max="180" step="any" @input="updateManualCoordinate('longitude', ($event.target as HTMLInputElement).value)" /></label>
+        <label class="field"><span>{{ label }}纬度</span><input :value="modelValue.latitude" :aria-label="`${label}纬度`" type="number" min="-90" max="90" step="any" @input="updateManualCoordinate('latitude', ($event.target as HTMLInputElement).value)" /></label>
       </div>
     </details>
   </fieldset>

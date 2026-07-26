@@ -53,6 +53,13 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.ok(Map.of("message", "请求体格式不合法")));
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> handleIllegalArgument(IllegalArgumentException exception) {
+        String message = exception.getMessage() == null || exception.getMessage().isBlank()
+                ? "请求参数不合法" : exception.getMessage();
+        return ResponseEntity.badRequest().body(ApiResponse.ok(Map.of("message", message)));
+    }
+
     @ExceptionHandler(ResponseStatusException.class)
     ResponseEntity<ApiResponse<Map<String, String>>> handleStatus(ResponseStatusException exception) {
         HttpStatus status = HttpStatus.valueOf(exception.getStatusCode().value());

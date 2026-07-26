@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref, watch } from "vue";
 import { listServiceAreas, listVirtualStops } from "../api/resources";
 import type { CreateRideOrderInput } from "../api/orders";
 import type { ServiceArea, VirtualStop } from "../api/types";
@@ -13,9 +13,10 @@ const emit = defineEmits<{
 
 defineProps<{
   submitting?: boolean;
+  submitError?: string;
 }>();
 
-const requestedDepartureAt = new Date(Date.now() + 15 * 60 * 1000).toISOString().slice(0, 16);
+const requestedDepartureAt = formatShanghaiDateTimeInput(new Date(Date.now() + 15 * 60 * 1000));
 const form = reactive({
   passengerName: "",
   passengerPhone: "",
@@ -31,6 +32,14 @@ const setupError = ref("");
 const formError = ref("");
 
 onMounted(() => { void loadReferenceData(); });
+watch(
+  () => [origin.value.longitude, origin.value.latitude, destination.value.longitude, destination.value.latitude],
+  () => {
+    if (formError.value && hasCoordinate(origin.value) && hasCoordinate(destination.value)) {
+      formError.value = "";
+    }
+  }
+);
 
 async function loadReferenceData(): Promise<void> {
   try {
@@ -58,12 +67,26 @@ function submit(): void {
     destinationLat: destination.value.latitude!,
     destinationVirtualStopId: destination.value.virtualStopId,
     coordinateSystem: "GCJ02",
-    requestedDepartureAt: new Date(`${form.requestedDepartureAt}:00`).toISOString()
+    requestedDepartureAt: new Date(`${form.requestedDepartureAt}:00+08:00`).toISOString()
   });
 }
 
 function hasCoordinate(value: AddressCoordinateValue): boolean {
   return Number.isFinite(value.longitude) && Number.isFinite(value.latitude);
+}
+
+function formatShanghaiDateTimeInput(value: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
 }
 </script>
 
@@ -76,7 +99,7 @@ function hasCoordinate(value: AddressCoordinateValue): boolean {
         <p>录入地址文本和坐标，系统会提示服务区范围并推荐可用虚拟站点。</p>
       </div>
     </header>
-    <p v-if="setupError" class="page-state">{{ setupError }}</p>
+    <p v-if="setupError" class="page-state" role="alert">{{ setupError }}</p>
     <div class="form-grid">
       <label class="field"><span>乘客姓名</span><input v-model="form.passengerName" required /></label>
       <label class="field"><span>乘客电话</span><input v-model="form.passengerPhone" required /></label>
@@ -88,8 +111,8 @@ function hasCoordinate(value: AddressCoordinateValue): boolean {
       <AddressCoordinateField v-model="origin" label="起点" purpose="BOARDING" :service-area-id="serviceAreas[0]?.id" :virtual-stops="virtualStops" />
       <AddressCoordinateField v-model="destination" label="终点" purpose="ALIGHTING" :service-area-id="serviceAreas[0]?.id" :virtual-stops="virtualStops" />
     </div>
-    <p v-if="formError" class="page-state">{{ formError }}</p>
     <div class="toolbar">
+      <p v-if="formError || submitError" class="page-state form-feedback" role="alert">{{ formError || submitError }}</p>
       <button class="primary-button" type="submit" :disabled="submitting">{{ submitting ? "正在提交" : "提交需求" }}</button>
       <button class="secondary-button" type="button" :disabled="submitting" @click="emit('close')">取消</button>
     </div>
@@ -98,6 +121,7 @@ function hasCoordinate(value: AddressCoordinateValue): boolean {
 
 <style scoped>
 .order-create-dialog { display: grid; gap: 16px; }
+.form-feedback { margin: 0; }
 .dialog-header p { margin: 0; }
 .location-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 900px) { .location-grid { grid-template-columns: 1fr; } }

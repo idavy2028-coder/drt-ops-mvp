@@ -2,7 +2,7 @@
 import { ref } from "vue";
 import type { VirtualStopImportResult } from "../api/types";
 
-const props = defineProps<{ disabled: boolean; loading: boolean; result?: VirtualStopImportResult }>();
+const props = defineProps<{ disabled: boolean; loading: boolean; result?: VirtualStopImportResult; error?: string }>();
 const emit = defineEmits<{ import: [file: File] }>();
 const selectedFile = ref<File>();
 const localError = ref("");
@@ -41,7 +41,7 @@ function submit(): void {
       <input aria-label="虚拟站点 CSV 文件" type="file" accept=".csv,text/csv" :disabled="disabled || loading" @change="selectFile" />
       <button type="button" class="primary-button" :disabled="disabled || loading" @click="submit">{{ loading ? "正在导入" : "导入站点" }}</button>
     </div>
-    <p v-if="localError" class="import-error">{{ localError }}</p>
+    <p v-if="localError || props.error" class="import-error">{{ localError || props.error }}</p>
     <div v-if="result" class="import-result" aria-live="polite">
       <strong>已创建 {{ result.createdCount }} 个站点，跳过 {{ result.skippedCount }} 行。</strong>
       <ul v-if="result.issues.length">

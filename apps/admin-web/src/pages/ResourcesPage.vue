@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import DriverTable from "../components/DriverTable.vue";
+import DriverCreateForm from "../components/DriverCreateForm.vue";
 import ServiceAreaMapEditor from "../components/ServiceAreaMapEditor.vue";
 import VehicleTable from "../components/VehicleTable.vue";
+import VehicleCreateForm from "../components/VehicleCreateForm.vue";
 import VirtualStopImportPanel from "../components/VirtualStopImportPanel.vue";
 import VirtualStopMap from "../components/VirtualStopMap.vue";
 import VirtualStopTable from "../components/VirtualStopTable.vue";
 import { createServiceArea, importDistrictBoundary, publishServiceAreaBoundary, saveServiceAreaBoundary } from "../api/map";
-import { createVirtualStop, importVirtualStops, listDrivers, listServiceAreas, listVehicles, listVirtualStops, updateVirtualStop } from "../api/resources";
+import { createDriver, createVirtualStop, createVehicle, importVirtualStops, listDrivers, listServiceAreas, listVehicles, listVirtualStops, updateVirtualStop } from "../api/resources";
 import { listDispatchRuleSets } from "../api/rules";
-import type { CreateServiceAreaInput, DispatchRuleSet, Driver, ServiceArea, ServiceAreaBoundaryDraft, ServiceAreaBoundaryView, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "../api/types";
+import type { CreateDriverInput, CreateServiceAreaInput, CreateVehicleInput, DispatchRuleSet, Driver, ServiceArea, ServiceAreaBoundaryDraft, ServiceAreaBoundaryView, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "../api/types";
 import { authStore } from "../auth/authStore";
 import { userMessage } from "../api/errors";
 
@@ -25,14 +27,23 @@ const serviceAreaFeedback = ref("");
 const selectedServiceArea = ref<ServiceAreaBoundaryView>();
 const stopActionLoading = ref(false);
 const stopFeedback = ref("");
+const importError = ref("");
 const importResult = ref<VirtualStopImportResult>();
 const stopKeyword = ref("");
 const stopEnabled = ref<"ALL" | "true" | "false">("ALL");
 const editingStopId = ref<string>();
 const stopDraft = ref<VirtualStopDraft>(emptyStopDraft());
+const stopEditor = ref<HTMLElement>();
+const fleetActionLoading = ref(false);
+const fleetError = ref("");
+const vehicleFeedback = ref("");
+const driverFeedback = ref("");
+const vehicleCreateForm = ref<InstanceType<typeof VehicleCreateForm>>();
+const driverCreateForm = ref<InstanceType<typeof DriverCreateForm>>();
 
 const canManageServiceArea = computed(() => authStore.user?.roles.includes("SYSTEM_ADMIN") ?? false);
 const canManageStops = computed(() => authStore.has("RESOURCE_MANAGE"));
+const canManageFleet = computed(() => authStore.has("RESOURCE_MANAGE"));
 const filteredStops = computed(() => virtualStops.value.filter((stop) => {
   const keyword = stopKeyword.value.trim();
   const matchKeyword = !keyword || stop.name.includes(keyword) || (stop.address ?? "").includes(keyword);
@@ -121,6 +132,10 @@ function useMapPoint(longitude: number, latitude: number): void {
 
 function editStop(stop: VirtualStop): void {
   editingStopId.value = stop.id;
+  void nextTick(() => {
+    stopEditor.value?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    stopEditor.value?.querySelector<HTMLInputElement>("input")?.focus();
+  });
   stopDraft.value = { serviceAreaId: stop.serviceAreaId, name: stop.name, address: stop.address ?? "", longitude: stop.longitude ?? 105.2421, latitude: stop.latitude ?? 35.2103, serviceRadiusMeters: stop.serviceRadiusMeters, boardingEnabled: stop.boardingEnabled, alightingEnabled: stop.alightingEnabled, safetyNote: stop.safetyNote, enabled: stop.enabled };
   stopFeedback.value = `正在编辑：${stop.name}`;
 }
@@ -144,13 +159,35 @@ async function saveStop(): Promise<void> {
 }
 
 async function importStops(file: File): Promise<void> {
-  stopActionLoading.value = true; importResult.value = undefined; stopFeedback.value = "";
+  stopActionLoading.value = true; importError.value = ""; importResult.value = undefined; stopFeedback.value = "";
   try {
     importResult.value = await importVirtualStops(file);
     await loadResources();
     stopFeedback.value = "导入结果已刷新到虚拟站点列表。";
-  } catch (actionError) { error.value = userMessage(actionError, "虚拟站点导入失败"); }
+  } catch (actionError) { importError.value = userMessage(actionError, "虚拟站点导入失败"); }
   finally { stopActionLoading.value = false; }
+}
+
+async function createVehicleEntry(input: CreateVehicleInput): Promise<void> {
+  fleetActionLoading.value = true; fleetError.value = ""; vehicleFeedback.value = "";
+  try {
+    vehicles.value.unshift(await createVehicle(input));
+    vehicleCreateForm.value?.reset();
+    vehicleFeedback.value = "车辆已创建";
+  } catch (actionError) {
+    fleetError.value = userMessage(actionError, "车辆创建失败");
+  } finally { fleetActionLoading.value = false; }
+}
+
+async function createDriverEntry(input: CreateDriverInput): Promise<void> {
+  fleetActionLoading.value = true; fleetError.value = ""; driverFeedback.value = "";
+  try {
+    drivers.value.unshift(await createDriver(input));
+    driverCreateForm.value?.reset();
+    driverFeedback.value = "驾驶员已创建";
+  } catch (actionError) {
+    fleetError.value = userMessage(actionError, "驾驶员创建失败");
+  } finally { fleetActionLoading.value = false; }
 }
 
 onMounted(() => { void loadResources(); });
@@ -161,20 +198,27 @@ onMounted(() => { void loadResources(); });
     <header class="page-header"><div><p class="page-kicker">RESOURCES</p><h2 class="page-title">资源配置</h2><p class="page-subtitle">维护服务区域、虚拟站点、车辆和驾驶员等基础运营资源。</p></div><button class="secondary-button" type="button" :disabled="loading" @click="loadResources">{{ loading ? "同步中" : "刷新" }}</button></header>
     <div class="summary-grid"><article class="metric-panel"><p class="metric-label">服务区域</p><p class="metric-value">{{ serviceAreas.length }}</p></article><article class="metric-panel"><p class="metric-label">虚拟站点</p><p class="metric-value">{{ virtualStops.length }}</p></article><article class="metric-panel"><p class="metric-label">可调车辆</p><p class="metric-value">{{ vehicles.filter((vehicle) => vehicle.dispatchable).length }}</p></article><article class="metric-panel"><p class="metric-label">驾驶员</p><p class="metric-value">{{ drivers.length }}</p></article></div>
     <p v-if="loading" class="page-state">正在同步服务区、站点、车辆与驾驶员资源。</p><p v-else-if="error" class="page-state error-state">{{ error }}</p>
-    <ServiceAreaMapEditor :service-area="selectedServiceArea" :rule-sets="ruleSets" :readonly="!canManageServiceArea || serviceAreaActionLoading" :feedback="serviceAreaFeedback" @create="createServiceAreaDraft" @import-district="importDistrict" @save-boundary="saveBoundary" @publish="publishBoundary" />
-    <VirtualStopImportPanel :disabled="!canManageStops" :loading="stopActionLoading" :result="importResult" @import="importStops" />
-    <section class="stop-editor" aria-labelledby="virtual-stop-editor-title">
+    <ServiceAreaMapEditor :service-area="selectedServiceArea" :stops="virtualStops" :rule-sets="ruleSets" :readonly="!canManageServiceArea || serviceAreaActionLoading" :busy="serviceAreaActionLoading" :feedback="serviceAreaFeedback" @create="createServiceAreaDraft" @import-district="importDistrict" @save-boundary="saveBoundary" @publish="publishBoundary" />
+    <VirtualStopImportPanel :disabled="!canManageStops" :loading="stopActionLoading" :result="importResult" :error="importError" @import="importStops" />
+    <section ref="stopEditor" class="stop-editor" aria-labelledby="virtual-stop-editor-title">
       <header><div><p class="section-kicker">STOP EDITOR</p><h3 id="virtual-stop-editor-title">{{ editingStopId ? "编辑虚拟站点" : "新增虚拟站点" }}</h3></div><button type="button" class="secondary-button" :disabled="!canManageStops || stopActionLoading" @click="() => resetStopForm()">清空</button></header>
       <div class="stop-editor-grid"><label>所属服务区<select v-model="stopDraft.serviceAreaId" :disabled="!canManageStops || stopActionLoading"><option v-for="area in serviceAreas" :key="area.id" :value="area.id">{{ area.name }}</option></select></label><label>站点名称<input v-model="stopDraft.name" :disabled="!canManageStops || stopActionLoading" required /></label><label class="address-field">地址<input v-model="stopDraft.address" :disabled="!canManageStops || stopActionLoading" /></label><label>经度<input v-model.number="stopDraft.longitude" type="number" step="0.000001" :disabled="!canManageStops || stopActionLoading" /></label><label>纬度<input v-model.number="stopDraft.latitude" type="number" step="0.000001" :disabled="!canManageStops || stopActionLoading" /></label><label>服务半径（米）<input v-model.number="stopDraft.serviceRadiusMeters" type="number" min="1" :disabled="!canManageStops || stopActionLoading" /></label><label>安全说明<input v-model="stopDraft.safetyNote" :disabled="!canManageStops || stopActionLoading" /></label><label><span>上下车能力</span><span class="checkbox-row"><input v-model="stopDraft.boardingEnabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />允许上车</span><span class="checkbox-row"><input v-model="stopDraft.alightingEnabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />允许下车</span></label><label><span>启用状态</span><span class="checkbox-row"><input v-model="stopDraft.enabled" type="checkbox" :disabled="!canManageStops || stopActionLoading" />保存后启用</span></label></div>
       <div class="stop-editor-actions"><button type="button" class="primary-button" :disabled="!canManageStops || stopActionLoading || !stopDraft.serviceAreaId || !stopDraft.name.trim()" @click="saveStop">{{ stopActionLoading ? "正在保存" : editingStopId ? "保存修改" : "新增站点" }}</button><p v-if="stopFeedback" class="stop-feedback">{{ stopFeedback }}</p></div>
     </section>
-    <VirtualStopMap :stops="filteredStops" :readonly="!canManageStops || stopActionLoading" @pick="useMapPoint" />
+    <VirtualStopMap :stops="filteredStops" :service-area="selectedServiceArea" :readonly="!canManageStops || stopActionLoading" @pick="useMapPoint" />
     <section class="stop-filters"><label>关键词<input v-model="stopKeyword" placeholder="站点名称或地址" /></label><label>状态<select v-model="stopEnabled"><option value="ALL">全部</option><option value="true">已启用</option><option value="false">未启用</option></select></label></section>
     <VirtualStopTable :stops="filteredStops" :can-manage="canManageStops" @edit="editStop" />
+    <section v-if="canManageFleet" class="fleet-entry-grid" aria-label="车辆和驾驶员录入">
+      <div><VehicleCreateForm ref="vehicleCreateForm" :disabled="!canManageFleet" :loading="fleetActionLoading" @create="createVehicleEntry" /><p v-if="vehicleFeedback" class="fleet-feedback">{{ vehicleFeedback }}</p></div>
+      <div><DriverCreateForm ref="driverCreateForm" :disabled="!canManageFleet" :loading="fleetActionLoading" @create="createDriverEntry" /><p v-if="driverFeedback" class="fleet-feedback">{{ driverFeedback }}</p></div>
+      <p v-if="fleetError" class="fleet-error">{{ fleetError }}</p>
+    </section>
     <VehicleTable :vehicles="vehicles" /><DriverTable :drivers="drivers" />
   </section>
 </template>
 
 <style scoped>
 .error-state { color: var(--danger); }.stop-editor, .stop-filters { border: 1px solid var(--line); background: var(--surface); padding: 18px; }.stop-editor header { align-items: center; display: flex; justify-content: space-between; margin-bottom: 14px; }.section-kicker { color: var(--accent); font-size: 12px; font-weight: 800; margin: 0 0 4px; }h3 { font-size: 20px; margin: 0; }.stop-editor-grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }.stop-editor label, .stop-filters label { color: var(--ink); display: grid; font-size: 13px; font-weight: 700; gap: 6px; }.address-field { grid-column: span 2; }.checkbox-row { align-items: center; display: flex; gap: 6px; font-weight: 500; }.stop-editor-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }.stop-feedback { color: var(--success); font-weight: 700; margin: 0; }.stop-filters { display: flex; gap: 12px; }.stop-filters label { min-width: 220px; }input, select { background: var(--surface); border: 1px solid var(--line); box-sizing: border-box; color: var(--ink); font: inherit; padding: 9px 10px; width: 100%; }@media (max-width: 900px) { .stop-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }.address-field { grid-column: span 2; }@media (max-width: 640px) { .stop-editor-grid { grid-template-columns: 1fr; }.address-field { grid-column: auto; }.stop-filters { flex-direction: column; }.stop-filters label { min-width: 0; } }
+.fleet-entry-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }.fleet-feedback { color: var(--success); font-weight: 700; margin: 8px 0 0; }.fleet-error { color: var(--danger); font-weight: 700; grid-column: 1 / -1; margin: 0; }
+@media (max-width: 900px) { .fleet-entry-grid { grid-template-columns: 1fr; } }
 </style>

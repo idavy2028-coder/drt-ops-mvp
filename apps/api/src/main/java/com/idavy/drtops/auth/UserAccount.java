@@ -95,6 +95,11 @@ public class UserAccount {
         return displayName;
     }
 
+    public void updateDisplayName(String displayName) {
+        this.displayName = displayName;
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public Set<RoleCode> getRoles() {
         return Set.copyOf(roles);
     }

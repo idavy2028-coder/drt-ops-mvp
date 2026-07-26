@@ -131,6 +131,7 @@ onMounted(() => {
     <OrderCreateDialog
       v-if="showCreateDialog"
       :submitting="submitting"
+      :submit-error="status"
       @close="showCreateDialog = false"
       @create="submitOrder"
     />

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { createUser, listUsers, resetPassword, setUserEnabled, updateUserRoles } from "../api/users";
+import { createUser, listUsers, resetPassword, setUserEnabled, updateUserDisplayName, updateUserRoles } from "../api/users";
 import type { UserAccount } from "../api/types";
 import StatusBadge from "../components/StatusBadge.vue";
 import { userMessage } from "../api/errors";
@@ -14,6 +14,7 @@ const submitting = ref(false);
 const roleCodes = ["SYSTEM_ADMIN", "DISPATCHER", "OPERATOR", "AUDITOR"];
 const newUser = ref({ username: "", displayName: "", temporaryPassword: "", roles: ["OPERATOR"] as string[] });
 const selectedRoles = ref<Record<string, string>>({});
+const editedDisplayNames = ref<Record<string, string>>({});
 const resetPasswords = ref<Record<string, string>>({});
 
 function roleLabel(role: string) {
@@ -26,6 +27,7 @@ async function load() {
   try {
     users.value = await listUsers();
     selectedRoles.value = Object.fromEntries(users.value.map((user) => [user.id, user.roles[0] ?? "OPERATOR"]));
+    editedDisplayNames.value = Object.fromEntries(users.value.map((user) => [user.id, user.displayName]));
   } catch (error) {
     status.value = userMessage(error, "用户数据加载失败");
   } finally {
@@ -76,6 +78,16 @@ async function saveRoles(user: UserAccount) {
   await runAction(() => updateUserRoles(user.id, [selectedRoles.value[user.id]]), `${user.username} 的角色已更新`, "角色更新失败");
 }
 
+async function saveDisplayName(user: UserAccount) {
+  const displayName = editedDisplayNames.value[user.id]?.trim();
+  if (!displayName) {
+    status.value = `请输入 ${user.username} 的姓名`;
+    feedbackStore.info(status.value);
+    return;
+  }
+  await runAction(() => updateUserDisplayName(user.id, displayName), `${user.username} 的姓名已更新`, "姓名更新失败");
+}
+
 onMounted(() => {
   void load();
 });
@@ -117,6 +129,8 @@ onMounted(() => {
             <td><StatusBadge :code='user.enabled ? "ENABLED" : "DISABLED"' /></td>
             <td>
               <div class="toolbar">
+                <input v-model="editedDisplayNames[user.id]" :aria-label="`${user.username} 姓名`" class="display-name-input" autocomplete="off" :disabled="submitting" />
+                <button class="secondary-button" type="button" :disabled="submitting" @click="saveDisplayName(user)">保存姓名</button>
                 <button class="secondary-button" type="button" :disabled="submitting" @click="saveRoles(user)">保存角色</button>
                 <input v-model="resetPasswords[user.id]" :aria-label="`${user.username} 新临时密码`" class="reset-password-input" type="password" autocomplete="new-password" placeholder="新临时密码" :disabled="submitting" />
                 <button class="secondary-button" type="button" :disabled="submitting" @click="reset(user)">重置密码</button>
@@ -132,5 +146,5 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.reset-password-input { border: 1px solid #cfd8d3; border-radius: 6px; min-height: 38px; padding: 8px 10px; width: 150px; }
+.display-name-input, .reset-password-input { border: 1px solid #cfd8d3; border-radius: 6px; min-height: 38px; padding: 8px 10px; width: 150px; }
 </style>

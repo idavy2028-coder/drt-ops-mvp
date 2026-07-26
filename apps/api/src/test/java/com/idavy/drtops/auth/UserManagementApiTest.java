@@ -97,6 +97,20 @@ class UserManagementApiTest {
     }
 
     @Test
+    void administratorCanUpdateUserDisplayNameAndAuditTheChange() throws Exception {
+        mockMvc.perform(put("/api/users/{id}/profile", dispatcher.getId())
+                        .header(HttpHeaders.AUTHORIZATION, bearer(adminToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"调度员01\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.username").value("dispatcher01"))
+                .andExpect(jsonPath("$.data.displayName").value("调度员01"));
+
+        assertThat(users.findById(dispatcher.getId()).orElseThrow().getDisplayName()).isEqualTo("调度员01");
+        assertAuditActions(dispatcher.getId(), "USER_PROFILE_UPDATED");
+    }
+
+    @Test
     void listsUsersOnlyForAdministrators() throws Exception {
         mockMvc.perform(get("/api/users").header(HttpHeaders.AUTHORIZATION, bearer(adminToken)))
                 .andExpect(status().isOk())

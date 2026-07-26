@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -23,9 +24,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class VehicleController {
 
     private final VehicleRepository repository;
+    private final VehicleProvisioningService provisioningService;
 
-    public VehicleController(VehicleRepository repository) {
+    public VehicleController(VehicleRepository repository, VehicleProvisioningService provisioningService) {
         this.repository = repository;
+        this.provisioningService = provisioningService;
     }
 
     @GetMapping
@@ -34,17 +37,20 @@ public class VehicleController {
     }
 
     @PostMapping
-    ResponseEntity<ApiResponse<VehicleView>> create(@Valid @RequestBody CreateVehicleRequest request) {
-        Vehicle vehicle = Vehicle.create(
-                UUID.randomUUID(),
-                request.plateNumber(),
-                request.vehicleType(),
-                request.capacity(),
-                request.currentStatus(),
-                "POINT(" + request.lng().toPlainString() + " " + request.lat().toPlainString() + ")",
-                request.fleetName(),
-                request.dispatchable());
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(VehicleView.from(repository.save(vehicle))));
+    ResponseEntity<ApiResponse<VehicleView>> create(
+            Authentication authentication, @Valid @RequestBody CreateVehicleRequest request) {
+        Vehicle vehicle = provisioningService.create(
+                request.plateNumber(), request.vehicleType(), request.capacity(), request.currentStatus(),
+                request.lng(), request.lat(), request.fleetName(), request.dispatchable(), actorId(authentication));
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(VehicleView.from(vehicle)));
+    }
+
+    private static UUID actorId(Authentication authentication) {
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof UUID actorId) {
+            return actorId;
+        }
+        return UUID.fromString(authentication.getName());
     }
 
     public record CreateVehicleRequest(

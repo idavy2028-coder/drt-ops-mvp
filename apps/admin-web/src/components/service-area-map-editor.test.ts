@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DispatchRuleSet, ServiceAreaBoundaryView } from "../api/types";
+import type { DispatchRuleSet, ServiceAreaBoundaryView, VirtualStop } from "../api/types";
 
 const tileMapRuntime = vi.hoisted(() => {
   const mapHandlers = new Map<string, Array<(event: unknown) => void>>();
@@ -53,6 +53,7 @@ const leaflet = vi.hoisted(() => {
     pm: { enable: ReturnType<typeof vi.fn>; disable: ReturnType<typeof vi.fn> };
     handlers: Map<string, Array<(event: unknown) => void>>;
   }> = [];
+  const stopLayers: Array<{ addTo: ReturnType<typeof vi.fn>; bindTooltip: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }> = [];
   const polygon = vi.fn((points: unknown) => {
     const handlers = new Map<string, Array<(event: unknown) => void>>();
     const layer = {
@@ -70,8 +71,19 @@ const leaflet = vi.hoisted(() => {
     layers.push({ ...layer, handlers });
     return layer;
   });
+  const circleMarker = vi.fn((_point: unknown, _options: unknown) => {
+    const layer = {
+      addTo: vi.fn(),
+      bindTooltip: vi.fn(),
+      remove: vi.fn()
+    };
+    layer.addTo.mockReturnValue(layer);
+    layer.bindTooltip.mockReturnValue(layer);
+    stopLayers.push(layer);
+    return layer;
+  });
 
-  return { polygon, layers };
+  return { polygon, layers, circleMarker, stopLayers };
 });
 
 vi.mock("../maps/tileMapRuntime", () => ({ createTileMap: tileMapRuntime.createTileMap }));
@@ -85,7 +97,7 @@ vi.mock("../maps/coordinateTransform", () => ({
     latitude: point.latitude + 0.02
   }))
 }));
-vi.mock("leaflet", () => ({ polygon: leaflet.polygon }));
+vi.mock("leaflet", () => ({ polygon: leaflet.polygon, circleMarker: leaflet.circleMarker }));
 vi.mock("@geoman-io/leaflet-geoman-free", () => ({}));
 
 import ServiceAreaMapEditor from "./ServiceAreaMapEditor.vue";
@@ -109,9 +121,40 @@ const ruleSet = {
   name: "通渭县试点规则组"
 } as DispatchRuleSet;
 
-function renderEditor(overrides: Partial<ServiceAreaBoundaryView> = {}) {
+const stops: VirtualStop[] = [
+  {
+    id: "stop-inside",
+    serviceAreaId: "area-1",
+    name: "通渭县医院",
+    address: "通渭县医院",
+    location: "POINT(105.2 35.2)",
+    longitude: 105.2,
+    latitude: 35.2,
+    serviceRadiusMeters: 500,
+    boardingEnabled: true,
+    alightingEnabled: true,
+    safetyNote: "",
+    enabled: true
+  },
+  {
+    id: "stop-outside",
+    serviceAreaId: "area-1",
+    name: "北城站",
+    address: "北城站",
+    location: "POINT(106.2 36.2)",
+    longitude: 106.2,
+    latitude: 36.2,
+    serviceRadiusMeters: 500,
+    boardingEnabled: true,
+    alightingEnabled: true,
+    safetyNote: "",
+    enabled: false
+  }
+];
+
+function renderEditor(overrides: Partial<ServiceAreaBoundaryView> = {}, virtualStops: VirtualStop[] = [], busy = false) {
   return render(ServiceAreaMapEditor, {
-    props: { serviceArea: { ...serviceArea, ...overrides }, readonly: false }
+    props: { serviceArea: { ...serviceArea, ...overrides }, stops: virtualStops, readonly: false, busy }
   });
 }
 
@@ -134,7 +177,9 @@ describe("ServiceAreaMapEditor", () => {
     tileMapRuntime.map.pm.disableDraw.mockClear();
     tileMapRuntime.map.pm.globalDrawModeEnabled.mockClear();
     leaflet.polygon.mockClear();
+    leaflet.circleMarker.mockClear();
     leaflet.layers.length = 0;
+    leaflet.stopLayers.length = 0;
     vi.restoreAllMocks();
   });
 
@@ -148,6 +193,53 @@ describe("ServiceAreaMapEditor", () => {
       [[34.98, 104.99], [34.98, 105.99], [35.98, 104.99], [34.98, 104.99]],
       expect.any(Object)
     );
+  });
+
+  it("overlays virtual stops and reports how many are inside the current boundary", async () => {
+    renderEditor({ boundaryWkt: "POLYGON((105 35, 106 35, 106 36, 105 36, 105 35))" }, stops);
+
+    await vi.waitFor(() => expect(leaflet.circleMarker).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText("站点覆盖：2 个，服务区内 1 个，服务区外 1 个")).toBeInTheDocument();
+    expect(leaflet.circleMarker.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ color: "#007f67" }));
+    expect(leaflet.circleMarker.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ color: "#c47a00" }));
+  });
+
+  it("isolates station markers while editing and restores them after cancelling", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderEditor({
+      boundaryWkt: "POLYGON((105 35, 106 35, 106 36, 105 36, 105 35))",
+      boundaryVersion: 1,
+      publishedAt: "2026-07-22T01:00:00Z"
+    }, stops);
+
+    await vi.waitFor(() => expect(leaflet.circleMarker).toHaveBeenCalled());
+    expect(screen.getByText("蓝色节点：围栏控制点")).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "编辑边界" }));
+
+    expect(screen.getByText("正在编辑电子围栏：蓝色节点可拖动")).toBeInTheDocument();
+    expect(leaflet.circleMarker.mock.calls[leaflet.circleMarker.mock.calls.length - 1]?.[1]).toEqual(expect.objectContaining({ interactive: false }));
+
+    await fireEvent.click(screen.getByRole("button", { name: "取消编辑" }));
+
+    expect(leaflet.circleMarker.mock.calls[leaflet.circleMarker.mock.calls.length - 1]?.[1]).toEqual(expect.objectContaining({ interactive: true }));
+  });
+
+  it("generates a reference boundary as an unsaved draft without emitting a save request", async () => {
+    const referenceStops = [...stops, { ...stops[0], id: "reference-extra" }].map((stop, index) => ({
+      ...stop,
+      id: `reference-${index}`,
+      longitude: 105 + index,
+      latitude: 35 + (index === 2 ? 1 : 0)
+    }));
+    const { emitted } = renderEditor({ boundaryWkt: "POLYGON((105 35, 106 35, 106 36, 105 35))" }, referenceStops);
+
+    await fireEvent.update(screen.getByLabelText("参考范围缓冲（米）"), "0");
+    await fireEvent.click(screen.getByRole("button", { name: "生成参考范围" }));
+
+    expect(screen.getByLabelText("服务区边界草稿")).toHaveValue("POLYGON((105 35, 107 35, 107 36, 105 36, 105 35))");
+    expect(screen.getByText("边界修改尚未保存为草稿，当前已发布服务区仍按已发布边界运行。")).toBeInTheDocument();
+    expect(emitted()["save-boundary"]).toBeUndefined();
   });
 
   it("places the service area map in a dedicated full-width panel above the editor controls", () => {
@@ -277,6 +369,36 @@ describe("ServiceAreaMapEditor", () => {
     });
 
     expect(screen.getByText("草稿待发布")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发布并启用" })).toBeEnabled();
+  });
+
+  it("shows saving state while the boundary request is in flight and enables publish after draft v5 returns", async () => {
+    const view = renderEditor({
+      boundaryWkt: "POLYGON((105 35, 106 35, 106 36, 105 35))",
+      boundaryVersion: 4,
+      draftBoundaryWkt: null,
+      draftBoundaryVersion: 4,
+      publishedAt: "2026-07-22T01:00:00Z"
+    }, [], true);
+
+    expect(screen.getByRole("button", { name: "正在保存" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "已发布并启用" })).not.toBeInTheDocument();
+
+    await view.rerender({
+      serviceArea: {
+        ...serviceArea,
+        boundaryWkt: "POLYGON((105 35, 106 35, 106 36, 105 35))",
+        boundaryVersion: 4,
+        draftBoundaryWkt: "POLYGON((105.1 35.1, 106.1 35.1, 106.1 36.1, 105.1 35.1))",
+        draftBoundaryVersion: 5,
+        publishedAt: "2026-07-22T01:00:00Z"
+      },
+      stops: [],
+      readonly: false,
+      busy: false,
+      feedback: "服务区草稿已保存。"
+    });
+
     expect(screen.getByRole("button", { name: "发布并启用" })).toBeEnabled();
   });
 

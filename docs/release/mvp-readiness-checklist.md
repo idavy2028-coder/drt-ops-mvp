@@ -128,3 +128,68 @@ npm run e2e -- auth-rbac.spec.ts
 - 换行风险：`git diff --check` 未发现空白错误，但 Git 提示部分现有文件下次写入时可能由 LF 转为 CRLF；拆分时应避免无意义的整文件换行变化。
 - 证据命令：`git status --short --branch`、`git rev-parse HEAD`、`git rev-parse '@{upstream}'`、`git merge-base HEAD '@{upstream}'`、`git rev-list --left-right --count 'HEAD...@{upstream}'`、`git status --porcelain=v1 --untracked-files=all`、`git diff --check`。
 - 处理结论：P0-1 的逻辑分组和无关文件核查已完成，等待人工审阅；本次未执行 P0-2、P1 或任何提交发布操作。
+
+## 七、P0-2 全量回归与构建
+
+- 执行日期：2026-07-26
+- 执行人：Codex（开发负责人代理）
+- 审阅人：待人工审阅
+- 输入数据：P0-1 盘点后的完整未提交业务改动；Node.js 依赖目录；临时目录中的 Apache Maven 3.9.11；Java 21.0.10。
+
+### 7.1 验证结果
+
+| 验证项 | 命令 | 结果 |
+| --- | --- | --- |
+| 前端类型检查 | `npm.cmd run typecheck` | 通过，退出码 0 |
+| 前端单元测试 | `npm.cmd test` | 通过；30 个测试文件、140 项测试全部通过 |
+| 前端生产构建 | `npm.cmd run build` | 通过；Vite 8.1.4 转换 138 个模块，主 JS chunk 为 640.34 kB |
+| 后端 Maven 全量测试 | `mvn -q -pl apps/api test` | 修复后通过；55 个测试套件、195 项测试、0 个失败、0 个错误、23 个跳过 |
+| 后端回归测试 | `mvn -q -pl apps/api -Dtest=VirtualStopMatcherTest#matchesStopsAfterJpaPointMappingRoundTrip test` | 通过；JPA flush、清空持久化上下文后可从数据库读回并完成匹配 |
+
+### 7.2 失败项与处理记录
+
+- 初次失败测试：`VirtualStopMatcherTest.matchesStopsWhenPostgisReturnsEwkbPointValues`；后端全量结果为 195 项测试、0 个失败、1 个错误、23 个跳过。
+- 异常：`IllegalArgumentException: location must be valid WKT`，调用链为 `GeographyPoint.fromWkt` → `VirtualStop.create` → 失败测试第 88 行。
+- 根因：`VirtualStop.location` 已从字符串映射改为 JTS `Point`，领域工厂现在只接收 WKT；旧测试仍把 PostGIS EWKB 十六进制直接传给领域工厂。真实数据库路径应由 Hibernate/JTS 将数据库几何值转换为 `Point`，旧测试输入不再代表当前持久化读取路径。
+- 修复：删除伪造 EWKB 输入，使用合法 WKT 创建站点，通过 `saveAndFlush` 持久化并调用 `EntityManager.clear()` 清空一级缓存，再由 `VirtualStopMatcher` 从数据库映射结果完成匹配。
+- 复验：更新后的定向测试通过；后端全量测试复跑通过，Surefire 文本报告汇总为 55 个测试套件、195 项测试、0 个失败、0 个错误、23 个跳过。
+- 日志位置：`apps/api/target/surefire-reports/com.idavy.drtops.domain.area.VirtualStopMatcherTest.txt`。
+- 处理结论：P0-2 已完成收口；后端 Maven 测试、前端类型检查、Vitest 和生产构建均通过，可在人工审阅后进入 P0-3。
+
+### 7.3 非阻断告警
+
+- Vite 报告主 JS chunk 为 640.34 kB，超过 500 kB 提示阈值；不影响本次构建退出码，但后续可按页面或地图模块进行代码拆分。
+- Maven 通过系统临时目录中的官方 Apache Maven 3.9.11 执行，未修改系统 PATH，也未向仓库写入工具文件。
+- 默认全量测试跳过了 23 项需特定环境或开关的测试；真实 PostGIS 映射仍由 `PostgisVirtualStopJpaIntegrationTest` 在启用 `drt.integration.postgis=true` 时专项验证。
+
+## 八、P0-3 提交与 PR 收口
+
+- 执行日期：2026-07-26
+- 执行人：Codex（开发负责人代理）
+- 审阅人：待人工审阅
+- PR：[#8 feat: close Tongwei pilot P0 baseline](https://github.com/idavy2028-coder/drt-ops-mvp/pull/8)，草稿状态，目标分支为 `master`。
+
+### 8.1 可审阅提交
+
+| 逻辑分组 | 提交 | 说明 |
+| --- | --- | --- |
+| 地图与资源配置 | `f295ac1` | 服务区与站点校准、导入反馈、JTS 映射及专项测试 |
+| 用户与认证 | `653ea20` | 用户显示名更新、管理页交互和审计 |
+| 订单录入 | `9b0ab23` | 人工坐标输入、点选交互和订单创建校验 |
+| 车辆首配位置 | `bf3e8b3` | 车辆/驾驶员录入及车辆首配位置事务 |
+| 共享资源工作流集成 | `bcaf0fd` | 在资源页串联地图校准、站点编辑和车队录入 |
+| P0 计划与验证证据 | `bfd712f` | 下阶段唯一执行计划及 P0-1/P0-2 验收记录 |
+
+### 8.2 发布前复验
+
+- 前端类型检查通过。
+- Vitest 30 个测试文件、140 项测试全部通过。
+- Vite 生产构建通过，转换 138 个模块。
+- 后端 Maven 55 个测试套件、195 项测试、0 个失败、0 个错误、23 个跳过。
+- 提交范围 `git diff --check` 通过；推送未使用强制选项。
+
+### 8.3 处理结论
+
+- P0-3 已完成提交分组、验证证据整理、远端推送和草稿 PR 创建。
+- PR 描述已包含变更、根因、验证证据和残余风险。
+- 当前仅完成 P0 代码与环境基线收口；未经人工审阅和后续任务执行，不进入 P1 或宣称具备生产上线条件。
