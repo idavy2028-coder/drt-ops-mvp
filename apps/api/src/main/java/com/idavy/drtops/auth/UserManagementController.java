@@ -2,6 +2,7 @@ package com.idavy.drtops.auth;
 
 import com.idavy.drtops.auth.dto.CreateUserRequest;
 import com.idavy.drtops.auth.dto.ResetPasswordRequest;
+import com.idavy.drtops.auth.dto.UpdateUserProfileRequest;
 import com.idavy.drtops.auth.dto.UpdateUserRolesRequest;
 import com.idavy.drtops.auth.dto.UserAccountResponse;
 import com.idavy.drtops.common.ApiResponse;
@@ -47,6 +48,14 @@ public class UserManagementController {
             @PathVariable UUID userId,
             @Valid @RequestBody UpdateUserRolesRequest request) {
         return ApiResponse.ok(service.updateRoles(actorId(authentication), userId, request));
+    }
+
+    @PutMapping("/{userId}/profile")
+    ApiResponse<UserAccountResponse> updateProfile(
+            Authentication authentication,
+            @PathVariable UUID userId,
+            @Valid @RequestBody UpdateUserProfileRequest request) {
+        return ApiResponse.ok(service.updateProfile(actorId(authentication), userId, request));
     }
 
     @PostMapping("/{userId}/reset-password")

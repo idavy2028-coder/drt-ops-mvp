@@ -15,6 +15,28 @@ describe("UserManagementPage", () => {
     expect(await screen.findByText("dispatcher01")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建用户" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重置密码" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存姓名" })).toBeInTheDocument();
+  });
+
+  it("saves an edited display name without changing the username", async () => {
+    authStore.setSessionForTest({ accessToken: "admin-token", user: { id: "admin-1", username: "admin01", roles: ["SYSTEM_ADMIN"], mustChangePassword: false } });
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/users/dispatcher-1/profile" && init?.method === "PUT") {
+        return Promise.resolve(new Response(JSON.stringify({ data: { id: "dispatcher-1", username: "dispatcher01", displayName: "调度员01", roles: ["DISPATCHER"], enabled: true, mustChangePassword: false } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(usersResponse());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(UserManagementPage);
+    await screen.findByText("dispatcher01");
+
+    await fireEvent.update(screen.getByLabelText("dispatcher01 姓名"), "调度员01");
+    await fireEvent.click(screen.getByRole("button", { name: "保存姓名" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/users/dispatcher-1/profile",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ displayName: "调度员01" }) })
+    );
   });
 
   it("sends the administrator supplied temporary password when resetting a user", async () => {

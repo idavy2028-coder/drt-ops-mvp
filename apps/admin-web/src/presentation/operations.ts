@@ -38,6 +38,7 @@ const labels: Record<string, string> = {
   ORDER_CANCELLED: "订单取消",
   ORDER_NO_SHOW: "乘客未到关闭",
   USER_CREATED: "创建用户",
+  USER_PROFILE_UPDATED: "修改用户资料",
   USER_PASSWORD_RESET: "重置密码",
   AUTH_LOGIN_FAILED: "登录失败"
 };

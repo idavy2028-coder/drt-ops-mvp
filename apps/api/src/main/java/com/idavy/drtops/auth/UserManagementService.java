@@ -1,6 +1,7 @@
 package com.idavy.drtops.auth;
 
 import com.idavy.drtops.auth.dto.CreateUserRequest;
+import com.idavy.drtops.auth.dto.UpdateUserProfileRequest;
 import com.idavy.drtops.auth.dto.UpdateUserRolesRequest;
 import com.idavy.drtops.auth.dto.UserAccountResponse;
 import java.time.OffsetDateTime;
@@ -55,6 +56,14 @@ public class UserManagementService {
         user.assignRoles(request.roles());
         revokeSessions(user);
         authAuditService.recordUserChange(actorId, user, "USER_ROLES_UPDATED");
+        return UserAccountResponse.from(user);
+    }
+
+    @Transactional
+    public UserAccountResponse updateProfile(UUID actorId, UUID userId, UpdateUserProfileRequest request) {
+        UserAccount user = user(userId);
+        user.updateDisplayName(request.displayName().trim());
+        authAuditService.recordUserChange(actorId, user, "USER_PROFILE_UPDATED");
         return UserAccountResponse.from(user);
     }
 
