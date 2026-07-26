@@ -193,3 +193,53 @@ npm run e2e -- auth-rbac.spec.ts
 - P0-3 已完成提交分组、验证证据整理、远端推送和草稿 PR 创建。
 - PR 描述已包含变更、根因、验证证据和残余风险。
 - 当前仅完成 P0 代码与环境基线收口；未经人工审阅和后续任务执行，不进入 P1 或宣称具备生产上线条件。
+
+## 九、P0-4 本机启动顺序固化
+
+- 执行日期：2026-07-26
+- 执行人：Codex（开发负责人代理）
+- 审阅人：待人工审阅
+- 输入数据：`infra/docker-compose.pilot.yml`、三个应用镜像构建文件、现有 PostGIS 初始化脚本和 P0-4 设计/实施计划。
+
+### 9.1 编排范围
+
+| 服务 | 镜像或构建来源 | 健康检查 | 启动条件 | 重启策略 |
+| --- | --- | --- | --- | --- |
+| PostgreSQL/PostGIS | `postgis/postgis:16-3.5` | TCP 回环地址上的 `pg_isready` | 无 | `unless-stopped` |
+| Redis | `redis:7` | `redis-cli ping` | 无 | `unless-stopped` |
+| 算法服务 | `apps/algorithm/Dockerfile` | `GET /health` | 无 | `unless-stopped` |
+| API | `apps/api/Dockerfile` | `GET /actuator/health` | PostgreSQL、算法服务均为 healthy | `unless-stopped` |
+| 管理前端 | `apps/admin-web/Dockerfile`、`nginx.pilot.conf` | `GET /health` | API 为 healthy | `unless-stopped` |
+
+容器内使用 `postgres:5432`、`algorithm:8090` 和 `api:8080` 服务名通信，不依赖容器 IP。PostgreSQL 和 Redis 分别使用 `postgres-data`、`redis-data` 命名卷；常规 `down` 不删除数据。
+
+### 9.2 验证结果
+
+| 验证项 | 命令或证据 | 结果 |
+| --- | --- | --- |
+| Compose 静态展开 | `docker compose -f infra/docker-compose.pilot.yml config` | 通过；包含 5 个服务、5 个健康检查、5 个 `restart: unless-stopped` 及预期条件依赖 |
+| 应用镜像构建 | `docker compose -f infra/docker-compose.pilot.yml build` | 通过；算法、API、管理前端镜像均成功生成 |
+| 五服务启动 | `docker compose -f infra/docker-compose.pilot.yml up -d --build`、`ps` | 通过；PostgreSQL、Redis、算法、API、前端最终均为 healthy |
+| 宿主机健康端点 | `localhost:8090/health`、`localhost:8080/actuator/health`、`localhost:5173/health` | 分别返回 `UP`、`UP`、HTTP 200/`ok` |
+| API 到算法连通 | API 容器内访问 `http://algorithm:8090/health` | 返回 `{"status":"UP"}` |
+| 算法重启恢复 | `restart algorithm` 后等待健康，并由 API 再次访问算法健康端点 | 算法恢复 healthy，API 到算法仍返回 `UP` |
+| API 重启恢复 | `restart api` 后等待健康，再访问 API 和前端 `/api` 代理 | API 恢复 healthy/`UP`；前端代理访问受保护接口返回预期 HTTP 401，证明代理链路可达 |
+| 数据保护 | 验证期间未运行 `down -v` | PostgreSQL、Redis 命名卷保留 |
+| 后端全量测试 | `mvn -q -pl apps/api test` | 通过；55 个测试套件、195 项测试、0 个失败、0 个错误、23 个跳过 |
+| 算法测试 | `python -m pytest apps/algorithm/tests -q` | 通过；4 项测试全部通过 |
+| 前端回归与构建 | 类型检查、Vitest、Vite 生产构建 | 通过；30 个测试文件、140 项测试全部通过，138 个模块完成构建 |
+
+### 9.3 发现问题与处理
+
+- 首次启动时 PostgreSQL 健康检查使用默认 Unix socket，在 PostGIS 初始化的临时数据库阶段提前报告 healthy；API 随即连接最终 TCP 端口并遇到 connection refused。健康检查改为 `pg_isready -h 127.0.0.1`，只在最终 TCP 服务就绪后放行。
+- 前端容器的 Alpine `wget` 将 `localhost` 优先解析为 `::1`，而 Nginx 只监听 IPv4，导致探针 connection refused。健康检查改为访问 `127.0.0.1`，随后前端恢复 healthy。
+- 首次 API 镜像构建需要下载 Java 基础镜像和 Maven 依赖，耗时明显长于缓存构建；这是本机首次构建成本，不影响后续缓存构建结果。
+
+### 9.4 处理结论与遗留风险
+
+- P0-4 的单一 Compose 启动入口、健康依赖、稳定服务名和重启恢复已完成本机验证。
+- 编排内置凭据仅供隔离本机试点，任何共享或正式环境必须通过环境变量覆盖。
+- `depends_on` 负责启动阶段门控，不会在依赖容器运行期重启时级联重启消费者；本次实测 API 可在算法重启后继续通过服务名连通，前端可在 API 重启后继续代理请求。
+- Redis 当前未被 API 业务代码使用，因此只纳入统一启动、持久化和健康状态，不虚构 API 对 Redis 的依赖。
+- 基础镜像目前使用版本标签而非不可变 digest；正式部署前仍需完成镜像锁定、漏洞扫描和制品治理。
+- 本节只收口 P0-4，不代表 P1 或生产上线条件已经完成。

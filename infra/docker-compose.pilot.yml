@@ -1,0 +1,100 @@
+name: drt-ops-pilot
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.5
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${DRT_OPS_DATABASE:-drt_ops}
+      POSTGRES_USER: ${DRT_OPS_DATASOURCE_USERNAME:-drt_ops}
+      POSTGRES_PASSWORD: ${DRT_OPS_DATASOURCE_PASSWORD:-drt_ops}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init-postgis.sql:/docker-entrypoint-initdb.d/init-postgis.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  algorithm:
+    build:
+      context: ../apps/algorithm
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DRT_OPS_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DRT_OPS_DATABASE:-drt_ops}
+      DRT_OPS_DATASOURCE_USERNAME: ${DRT_OPS_DATASOURCE_USERNAME:-drt_ops}
+      DRT_OPS_DATASOURCE_PASSWORD: ${DRT_OPS_DATASOURCE_PASSWORD:-drt_ops}
+      DISPATCH_ALGORITHM_BASE_URL: http://algorithm:8090
+      DRT_AUTH_JWT_SECRET: ${DRT_AUTH_JWT_SECRET:-pilot-only-jwt-secret-change-before-production}
+      DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME: ${DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD:-pilot-only-password}
+      DRT_AUTH_REFRESH_COOKIE_SECURE: ${DRT_AUTH_REFRESH_COOKIE_SECURE:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      algorithm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  admin-web:
+    build:
+      context: ../apps/admin-web
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  redis-data:
