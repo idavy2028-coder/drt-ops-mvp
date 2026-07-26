@@ -50,6 +50,37 @@
 - 算法: `GET http://localhost:8090/health`
 - 前端: `GET http://localhost:5173/`
 
+## 通渭试点完整 Compose 启动
+
+P0-4 提供完整试点编排，统一启动 PostgreSQL/PostGIS、Redis、算法服务、API 和管理前端：
+
+```powershell
+docker compose -f infra/docker-compose.pilot.yml up -d --build
+docker compose -f infra/docker-compose.pilot.yml ps
+```
+
+查看应用服务日志：
+
+```powershell
+docker compose -f infra/docker-compose.pilot.yml logs -f api algorithm admin-web
+```
+
+验证算法服务或 API 重启后的自动恢复：
+
+```powershell
+docker compose -f infra/docker-compose.pilot.yml restart algorithm
+docker compose -f infra/docker-compose.pilot.yml restart api
+docker compose -f infra/docker-compose.pilot.yml ps
+```
+
+常规停止使用以下命令，它会保留 PostgreSQL 和 Redis 命名卷：
+
+```powershell
+docker compose -f infra/docker-compose.pilot.yml down
+```
+
+编排内置的数据库、JWT 和初始管理员默认值只允许用于隔离本机试点。共享或正式环境必须通过 `DRT_OPS_DATASOURCE_USERNAME`、`DRT_OPS_DATASOURCE_PASSWORD`、`DRT_AUTH_JWT_SECRET`、`DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME` 和 `DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD` 环境变量覆盖。常规停止不得添加 `-v`，以免删除试点数据卷。
+
 ## 开放瓦片地图本机配置
 
 管理端默认使用 Leaflet 加载 OpenStreetMap 标准公开瓦片：`https://tile.openstreetmap.org/{z}/{x}/{y}.png`。页面会显示 `© OpenStreetMap contributors` 归属信息。业务接口、服务区 WKT 与虚拟站点仍统一保存 GCJ-02 坐标；仅在地图显示和点选边界转换为 WGS84。
