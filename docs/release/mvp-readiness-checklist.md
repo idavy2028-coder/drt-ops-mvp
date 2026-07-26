@@ -91,3 +91,40 @@ npm run e2e -- auth-rbac.spec.ts
 | 虚拟站点现场数据 | 待关闭 | 需要完成 30-50 个通渭县现场站点采集与导入。 |
 | 生产 PostGIS 与监控告警 | 待关闭 | 需要完成生产环境验证和告警演练。 |
 | GPS/司机端、OIDC/LDAP | 不在本阶段 | 当前使用人工上报与内置账号 + JWT，后续独立交付。 |
+
+## 六、P0-1 工作区与版本基线核查
+
+- 执行日期：2026-07-26
+- 执行人：Codex（开发负责人代理）
+- 审阅人：待人工审阅
+- 输入数据：`codex/pilot-service-area-bootstrap` 工作树、当前 HEAD、上游分支及全部已跟踪/未跟踪改动。
+
+### 6.1 版本基线
+
+| 检查项 | 结果 |
+| --- | --- |
+| 工作树 | `D:\codex-projects\.worktrees\pilot-bootstrap-rules`，已确认是 linked worktree，不是主检出目录或子模块 |
+| 当前分支 | `codex/pilot-service-area-bootstrap` |
+| 当前 HEAD | `e02eea182d9743875ce3bc81821b596e3ec9e9a0` |
+| 上游分支 | `origin/codex/pilot-service-area-bootstrap` |
+| 上游同步状态 | `0 ahead / 0 behind`；HEAD、上游和 merge-base 均为 `e02eea1` |
+| 初始工作区规模 | 28 个已跟踪文件有修改，10 个未跟踪文件，共 38 个文件 |
+| 暂存、提交和发布 | 未暂存、未提交、未推送、未创建 PR |
+
+### 6.2 逻辑分组
+
+| 分组 | 文件边界 |
+| --- | --- |
+| 地图与资源配置 | `ServiceAreaMapEditor.vue`、`VirtualStopImportPanel.vue`、`VirtualStopMap.vue` 及其测试；`VirtualStop.java`；`GlobalExceptionHandler.java` 及其测试；`PostgisVirtualStopJpaIntegrationTest.java`；`ResourcesPage.vue` 和 `resources-page.test.ts` 中的服务区/站点相关补丁 |
+| 用户与认证 | `api/users.ts`；`UserManagementPage.vue` 及其测试；`presentation/operations.ts`；`UserAccount.java`、`UserManagementController.java`、`UserManagementService.java`、`UserManagementApiTest.java`、`UpdateUserProfileRequest.java` |
+| 订单录入 | `AddressCoordinateField.vue`、`OrderCreateDialog.vue` 及其测试；`OrdersPage.vue` |
+| 车辆首配位置 | `api/resources.ts`、`api/resources.test.ts`、`api/types.ts`；`DriverCreateForm.vue`、`VehicleCreateForm.vue` 及其测试；`VehicleController.java`、`VehicleProvisioningService.java`、`LocationEventType.java`、`FleetApiTest.java`；`ResourcesPage.vue` 和 `resources-page.test.ts` 中的车辆/驾驶员录入补丁 |
+| 计划与验收证据 | `docs/release/tongwei-pilot-next-phase-plan.md` 以及本节；不属于业务实现提交，应与四个业务逻辑组分开审阅 |
+
+### 6.3 核查结果、问题和证据
+
+- 结果：初始 38 个文件中，37 个业务文件均可归入上述四个逻辑组，另 1 个为本阶段总计划；未发现缓存、构建产物、凭据或计划范围外业务文件。
+- 共享文件：`ResourcesPage.vue` 与 `resources-page.test.ts` 同时包含“地图与资源配置”和“车辆首配位置”补丁，P0-3 必须按补丁块拆分，不能整文件归入单一提交。
+- 换行风险：`git diff --check` 未发现空白错误，但 Git 提示部分现有文件下次写入时可能由 LF 转为 CRLF；拆分时应避免无意义的整文件换行变化。
+- 证据命令：`git status --short --branch`、`git rev-parse HEAD`、`git rev-parse '@{upstream}'`、`git merge-base HEAD '@{upstream}'`、`git rev-list --left-right --count 'HEAD...@{upstream}'`、`git status --porcelain=v1 --untracked-files=all`、`git diff --check`。
+- 处理结论：P0-1 的逻辑分组和无关文件核查已完成，等待人工审阅；本次未执行 P0-2、P1 或任何提交发布操作。
