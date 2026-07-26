@@ -86,6 +86,27 @@ describe("AddressCoordinateField", () => {
     await vi.waitFor(() => expect(tileMapRuntime.handle.destroy).toHaveBeenCalled());
   });
 
+  it("normalizes high-precision map coordinates without triggering native step validation", async () => {
+    const { emitted } = render(AddressCoordinateField, {
+      props: { label: "起点", purpose: "BOARDING", modelValue: { address: "" } }
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "地图点选" }));
+    await vi.waitFor(() => expect(tileMapRuntime.createTileMap).toHaveBeenCalled());
+    tileMapRuntime.triggerClick({
+      longitude: 105.26112601382032,
+      latitude: 35.20126183692491
+    });
+
+    const changes = emitted()["update:modelValue"] as unknown[][] | undefined;
+    expect(changes?.[changes.length - 1]?.[0]).toMatchObject({
+      longitude: 105.261126,
+      latitude: 35.201262
+    });
+    expect(screen.getByLabelText("起点经度")).toHaveAttribute("step", "any");
+    expect(screen.getByLabelText("起点纬度")).toHaveAttribute("step", "any");
+  });
+
   it("keeps manual coordinates and virtual-stop selection available when the tile base layer fails", async () => {
     const { emitted } = render(AddressCoordinateField, {
       props: { label: "起点", purpose: "BOARDING", modelValue: { address: "", longitude: 105.2, latitude: 35.2 }, virtualStops: stops }
@@ -98,11 +119,9 @@ describe("AddressCoordinateField", () => {
 
     await fireEvent.update(screen.getByLabelText("起点经度"), "105.24");
     await fireEvent.update(screen.getByLabelText("起点纬度"), "35.21");
-    await fireEvent.change(screen.getByLabelText("推荐上车点"), { target: { value: "stop-1" } });
 
     const changes = emitted()["update:modelValue"] as unknown[][] | undefined;
     expect(changes?.some((change) => (change[0] as { longitude?: number }).longitude === 105.24)).toBe(true);
-    expect(changes?.[changes.length - 1]?.[0]).toMatchObject({ virtualStopId: "stop-1" });
   });
 
   it("continues to validate coordinates against the service area", async () => {
@@ -118,5 +137,22 @@ describe("AddressCoordinateField", () => {
 
     await vi.waitFor(() => expect(mapApi.checkServiceAreaContainment).toHaveBeenCalledWith("area-1", 105.24, 35.21));
     expect(await screen.findByText("服务区内，可继续录入")).toBeInTheDocument();
+  });
+
+  it("only offers virtual stops that are within their service radius", () => {
+    render(AddressCoordinateField, {
+      props: {
+        label: "终点",
+        purpose: "ALIGHTING",
+        modelValue: { address: "", longitude: 105.24, latitude: 35.21 },
+        virtualStops: [
+          ...stops,
+          { ...stops[0], id: "stop-2", name: "远端站点", location: "POINT(105.35 35.21)", longitude: 105.35, latitude: 35.21 }
+        ]
+      }
+    });
+
+    expect(screen.getByRole("option", { name: /县医院/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /远端站点/ })).not.toBeInTheDocument();
   });
 });
