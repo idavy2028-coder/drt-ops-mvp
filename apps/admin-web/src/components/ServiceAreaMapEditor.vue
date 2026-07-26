@@ -9,17 +9,22 @@ import type {
   CreateServiceAreaInput,
   DispatchRuleSet,
   ServiceAreaBoundaryDraft,
-  ServiceAreaBoundaryView
+  ServiceAreaBoundaryView,
+  VirtualStop
 } from "../api/types";
 
 const props = withDefaults(defineProps<{
   serviceArea?: ServiceAreaBoundaryView;
+  stops?: VirtualStop[];
   ruleSets?: DispatchRuleSet[];
   readonly: boolean;
+  busy?: boolean;
   feedback?: string;
 }>(), {
   serviceArea: undefined,
+  stops: () => [],
   ruleSets: () => [],
+  busy: false,
   feedback: ""
 });
 
@@ -39,6 +44,7 @@ const importKeyword = ref("甘肃省定西市通渭县");
 const inputFormat = ref<"wkt" | "geoJson">("wkt");
 const boundaryText = ref("");
 const isEditingBoundary = ref(false);
+const referenceBufferMeters = ref(500);
 const createForm = reactive({
   name: "通渭县试点服务区",
   serviceStart: "06:30",
@@ -46,6 +52,7 @@ const createForm = reactive({
   ruleSetId: ""
 });
 let polygonLayer: L.Polygon | undefined;
+let stopLayers: L.CircleMarker[] = [];
 let unsubscribeBaseLayerError: (() => void) | undefined;
 let boundaryUpdatedByMap = false;
 
@@ -70,6 +77,20 @@ const boundaryVersion = computed(() => {
   return "未发布";
 });
 const coordinateSystem = computed(() => props.serviceArea?.coordinateSystem === "GCJ02" ? "GCJ-02" : props.serviceArea?.coordinateSystem ?? "GCJ-02");
+const calibrationStops = computed(() => props.stops.filter((stop) => !props.serviceArea || stop.serviceAreaId === props.serviceArea.id));
+const parsedActiveBoundary = computed(() => parseWkt(boundaryText.value));
+const stopCoverage = computed(() => {
+  const boundary = parsedActiveBoundary.value;
+  const insideCount = boundary.length >= 3
+    ? calibrationStops.value.filter((stop) => isPointInsidePolygon(stop.longitude, stop.latitude, boundary)).length
+    : 0;
+  return {
+    total: calibrationStops.value.length,
+    inside: insideCount,
+    outside: calibrationStops.value.length - insideCount
+  };
+});
+const canGenerateReferenceBoundary = computed(() => !props.readonly && calibrationStops.value.length >= 3);
 const createDisabled = computed(() =>
   props.readonly ||
   !createForm.name.trim() ||
@@ -105,6 +126,15 @@ watch(
   }
 );
 
+watch(
+  () => props.stops,
+  () => {
+    renderStopLayers();
+    fitCalibrationLayers();
+  },
+  { deep: true }
+);
+
 watch(boundaryText, () => {
   if (inputFormat.value === "wkt" && !boundaryUpdatedByMap) {
     renderWktBoundary();
@@ -135,6 +165,7 @@ onBeforeUnmount(() => {
   if (tileMap.value) {
     tileMap.value.map.off("pm:create", updateBoundaryFromGeomanEvent);
   }
+  clearStopLayers();
   unsubscribeBaseLayerError?.();
   tileMap.value?.destroy();
 });
@@ -158,6 +189,7 @@ function startDrawing(): void {
     pathOptions: polygonStyle()
   });
   isEditingBoundary.value = true;
+  renderStopLayers();
   mapError.value = "";
 }
 
@@ -172,6 +204,7 @@ function startEditing(): void {
 
   polygonLayer.pm.enable({ allowSelfIntersection: false });
   isEditingBoundary.value = true;
+  renderStopLayers();
   mapError.value = "";
 }
 
@@ -203,6 +236,7 @@ function finishBoundaryEdit(): void {
   }
   polygonLayer?.pm?.disable();
   isEditingBoundary.value = false;
+  renderStopLayers();
 }
 
 function updateBoundaryFromGeomanEvent(event: unknown): void {
@@ -224,18 +258,25 @@ function updateBoundaryFromGeomanEvent(event: unknown): void {
 
 function renderWktBoundary(): void {
   const coordinates = parseWkt(boundaryText.value);
-  if (!tileMap.value || coordinates.length < 3) {
+  if (!tileMap.value) {
     return;
   }
 
   clearPolygonLayer();
+  if (coordinates.length < 3) {
+    renderStopLayers();
+    fitCalibrationLayers();
+    return;
+  }
+
   const leafletCoordinates = coordinates.map((coordinate) => {
     const wgs84 = gcj02ToWgs84(coordinate);
     return [wgs84.latitude, wgs84.longitude] as L.LatLngTuple;
   });
   polygonLayer = L.polygon(leafletCoordinates, polygonStyle()).addTo(tileMap.value.map);
   bindPolygonChangeEvents(polygonLayer);
-  tileMap.value.fitLayers([polygonLayer]);
+  renderStopLayers();
+  fitCalibrationLayers();
 }
 
 function clearPolygonLayer(): void {
@@ -243,6 +284,48 @@ function clearPolygonLayer(): void {
   polygonLayer?.pm?.disable();
   polygonLayer?.remove();
   polygonLayer = undefined;
+}
+
+function renderStopLayers(): void {
+  if (!tileMap.value) {
+    return;
+  }
+
+  clearStopLayers();
+  const boundary = parsedActiveBoundary.value;
+  stopLayers = calibrationStops.value
+    .filter((stop) => Number.isFinite(stop.longitude) && Number.isFinite(stop.latitude))
+    .map((stop) => {
+      const inside = boundary.length >= 3 && isPointInsidePolygon(stop.longitude!, stop.latitude!, boundary);
+      const wgs84 = gcj02ToWgs84({ longitude: stop.longitude!, latitude: stop.latitude! });
+      const label = `${stop.name} · ${inside ? "服务区内" : "服务区外"}`;
+      return L.circleMarker([wgs84.latitude, wgs84.longitude], {
+        color: inside ? "#007f67" : "#c47a00",
+        fillColor: inside ? "#007f67" : "#f1b95c",
+        fillOpacity: 0.9,
+        interactive: !isEditingBoundary.value,
+        radius: inside ? 7 : 8,
+        weight: 2
+      }).bindTooltip(label, { direction: "top" }).addTo(tileMap.value!.map);
+    });
+}
+
+function clearStopLayers(): void {
+  stopLayers.forEach((layer) => layer.remove());
+  stopLayers = [];
+}
+
+function fitCalibrationLayers(): void {
+  if (!tileMap.value) {
+    return;
+  }
+
+  const layers: L.Layer[] = [];
+  if (polygonLayer) {
+    layers.push(polygonLayer);
+  }
+  layers.push(...stopLayers);
+  tileMap.value.fitLayers(layers);
 }
 
 function bindPolygonChangeEvents(layer: L.Polygon): void {
@@ -265,6 +348,58 @@ function parseWkt(value: string): Array<{ longitude: number; latitude: number }>
     .map((pair) => pair.trim().split(/\s+/).map(Number))
     .filter(([longitude, latitude]) => Number.isFinite(longitude) && Number.isFinite(latitude))
     .map(([longitude, latitude]) => ({ longitude, latitude }));
+}
+
+function isPointInsidePolygon(longitude: number | undefined, latitude: number | undefined, polygon: Array<{ longitude: number; latitude: number }>): boolean {
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+    return false;
+  }
+
+  const pointLongitude = longitude as number;
+  const pointLatitude = latitude as number;
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const currentPoint = polygon[index]!;
+    const previousPoint = polygon[previous]!;
+    const intersects = (currentPoint.latitude > pointLatitude) !== (previousPoint.latitude > pointLatitude)
+      && pointLongitude < (previousPoint.longitude - currentPoint.longitude)
+        * (pointLatitude - currentPoint.latitude)
+        / (previousPoint.latitude - currentPoint.latitude)
+        + currentPoint.longitude;
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function generateReferenceBoundary(): void {
+  const points = calibrationStops.value
+    .filter((stop) => Number.isFinite(stop.longitude) && Number.isFinite(stop.latitude))
+    .map((stop) => ({ longitude: stop.longitude!, latitude: stop.latitude! }));
+  if (points.length < 3) {
+    return;
+  }
+
+  const minLongitude = Math.min(...points.map((point) => point.longitude));
+  const maxLongitude = Math.max(...points.map((point) => point.longitude));
+  const minLatitude = Math.min(...points.map((point) => point.latitude));
+  const maxLatitude = Math.max(...points.map((point) => point.latitude));
+  const averageLatitude = (minLatitude + maxLatitude) / 2;
+  const bufferMeters = Number.isFinite(referenceBufferMeters.value) && referenceBufferMeters.value >= 0 ? referenceBufferMeters.value : 0;
+  const latitudeBuffer = bufferMeters / 111_320;
+  const longitudeBuffer = bufferMeters / (111_320 * Math.max(Math.cos(averageLatitude * Math.PI / 180), 0.01));
+  const west = minLongitude - longitudeBuffer;
+  const east = maxLongitude + longitudeBuffer;
+  const south = minLatitude - latitudeBuffer;
+  const north = maxLatitude + latitudeBuffer;
+
+  boundaryUpdatedByMap = true;
+  inputFormat.value = "wkt";
+  boundaryText.value = `POLYGON((${west} ${south}, ${east} ${south}, ${east} ${north}, ${west} ${north}, ${west} ${south}))`;
+  isEditingBoundary.value = true;
+  mapError.value = "";
+  renderWktBoundary();
 }
 
 function toGcj02Wkt(layer: L.Polygon): string {
@@ -358,7 +493,7 @@ function requestPublish(): void {
 </script>
 
 <template>
-  <section class="service-area-editor" aria-labelledby="service-area-editor-title">
+  <section class="service-area-editor" :class="{ 'service-area-editing': isEditingBoundary }" :aria-busy="busy" aria-labelledby="service-area-editor-title">
     <header class="editor-header">
       <div>
         <p class="section-kicker">GEOFENCE</p>
@@ -381,9 +516,23 @@ function requestPublish(): void {
           <div class="map-meta">
             <span>坐标系：{{ coordinateSystem }}</span>
             <div v-if="mapReady" class="map-actions">
+              <span v-if="isEditingBoundary" class="edit-mode-badge" role="status">正在编辑电子围栏：蓝色节点可拖动</span>
               <button type="button" class="secondary-button" :disabled="readonly" @click="startDrawing">开始绘制</button>
               <button type="button" class="secondary-button" :disabled="readonly" @click="startEditing">编辑边界</button>
               <button v-if="serviceArea && isEditingBoundary" type="button" class="secondary-button" :disabled="readonly" @click="cancelBoundaryEdit">取消编辑</button>
+            </div>
+          </div>
+          <div v-if="calibrationStops.length" class="calibration-panel" aria-label="站点覆盖校准">
+            <div class="calibration-summary">
+              <strong>站点覆盖：{{ stopCoverage.total }} 个，服务区内 {{ stopCoverage.inside }} 个，服务区外 {{ stopCoverage.outside }} 个</strong>
+              <span><i class="calibration-swatch inside-swatch"></i>服务区内</span>
+              <span><i class="calibration-swatch outside-swatch"></i>服务区外</span>
+              <span><i class="calibration-swatch control-node-swatch"></i>蓝色节点：围栏控制点</span>
+            </div>
+            <div v-if="calibrationStops.length >= 3" class="calibration-actions">
+              <label>参考范围缓冲（米）<input v-model.number="referenceBufferMeters" type="number" min="0" step="50" :disabled="readonly" /></label>
+              <button type="button" class="secondary-button" :disabled="!canGenerateReferenceBoundary" @click="generateReferenceBoundary">生成参考范围</button>
+              <span class="calibration-note">仅写入当前编辑草稿，核对后请点击“保存草稿”。</span>
             </div>
           </div>
         </div>
@@ -431,8 +580,8 @@ function requestPublish(): void {
         <div class="editor-actions">
           <button v-if="!serviceArea" type="button" class="primary-button" :disabled="createDisabled" @click="createServiceAreaDraft">创建服务区草稿</button>
           <template v-else>
-            <button type="button" class="secondary-button" :disabled="readonly" @click="saveBoundary">保存草稿</button>
-            <button type="button" class="primary-button" :disabled="readonly || !hasPendingDraft" @click="requestPublish">{{ hasPendingDraft ? "发布并启用" : "已发布并启用" }}</button>
+            <button type="button" class="secondary-button" :disabled="readonly || busy" @click="saveBoundary">{{ busy ? "正在保存" : "保存草稿" }}</button>
+            <button type="button" class="primary-button" :disabled="readonly || busy || !hasPendingDraft" @click="requestPublish">{{ busy ? "保存中，请稍候" : hasPendingDraft ? "发布并启用" : "已发布并启用" }}</button>
           </template>
         </div>
         <p class="publish-note">发布后，订单录入将按该边界校验起终点；围栏外位置仍会保留告警记录。</p>
@@ -459,6 +608,17 @@ h3 { margin: 0; font-size: 22px; }
 .map-fallback span { font-size: 14px; }
 .map-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd8d2; background: #f8faf8; padding: 10px 12px; color: #40574e; font-size: 13px; }
 .map-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.edit-mode-badge { background: #eaf3ff; border: 1px solid #3388ff; color: #1555a4; font-weight: 700; padding: 6px 8px; }
+.calibration-panel { display: grid; gap: 10px; border-top: 1px solid #cbd8d2; background: #f8faf8; padding: 10px 12px; color: #40574e; font-size: 13px; }
+.calibration-summary, .calibration-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; }
+.calibration-summary strong { color: #263a32; }
+.calibration-swatch { border: 2px solid; border-radius: 50%; display: inline-block; height: 10px; width: 10px; }
+.inside-swatch { background: #007f67; border-color: #007f67; }
+.outside-swatch { background: #f1b95c; border-color: #c47a00; }
+.control-node-swatch { background: #fff; border-color: #3388ff; }
+.calibration-actions label { align-items: center; display: inline-flex; flex-direction: row; gap: 6px; }
+.calibration-actions input { max-width: 100px; padding: 6px 8px; }
+.calibration-note { color: #805b00; }
 .editor-controls { display: grid; align-content: start; gap: 14px 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .boundary-draft-field, .editor-message, .create-fields, .editor-actions, .publish-note { grid-column: 1 / -1; }
 .create-fields { display: grid; gap: 14px 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -472,6 +632,8 @@ textarea { resize: vertical; line-height: 1.45; }
 .editor-message.warning { color: #805b00; }
 .editor-message.error { color: #ad2a2a; }
 .publish-note { margin: 0; border-left: 3px solid #d59a00; padding-left: 10px; color: #65521f; font-size: 13px; line-height: 1.5; }
+:deep(.service-area-editing .marker-icon) { background-color: #fff !important; border: 2px solid #3388ff !important; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8); }
+:deep(.service-area-editing .marker-icon-middle) { background-color: #eaf3ff !important; border: 2px solid #7db3ff !important; }
 @media (max-width: 900px) { .map-shell { grid-template-rows: minmax(280px, 1fr) auto; } .map-stage, .tile-map-canvas { min-height: 280px; } }
 @media (max-width: 560px) { .editor-header, .map-meta { align-items: stretch; flex-direction: column; } .editor-controls, .create-fields, .inline-field { grid-template-columns: 1fr; } }
 </style>

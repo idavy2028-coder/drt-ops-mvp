@@ -24,4 +24,12 @@ describe("VirtualStopImportPanel", () => {
     expect(screen.getByText("已创建 2 个站点，跳过 1 行。")).toBeInTheDocument();
     expect(screen.getByText("第 4 行：站点名称已存在")).toBeInTheDocument();
   });
+
+  it("shows import request errors beside the upload controls", () => {
+    render(VirtualStopImportPanel, {
+      props: { disabled: false, loading: false, error: "导入文件表头不符合虚拟站点模板" }
+    });
+
+    expect(screen.getByText("导入文件表头不符合虚拟站点模板")).toBeInTheDocument();
+  });
 });

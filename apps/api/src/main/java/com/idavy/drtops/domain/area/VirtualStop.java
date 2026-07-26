@@ -1,11 +1,15 @@
 package com.idavy.drtops.domain.area;
 
+import com.idavy.drtops.domain.location.GeographyPoint;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+import org.locationtech.jts.geom.Point;
 
 @Entity
 @Table(name = "virtual_stops")
@@ -20,8 +24,9 @@ public class VirtualStop {
     @Column(nullable = false, length = 120)
     private String name;
 
-    @Column(nullable = false, length = 120)
-    private String location;
+    @JdbcTypeCode(SqlTypes.GEOGRAPHY)
+    @Column(nullable = false, columnDefinition = "geometry")
+    private Point location;
 
     @Column(length = 300)
     private String address;
@@ -74,11 +79,13 @@ public class VirtualStop {
         this.id = id;
         this.serviceAreaId = serviceAreaId;
         this.name = name;
-        this.location = location;
+        this.location = GeographyPoint.fromWkt(location);
         this.serviceRadiusMeters = serviceRadiusMeters;
         this.boardingEnabled = boardingEnabled;
         this.alightingEnabled = alightingEnabled;
         this.safetyNote = safetyNote;
+        this.coordinateSystem = "GCJ-02";
+        this.source = "LEGACY";
         this.enabled = true;
         this.createdAt = OffsetDateTime.now();
         this.updatedAt = this.createdAt;
@@ -147,7 +154,7 @@ public class VirtualStop {
         }
         this.name = name;
         this.address = address;
-        this.location = locationWkt;
+        this.location = GeographyPoint.fromWkt(locationWkt);
         this.serviceRadiusMeters = serviceRadiusMeters;
         this.boardingEnabled = boardingEnabled;
         this.alightingEnabled = alightingEnabled;
@@ -173,7 +180,7 @@ public class VirtualStop {
     }
 
     public String getLocation() {
-        return location;
+        return GeographyPoint.toWkt(location);
     }
 
     public int getServiceRadiusMeters() {
