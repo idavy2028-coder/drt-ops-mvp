@@ -1,5 +1,5 @@
 import { request } from "./http";
-import type { Driver, ServiceArea, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "./types";
+import type { CreateDriverInput, CreateVehicleInput, Driver, ServiceArea, Vehicle, VirtualStop, VirtualStopDraft, VirtualStopImportResult } from "./types";
 
 export function listServiceAreas(): Promise<ServiceArea[]> {
   return request<ServiceArea[]>("/api/service-areas");
@@ -32,6 +32,14 @@ export function listVehicles(): Promise<Vehicle[]> {
   return request<Vehicle[]>("/api/vehicles");
 }
 
+export function createVehicle(input: CreateVehicleInput): Promise<Vehicle> {
+  return request<Vehicle>("/api/vehicles", { method: "POST", body: JSON.stringify(input) });
+}
+
 export function listDrivers(): Promise<Driver[]> {
   return request<Driver[]>("/api/drivers");
+}
+
+export function createDriver(input: CreateDriverInput): Promise<Driver> {
+  return request<Driver>("/api/drivers", { method: "POST", body: JSON.stringify(input) });
 }

@@ -219,8 +219,29 @@ export interface Vehicle {
   latestLocation?: VehicleLocationSnapshot;
 }
 
+export interface CreateVehicleInput {
+  plateNumber: string;
+  vehicleType: string;
+  capacity: number;
+  currentStatus: string;
+  lng: number;
+  lat: number;
+  fleetName: string;
+  dispatchable: boolean;
+}
+
 export interface Driver {
   id: UUID;
+  name: string;
+  phone: string;
+  qualificationStatus: string;
+  shiftStart?: IsoDateTime;
+  shiftEnd?: IsoDateTime;
+  currentStatus: string;
+  fleetName: string;
+}
+
+export interface CreateDriverInput {
   name: string;
   phone: string;
   qualificationStatus: string;

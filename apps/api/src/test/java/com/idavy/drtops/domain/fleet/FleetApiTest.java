@@ -1,5 +1,6 @@
 package com.idavy.drtops.domain.fleet;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -7,9 +8,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import com.idavy.drtops.domain.location.LocationEventType;
+import com.idavy.drtops.domain.location.LocationSource;
+import com.idavy.drtops.domain.location.IdempotencyKeyLock;
+import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
@@ -23,7 +33,8 @@ import org.springframework.test.web.servlet.MockMvc;
         "spring.jpa.hibernate.ddl-auto=create-drop"
 })
 @AutoConfigureMockMvc
-@WithMockUser(authorities = "RESOURCE_MANAGE")
+@WithMockUser(username = "11111111-1111-1111-1111-111111111111", authorities = "RESOURCE_MANAGE")
+@Import(FleetApiTest.LocationTestConfiguration.class)
 class FleetApiTest {
 
     @Autowired
@@ -35,8 +46,12 @@ class FleetApiTest {
     @Autowired
     DriverRepository driverRepository;
 
+    @Autowired
+    VehicleLocationEventRepository locationEventRepository;
+
     @BeforeEach
     void setUp() {
+        locationEventRepository.deleteAll();
         vehicleRepository.deleteAll();
         driverRepository.deleteAll();
     }
@@ -53,7 +68,19 @@ class FleetApiTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.plateNumber").value("DRT-101"))
                 .andExpect(jsonPath("$.data.createdAt").isNotEmpty())
-                .andExpect(jsonPath("$.data.currentLocation").doesNotExist());
+                .andExpect(jsonPath("$.data.latestLocation.longitude").value(116.3180000))
+                .andExpect(jsonPath("$.data.latestLocation.latitude").value(39.9290000))
+                .andExpect(jsonPath("$.data.latestLocation.source").value("MANUAL_DISPATCHER"))
+                .andExpect(jsonPath("$.data.latestLocation.eventId").isNotEmpty());
+
+        assertThat(locationEventRepository.findAll())
+                .singleElement()
+                .satisfies(event -> {
+                    assertThat(event.getEventType()).isEqualTo(LocationEventType.MANUAL_REPORT);
+                    assertThat(event.getSource()).isEqualTo(LocationSource.MANUAL_DISPATCHER);
+                    assertThat(event.getRecordedBy()).isEqualTo(java.util.UUID.fromString("11111111-1111-1111-1111-111111111111"));
+                    assertThat(event.isSnapshotApplied()).isTrue();
+                });
 
         mockMvc.perform(get("/api/vehicles"))
                 .andExpect(status().isOk())
@@ -87,5 +114,21 @@ class FleetApiTest {
         mockMvc.perform(get("/api/drivers"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1));
+    }
+
+    @TestConfiguration
+    static class LocationTestConfiguration {
+
+        @Bean
+        @Primary
+        IdempotencyKeyLock idempotencyKeyLock() {
+            return idempotencyKey -> { };
+        }
+
+        @Bean
+        @Primary
+        ServiceAreaLocationChecker serviceAreaLocationChecker() {
+            return (longitude, latitude) -> true;
+        }
     }
 }
