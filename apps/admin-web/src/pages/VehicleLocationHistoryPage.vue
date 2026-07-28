@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { exportVehicleLocationEvents, listVehicleLocationEvents } from "../api/vehicleLocations";
-import type { VehicleLocationEventFilters, VehicleLocationEventView } from "../api/types";
+import { computed, onMounted, ref } from "vue";
+import { exportVehicleLocationEvents, listLocationReportVehicles, listVehicleLocationEvents, reportVehicleStandbyLocation } from "../api/vehicleLocations";
+import { listServiceAreas, listVirtualStops } from "../api/resources";
+import type { DecimalValue, LocationCandidate, LocationReportInput, ServiceArea, ServiceAreaBoundaryView, VehicleLocationEventFilters, VehicleLocationEventView, VehicleLocationReportCandidate, VirtualStop } from "../api/types";
 import { authStore } from "../auth/authStore";
 import { userMessage } from "../api/errors";
 import { feedbackStore } from "../stores/feedbackStore";
+import LocationReportPanel from "../components/LocationReportPanel.vue";
 
 const vehicleId = ref("");
 const taskId = ref("");
@@ -14,12 +16,47 @@ const events = ref<VehicleLocationEventView[]>([]);
 const status = ref("请输入车辆编号或任务编号后查询位置历史。");
 const loading = ref(false);
 const exporting = ref(false);
+const reportingResourcesLoading = ref(false);
+const reporting = ref(false);
+const reportingPanelVisible = ref(false);
+const reportingSetupMessage = ref("");
+const reportingEntryMessage = ref("");
+const reportVehicles = ref<VehicleLocationReportCandidate[]>([]);
+const enabledVirtualStops = ref<VirtualStop[]>([]);
+const enabledServiceArea = ref<ServiceAreaBoundaryView>();
+const selectedReportVehicleId = ref("");
 const vehicleExportUnsupportedMessage = "车辆维度导出需后端支持，请改用任务编号或清空车辆筛选";
 
 const canExport = computed(() => authStore.has("LOCATION_EXPORT"));
 const canCorrect = computed(() => authStore.has("LOCATION_CORRECT"));
+const canReport = computed(() => authStore.has("LOCATION_REPORT"));
 const vehicleOnlyExportUnsupported = computed(() => vehicleId.value.trim() !== "" && taskId.value.trim() === "");
 const exportDisabled = computed(() => exporting.value || vehicleOnlyExportUnsupported.value);
+const selectedReportVehicle = computed(() => reportVehicles.value.find((vehicle) => vehicle.vehicleId === selectedReportVehicleId.value));
+const selectedReportInitialLocation = computed<LocationCandidate | undefined>(() => {
+  const latestLocation = selectedReportVehicle.value?.latestLocation;
+  if (latestLocation === null || latestLocation === undefined) {
+    return undefined;
+  }
+  const longitude = parseFiniteCoordinate(latestLocation.longitude);
+  const latitude = parseFiniteCoordinate(latestLocation.latitude);
+  if (longitude === undefined || latitude === undefined) {
+    return undefined;
+  }
+  return {
+    longitude,
+    latitude,
+    standardizedAddress: usableSnapshotAddress(latestLocation.standardizedAddress),
+    outsideServiceArea: latestLocation.outsideServiceArea
+  };
+});
+const reportEntryDisabled = computed(() => reportingResourcesLoading.value || enabledServiceArea.value === undefined);
+
+onMounted(() => {
+  if (canReport.value) {
+    void loadReportingResources();
+  }
+});
 
 async function search() {
   const filters = buildFilters();
@@ -56,6 +93,99 @@ async function exportCsv() {
   } finally {
     exporting.value = false;
   }
+}
+
+async function loadReportingResources() {
+  reportingResourcesLoading.value = true;
+  reportingSetupMessage.value = "";
+  try {
+    const [vehicles, serviceAreas, stops] = await Promise.all([
+      listLocationReportVehicles(),
+      listServiceAreas(),
+      listVirtualStops({ enabled: true })
+    ]);
+    reportVehicles.value = vehicles;
+    enabledVirtualStops.value = stops;
+    enabledServiceArea.value = toBoundaryView(serviceAreas.find((serviceArea) => serviceArea.enabled));
+    if (enabledServiceArea.value === undefined) {
+      reportingSetupMessage.value = "未找到已启用服务区，无法校验待命位置";
+    }
+  } catch (error) {
+    reportingSetupMessage.value = userMessage(error, "待命位置上报资源加载失败");
+  } finally {
+    reportingResourcesLoading.value = false;
+  }
+}
+
+function openStandbyLocationReport() {
+  reportingEntryMessage.value = "";
+  if (enabledServiceArea.value === undefined) {
+    reportingEntryMessage.value = "未找到已启用服务区，无法校验待命位置";
+    return;
+  }
+  if (selectedReportVehicle.value === undefined) {
+    reportingEntryMessage.value = "请先选择车辆";
+    return;
+  }
+  reportingPanelVisible.value = true;
+}
+
+async function submitStandbyLocation(input: LocationReportInput) {
+  const vehicle = selectedReportVehicle.value;
+  if (vehicle === undefined || reporting.value) {
+    return;
+  }
+  reporting.value = true;
+  try {
+    const response = await reportVehicleStandbyLocation(vehicle.vehicleId, input);
+    reportingPanelVisible.value = false;
+    await loadReportingResources();
+    vehicleId.value = vehicle.vehicleId;
+    await search();
+    if (response.warnings.includes("OUTSIDE_SERVICE_AREA")) {
+      feedbackStore.success("待命位置已上报，已保存服务区外位置；车辆快照是否推进以接口返回为准");
+    } else if (response.replayed) {
+      feedbackStore.info("待命位置已上报（重复提交已复用）");
+    } else {
+      feedbackStore.success("待命位置已上报");
+    }
+  } catch (error) {
+    feedbackStore.error(userMessage(error, "待命位置上报失败"));
+  } finally {
+    reporting.value = false;
+  }
+}
+
+function toBoundaryView(serviceArea: ServiceArea | undefined): ServiceAreaBoundaryView | undefined {
+  if (serviceArea === undefined) {
+    return undefined;
+  }
+  return {
+    id: serviceArea.id,
+    name: serviceArea.name,
+    boundaryWkt: serviceArea.boundary,
+    boundarySource: serviceArea.boundarySource,
+    boundaryVersion: serviceArea.boundaryVersion,
+    draftBoundaryWkt: serviceArea.draftBoundary,
+    draftBoundarySource: serviceArea.draftBoundarySource,
+    draftBoundaryVersion: serviceArea.draftBoundaryVersion,
+    publishedAt: serviceArea.publishedAt,
+    updatedAt: serviceArea.updatedAt,
+    coordinateSystem: serviceArea.coordinateSystem
+  };
+}
+
+function usableSnapshotAddress(value: string | null | undefined): string {
+  const address = value?.trim() ?? "";
+  return address.includes("?") ? "" : address;
+}
+
+function parseFiniteCoordinate(value: DecimalValue): number | undefined {
+  if (typeof value === "string" && value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function buildFilters(): VehicleLocationEventFilters {
@@ -127,6 +257,35 @@ function delayMinutes(event: VehicleLocationEventView): number {
     </header>
     <p v-if="canExport && vehicleOnlyExportUnsupported" class="page-state">{{ vehicleExportUnsupportedMessage }}</p>
 
+    <section v-if="canReport" class="work-panel standby-report-panel" aria-label="待命位置上报">
+      <label>
+        <span>待命车辆</span>
+        <select v-model="selectedReportVehicleId" :disabled="reportingResourcesLoading || reporting || reportingPanelVisible" @change="reportingEntryMessage = ''">
+          <option value="">请选择车辆</option>
+          <option v-for="vehicle in reportVehicles" :key="vehicle.vehicleId" :value="vehicle.vehicleId">
+            {{ vehicle.plateNumber }} · {{ vehicle.currentStatus }} · {{ vehicle.dispatchable ? "可调度" : "不可调度" }}
+          </option>
+        </select>
+      </label>
+      <div class="standby-report-actions">
+        <button class="primary-button" type="button" :disabled="reportEntryDisabled" @click="openStandbyLocationReport">上报待命位置</button>
+        <button class="secondary-button" type="button" :disabled="reportingResourcesLoading || reporting" @click="loadReportingResources">刷新车辆</button>
+      </div>
+      <p v-if="reportingSetupMessage" class="page-state">{{ reportingSetupMessage }}</p>
+      <p v-if="reportingEntryMessage" class="page-state">{{ reportingEntryMessage }}</p>
+    </section>
+
+    <LocationReportPanel
+      v-if="reportingPanelVisible && selectedReportVehicle && enabledServiceArea"
+      action-label="待命"
+      :initial-location="selectedReportInitialLocation"
+      :virtual-stops="enabledVirtualStops"
+      :service-area="enabledServiceArea"
+      :submitting="reporting"
+      @close="reportingPanelVisible = false"
+      @submit="submitStandbyLocation"
+    />
+
     <section class="work-panel filter-panel" aria-label="位置历史筛选">
       <label>
         <span>车辆编号</span>
@@ -186,6 +345,42 @@ function delayMinutes(event: VehicleLocationEventView): number {
   gap: 12px;
   align-items: end;
   margin-bottom: 14px;
+}
+
+.standby-report-panel {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+
+.standby-report-panel label {
+  display: grid;
+  gap: 6px;
+  color: #3f4c46;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.standby-report-panel select {
+  min-height: 38px;
+  border: 1px solid #cfd9d4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17201c;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.standby-report-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.standby-report-panel .page-state {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 .filter-panel label {
@@ -272,6 +467,10 @@ function delayMinutes(event: VehicleLocationEventView): number {
 
 @media (max-width: 980px) {
   .filter-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .standby-report-panel {
     grid-template-columns: 1fr;
   }
 

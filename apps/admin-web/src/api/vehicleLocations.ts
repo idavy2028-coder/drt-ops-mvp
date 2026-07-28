@@ -1,10 +1,33 @@
 import { request } from "./http";
 import { authStore } from "../auth/authStore";
 import { apiErrorFromResponse } from "./errors";
-import type { VehicleLocationEventFilters, VehicleLocationEventView, VehicleLocationSnapshotItem } from "./types";
+import type { LocationReportInput, LocationReportResponse, UUID, VehicleLocationEventFilters, VehicleLocationEventView, VehicleLocationReportCandidate, VehicleLocationSnapshotItem } from "./types";
 
 export function listLatestVehicleLocations(): Promise<VehicleLocationSnapshotItem[]> {
   return request<VehicleLocationSnapshotItem[]>("/api/vehicles/locations/latest");
+}
+
+export function listLocationReportVehicles(): Promise<VehicleLocationReportCandidate[]> {
+  return request<VehicleLocationReportCandidate[]>("/api/vehicles/location-reporting-candidates");
+}
+
+export function reportVehicleStandbyLocation(vehicleId: UUID, input: LocationReportInput): Promise<LocationReportResponse> {
+  return request<LocationReportResponse>(`/api/vehicles/${vehicleId}/location-reports`, {
+    method: "POST",
+    body: JSON.stringify({
+      vehicleTaskId: null,
+      taskStopId: null,
+      eventType: "MANUAL_REPORT",
+      correctsEventId: null,
+      longitude: input.longitude,
+      latitude: input.latitude,
+      standardizedAddress: input.standardizedAddress,
+      driverReportedAt: input.driverReportedAt,
+      idempotencyKey: input.idempotencyKey,
+      virtualStopId: input.virtualStopId,
+      note: input.note
+    })
+  });
 }
 
 export async function listVehicleLocationEvents(filters: VehicleLocationEventFilters): Promise<VehicleLocationEventView[]> {

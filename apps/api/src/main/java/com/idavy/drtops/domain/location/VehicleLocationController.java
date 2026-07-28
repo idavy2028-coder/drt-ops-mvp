@@ -53,6 +53,12 @@ public class VehicleLocationController {
         return ApiResponse.ok(queryService.latest());
     }
 
+    @GetMapping("/vehicles/location-reporting-candidates")
+    @PreAuthorize("hasAuthority('LOCATION_REPORT')")
+    public ApiResponse<List<VehicleLocationQueryService.VehicleLocationReportCandidate>> reportingCandidates() {
+        return ApiResponse.ok(queryService.reportableVehicles());
+    }
+
     @GetMapping("/vehicles/{vehicleId}/location-events")
     @PreAuthorize("hasAuthority('LOCATION_READ')")
     public ApiResponse<List<VehicleLocationView>> history(

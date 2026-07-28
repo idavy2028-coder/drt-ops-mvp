@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
-import { exportVehicleLocationEvents, listVehicleLocationEvents } from "./vehicleLocations";
+import { exportVehicleLocationEvents, listLocationReportVehicles, listVehicleLocationEvents, reportVehicleStandbyLocation } from "./vehicleLocations";
 
 describe("vehicle location API", () => {
   afterEach(() => {
@@ -50,6 +50,64 @@ describe("vehicle location API", () => {
     expect(requestedUrl.searchParams.get("taskId")).toBe("task-1");
     expect(requestedUrl.searchParams.get("eventType")).toBe("TASK_STARTED");
     expect(requestedUrl.searchParams.has("vehicleId")).toBe(false);
+  });
+
+  it("lists vehicles that can report a standby location", async () => {
+    const candidates = [{
+      vehicleId: "vehicle-1",
+      plateNumber: "甘G12345",
+      currentStatus: "IDLE",
+      dispatchable: true,
+      latestLocation: null
+    }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(candidates));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listLocationReportVehicles()).resolves.toEqual(candidates);
+
+    const requestedUrl = new URL(String(fetchMock.mock.calls[0][0]), "http://localhost");
+    expect(requestedUrl.pathname).toBe("/api/vehicles/location-reporting-candidates");
+  });
+
+  it("reports a standby location with the manual-report payload", async () => {
+    const response = {
+      event: locationEvent({ id: "event-4", vehicleId: "vehicle-1", eventType: "MANUAL_REPORT" }),
+      snapshotApplied: true,
+      warnings: [],
+      replayed: false
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(reportVehicleStandbyLocation("vehicle-1", {
+      longitude: 105.2421,
+      latitude: 35.2103,
+      standardizedAddress: "通渭县客运中心",
+      driverReportedAt: "2026-07-26T08:00:00Z",
+      idempotencyKey: "report-1",
+      virtualStopId: "stop-1",
+      note: "待命位置已确认",
+      providerDegraded: true,
+      outsideServiceArea: true
+    })).resolves.toEqual(response);
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const requestedUrl = new URL(String(url), "http://localhost");
+    expect(requestedUrl.pathname).toBe("/api/vehicles/vehicle-1/location-reports");
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(String(options.body))).toEqual({
+      vehicleTaskId: null,
+      taskStopId: null,
+      eventType: "MANUAL_REPORT",
+      correctsEventId: null,
+      longitude: 105.2421,
+      latitude: 35.2103,
+      standardizedAddress: "通渭县客运中心",
+      driverReportedAt: "2026-07-26T08:00:00Z",
+      idempotencyKey: "report-1",
+      virtualStopId: "stop-1",
+      note: "待命位置已确认"
+    });
   });
 });
 
