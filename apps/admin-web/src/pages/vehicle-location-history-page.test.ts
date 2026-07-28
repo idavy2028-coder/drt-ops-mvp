@@ -211,6 +211,22 @@ describe("VehicleLocationHistoryPage", () => {
           recordedAt: "2026-07-26T01:21:00Z",
           eventId: "event-invalid"
         }
+      },
+      {
+        vehicleId: "vehicle-corrupt",
+        plateNumber: "甘G00858D",
+        currentStatus: "IDLE",
+        dispatchable: true,
+        latestLocation: {
+          longitude: 105.26,
+          latitude: 35.22,
+          standardizedAddress: "??????-?G00858D",
+          source: "MANUAL_DISPATCHER",
+          coordinateSystem: "GCJ02",
+          driverReportedAt: "2026-07-26T01:20:00Z",
+          recordedAt: "2026-07-26T01:21:00Z",
+          eventId: "event-corrupt"
+        }
       }
     ]);
     render(VehicleLocationHistoryPage);
@@ -227,6 +243,15 @@ describe("VehicleLocationHistoryPage", () => {
     await fireEvent.update(screen.getByLabelText("待命车辆"), "vehicle-invalid");
     await fireEvent.click(screen.getByRole("button", { name: "上报待命位置" }));
     expect(locationPanel.receivedProps[locationPanel.receivedProps.length - 1].initialLocation).toBeUndefined();
+
+    await fireEvent.click(screen.getByRole("button", { name: "关闭待命位置面板" }));
+    await fireEvent.update(screen.getByLabelText("待命车辆"), "vehicle-corrupt");
+    await fireEvent.click(screen.getByRole("button", { name: "上报待命位置" }));
+    expect(locationPanel.receivedProps[locationPanel.receivedProps.length - 1].initialLocation).toEqual(expect.objectContaining({
+      longitude: 105.26,
+      latitude: 35.22,
+      standardizedAddress: ""
+    }));
   });
 
   it("treats an outside-service-area warning as a successful standby report", async () => {
@@ -308,7 +333,8 @@ function setDispatcherSession() {
 function locationReportVehicles() {
   return [
     { vehicleId: "vehicle-standby", plateNumber: "甘G00856D", currentStatus: "IDLE", dispatchable: true, latestLocation: null },
-    { vehicleId: "vehicle-busy", plateNumber: "甘G00857D", currentStatus: "IN_SERVICE", dispatchable: false, latestLocation: { longitude: 105.25, latitude: 35.21, standardizedAddress: "通渭县客运中心", source: "MANUAL_DISPATCHER", coordinateSystem: "GCJ02", driverReportedAt: "2026-07-26T01:20:00Z", recordedAt: "2026-07-26T01:21:00Z", eventId: "event-latest" } }
+    { vehicleId: "vehicle-busy", plateNumber: "甘G00857D", currentStatus: "IN_SERVICE", dispatchable: false, latestLocation: { longitude: 105.25, latitude: 35.21, standardizedAddress: "通渭县客运中心", source: "MANUAL_DISPATCHER", coordinateSystem: "GCJ02", driverReportedAt: "2026-07-26T01:20:00Z", recordedAt: "2026-07-26T01:21:00Z", eventId: "event-latest" } },
+    { vehicleId: "vehicle-corrupt", plateNumber: "甘G00858D", currentStatus: "IDLE", dispatchable: true, latestLocation: { longitude: 105.26, latitude: 35.22, standardizedAddress: "??????-?G00858D", source: "MANUAL_DISPATCHER", coordinateSystem: "GCJ02", driverReportedAt: "2026-07-26T01:20:00Z", recordedAt: "2026-07-26T01:21:00Z", eventId: "event-corrupt" } }
   ];
 }
 

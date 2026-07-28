@@ -36,6 +36,7 @@ const errorMessage = ref("");
 const outsideWarningVisible = ref(false);
 const outsideConfirmed = ref(false);
 const validating = ref(false);
+const mapPickActive = ref(false);
 const candidateOutsideServiceArea = ref(props.initialLocation?.outsideServiceArea === true);
 const mapContainer = ref<HTMLElement | null>(null);
 
@@ -150,6 +151,7 @@ async function pickOnMap() {
 }
 
 function selectVirtualStop() {
+  mapPickActive.value = false;
   resetOutsideConfirmation();
   const stop = props.virtualStops.find((candidate) => candidate.id === form.virtualStopId);
   if (!stop) {
@@ -172,6 +174,17 @@ function pickServiceAreaPoint(longitude: number, latitude: number) {
   form.latitude = latitude.toString();
   form.standardizedAddress = "地图点选位置";
   form.virtualStopId = "";
+  mapPickActive.value = false;
+  candidateOutsideServiceArea.value = false;
+  resetOutsideConfirmation();
+}
+
+function beginMapPick() {
+  form.virtualStopId = "";
+  form.longitude = "";
+  form.latitude = "";
+  form.standardizedAddress = "";
+  mapPickActive.value = true;
   candidateOutsideServiceArea.value = false;
   resetOutsideConfirmation();
 }
@@ -181,6 +194,7 @@ function applyCandidate(candidate: LocationCandidate) {
   form.latitude = candidate.latitude === undefined ? "" : candidate.latitude.toString();
   form.standardizedAddress = candidate.standardizedAddress;
   form.virtualStopId = candidate.virtualStopId ?? "";
+  mapPickActive.value = false;
   candidateOutsideServiceArea.value = candidate.outsideServiceArea === true;
   resetOutsideConfirmation();
 }
@@ -246,7 +260,7 @@ function toLocalInputValue(value: Date): string {
       <button class="secondary-button" type="button" :disabled="submitting || validating" @click="closePanel">关闭</button>
     </div>
 
-    <p v-if="degraded" class="inline-warning">地图服务不可用，已切换为经纬度录入。</p>
+    <p v-if="degraded" class="inline-warning">地址搜索服务未配置；可通过虚拟站点、地图点选或经纬度录入位置。</p>
     <p v-if="errorMessage" class="inline-error">{{ errorMessage }}</p>
     <div v-if="outsideWarningVisible" class="inline-warning">
       <p>当前位置可能在服务区外，请确认后再保存。</p>
@@ -256,7 +270,7 @@ function toLocalInputValue(value: Date): string {
       </label>
     </div>
 
-    <div class="provider-row">
+    <div v-if="provider" class="provider-row">
       <label class="field">
         <span>地址搜索</span>
         <input v-model="searchKeyword" :disabled="validating || provider === null" />
@@ -286,17 +300,22 @@ function toLocalInputValue(value: Date): string {
           <option v-for="stop in virtualStops" :key="stop.id" :value="stop.id">{{ stop.name }}</option>
         </select>
       </label>
+      <div class="field">
+        <span>地图点选</span>
+        <button class="secondary-button" type="button" :disabled="validating" @click="beginMapPick">地图点选位置</button>
+      </div>
+      <p v-if="mapPickActive" class="map-pick-help form-grid-wide">请在上方地图空白处点击位置，系统会自动填写经纬度。</p>
       <label class="field">
         <span>驾驶员反馈时间</span>
         <input v-model="form.driverReportedAt" :disabled="validating" type="datetime-local" />
       </label>
       <label class="field">
         <span>经度</span>
-        <input v-model="form.longitude" :disabled="validating" type="number" step="0.000001" @input="resetOutsideConfirmation" />
+        <input v-model="form.longitude" :disabled="validating" type="number" step="any" @input="resetOutsideConfirmation" />
       </label>
       <label class="field">
         <span>纬度</span>
-        <input v-model="form.latitude" :disabled="validating" type="number" step="0.000001" @input="resetOutsideConfirmation" />
+        <input v-model="form.latitude" :disabled="validating" type="number" step="any" @input="resetOutsideConfirmation" />
       </label>
       <label class="field form-grid-wide">
         <span>标准化地址</span>

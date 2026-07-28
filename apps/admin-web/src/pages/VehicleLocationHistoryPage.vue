@@ -46,7 +46,7 @@ const selectedReportInitialLocation = computed<LocationCandidate | undefined>(()
   return {
     longitude,
     latitude,
-    standardizedAddress: latestLocation.standardizedAddress,
+    standardizedAddress: usableSnapshotAddress(latestLocation.standardizedAddress),
     outsideServiceArea: latestLocation.outsideServiceArea
   };
 });
@@ -173,6 +173,11 @@ function toBoundaryView(serviceArea: ServiceArea | undefined): ServiceAreaBounda
     updatedAt: serviceArea.updatedAt,
     coordinateSystem: serviceArea.coordinateSystem
   };
+}
+
+function usableSnapshotAddress(value: string | null | undefined): string {
+  const address = value?.trim() ?? "";
+  return address.includes("?") ? "" : address;
 }
 
 function parseFiniteCoordinate(value: DecimalValue): number | undefined {

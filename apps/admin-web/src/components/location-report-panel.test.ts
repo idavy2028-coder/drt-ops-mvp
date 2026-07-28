@@ -74,7 +74,7 @@ describe("LocationReportPanel", () => {
     expect(screen.getByLabelText("经度")).toHaveValue(104.6378);
     expect(screen.getByLabelText("纬度")).toHaveValue(35.2109);
     expect(screen.getByLabelText("标准化地址")).toHaveValue("通渭县客运中心");
-    expect(screen.getByText("地图服务不可用，已切换为经纬度录入。")).toBeInTheDocument();
+    expect(screen.getByText("地址搜索服务未配置；可通过虚拟站点、地图点选或经纬度录入位置。")).toBeInTheDocument();
   });
 
   it("requires driver reported time", async () => {
@@ -181,6 +181,52 @@ describe("LocationReportPanel", () => {
       latitude: 35.215,
       standardizedAddress: "地图点选位置",
       virtualStopId: undefined
+    });
+  });
+
+  it("provides an explicit map-pick entry and clears a stale snapshot before the operator clicks the map", async () => {
+    render(LocationReportPanel, {
+      props: {
+        actionLabel: "待命",
+        initialLocation: candidate(105.2421, 35.2103, "旧待命位置"),
+        serviceArea,
+        virtualStops: [virtualStop("stop-1", "高铁站", "POINT (105.258224 35.197636)")]
+      }
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "地图点选位置" }));
+
+    expect(screen.getByText("请在上方地图空白处点击位置，系统会自动填写经纬度。")) .toBeInTheDocument();
+    expect(screen.getByLabelText("虚拟站点")).toHaveValue("");
+    expect(screen.getByLabelText("经度")).toHaveValue(null);
+    expect(screen.getByLabelText("纬度")).toHaveValue(null);
+    expect(screen.getByLabelText("标准化地址")).toHaveValue("");
+
+  });
+
+  it("accepts a high-precision service-area map pick without native step validation blocking submission", async () => {
+    mapApi.checkServiceAreaContainment.mockResolvedValueOnce(containment(true));
+    const view = render(LocationReportPanel, {
+      props: { actionLabel: "待命", serviceArea, virtualStops: [] }
+    });
+
+    await waitFor(() => expect(tileMapRuntime.handle.onClick).toHaveBeenCalled());
+    tileMapRuntime.triggerClick({ longitude: 105.26586720834847, latitude: 35.19207770795434 });
+
+    const longitude = screen.getByLabelText("经度") as HTMLInputElement;
+    const latitude = screen.getByLabelText("纬度") as HTMLInputElement;
+    expect(longitude.step).toBe("any");
+    expect(latitude.step).toBe("any");
+    expect(longitude).toBeValid();
+    expect(latitude).toBeValid();
+
+    await fireEvent.click(screen.getByRole("button", { name: "确认待命" }));
+
+    await waitFor(() => expect(view.emitted("submit")).toHaveLength(1));
+    expect(firstSubmitPayload(view.emitted("submit"))).toMatchObject({
+      longitude: 105.26586720834847,
+      latitude: 35.19207770795434,
+      standardizedAddress: "地图点选位置"
     });
   });
 
