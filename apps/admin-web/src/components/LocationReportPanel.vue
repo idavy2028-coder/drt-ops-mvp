@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
-import type { LocationCandidate, LocationPickerProvider, LocationReportInput, VirtualStop } from "../api/types";
+import { checkServiceAreaContainment } from "../api/map";
+import type { LocationCandidate, LocationPickerProvider, LocationReportInput, ServiceAreaBoundaryView, VirtualStop } from "../api/types";
+import VirtualStopMap from "./VirtualStopMap.vue";
 
 type ConfirmedLocationCandidate = LocationCandidate & {
   longitude: number;
@@ -11,6 +13,7 @@ const props = withDefaults(defineProps<{
   actionLabel: string;
   initialLocation?: LocationCandidate;
   virtualStops?: VirtualStop[];
+  serviceArea?: ServiceAreaBoundaryView;
   provider?: LocationPickerProvider | null;
   submitting?: boolean;
   isOutsideServiceArea?: (location: LocationCandidate) => boolean;
@@ -32,6 +35,7 @@ const searchResults = ref<LocationCandidate[]>([]);
 const errorMessage = ref("");
 const outsideWarningVisible = ref(false);
 const outsideConfirmed = ref(false);
+const validating = ref(false);
 const candidateOutsideServiceArea = ref(props.initialLocation?.outsideServiceArea === true);
 const mapContainer = ref<HTMLElement | null>(null);
 
@@ -53,7 +57,10 @@ watch(() => props.initialLocation, (location) => {
   applyCandidate(location);
 });
 
-function submit() {
+async function submit() {
+  if (validating.value) {
+    return;
+  }
   errorMessage.value = "";
   const candidate = currentCandidate();
   if (candidate === null) {
@@ -63,7 +70,25 @@ function submit() {
     errorMessage.value = "请填写驾驶员反馈时间";
     return;
   }
-  if (props.isOutsideServiceArea(candidate) && !outsideConfirmed.value) {
+  if (props.serviceArea) {
+    validating.value = true;
+    try {
+      const containment = await checkServiceAreaContainment(props.serviceArea.id, candidate.longitude, candidate.latitude);
+      if (typeof containment.inside !== "boolean") {
+        errorMessage.value = "服务区范围校验失败，请稍后重试。";
+        return;
+      }
+      if (containment.inside === false && !outsideConfirmed.value) {
+        outsideWarningVisible.value = true;
+        return;
+      }
+    } catch {
+      errorMessage.value = "服务区范围校验失败，请稍后重试。";
+      return;
+    } finally {
+      validating.value = false;
+    }
+  } else if (props.isOutsideServiceArea(candidate) && !outsideConfirmed.value) {
     outsideWarningVisible.value = true;
     return;
   }
@@ -125,6 +150,7 @@ async function pickOnMap() {
 }
 
 function selectVirtualStop() {
+  resetOutsideConfirmation();
   const stop = props.virtualStops.find((candidate) => candidate.id === form.virtualStopId);
   if (!stop) {
     return;
@@ -139,8 +165,15 @@ function selectVirtualStop() {
     form.latitude = "";
   }
   candidateOutsideServiceArea.value = false;
-  outsideWarningVisible.value = false;
-  outsideConfirmed.value = false;
+}
+
+function pickServiceAreaPoint(longitude: number, latitude: number) {
+  form.longitude = longitude.toString();
+  form.latitude = latitude.toString();
+  form.standardizedAddress = "地图点选位置";
+  form.virtualStopId = "";
+  candidateOutsideServiceArea.value = false;
+  resetOutsideConfirmation();
 }
 
 function applyCandidate(candidate: LocationCandidate) {
@@ -149,8 +182,18 @@ function applyCandidate(candidate: LocationCandidate) {
   form.standardizedAddress = candidate.standardizedAddress;
   form.virtualStopId = candidate.virtualStopId ?? "";
   candidateOutsideServiceArea.value = candidate.outsideServiceArea === true;
+  resetOutsideConfirmation();
+}
+
+function resetOutsideConfirmation() {
   outsideWarningVisible.value = false;
   outsideConfirmed.value = false;
+}
+
+function closePanel() {
+  if (!validating.value) {
+    emit("close");
+  }
 }
 
 function parseCoordinateInput(value: number | string | null | undefined, coordinate: "longitude" | "latitude"): number | null {
@@ -200,7 +243,7 @@ function toLocalInputValue(value: Date): string {
         <p class="panel-kicker">LOCATION REPORT</p>
         <h3 class="section-title">确认{{ actionLabel }}位置</h3>
       </div>
-      <button class="secondary-button" type="button" :disabled="submitting" @click="emit('close')">关闭</button>
+      <button class="secondary-button" type="button" :disabled="submitting || validating" @click="closePanel">关闭</button>
     </div>
 
     <p v-if="degraded" class="inline-warning">地图服务不可用，已切换为经纬度录入。</p>
@@ -216,12 +259,19 @@ function toLocalInputValue(value: Date): string {
     <div class="provider-row">
       <label class="field">
         <span>地址搜索</span>
-        <input v-model="searchKeyword" :disabled="provider === null" />
+        <input v-model="searchKeyword" :disabled="validating || provider === null" />
       </label>
-      <button class="secondary-button" type="button" :disabled="provider === null || !searchKeyword.trim()" @click="searchAddress">搜索</button>
-      <button class="secondary-button" type="button" :disabled="provider === null" @click="pickOnMap">地图选点</button>
+      <button class="secondary-button" type="button" :disabled="validating || provider === null || !searchKeyword.trim()" @click="searchAddress">搜索</button>
+      <button class="secondary-button" type="button" :disabled="validating || provider === null" @click="pickOnMap">地图选点</button>
     </div>
     <div ref="mapContainer" class="map-slot" aria-hidden="true"></div>
+    <VirtualStopMap
+      v-if="serviceArea"
+      :service-area="serviceArea"
+      :stops="virtualStops"
+      :readonly="validating"
+      @pick="pickServiceAreaPoint"
+    />
     <div v-if="searchResults.length > 0" class="candidate-list">
       <button v-for="candidate in searchResults" :key="`${candidate.longitude}-${candidate.latitude}-${candidate.standardizedAddress}`" class="candidate-button" type="button" @click="applyCandidate(candidate)">
         {{ candidate.standardizedAddress }}
@@ -231,36 +281,36 @@ function toLocalInputValue(value: Date): string {
     <div class="form-grid">
       <label class="field">
         <span>虚拟站点</span>
-        <select v-model="form.virtualStopId" @change="selectVirtualStop">
+        <select v-model="form.virtualStopId" :disabled="validating" @change="selectVirtualStop">
           <option value="">手工录入</option>
           <option v-for="stop in virtualStops" :key="stop.id" :value="stop.id">{{ stop.name }}</option>
         </select>
       </label>
       <label class="field">
         <span>驾驶员反馈时间</span>
-        <input v-model="form.driverReportedAt" type="datetime-local" />
+        <input v-model="form.driverReportedAt" :disabled="validating" type="datetime-local" />
       </label>
       <label class="field">
         <span>经度</span>
-        <input v-model="form.longitude" type="number" step="0.000001" />
+        <input v-model="form.longitude" :disabled="validating" type="number" step="0.000001" @input="resetOutsideConfirmation" />
       </label>
       <label class="field">
         <span>纬度</span>
-        <input v-model="form.latitude" type="number" step="0.000001" />
+        <input v-model="form.latitude" :disabled="validating" type="number" step="0.000001" @input="resetOutsideConfirmation" />
       </label>
       <label class="field form-grid-wide">
         <span>标准化地址</span>
-        <input v-model="form.standardizedAddress" />
+        <input v-model="form.standardizedAddress" :disabled="validating" @input="resetOutsideConfirmation" />
       </label>
       <label class="field form-grid-wide">
         <span>备注</span>
-        <input v-model="form.note" />
+        <input v-model="form.note" :disabled="validating" />
       </label>
     </div>
 
     <div class="toolbar">
-      <button class="primary-button" type="submit" :disabled="submitting">{{ submitting ? "正在提交" : `确认${actionLabel}` }}</button>
-      <button class="secondary-button" type="button" :disabled="submitting" @click="emit('close')">取消</button>
+      <button class="primary-button" type="submit" :disabled="submitting || validating">{{ submitting ? "正在提交" : `确认${actionLabel}` }}</button>
+      <button class="secondary-button" type="button" :disabled="submitting || validating" @click="closePanel">取消</button>
     </div>
   </form>
 </template>

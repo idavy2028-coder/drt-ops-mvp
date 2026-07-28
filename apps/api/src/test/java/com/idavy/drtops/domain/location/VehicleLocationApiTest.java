@@ -140,6 +140,47 @@ class VehicleLocationApiTest {
     }
 
     @Test
+    void dispatcherReadsLocationReportingCandidatesWithAndWithoutSnapshots() throws Exception {
+        Map<String, Object> snapshotPayload = reportPayload(UUID.randomUUID(), "2026-07-13T09:00:00+08:00");
+        String reportResponse = report(OTHER_VEHICLE_ID, dispatcherToken, snapshotPayload)
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID eventId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(reportResponse, "$.data.event.id"));
+
+        MvcResult result = mockMvc.perform(get("/api/vehicles/location-reporting-candidates")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(dispatcherToken)))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode candidates = objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+        JsonNode withoutSnapshot = candidateFor(candidates, VEHICLE_ID);
+        JsonNode withSnapshot = candidateFor(candidates, OTHER_VEHICLE_ID);
+
+        assertThat(candidates).hasSize(2);
+        assertThat(withoutSnapshot.path("vehicleId").asText()).isEqualTo(VEHICLE_ID.toString());
+        assertThat(withoutSnapshot.path("plateNumber").asText()).isEqualTo("沪A10001");
+        assertThat(withoutSnapshot.path("currentStatus").asText()).isEqualTo("AVAILABLE");
+        assertThat(withoutSnapshot.path("dispatchable").asBoolean()).isTrue();
+        assertThat(withoutSnapshot.path("latestLocation").isNull()).isTrue();
+
+        assertThat(withSnapshot.path("vehicleId").asText()).isEqualTo(OTHER_VEHICLE_ID.toString());
+        assertThat(withSnapshot.path("plateNumber").asText()).isEqualTo("沪A10002");
+        assertThat(withSnapshot.path("currentStatus").asText()).isEqualTo("AVAILABLE");
+        assertThat(withSnapshot.path("dispatchable").asBoolean()).isTrue();
+        JsonNode latestLocation = withSnapshot.path("latestLocation");
+        assertThat(latestLocation.path("longitude").decimalValue())
+                .isEqualByComparingTo("121.4737");
+        assertThat(latestLocation.path("latitude").decimalValue())
+                .isEqualByComparingTo("31.2304");
+        assertThat(latestLocation.path("standardizedAddress").asText())
+                .isEqualTo(snapshotPayload.get("standardizedAddress"));
+        assertThat(latestLocation.path("eventId").asText()).isEqualTo(eventId.toString());
+
+        mockMvc.perform(get("/api/vehicles/location-reporting-candidates")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(operatorToken)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void replayKeepsSnapshotEventAndTimesAndDoesNotDuplicateAudit() throws Exception {
         UUID originalKey = UUID.randomUUID();
         Map<String, Object> originalPayload = reportPayload(originalKey, "2026-07-13T09:00:00+08:00");
@@ -514,8 +555,23 @@ class VehicleLocationApiTest {
 
     private org.springframework.test.web.servlet.ResultActions report(String token, Map<String, Object> payload)
             throws Exception {
-        return mockMvc.perform(post(reportPath()).header(HttpHeaders.AUTHORIZATION, bearer(token))
+        return report(VEHICLE_ID, token, payload);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions report(
+            UUID vehicleId, String token, Map<String, Object> payload) throws Exception {
+        return mockMvc.perform(post("/api/vehicles/" + vehicleId + "/location-reports")
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
                 .contentType(MediaType.APPLICATION_JSON).content(json(payload)));
+    }
+
+    private static JsonNode candidateFor(JsonNode candidates, UUID vehicleId) {
+        for (JsonNode candidate : candidates) {
+            if (vehicleId.toString().equals(candidate.path("vehicleId").asText())) {
+                return candidate;
+            }
+        }
+        throw new AssertionError("候选车辆不存在: " + vehicleId);
     }
 
     private TaskFixture createTask(UUID vehicleId) {

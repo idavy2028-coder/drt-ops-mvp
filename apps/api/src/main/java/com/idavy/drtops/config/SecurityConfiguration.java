@@ -60,6 +60,8 @@ public class SecurityConfiguration {
                         .requestMatchers("/api/audit-logs/**").hasAuthority("AUDIT_READ")
                         .requestMatchers("/api/metrics/**").hasAuthority("METRICS_READ")
                         .requestMatchers("/api/users/**").hasAuthority("USER_MANAGE")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicles/location-reporting-candidates")
+                        .hasAuthority("LOCATION_REPORT")
                         .requestMatchers(HttpMethod.POST, "/api/vehicles/*/location-reports").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/locations/latest").hasAuthority("LOCATION_READ")
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/*/location-events").hasAuthority("LOCATION_READ")

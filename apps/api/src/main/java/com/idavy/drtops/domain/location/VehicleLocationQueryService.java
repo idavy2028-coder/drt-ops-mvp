@@ -60,6 +60,15 @@ public class VehicleLocationQueryService {
                     .toList());
     }
 
+    @PreAuthorize("hasAuthority('LOCATION_REPORT')")
+    public List<VehicleLocationReportCandidate> reportableVehicles() {
+        return metrics.recordQuery(() -> vehicleRepository.findAll().stream()
+                .map(vehicle -> new VehicleLocationReportCandidate(
+                        vehicle.getId(), vehicle.getPlateNumber(), vehicle.getCurrentStatus(),
+                        vehicle.isDispatchable(), VehicleLocationSnapshotView.from(vehicle)))
+                .toList());
+    }
+
     @PreAuthorize("hasAuthority('LOCATION_EXPORT')")
     public List<VehicleLocationView> export(
             OffsetDateTime from, OffsetDateTime to, LocalDate date, UUID taskId, LocationEventType eventType) {
@@ -89,5 +98,11 @@ public class VehicleLocationQueryService {
     }
 
     record VehicleLocationSnapshotItem(UUID vehicleId, String plateNumber, String currentStatus, VehicleLocationSnapshotView latestLocation) { }
+    record VehicleLocationReportCandidate(
+            UUID vehicleId,
+            String plateNumber,
+            String currentStatus,
+            boolean dispatchable,
+            VehicleLocationSnapshotView latestLocation) { }
     private record TimeRange(OffsetDateTime from, OffsetDateTime to) { }
 }

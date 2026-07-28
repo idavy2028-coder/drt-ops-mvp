@@ -208,6 +208,21 @@ export interface VehicleLocationSnapshotItem {
   latestLocation: VehicleLocationSnapshot;
 }
 
+export interface VehicleLocationReportCandidate {
+  vehicleId: UUID;
+  plateNumber: string;
+  currentStatus: string;
+  dispatchable: boolean;
+  latestLocation: VehicleLocationSnapshot | null;
+}
+
+export interface LocationReportResponse {
+  event: VehicleLocationView;
+  snapshotApplied: boolean;
+  warnings: string[];
+  replayed: boolean;
+}
+
 export interface Vehicle {
   id: UUID;
   plateNumber: string;
