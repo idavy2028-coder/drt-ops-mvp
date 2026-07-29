@@ -1,7 +1,15 @@
+const ALGORITHM_UNAVAILABLE = "ALGORITHM_UNAVAILABLE";
+
+interface ErrorPayload {
+  code?: string;
+  message?: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
-    message?: string
+    message?: string,
+    public readonly code?: string
   ) {
     super(message || defaultMessage(status));
     this.name = "ApiError";
@@ -9,9 +17,18 @@ export class ApiError extends Error {
 }
 
 export async function apiErrorFromResponse(response: Response): Promise<ApiError> {
+  const shouldReadPayload = response.status === 400 || response.status === 409 || response.status === 503;
+  const payload = shouldReadPayload ? extractPayload(await response.text()) : {};
   const isBusinessError = response.status === 400 || response.status === 409;
-  const message = isBusinessError ? extractMessage(await response.text()) : undefined;
-  return new ApiError(response.status, message);
+  const code = response.status === 503 && payload.code === ALGORITHM_UNAVAILABLE
+    ? payload.code
+    : undefined;
+  const message = isBusinessError
+    ? payload.message
+    : code === ALGORITHM_UNAVAILABLE
+      ? "算法服务不可用"
+      : undefined;
+  return new ApiError(response.status, message, code);
 }
 
 export function userMessage(error: unknown, fallback: string): string {
@@ -24,15 +41,18 @@ export function userMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function extractMessage(body: string): string | undefined {
+function extractPayload(body: string): ErrorPayload {
   if (!body) {
-    return undefined;
+    return {};
   }
   try {
-    const parsed = JSON.parse(body) as { data?: { message?: unknown } };
-    return typeof parsed.data?.message === "string" ? parsed.data.message : undefined;
+    const parsed = JSON.parse(body) as { data?: { code?: unknown; message?: unknown } };
+    return {
+      code: typeof parsed.data?.code === "string" ? parsed.data.code : undefined,
+      message: typeof parsed.data?.message === "string" ? parsed.data.message : undefined
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 

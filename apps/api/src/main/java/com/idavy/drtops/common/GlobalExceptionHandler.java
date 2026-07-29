@@ -1,6 +1,7 @@
 package com.idavy.drtops.common;
 
 import com.idavy.drtops.domain.map.MapProviderException;
+import com.idavy.drtops.integration.algorithm.AlgorithmUnavailableException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Map;
@@ -16,6 +17,15 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(AlgorithmUnavailableException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> handleAlgorithmUnavailable(
+            AlgorithmUnavailableException exception) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.ok(Map.of(
+                        "code", AlgorithmUnavailableException.ERROR_CODE,
+                        "message", AlgorithmUnavailableException.USER_MESSAGE)));
+    }
 
     @ExceptionHandler(MapProviderException.class)
     ResponseEntity<ApiResponse<Map<String, String>>> handleMapProvider(MapProviderException exception) {

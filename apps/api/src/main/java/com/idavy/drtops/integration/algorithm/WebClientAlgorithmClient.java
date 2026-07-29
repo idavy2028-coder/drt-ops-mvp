@@ -18,11 +18,19 @@ class WebClientAlgorithmClient implements AlgorithmClient {
 
     @Override
     public DispatchEvaluateResponse evaluate(DispatchEvaluateRequest request) {
-        return webClient.post()
-                .uri("/dispatch/evaluate")
-                .bodyValue(request)
-                .retrieve()
-                .bodyToMono(DispatchEvaluateResponse.class)
-                .block(Duration.ofSeconds(5));
+        try {
+            DispatchEvaluateResponse response = webClient.post()
+                    .uri("/dispatch/evaluate")
+                    .bodyValue(request)
+                    .retrieve()
+                    .bodyToMono(DispatchEvaluateResponse.class)
+                    .block(Duration.ofSeconds(5));
+            if (response == null) {
+                throw new IllegalStateException("Algorithm returned an empty response");
+            }
+            return response;
+        } catch (RuntimeException exception) {
+            throw new AlgorithmUnavailableException(exception);
+        }
     }
 }
