@@ -239,11 +239,12 @@ P3 当前状态：已完成并收口。方案 A 最小权限设计保持不变�
 - 告警通知链路通过：`dispatcher02` 正式接口区外上报告警成功，随后恢复区内快照；管理端位置历史和审计页显示两条新增记录，审计增量为 2。
 - 首日资源门禁通过：API/前端/算法/模拟路由/数据库运行正常，31/31 站点在已发布服务区内，4 车 `IDLE`、4 驾驶员 `AVAILABLE`、活动任务 0、重复活动任务 0，规则参数未变化。
 - 最终回归通过：后端 209 项（失败 0、错误 0、跳过 24），前端 31 个测试文件 173 项，类型检查、生产构建和模拟路由 5 项均通过。
-- 当前唯一阻断：`dispatcher02.mustChangePassword=true`。必须由用户完成首次改密并复核角色仍仅为 `DISPATCHER` 后，才能启动首日 5–10 笔真实订单。
+- `dispatcher02` 首次改密已完成；最终只读复核确认账号启用、`mustChangePassword=false`，角色仍仅为 `DISPATCHER`。
+- 首日资源终态复核：4/4 车辆 `IDLE` 且可调度，4/4 驾驶员 `AVAILABLE` 且资质为 `QUALIFIED`，活动任务 0、同车重复活动任务 0；API `UP`、前端 HTTP 200、模拟路由 `UP`。
 - 详细证据：
   - `docs/pilot/evidence/p4-capacity-validation-2026-07-30.md`
   - `docs/pilot/evidence/p4-backup-restore-drill-2026-07-30.md`
   - `docs/pilot/evidence/p4-alert-chain-validation-2026-07-30.md`
   - `docs/pilot/evidence/p5-day-1-readiness-2026-07-30.md`
 
-P4 技术验证状态：已完成。首日真实订单启动状态：阻断，等待 `dispatcher02` 首次改密。
+P4 技术验证状态：已完成。首日真实订单启动门禁：已解除，允许按 5–10 笔/日进入试运行。

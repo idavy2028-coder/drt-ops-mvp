@@ -54,6 +54,6 @@
 - 服务区外位置告警已在当前试点环境通过正式 API 复核：接口返回 `OUTSIDE_SERVICE_AREA`，随后通过启用区内站点恢复最新快照。
 - `SYSTEM_ADMIN` 已在位置历史、审计日志和运营看板完成页面验收；审计新增两条 `VEHICLE_LOCATION_REPORTED`。
 - 当前没有带活动任务的自然过期位置样本，因此“超过 30 分钟未更新”页面提示分支本轮不适用；未伪造任务或历史时间。
-- 位置模块 P4 技术门禁已解除。首日真实订单仍受 `dispatcher02` 首次改密门禁阻断。
+- 位置模块 P4 技术门禁已解除。`dispatcher02` 首次改密完成且最小权限未变化，首日真实订单启动门禁已解除。
 
 详细证据见 `docs/pilot/evidence/p4-capacity-validation-2026-07-30.md`、`p4-backup-restore-drill-2026-07-30.md` 和 `p4-alert-chain-validation-2026-07-30.md`。

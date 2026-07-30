@@ -253,8 +253,8 @@ npm run e2e -- auth-rbac.spec.ts
 | 服务与资源 | API/前端/算法/模拟路由/数据库可用；31/31 站点在区内；4 车和 4 驾驶员可用 |
 | 规则 | 5/8/60、82/62、0.35/0.20/0.30/0.15、`REALTIME_INSERTION`，无变化 |
 | 自动化回归 | 后端 209 项、前端 173 项、模拟路由 5 项均 0 失败；类型检查和构建通过 |
-| 首日启动 | **阻断**；`dispatcher02.mustChangePassword=true`，用户首次改密后需重新复核 |
+| 首日启动 | 通过；`dispatcher02.mustChangePassword=false`，角色仍仅为 `DISPATCHER`，允许 5–10 笔/日 |
 
-告警通知范围只包含管理端页面和审计记录。路线继续采用虚拟站点/人工坐标和当前估算，ETA 仅作参考。首日计划为 5–10 笔真实订单，但在账号门禁解除前不得录入。
+告警通知范围只包含管理端页面和审计记录。路线继续采用虚拟站点/人工坐标和当前估算，ETA 仅作参考。账号、4 车、4 驾驶员和活动任务终态复核通过，允许按首日计划录入 5–10 笔真实订单。
 
 证据见 `docs/pilot/evidence/p4-capacity-validation-2026-07-30.md`、`p4-backup-restore-drill-2026-07-30.md`、`p4-alert-chain-validation-2026-07-30.md` 和 `p5-day-1-readiness-2026-07-30.md`。
