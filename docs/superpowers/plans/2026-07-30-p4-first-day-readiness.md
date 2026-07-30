@@ -351,7 +351,7 @@ git commit -m "ops: verify pilot database recovery"
 
 ```text
 POST /api/vehicles/{vehicleId}/location-reports
-eventType = TASK_STARTED
+eventType = MANUAL_REPORT
 driverReportedAt = 当前时间
 idempotencyKey = 新 UUID
 note = P4 告警链路验证：区外位置
@@ -432,7 +432,7 @@ git commit -m "test: verify pilot alert notification chain"
 npm.cmd --prefix apps/admin-web run test
 npm.cmd --prefix apps/admin-web run typecheck
 npm.cmd --prefix apps/admin-web run build
-python -m unittest discover -s apps/route-simulator/tests -v
+python -m unittest apps/route-simulator/test_server.py -v
 ```
 
 Expected: 后端、前端、类型检查、构建和路由模拟器测试均为 0 失败。
