@@ -23,21 +23,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class RideOrderController {
 
     private final RideOrderService rideOrderService;
+    private final RideOrderQueryService rideOrderQueryService;
     private final DispatchOrchestrator dispatchOrchestrator;
     private final OrderExceptionService orderExceptionService;
 
     public RideOrderController(
             RideOrderService rideOrderService,
+            RideOrderQueryService rideOrderQueryService,
             DispatchOrchestrator dispatchOrchestrator,
             OrderExceptionService orderExceptionService) {
         this.rideOrderService = rideOrderService;
+        this.rideOrderQueryService = rideOrderQueryService;
         this.dispatchOrchestrator = dispatchOrchestrator;
         this.orderExceptionService = orderExceptionService;
     }
 
     @GetMapping
-    ApiResponse<List<RideOrder>> list() {
-        return ApiResponse.ok(rideOrderService.list());
+    ApiResponse<List<RideOrderView>> list() {
+        return ApiResponse.ok(rideOrderQueryService.list());
     }
 
     @PostMapping

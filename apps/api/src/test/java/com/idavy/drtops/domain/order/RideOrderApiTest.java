@@ -103,7 +103,10 @@ class RideOrderApiTest {
 
         mockMvc.perform(get("/api/orders"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1));
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].canMarkNoShow").value(false))
+                .andExpect(jsonPath("$.data[0].noShowBlockReason")
+                        .value("订单尚未开始执行"));
     }
 
     @TestConfiguration(proxyBeanMethods = false)
