@@ -10,6 +10,8 @@ import com.idavy.drtops.auth.RoleCode;
 import com.idavy.drtops.auth.UserAccount;
 import com.idavy.drtops.auth.UserAccountRepository;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
+import com.idavy.drtops.domain.fleet.Driver;
+import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.LocationEventType;
@@ -73,6 +75,9 @@ class TaskExecutionApiTest {
     VehicleRepository vehicleRepository;
 
     @Autowired
+    DriverRepository driverRepository;
+
+    @Autowired
     UserAccountRepository userAccountRepository;
 
     @Autowired
@@ -88,6 +93,7 @@ class TaskExecutionApiTest {
         vehicleTaskRepository.deleteAll();
         rideOrderRepository.deleteAll();
         vehicleRepository.deleteAll();
+        driverRepository.deleteAll();
         userAccountRepository.deleteAll();
 
         vehicleRepository.save(Vehicle.create(
@@ -95,10 +101,19 @@ class TaskExecutionApiTest {
                 "浙A00001",
                 "MINIBUS",
                 8,
-                "AVAILABLE",
+                "IDLE",
                 "POINT(120.1550 30.2741)",
                 "测试车队",
                 true));
+        driverRepository.save(Driver.create(
+                DRIVER_ID,
+                "测试司机",
+                "13900004001",
+                "QUALIFIED",
+                OffsetDateTime.parse("2026-07-08T06:30:00+08:00"),
+                OffsetDateTime.parse("2026-07-08T19:00:00+08:00"),
+                "AVAILABLE",
+                "测试车队"));
 
         UserAccount dispatcher = UserAccount.create("dispatcher01", "dispatcher01", "not-used-in-task-execution-test");
         dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER));
@@ -120,6 +135,10 @@ class TaskExecutionApiTest {
                 .andExpect(jsonPath("$.data.task.status").value("IN_PROGRESS"))
                 .andExpect(jsonPath("$.data.locationEvent.eventType").value("TASK_STARTED"))
                 .andExpect(jsonPath("$.data.replayed").value(false));
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("IN_SERVICE");
+        assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("BUSY");
 
         mockMvc.perform(post("/api/vehicle-tasks/" + taskId + "/start")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
@@ -171,6 +190,10 @@ class TaskExecutionApiTest {
         RideOrder order = rideOrderRepository.findAll().getFirst();
         assertThat(task.getStatus()).isEqualTo(TaskStatus.COMPLETED);
         assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("IDLE");
+        assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("AVAILABLE");
         assertThat(vehicleLocationEventRepository.findByVehicleTaskIdOrderByDriverReportedAtAsc(taskId))
                 .extracting(event -> event.getEventType())
                 .containsExactly(

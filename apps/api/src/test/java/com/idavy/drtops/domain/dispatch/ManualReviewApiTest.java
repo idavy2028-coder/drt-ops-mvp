@@ -129,6 +129,10 @@ class ManualReviewApiTest {
         RideOrder order = rideOrderRepository.findAll().getFirst();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
         assertThat(vehicleTaskRepository.findAll()).hasSize(1);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("DISPATCHED");
+        assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("BUSY");
         assertThat(auditLogRepository.findByEntityId(order.getId()))
                 .anyMatch(log -> log.getAction().equals("MANUAL_REVIEW_APPROVED")
                         && log.getActorType().equals("USER")

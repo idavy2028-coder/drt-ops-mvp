@@ -11,6 +11,7 @@ import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.TaskStatus;
+import com.idavy.drtops.domain.task.TaskResourceCoordinator;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import jakarta.persistence.EntityManager;
@@ -31,6 +32,7 @@ public class ManualReviewService {
     private final VehicleRepository vehicleRepository;
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
+    private final TaskResourceCoordinator taskResourceCoordinator;
     private final AuditLogRepository auditLogRepository;
     private final EntityManager entityManager;
 
@@ -40,6 +42,7 @@ public class ManualReviewService {
             VehicleRepository vehicleRepository,
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
+            TaskResourceCoordinator taskResourceCoordinator,
             AuditLogRepository auditLogRepository,
             EntityManager entityManager) {
         this.dispatchDecisionRepository = dispatchDecisionRepository;
@@ -47,6 +50,7 @@ public class ManualReviewService {
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
+        this.taskResourceCoordinator = taskResourceCoordinator;
         this.auditLogRepository = auditLogRepository;
         this.entityManager = entityManager;
     }
@@ -100,6 +104,7 @@ public class ManualReviewService {
         task.addStop(TaskStop.planned(order.getBoardingStopId(), order.getId(), 1, "BOARDING", boardingAt));
         task.addStop(TaskStop.planned(order.getAlightingStopId(), order.getId(), 2, "ALIGHTING", alightingAt));
         task.dispatch();
+        taskResourceCoordinator.reserve(vehicle.getId(), driver.getId());
         return vehicleTaskRepository.save(task);
     }
 

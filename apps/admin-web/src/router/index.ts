@@ -11,9 +11,11 @@ import TasksPage from "../pages/TasksPage.vue";
 import LoginPage from "../pages/LoginPage.vue";
 import UserManagementPage from "../pages/UserManagementPage.vue";
 import VehicleLocationHistoryPage from "../pages/VehicleLocationHistoryPage.vue";
+import ChangePasswordPage from "../pages/ChangePasswordPage.vue";
 
 export const routes: RouteRecordRaw[] = [
   { path: "/login", name: "login", component: LoginPage, meta: { public: true } },
+  { path: "/change-password", name: "changePassword", component: ChangePasswordPage, meta: { standalone: true } },
   { path: "/", name: "dashboard", component: DashboardPage, meta: { title: "运营看板", permission: "METRICS_READ" } },
   { path: "/dispatch", name: "dispatch", component: DispatchWorkbenchPage, meta: { title: "调度工作台", permission: "DISPATCH_EXECUTE" } },
   { path: "/resources", name: "resources", component: ResourcesPage, meta: { title: "资源配置", permission: "RESOURCE_MANAGE" } },
@@ -33,6 +35,12 @@ export function createAppRouter(history: RouterHistory = createWebHistory()) {
     }
     if (!(await authStore.restore())) {
       return { name: "login", query: { redirect: to.fullPath } };
+    }
+    if (authStore.user?.mustChangePassword === true) {
+      return to.name === "changePassword" ? true : { name: "changePassword" };
+    }
+    if (to.name === "changePassword") {
+      return { name: "dashboard" };
     }
     const requiredPermission = to.meta.permission as PermissionCode | undefined;
     if (requiredPermission === undefined || authStore.has(requiredPermission)) {

@@ -15,6 +15,7 @@ import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
+import com.idavy.drtops.domain.task.TaskResourceCoordinator;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
@@ -44,6 +45,7 @@ public class DispatchOrchestrator {
     private final VehicleRepository vehicleRepository;
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
+    private final TaskResourceCoordinator taskResourceCoordinator;
     private final AuditLogRepository auditLogRepository;
     private final CandidateTaskAssembler candidateTaskAssembler;
     private final AlgorithmClient algorithmClient;
@@ -57,6 +59,7 @@ public class DispatchOrchestrator {
             VehicleRepository vehicleRepository,
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
+            TaskResourceCoordinator taskResourceCoordinator,
             AuditLogRepository auditLogRepository,
             CandidateTaskAssembler candidateTaskAssembler,
             AlgorithmClient algorithmClient,
@@ -68,6 +71,7 @@ public class DispatchOrchestrator {
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
+        this.taskResourceCoordinator = taskResourceCoordinator;
         this.auditLogRepository = auditLogRepository;
         this.candidateTaskAssembler = candidateTaskAssembler;
         this.algorithmClient = algorithmClient;
@@ -89,7 +93,7 @@ public class DispatchOrchestrator {
         response = forceManualReviewWhenRequired(response, assembly);
         CandidateTaskAssembler.CandidateTravelEstimates travelEstimates = assembly.estimatesFor(response.bestPlan());
 
-        VehicleTask vehicleTask = applyDecision(order, response, travelEstimates);
+        VehicleTask vehicleTask = applyDecision(order, response, travelEstimates, assembly);
         DispatchDecision decision = dispatchDecisionRepository.save(DispatchDecision.fromAlgorithm(
                 order.getId(),
                 response,
@@ -163,9 +167,14 @@ public class DispatchOrchestrator {
     private VehicleTask applyDecision(
             RideOrder order,
             DispatchEvaluateResponse response,
-            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates) {
+            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates,
+            CandidateTaskAssembler.Assembly assembly) {
         return switch (response.decision()) {
-            case AUTO_DISPATCH -> autoDispatch(order, response.bestPlan(), travelEstimates);
+            case AUTO_DISPATCH -> autoDispatch(
+                    order,
+                    response.bestPlan(),
+                    travelEstimates,
+                    assembly.isNewTaskCandidate(response.bestPlan()));
             case MANUAL_REVIEW -> {
                 order.markPendingManualReview(explanationReason(response));
                 yield null;
@@ -180,12 +189,13 @@ public class DispatchOrchestrator {
     private VehicleTask autoDispatch(
             RideOrder order,
             DispatchEvaluateResponse.BestPlan bestPlan,
-            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates) {
+            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates,
+            boolean newTaskCandidate) {
         if (bestPlan == null) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "算法自动派发结果缺少最优方案");
         }
 
-        VehicleTask existingTask = bestPlan.taskId() == null
+        VehicleTask existingTask = bestPlan.taskId() == null || newTaskCandidate
                 ? null : taskForInsertion(bestPlan.taskId());
         Vehicle vehicle = vehicleRepository.findById(bestPlan.vehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的车辆不存在"));
@@ -221,6 +231,7 @@ public class DispatchOrchestrator {
                 estimatedArrivalAt));
         task.dispatch();
 
+        taskResourceCoordinator.reserve(vehicle.getId(), driver.getId());
         VehicleTask savedTask = vehicleTaskRepository.save(task);
         order.confirm(new RideOrder.OrderPromise(estimatedBoardingAt, estimatedArrivalAt));
         return savedTask;

@@ -199,7 +199,9 @@ function openCompleteTaskPanel() {
     type: "complete",
     label: "完成",
     task: selectedTask.value,
-    initialLocation: lastStop ? stopCandidate(lastStop) : snapshotCandidate(selectedTask.value.vehicleId)
+    initialLocation: lastStop
+      ? taskCompletionCandidate(lastStop)
+      : snapshotCandidate(selectedTask.value.vehicleId)
   };
 }
 
@@ -294,6 +296,15 @@ function stopCandidate(stop: TaskStop): LocationCandidate | undefined {
     standardizedAddress: virtualStop.name,
     virtualStopId: virtualStop.id
   };
+}
+
+function taskCompletionCandidate(stop: TaskStop): LocationCandidate | undefined {
+  const candidate = stopCandidate(stop);
+  if (!candidate) {
+    return undefined;
+  }
+  const { virtualStopId: _virtualStopId, ...location } = candidate;
+  return location;
 }
 
 function applyLocationEvent(response: TaskActionResponse) {

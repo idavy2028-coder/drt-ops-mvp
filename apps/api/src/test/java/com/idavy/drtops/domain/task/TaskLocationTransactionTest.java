@@ -10,6 +10,8 @@ import com.idavy.drtops.auth.RoleCode;
 import com.idavy.drtops.auth.UserAccount;
 import com.idavy.drtops.auth.UserAccountRepository;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
+import com.idavy.drtops.domain.fleet.Driver;
+import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
@@ -67,6 +69,7 @@ class TaskLocationTransactionTest {
     @Autowired MockMvc mockMvc;
     @Autowired VehicleTaskRepository vehicleTaskRepository;
     @Autowired VehicleRepository vehicleRepository;
+    @Autowired DriverRepository driverRepository;
     @Autowired VehicleLocationEventRepository eventRepository;
     @Autowired AuditLogRepository auditLogRepository;
     @Autowired UserAccountRepository userAccountRepository;
@@ -86,6 +89,7 @@ class TaskLocationTransactionTest {
         eventRepository.deleteAll();
         vehicleTaskRepository.deleteAll();
         vehicleRepository.deleteAll();
+        driverRepository.deleteAll();
         userAccountRepository.deleteAll();
 
         vehicleRepository.save(Vehicle.create(
@@ -93,10 +97,19 @@ class TaskLocationTransactionTest {
                 "浙A00002",
                 "MINIBUS",
                 8,
-                "AVAILABLE",
+                "IDLE",
                 "POINT(120.1550 30.2741)",
                 "事务测试车队",
                 true));
+        driverRepository.save(Driver.create(
+                DRIVER_ID,
+                "事务测试司机",
+                "13900006001",
+                "QUALIFIED",
+                OffsetDateTime.parse("2026-07-30T06:30:00+08:00"),
+                OffsetDateTime.parse("2026-07-30T19:00:00+08:00"),
+                "AVAILABLE",
+                "事务测试车队"));
         UserAccount dispatcher = UserAccount.create("task-location", "task-location", "not-used");
         dispatcher.assignRoles(Set.of(RoleCode.DISPATCHER));
         dispatcher = userAccountRepository.save(dispatcher);

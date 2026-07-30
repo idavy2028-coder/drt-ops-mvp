@@ -55,6 +55,13 @@ export const authStore = {
       this.clearSessionForTest();
     }
   },
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    if (state.accessToken === null) {
+      throw new Error("No authenticated session");
+    }
+    await authApi.changePassword(state.accessToken, currentPassword, newPassword);
+    this.clearSessionForTest();
+  },
   setSessionForTest(session: TestSession): void {
     state.accessToken = session?.accessToken ?? null;
     state.user = session?.user ?? null;

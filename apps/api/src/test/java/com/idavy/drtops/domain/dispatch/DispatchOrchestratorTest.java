@@ -139,6 +139,24 @@ class DispatchOrchestratorTest {
                 .anyMatch(log -> log.getAction().equals("ORDER_AUTO_DISPATCHED"));
         assertThat(algorithmClient.lastRequest().order().orderId()).isEqualTo(orderId);
         assertThat(algorithmClient.lastRequest().candidateTasks()).hasSize(1);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("DISPATCHED");
+        assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("BUSY");
+    }
+
+    @Test
+    void autoDispatchCreatesVehicleTaskWhenAlgorithmEchoesNewCandidateTaskId() {
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatchEchoingCandidateTaskId();
+
+        DispatchResult result = orchestrator.dispatchOrder(orderId);
+
+        assertThat(result.decision()).isEqualTo(DispatchDecisionType.AUTO_DISPATCH);
+        assertThat(vehicleTaskRepository.findAll()).hasSize(1);
+        assertThat(result.vehicleTaskId()).isEqualTo(vehicleTaskRepository.findAll().getFirst().getId());
+        assertThat(dispatchDecisionRepository.findByRideOrderId(orderId).getFirst().getBestTaskId())
+                .isEqualTo(result.vehicleTaskId());
     }
 
     @Test
@@ -164,7 +182,7 @@ class DispatchOrchestratorTest {
                 .isEqualTo(existingTaskId);
         assertThat(algorithmClient.lastRequest().candidateTasks())
                 .extracting(DispatchEvaluateRequest.CandidateTask::taskId)
-                .contains(existingTaskId);
+                .containsExactly(existingTaskId);
     }
 
     @Test
@@ -348,16 +366,22 @@ class DispatchOrchestratorTest {
 
         private DispatchEvaluateResponse nextResponse;
         private DispatchEvaluateRequest lastRequest;
+        private boolean echoCandidateTaskId;
 
         @Override
         public DispatchEvaluateResponse evaluate(DispatchEvaluateRequest request) {
             this.lastRequest = request;
+            if (echoCandidateTaskId) {
+                DispatchEvaluateRequest.CandidateTask candidate = request.candidateTasks().getFirst();
+                return response(DispatchDecisionType.AUTO_DISPATCH, candidate.taskId(), candidate.vehicleId());
+            }
             return nextResponse;
         }
 
         void reset() {
             nextResponse = null;
             lastRequest = null;
+            echoCandidateTaskId = false;
         }
 
         DispatchEvaluateRequest lastRequest() {
@@ -366,6 +390,10 @@ class DispatchOrchestratorTest {
 
         void stubAutoDispatch(UUID vehicleId) {
             nextResponse = response(DispatchDecisionType.AUTO_DISPATCH, vehicleId);
+        }
+
+        void stubAutoDispatchEchoingCandidateTaskId() {
+            echoCandidateTaskId = true;
         }
 
         void stubAutoDispatchIntoTask(UUID taskId, UUID vehicleId) {

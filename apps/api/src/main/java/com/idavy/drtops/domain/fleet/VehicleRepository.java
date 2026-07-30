@@ -13,4 +13,8 @@ public interface VehicleRepository extends JpaRepository<Vehicle, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select vehicle from Vehicle vehicle where vehicle.id = :id")
     Optional<Vehicle> findByIdForLocationUpdate(@Param("id") UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select vehicle from Vehicle vehicle where vehicle.id = :id")
+    Optional<Vehicle> findByIdForAssignment(@Param("id") UUID id);
 }

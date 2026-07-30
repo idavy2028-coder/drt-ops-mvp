@@ -200,6 +200,31 @@ describe("TasksPage", () => {
     expect((screen.getByLabelText("纬度") as HTMLInputElement).value).toBe("");
     expect(screen.getByLabelText("标准化地址")).toHaveValue("解析失败站");
   });
+
+  it("does not submit a virtual stop id for task-level completion", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    const fetchMock = taskPageFetchMock({
+      taskResponse: completableTaskResponse(),
+      virtualStops: [virtualStopFixture("virtual-stop-2", "终点站", "POINT(104.6500 35.2200)")]
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(TasksPage);
+
+    await screen.findByText("执行中");
+    await fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await fireEvent.update(await screen.findByLabelText("驾驶员反馈时间"), "2026-07-13T03:20");
+    await fireEvent.click(screen.getByRole("button", { name: "确认完成" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/complete"))).toBe(true));
+    const completeCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/complete"));
+    const body = JSON.parse((completeCall?.[1] as RequestInit).body as string);
+    expect(body.locationReport).not.toHaveProperty("virtualStopId");
+    expect(body.locationReport).toMatchObject({
+      longitude: 104.65,
+      latitude: 35.22,
+      standardizedAddress: "终点站"
+    });
+  });
 });
 
 function completedTaskResponse(): Response {
@@ -252,6 +277,20 @@ function inProgressTaskResponse(): Response {
     plannedStartAt: "2026-07-13T03:00:00Z",
     stops: [
       { id: "invalid-stop", virtualStopId: "virtual-stop-invalid", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T03:01:00Z", status: "PLANNED" }
+    ]
+  }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function completableTaskResponse(): Response {
+  return new Response(JSON.stringify({ data: [{
+    id: "task-completable",
+    vehicleId: "vehicle-3",
+    driverId: "driver-3",
+    status: "IN_PROGRESS",
+    plannedStartAt: "2026-07-13T03:00:00Z",
+    stops: [
+      { id: "boarding-complete", virtualStopId: "virtual-stop-1", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T03:01:00Z", status: "BOARDED" },
+      { id: "alighting-complete", virtualStopId: "virtual-stop-2", sequenceNumber: 2, stopType: "ALIGHTING", plannedArrivalAt: "2026-07-13T03:11:00Z", status: "ALIGHTED" }
     ]
   }] }), { status: 200, headers: { "Content-Type": "application/json" } });
 }

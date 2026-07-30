@@ -118,6 +118,7 @@ public class RideOrder {
         requireStatus(OrderStatus.PENDING_DISPATCH, OrderStatus.PENDING_MANUAL_REVIEW);
         this.estimatedBoardingAt = promise.estimatedBoardingAt();
         this.estimatedArrivalAt = promise.estimatedArrivalAt();
+        this.failureReason = null;
         changeStatus(OrderStatus.CONFIRMED);
     }
 

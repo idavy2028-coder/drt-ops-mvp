@@ -60,6 +60,24 @@ class VehicleTaskStateTest {
         assertThat(task.getStops()).extracting(TaskStop::getSequenceNumber).containsExactly(1, 2);
     }
 
+    @Test
+    void cancelledOrderStopsNoLongerBlockTaskCompletion() {
+        UUID orderId = UUID.fromString("66666666-6666-6666-6666-666666666661");
+        VehicleTask task = sampleTask();
+        task.addStop(TaskStop.planned(
+                UUID.fromString("55555555-5555-5555-5555-555555555551"),
+                orderId, 1, "BOARDING", OffsetDateTime.now()));
+        task.addStop(TaskStop.planned(
+                UUID.fromString("55555555-5555-5555-5555-555555555554"),
+                orderId, 2, "ALIGHTING", OffsetDateTime.now().plusMinutes(10)));
+
+        task.cancelStopsForOrder(orderId);
+
+        assertThat(task.getStops()).allMatch(TaskStop::isExecutionComplete);
+        assertThat(task.getStops()).extracting(TaskStop::getStatus)
+                .containsOnly("CANCELLED");
+    }
+
     private static VehicleTask sampleTask() {
         return VehicleTask.pendingDeparture(
                 UUID.fromString("33333333-3333-3333-3333-333333333331"),

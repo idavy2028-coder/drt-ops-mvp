@@ -51,6 +51,23 @@ services:
       retries: 12
       start_period: 20s
 
+  route-simulator:
+    build:
+      context: ../apps/route-simulator
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   api:
     build:
       context: ..
@@ -63,6 +80,9 @@ services:
       DRT_OPS_DATASOURCE_USERNAME: ${DRT_OPS_DATASOURCE_USERNAME:-drt_ops}
       DRT_OPS_DATASOURCE_PASSWORD: ${DRT_OPS_DATASOURCE_PASSWORD:-drt_ops}
       DISPATCH_ALGORITHM_BASE_URL: http://algorithm:8090
+      DRT_AMAP_ENABLED: "true"
+      DRT_AMAP_WEB_SERVICE_KEY: local-simulator
+      DRT_AMAP_BASE_URL: http://route-simulator:8091
       DRT_AUTH_JWT_SECRET: ${DRT_AUTH_JWT_SECRET:-pilot-only-jwt-secret-change-before-production}
       DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME: ${DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME:-admin}
       DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD:-pilot-only-password}
@@ -71,6 +91,8 @@ services:
       postgres:
         condition: service_healthy
       algorithm:
+        condition: service_healthy
+      route-simulator:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/actuator/health"]

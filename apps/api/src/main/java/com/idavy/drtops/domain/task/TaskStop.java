@@ -96,7 +96,17 @@ public class TaskStop {
         this.status = "ALIGHTED";
     }
 
+    public void cancel() {
+        if (isExecutionComplete()) {
+            return;
+        }
+        this.status = "CANCELLED";
+    }
+
     public boolean isExecutionComplete() {
+        if ("CANCELLED".equals(status)) {
+            return true;
+        }
         if ("BOARDING".equals(stopType)) {
             return "BOARDED".equals(status);
         }

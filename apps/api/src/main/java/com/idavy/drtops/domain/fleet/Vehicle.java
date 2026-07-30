@@ -134,6 +134,34 @@ public class Vehicle {
         return dispatchable;
     }
 
+    public void reserveForDispatch() {
+        if (!dispatchable) {
+            throw new IllegalStateException("Vehicle is not dispatchable");
+        }
+        requireStatus("IDLE");
+        this.currentStatus = "DISPATCHED";
+    }
+
+    public void startService() {
+        if ("IN_SERVICE".equals(currentStatus)) {
+            return;
+        }
+        if (!"DISPATCHED".equals(currentStatus) && !"IDLE".equals(currentStatus)) {
+            throw new IllegalStateException("Vehicle status " + currentStatus + " cannot start service");
+        }
+        this.currentStatus = "IN_SERVICE";
+    }
+
+    public void releaseToIdle() {
+        if ("IDLE".equals(currentStatus)) {
+            return;
+        }
+        if (!"DISPATCHED".equals(currentStatus) && !"IN_SERVICE".equals(currentStatus)) {
+            throw new IllegalStateException("Vehicle status " + currentStatus + " cannot be released");
+        }
+        this.currentStatus = "IDLE";
+    }
+
     public OffsetDateTime getCreatedAt() {
         return createdAt;
     }
@@ -187,5 +215,12 @@ public class Vehicle {
 
     public UUID getCurrentLocationTaskId() {
         return currentLocationTaskId;
+    }
+
+    private void requireStatus(String expectedStatus) {
+        if (!expectedStatus.equals(currentStatus)) {
+            throw new IllegalStateException(
+                    "Vehicle status " + currentStatus + " does not match " + expectedStatus);
+        }
     }
 }

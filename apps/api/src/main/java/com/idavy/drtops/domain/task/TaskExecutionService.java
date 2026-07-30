@@ -28,18 +28,21 @@ public class TaskExecutionService {
     private final AuditLogRepository auditLogRepository;
     private final VehicleLocationRecorder locationRecorder;
     private final VehicleLocationSnapshotService snapshotService;
+    private final TaskResourceCoordinator taskResourceCoordinator;
 
     public TaskExecutionService(
             VehicleTaskRepository vehicleTaskRepository,
             RideOrderRepository rideOrderRepository,
             AuditLogRepository auditLogRepository,
             VehicleLocationRecorder locationRecorder,
-            VehicleLocationSnapshotService snapshotService) {
+            VehicleLocationSnapshotService snapshotService,
+            TaskResourceCoordinator taskResourceCoordinator) {
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.rideOrderRepository = rideOrderRepository;
         this.auditLogRepository = auditLogRepository;
         this.locationRecorder = locationRecorder;
         this.snapshotService = snapshotService;
+        this.taskResourceCoordinator = taskResourceCoordinator;
     }
 
     @Transactional
@@ -56,6 +59,7 @@ public class TaskExecutionService {
         requireTaskStatus(task, TaskStatus.PENDING_DEPARTURE, TaskStatus.DISPATCHED);
         LocationReportResult result = requireFresh(locationRecorder.append(command));
         task.startExecution();
+        taskResourceCoordinator.start(task);
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() == OrderStatus.CONFIRMED) {
                 order.startExecution();
@@ -157,6 +161,7 @@ public class TaskExecutionService {
         }
         LocationReportResult result = requireFresh(locationRecorder.append(command));
         task.complete();
+        taskResourceCoordinator.releaseIfUnused(task);
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() == OrderStatus.IN_PROGRESS) {
                 order.complete();
@@ -180,6 +185,7 @@ public class TaskExecutionService {
     private VehicleTask closeTaskAsException(UUID actorId, UUID taskId, String reason, String auditAction) {
         VehicleTask task = taskForExecution(taskId);
         task.markException(reason);
+        taskResourceCoordinator.releaseIfUnused(task);
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() != OrderStatus.COMPLETED
                     && order.getStatus() != OrderStatus.CANCELLED

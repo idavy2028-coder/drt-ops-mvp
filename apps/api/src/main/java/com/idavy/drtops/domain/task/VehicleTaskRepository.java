@@ -22,4 +22,20 @@ public interface VehicleTaskRepository extends JpaRepository<VehicleTask, UUID> 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select task from VehicleTask task where task.id = :id")
     Optional<VehicleTask> findByIdForExecution(@Param("id") UUID id);
+
+    boolean existsByVehicleIdAndStatusInAndIdNot(
+            UUID vehicleId, List<TaskStatus> statuses, UUID excludedTaskId);
+
+    boolean existsByDriverIdAndStatusInAndIdNot(
+            UUID driverId, List<TaskStatus> statuses, UUID excludedTaskId);
+
+    @EntityGraph(attributePaths = "stops")
+    @Query("""
+            select distinct task
+            from VehicleTask task join task.stops stop
+            where stop.rideOrderId = :orderId and task.status in :statuses
+            """)
+    List<VehicleTask> findActiveByRideOrderId(
+            @Param("orderId") UUID orderId,
+            @Param("statuses") List<TaskStatus> statuses);
 }

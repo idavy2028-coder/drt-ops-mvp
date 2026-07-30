@@ -18,11 +18,24 @@ export async function logout(): Promise<void> {
   await authRequest<void>("/api/auth/logout", { method: "POST" });
 }
 
+export async function changePassword(
+  accessToken: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  await authRequest<void>("/api/auth/password", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword, newPassword })
+  }, accessToken);
+}
 
-async function authRequest<T>(path: string, options: RequestInit): Promise<T> {
+async function authRequest<T>(path: string, options: RequestInit, accessToken?: string): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
+  }
+  if (accessToken !== undefined) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
   }
   const response = await fetch(buildUrl(path), { ...options, headers, credentials: "include" });
   if (!response.ok) {

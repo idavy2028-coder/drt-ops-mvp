@@ -12,6 +12,8 @@ import jakarta.persistence.Table;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
@@ -125,6 +127,21 @@ public class VehicleTask {
     public void markCurrentStop(UUID currentStopId) {
         this.currentStopId = currentStopId;
         this.updatedAt = OffsetDateTime.now();
+    }
+
+    public void cancelStopsForOrder(UUID rideOrderId) {
+        stops.stream()
+                .filter(stop -> rideOrderId.equals(stop.getRideOrderId()))
+                .forEach(TaskStop::cancel);
+        this.updatedAt = OffsetDateTime.now();
+    }
+
+    public Set<UUID> activeOrderIds() {
+        return stops.stream()
+                .filter(stop -> !stop.isExecutionComplete())
+                .map(TaskStop::getRideOrderId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     public UUID getId() {

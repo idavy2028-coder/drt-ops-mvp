@@ -110,8 +110,14 @@ public class CandidateTaskAssembler {
             vehiclesById.put(vehicle.getId(), vehicle);
         }
 
+        List<VehicleTask> tasks = vehicleTaskRepository.findAllByOrderByPlannedStartAtAsc();
+        Set<UUID> vehiclesWithActiveTasks = tasks.stream()
+                .filter(this::isInsertable)
+                .map(VehicleTask::getVehicleId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         List<Vehicle> idleVehicles = dispatchableVehicles.stream()
                 .filter(vehicle -> "IDLE".equals(vehicle.getCurrentStatus()))
+                .filter(vehicle -> !vehiclesWithActiveTasks.contains(vehicle.getId()))
                 .toList();
         List<Driver> drivers = driverRepository.findAll().stream()
                 .filter(driver -> "QUALIFIED".equals(driver.getQualificationStatus()))
@@ -127,7 +133,7 @@ public class CandidateTaskAssembler {
                     pickupCoordinate, pickupToDestination, null);
         }
 
-        for (VehicleTask task : vehicleTaskRepository.findAllByOrderByPlannedStartAtAsc()) {
+        for (VehicleTask task : tasks) {
             Vehicle vehicle = vehiclesById.get(task.getVehicleId());
             if (vehicle != null && isInsertable(task)) {
                 addCandidateWithTravelEstimate(
@@ -348,6 +354,13 @@ public class CandidateTaskAssembler {
                     .map(Map.Entry::getValue)
                     .findFirst()
                     .orElse(pickupToDestination == null ? null : new CandidateTravelEstimates(null, pickupToDestination));
+        }
+
+        public boolean isNewTaskCandidate(DispatchEvaluateResponse.BestPlan bestPlan) {
+            return bestPlan != null
+                    && bestPlan.taskId() != null
+                    && bestPlan.vehicleId() != null
+                    && bestPlan.taskId().equals(syntheticTaskId(bestPlan.vehicleId()));
         }
     }
 }
