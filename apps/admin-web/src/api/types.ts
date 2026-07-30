@@ -303,6 +303,10 @@ export interface RideOrder {
   estimatedBoardingAt?: IsoDateTime;
   estimatedArrivalAt?: IsoDateTime;
   status: string;
+  canMarkNoShow: boolean;
+  noShowEligibleAt?: IsoDateTime;
+  noShowWaitedSeconds: number;
+  noShowBlockReason?: string;
 }
 
 export interface TaskStop {

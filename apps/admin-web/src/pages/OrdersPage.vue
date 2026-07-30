@@ -10,6 +10,7 @@ import {
 } from "../api/orders";
 import type { RideOrder } from "../api/types";
 import OrderCreateDialog from "../components/OrderCreateDialog.vue";
+import NoShowConfirmDialog from "../components/NoShowConfirmDialog.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 import { authStore } from "../auth/authStore";
 import { userMessage } from "../api/errors";
@@ -20,6 +21,8 @@ const showCreateDialog = ref(false);
 const status = ref("");
 const loading = ref(false);
 const submitting = ref(false);
+const noShowOrder = ref<RideOrder | null>(null);
+const noShowSubmitting = ref(false);
 
 function canDispatch(order: RideOrder) {
   return order.status === "PENDING_DISPATCH";
@@ -27,10 +30,6 @@ function canDispatch(order: RideOrder) {
 
 function canCancel(order: RideOrder) {
   return !["UNSERVICEABLE", "CANCELLED", "COMPLETED", "EXCEPTION_CLOSED"].includes(order.status);
-}
-
-function canCloseNoShow(order: RideOrder) {
-  return ["CONFIRMED", "IN_PROGRESS"].includes(order.status);
 }
 
 function formatDateTime(value?: string) {
@@ -97,15 +96,27 @@ async function cancel(order: RideOrder) {
   }
 }
 
-async function closeNoShow(order: RideOrder) {
+function openNoShow(order: RideOrder): void {
+  noShowOrder.value = order;
+}
+
+async function closeNoShow(value: { reason: string; idempotencyKey: string }) {
+  if (!noShowOrder.value) {
+    return;
+  }
+  noShowSubmitting.value = true;
   try {
-    await markOrderNoShow(order.id, "乘客未上车");
+    await markOrderNoShow(noShowOrder.value.id, value.reason, value.idempotencyKey);
+    noShowOrder.value = null;
     feedbackStore.success("订单已按乘客未到关闭");
     await loadOrders();
   } catch (error) {
     const message = userMessage(error, "异常关闭失败");
     status.value = message;
     feedbackStore.error(message);
+    await loadOrders();
+  } finally {
+    noShowSubmitting.value = false;
   }
 }
 
@@ -135,6 +146,13 @@ onMounted(() => {
       @close="showCreateDialog = false"
       @create="submitOrder"
     />
+    <NoShowConfirmDialog
+      v-if="noShowOrder"
+      :order="noShowOrder"
+      :submitting="noShowSubmitting"
+      @close="noShowOrder = null"
+      @confirm="closeNoShow"
+    />
 
     <p v-if="loading" class="page-state">正在同步订单数据…</p>
     <p v-else-if="status" class="page-state">{{ status }}</p>
@@ -163,7 +181,13 @@ onMounted(() => {
                 <template v-if="authStore.has('DISPATCH_EXECUTE')">
                   <button v-if="canDispatch(order)" class="secondary-button" type="button" @click="runDispatch(order)">调度</button>
                   <button v-if="canCancel(order)" class="secondary-button" type="button" @click="cancel(order)">取消</button>
-                  <button v-if="canCloseNoShow(order)" class="danger-button" type="button" @click="closeNoShow(order)">乘客未到</button>
+                  <button v-if="order.canMarkNoShow" class="danger-button" type="button" @click="openNoShow(order)">乘客未到</button>
+                  <span
+                    v-else-if="order.status === 'IN_PROGRESS' && order.noShowBlockReason"
+                    class="action-hint"
+                  >
+                    {{ order.noShowBlockReason }}
+                  </span>
                   <span v-if="!canCancel(order)" class="action-hint">无需操作</span>
                 </template>
               </div>
