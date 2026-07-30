@@ -100,6 +100,11 @@ function openNoShow(order: RideOrder): void {
   noShowOrder.value = order;
 }
 
+function noShowRemaining(order: RideOrder): string {
+  const remaining = Math.max(0, 5 * 60 - order.noShowWaitedSeconds);
+  return `剩余 ${Math.floor(remaining / 60)} 分 ${remaining % 60} 秒`;
+}
+
 async function closeNoShow(value: { reason: string; idempotencyKey: string }) {
   if (!noShowOrder.value) {
     return;
@@ -186,7 +191,8 @@ onMounted(() => {
                     v-else-if="order.status === 'IN_PROGRESS' && order.noShowBlockReason"
                     class="action-hint"
                   >
-                    {{ order.noShowBlockReason }}
+                    <span>{{ order.noShowBlockReason }}</span>
+                    <span v-if="order.noShowEligibleAt">{{ noShowRemaining(order) }}</span>
                   </span>
                   <span v-if="!canCancel(order)" class="action-hint">无需操作</span>
                 </template>
@@ -203,5 +209,5 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.action-hint { color: var(--ink-muted); font-size: 13px; font-weight: 700; }
+.action-hint { color: var(--ink-muted); display: grid; font-size: 13px; font-weight: 700; gap: 2px; }
 </style>

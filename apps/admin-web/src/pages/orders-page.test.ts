@@ -127,6 +127,7 @@ describe("OrdersPage", () => {
     render(OrdersPage);
 
     expect(await screen.findByText("乘客等候期尚未结束")).toBeInTheDocument();
+    expect(screen.getByText("剩余 3 分 0 秒")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "乘客未到" })).not.toBeInTheDocument();
   });
 
