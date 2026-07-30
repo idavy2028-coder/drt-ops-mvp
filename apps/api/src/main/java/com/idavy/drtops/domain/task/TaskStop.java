@@ -140,6 +140,10 @@ public class TaskStop {
         return plannedArrivalAt;
     }
 
+    public OffsetDateTime getActualArrivalAt() {
+        return actualArrivalAt;
+    }
+
     public String getStatus() {
         return status;
     }
