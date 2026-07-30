@@ -4,6 +4,8 @@ import com.idavy.drtops.common.ApiResponse;
 import com.idavy.drtops.domain.dispatch.DispatchOrchestrator;
 import com.idavy.drtops.domain.dispatch.DispatchResult;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -57,8 +59,9 @@ public class RideOrderController {
 
     @PostMapping("/{orderId}/no-show")
     ApiResponse<RideOrder> noShow(
-            Authentication authentication, @PathVariable UUID orderId, @RequestBody ReasonRequest request) {
-        return ApiResponse.ok(orderExceptionService.noShow(actorId(authentication), orderId, request.reason()));
+            Authentication authentication, @PathVariable UUID orderId, @Valid @RequestBody NoShowRequest request) {
+        return ApiResponse.ok(orderExceptionService.noShow(
+                actorId(authentication), orderId, request.reason(), request.idempotencyKey()));
     }
 
     private UUID actorId(Authentication authentication) {
@@ -69,5 +72,8 @@ public class RideOrderController {
     }
 
     public record ReasonRequest(String reason) {
+    }
+
+    public record NoShowRequest(@NotBlank String reason, @NotNull UUID idempotencyKey) {
     }
 }

@@ -19,4 +19,7 @@ public interface VehicleLocationEventRepository extends JpaRepository<VehicleLoc
 
     List<VehicleLocationEvent> findByVehicleTaskIdAndDriverReportedAtBetweenOrderByDriverReportedAtAsc(
             UUID vehicleTaskId, OffsetDateTime from, OffsetDateTime to);
+
+    boolean existsByVehicleTaskIdAndTaskStopIdAndEventType(
+            UUID vehicleTaskId, UUID taskStopId, LocationEventType eventType);
 }
