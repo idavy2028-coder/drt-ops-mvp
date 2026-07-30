@@ -21,7 +21,7 @@
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/pilot/Invoke-LocationCapacityValidation.ps1
 ```
 
-执行日期：2026-07-30（Asia/Shanghai）  
+执行日期：2026-07-30（Asia/Shanghai）
 进程退出码：`0`
 
 ## 结果
