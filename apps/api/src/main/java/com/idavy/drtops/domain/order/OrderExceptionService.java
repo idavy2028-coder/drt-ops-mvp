@@ -54,7 +54,7 @@ public class OrderExceptionService {
 
     @Transactional
     public RideOrder noShow(UUID actorId, UUID orderId, String reason, UUID idempotencyKey) {
-        RideOrder order = order(orderId);
+        RideOrder order = orderForUpdate(orderId);
         if (auditLogRepository.findByEntityId(orderId).stream()
                 .anyMatch(log -> "ORDER_NO_SHOW".equals(log.getAction())
                         && log.getMetadataJson().contains(idempotencyKey.toString()))) {
@@ -127,6 +127,11 @@ public class OrderExceptionService {
 
     private RideOrder order(UUID orderId) {
         return rideOrderRepository.findById(orderId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "订单不存在"));
+    }
+
+    private RideOrder orderForUpdate(UUID orderId) {
+        return rideOrderRepository.findByIdForUpdate(orderId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "订单不存在"));
     }
 

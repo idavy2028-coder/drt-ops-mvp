@@ -24,8 +24,13 @@ import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -223,6 +228,29 @@ class OrderExceptionApiTest {
                 .hasSize(1);
     }
 
+    @Test
+    void concurrentNoShowRequestsAllowOnlyOneSuccessfulTransition() throws Exception {
+        UUID orderId = createConfirmedOrder();
+        UUID taskId = createTask(orderId);
+        prepareEligibleNoShow(orderId, taskId, 301);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<Integer> first = executor.submit(() -> performNoShowAfter(start, orderId, UUID.randomUUID()));
+            Future<Integer> second = executor.submit(() -> performNoShowAfter(start, orderId, UUID.randomUUID()));
+            start.countDown();
+
+            assertThat(List.of(first.get(), second.get()))
+                    .containsExactlyInAnyOrder(200, 409);
+            assertThat(auditLogRepository.findByEntityId(orderId))
+                    .filteredOn(log -> log.getAction().equals("ORDER_NO_SHOW"))
+                    .hasSize(1);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     private UUID createPendingOrder() {
         return rideOrderRepository.save(newOrder()).getId();
     }
@@ -264,6 +292,14 @@ class OrderExceptionApiTest {
                 .content("""
                         {"reason":"乘客未上车","idempotencyKey":"%s"}
                         """.formatted(idempotencyKey));
+    }
+
+    private int performNoShowAfter(CountDownLatch start, UUID orderId, UUID idempotencyKey) throws Exception {
+        start.await();
+        return mockMvc.perform(noShowRequest(orderId, idempotencyKey))
+                .andReturn()
+                .getResponse()
+                .getStatus();
     }
 
     private void prepareEligibleNoShow(UUID orderId, UUID taskId, long arrivedSecondsAgo) {
