@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useRoute } from "vue-router";
 import {
   alightStop,
   arriveStop,
@@ -21,6 +22,7 @@ import { userMessage } from "../api/errors";
 import { feedbackStore } from "../stores/feedbackStore";
 
 const tasks = ref<VehicleTask[]>([]);
+const route = useRoute();
 const selectedTaskId = ref("");
 const status = ref("");
 const lastAction = ref("等待操作");
@@ -93,7 +95,10 @@ async function loadVehicleTasks() {
   loading.value = true;
   try {
     tasks.value = await listTasks();
-    if (!selectedTaskId.value && tasks.value.length > 0) {
+    const requestedTaskId = typeof route.query.taskId === "string" ? route.query.taskId : undefined;
+    if (requestedTaskId && tasks.value.some((task) => task.id === requestedTaskId)) {
+      selectedTaskId.value = requestedTaskId;
+    } else if (!selectedTaskId.value && tasks.value.length > 0) {
       selectedTaskId.value = tasks.value[0].id;
     }
   } catch (error) {

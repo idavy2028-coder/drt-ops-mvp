@@ -5,8 +5,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
 import TasksPage from "./TasksPage.vue";
 
+const routeQuery = vi.hoisted(() => ({ taskId: undefined as string | undefined }));
+vi.mock("vue-router", () => ({ useRoute: () => ({ query: routeQuery }) }));
+
 describe("TasksPage", () => {
-  afterEach(() => { cleanup(); authStore.clearSessionForTest(); vi.unstubAllGlobals(); });
+  afterEach(() => {
+    cleanup();
+    authStore.clearSessionForTest();
+    routeQuery.taskId = undefined;
+    vi.unstubAllGlobals();
+  });
 
   it("shows task execution controls and stop timeline", async () => {
     authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
@@ -199,6 +207,21 @@ describe("TasksPage", () => {
     expect((screen.getByLabelText("经度") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("纬度") as HTMLInputElement).value).toBe("");
     expect(screen.getByLabelText("标准化地址")).toHaveValue("解析失败站");
+  });
+
+  it("selects the exact task requested by the taskId query parameter", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    routeQuery.taskId = "task-dispatched";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(multipleTaskResponse()));
+
+    render(TasksPage);
+
+    const dispatchedTaskRow = (await screen.findByText("待发车")).closest("tr");
+    const completedTaskRow = screen.getByText("已完成").closest("tr");
+    expect(dispatchedTaskRow).toHaveClass("is-selected");
+    expect(completedTaskRow).not.toHaveClass("is-selected");
+    expect(screen.getByText("计划到站 2026-07-13T02:01:00Z")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发车" })).toBeEnabled();
   });
 
   it("does not submit a virtual stop id for task-level completion", async () => {

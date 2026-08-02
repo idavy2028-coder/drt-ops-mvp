@@ -65,6 +65,7 @@ class VehicleLocationApiTest {
 
     private static final UUID VEHICLE_ID = UUID.fromString("11111111-1111-1111-1111-111111111131");
     private static final UUID OTHER_VEHICLE_ID = UUID.fromString("11111111-1111-1111-1111-111111111132");
+    private static final UUID DISPATCHED_VEHICLE_ID = UUID.fromString("11111111-1111-1111-1111-111111111133");
     private static final UUID SERVICE_AREA_ID = UUID.fromString("22222222-2222-2222-2222-222222222231");
 
     @Autowired MockMvc mockMvc;
@@ -94,11 +95,14 @@ class VehicleLocationApiTest {
         vehicleRepository.deleteAll();
         userAccountRepository.deleteAll();
         vehicleRepository.save(Vehicle.create(
-                VEHICLE_ID, "沪A10001", "MINIBUS", 8, "AVAILABLE",
+                VEHICLE_ID, "沪A10001", "MINIBUS", 8, "IDLE",
                 "POINT(121.4700 31.2300)", "浦东车队", true));
         vehicleRepository.save(Vehicle.create(
-                OTHER_VEHICLE_ID, "沪A10002", "MINIBUS", 8, "AVAILABLE",
+                OTHER_VEHICLE_ID, "沪A10002", "MINIBUS", 8, "IDLE",
                 "POINT(121.4800 31.2400)", "浦东车队", true));
+        vehicleRepository.save(Vehicle.create(
+                DISPATCHED_VEHICLE_ID, "沪A10003", "MINIBUS", 8, "DISPATCHED",
+                "POINT(121.4900 31.2500)", "浦东车队", true));
         UserAccount dispatcher = account("dispatcher01", RoleCode.DISPATCHER);
         dispatcherId = dispatcher.getId();
         dispatcherToken = jwtTokenService.issue(dispatcher).value();
@@ -156,15 +160,16 @@ class VehicleLocationApiTest {
         JsonNode withSnapshot = candidateFor(candidates, OTHER_VEHICLE_ID);
 
         assertThat(candidates).hasSize(2);
+        assertThat(hasCandidate(candidates, DISPATCHED_VEHICLE_ID)).isFalse();
         assertThat(withoutSnapshot.path("vehicleId").asText()).isEqualTo(VEHICLE_ID.toString());
         assertThat(withoutSnapshot.path("plateNumber").asText()).isEqualTo("沪A10001");
-        assertThat(withoutSnapshot.path("currentStatus").asText()).isEqualTo("AVAILABLE");
+        assertThat(withoutSnapshot.path("currentStatus").asText()).isEqualTo("IDLE");
         assertThat(withoutSnapshot.path("dispatchable").asBoolean()).isTrue();
         assertThat(withoutSnapshot.path("latestLocation").isNull()).isTrue();
 
         assertThat(withSnapshot.path("vehicleId").asText()).isEqualTo(OTHER_VEHICLE_ID.toString());
         assertThat(withSnapshot.path("plateNumber").asText()).isEqualTo("沪A10002");
-        assertThat(withSnapshot.path("currentStatus").asText()).isEqualTo("AVAILABLE");
+        assertThat(withSnapshot.path("currentStatus").asText()).isEqualTo("IDLE");
         assertThat(withSnapshot.path("dispatchable").asBoolean()).isTrue();
         JsonNode latestLocation = withSnapshot.path("latestLocation");
         assertThat(latestLocation.path("longitude").decimalValue())
@@ -178,6 +183,31 @@ class VehicleLocationApiTest {
         mockMvc.perform(get("/api/vehicles/location-reporting-candidates")
                         .header(HttpHeaders.AUTHORIZATION, bearer(operatorToken)))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void rejectsStandaloneStandbyReportWhenVehicleIsNotIdleWithoutChangingLocationState() throws Exception {
+        Vehicle before = vehicleRepository.findById(DISPATCHED_VEHICLE_ID).orElseThrow();
+        String locationBefore = before.getCurrentLocation();
+        String statusBefore = before.getCurrentStatus();
+        long eventCountBefore = eventRepository.count();
+        long auditCountBefore = auditLogRepository.count();
+
+        Map<String, Object> payload = reportPayload(UUID.randomUUID(), "2026-07-13T09:05:00+08:00");
+        payload.put("eventType", "MANUAL_REPORT");
+
+        report(DISPATCHED_VEHICLE_ID, dispatcherToken, payload)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.data.message")
+                        .value("当前车辆正在执行或等待任务，不能上报待命位置"));
+
+        Vehicle after = vehicleRepository.findById(DISPATCHED_VEHICLE_ID).orElseThrow();
+        assertThat(eventRepository.count()).isEqualTo(eventCountBefore);
+        assertThat(auditLogRepository.count()).isEqualTo(auditCountBefore);
+        assertThat(after.getCurrentLocation()).isEqualTo(locationBefore);
+        assertThat(after.getCurrentStatus()).isEqualTo(statusBefore);
+        assertThat(after.getCurrentLocationEventId()).isNull();
+        assertThat(after.getCurrentLocationReportedAt()).isNull();
     }
 
     @Test
@@ -572,6 +602,15 @@ class VehicleLocationApiTest {
             }
         }
         throw new AssertionError("候选车辆不存在: " + vehicleId);
+    }
+
+    private static boolean hasCandidate(JsonNode candidates, UUID vehicleId) {
+        for (JsonNode candidate : candidates) {
+            if (vehicleId.toString().equals(candidate.path("vehicleId").asText())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private TaskFixture createTask(UUID vehicleId) {
