@@ -244,6 +244,18 @@ public class DispatchDecision {
         return pickupToDestinationDurationSeconds;
     }
 
+    public String getRejectedReasonsJson() {
+        return rejectedReasonsJson;
+    }
+
+    public String getExplanationJson() {
+        return explanationJson;
+    }
+
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
+    }
+
     private static boolean isDegraded(CandidateTaskAssembler.CandidateTravelEstimates estimates) {
         return estimates != null && ((estimates.vehicleToPickup() != null && estimates.vehicleToPickup().degraded())
                 || (estimates.pickupToDestination() != null && estimates.pickupToDestination().degraded()));

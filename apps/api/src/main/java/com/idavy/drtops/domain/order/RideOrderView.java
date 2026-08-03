@@ -28,9 +28,17 @@ public record RideOrderView(
         boolean canMarkNoShow,
         OffsetDateTime noShowEligibleAt,
         long noShowWaitedSeconds,
-        String noShowBlockReason) {
+        String noShowBlockReason,
+        DispatchFailureView dispatchFailure) {
 
     static RideOrderView from(RideOrder order, NoShowEligibility eligibility) {
+        return from(order, eligibility, null);
+    }
+
+    static RideOrderView from(
+            RideOrder order,
+            NoShowEligibility eligibility,
+            DispatchFailureView dispatchFailure) {
         return new RideOrderView(
                 order.getId(),
                 order.getPassengerName(),
@@ -55,6 +63,7 @@ public record RideOrderView(
                 eligibility.eligible(),
                 eligibility.eligibleAt(),
                 eligibility.waitedSeconds(),
-                eligibility.reasonMessage());
+                eligibility.reasonMessage(),
+                dispatchFailure);
     }
 }

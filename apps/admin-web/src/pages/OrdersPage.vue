@@ -24,6 +24,7 @@ const loading = ref(false);
 const submitting = ref(false);
 const noShowOrder = ref<RideOrder | null>(null);
 const noShowSubmitting = ref(false);
+const expandedFailureOrderId = ref<string | null>(null);
 
 function canDispatch(order: RideOrder) {
   return order.status === "PENDING_DISPATCH";
@@ -35,6 +36,10 @@ function canCancel(order: RideOrder) {
 
 function canConfirmPassengerCancellation(order: RideOrder) {
   return order.status === "CANCELLED";
+}
+
+function toggleFailureDetails(orderId: string): void {
+  expandedFailureOrderId.value = expandedFailureOrderId.value === orderId ? null : orderId;
 }
 
 function formatDateTime(value?: string) {
@@ -193,7 +198,30 @@ onMounted(() => {
           <tr v-for="order in orders" :key="order.id">
             <td>{{ order.id.slice(0, 8) }}</td>
             <td>{{ order.passengerName }} · {{ order.passengerCount }}人</td>
-            <td><StatusBadge :code="order.status" /></td>
+            <td>
+              <StatusBadge :code="order.status" />
+              <div v-if="order.status === 'UNSERVICEABLE' && order.dispatchFailure" class="dispatch-failure-summary">
+                <span>{{ order.dispatchFailure.summary }}</span>
+                <button
+                  class="link-button"
+                  type="button"
+                  :aria-expanded="expandedFailureOrderId === order.id"
+                  aria-label="查看不可服务原因"
+                  @click="toggleFailureDetails(order.id)"
+                >
+                  {{ expandedFailureOrderId === order.id ? "收起原因" : "查看原因" }}
+                </button>
+                <div v-if="expandedFailureOrderId === order.id" class="dispatch-failure-details">
+                  <span>候选方案数：{{ order.dispatchFailure.candidateCount }}</span>
+                  <span v-if="order.dispatchFailure.maxWaitMinutes !== undefined">最大等候：{{ order.dispatchFailure.maxWaitMinutes }} 分钟</span>
+                  <span v-if="order.dispatchFailure.maxDetourMinutes !== undefined">最大绕行：{{ order.dispatchFailure.maxDetourMinutes }} 分钟</span>
+                  <span v-if="order.dispatchFailure.rejectedReasons.length">拒绝原因：{{ order.dispatchFailure.rejectedReasons.join("、") }}</span>
+                  <span v-if="order.dispatchFailure.mapProvider">路线服务：{{ order.dispatchFailure.mapProvider }}{{ order.dispatchFailure.mapDegraded ? "（降级）" : "（正常）" }}</span>
+                  <span v-if="order.dispatchFailure.pickupToDestinationDistanceMeters">起终点路线：{{ order.dispatchFailure.pickupToDestinationDistanceMeters }} 米 / {{ Math.ceil((order.dispatchFailure.pickupToDestinationDurationSeconds ?? 0) / 60) }} 分钟</span>
+                  <span class="dispatch-failure-code">诊断代码：{{ order.dispatchFailure.code }}</span>
+                </div>
+              </div>
+            </td>
             <td>{{ formatDateTime(order.estimatedBoardingAt) }}</td>
             <td>{{ formatDateTime(order.requestedDepartureAt) }}</td>
             <td>
@@ -226,4 +254,8 @@ onMounted(() => {
 
 <style scoped>
 .action-hint { color: var(--ink-muted); display: grid; font-size: 13px; font-weight: 700; gap: 2px; }
+.dispatch-failure-summary { color: #9b2c2c; display: grid; font-size: 12px; gap: 4px; margin-top: 6px; max-width: 280px; }
+.dispatch-failure-details { background: #fff7ed; border-left: 3px solid #f59e0b; color: var(--ink); display: grid; gap: 3px; padding: 8px 10px; }
+.dispatch-failure-code { color: var(--ink-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.link-button { background: none; border: 0; color: var(--accent-strong, #006b5b); cursor: pointer; font-size: 12px; font-weight: 800; padding: 0; text-align: left; }
 </style>

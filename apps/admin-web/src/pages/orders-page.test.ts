@@ -25,6 +25,54 @@ describe("OrdersPage", () => {
     expect(screen.getByText("预计上车时间")).toBeInTheDocument();
   });
 
+  it("shows and expands the reason for an unserviceable order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: [{
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      passengerName: "罗老师",
+      passengerPhone: "13800000000",
+      passengerCount: 1,
+      requestType: "IMMEDIATE",
+      originLng: 105.258224,
+      originLat: 35.197636,
+      destinationLng: 105.327705,
+      destinationLat: 35.283669,
+      originAddress: "高铁站",
+      destinationAddress: "陇阳镇",
+      coordinateSystem: "GCJ02",
+      originAddressSource: "VIRTUAL_STOP",
+      destinationAddressSource: "VIRTUAL_STOP",
+      requestedDepartureAt: "2026-08-03T06:57:00Z",
+      status: "UNSERVICEABLE",
+      dispatchFailure: {
+        code: "ALL_CANDIDATES_REJECTED",
+        summary: "所有候选方案均未满足调度约束",
+        candidateCount: 4,
+        rejectedReasons: ["WAIT_TIME_EXCEEDED"],
+        maxWaitMinutes: 5,
+        maxDetourMinutes: 8,
+        mapProvider: "AMAP",
+        mapDegraded: false,
+        pickupToDestinationDistanceMeters: 13523,
+        pickupToDestinationDurationSeconds: 1391
+      }
+    }] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    authStore.setSessionForTest({
+      accessToken: "dispatcher-token",
+      user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false }
+    });
+
+    render(OrdersPage);
+
+    expect(await screen.findByText("所有候选方案均未满足调度约束")).toBeInTheDocument();
+    const reasonButton = screen.getByRole("button", { name: "查看不可服务原因" });
+    expect(reasonButton).toHaveAttribute("aria-expanded", "false");
+    await fireEvent.click(reasonButton);
+    expect(reasonButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("候选方案数：4")).toBeInTheDocument();
+    expect(screen.getByText("拒绝原因：WAIT_TIME_EXCEEDED")).toBeInTheDocument();
+    expect(screen.getByText("最大等候：5 分钟")).toBeInTheDocument();
+  });
+
   it("shows algorithm unavailable instead of login expired when dispatch returns the tagged 503", async () => {
     const orderId = "77777777-7777-7777-7777-777777777777";
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
