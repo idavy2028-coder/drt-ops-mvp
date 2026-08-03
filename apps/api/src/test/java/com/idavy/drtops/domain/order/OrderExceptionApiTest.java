@@ -132,6 +132,87 @@ class OrderExceptionApiTest {
     }
 
     @Test
+    void cancelOrderCancelsSingleOrderTaskAndReleasesResources() throws Exception {
+        UUID orderId = createConfirmedOrder();
+        UUID taskId = createTask(orderId);
+
+        cancel(orderId, "乘客取消");
+
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.CANCELLED);
+        assertThat(vehicleTaskRepository.findById(taskId).orElseThrow().getStatus())
+                .isEqualTo(TaskStatus.CANCELLED);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("IDLE");
+        assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("AVAILABLE");
+        assertThat(auditLogRepository.findByEntityId(taskId))
+                .anyMatch(log -> log.getAction().equals("TASK_CANCELLED_PASSENGER_CANCELLED")
+                        && log.getReason().equals("乘客取消"));
+    }
+
+    @Test
+    void cancelOrderCancelsOnlyMatchingStopsInSharedTask() throws Exception {
+        UUID cancelledOrderId = createConfirmedOrder();
+        UUID remainingOrderId = createConfirmedOrder();
+        UUID taskId = createTask(cancelledOrderId, remainingOrderId);
+
+        cancel(cancelledOrderId, "乘客取消");
+
+        VehicleTask task = vehicleTaskRepository.findWithStopsById(taskId).orElseThrow();
+        assertThat(task.getStatus()).isEqualTo(TaskStatus.DISPATCHED);
+        assertThat(task.getStops())
+                .filteredOn(stop -> cancelledOrderId.equals(stop.getRideOrderId()))
+                .extracting(TaskStop::getStatus)
+                .containsOnly("CANCELLED");
+        assertThat(task.getStops())
+                .filteredOn(stop -> remainingOrderId.equals(stop.getRideOrderId()))
+                .extracting(TaskStop::getStatus)
+                .containsOnly("PLANNED");
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("DISPATCHED");
+        assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("BUSY");
+        assertThat(auditLogRepository.findByEntityId(taskId))
+                .anyMatch(log -> log.getAction().equals("TASK_STOPS_CANCELLED_PASSENGER_CANCELLED")
+                        && log.getReason().equals("乘客取消"));
+    }
+
+    @Test
+    void cancellationReasonConfirmationAppendsAuditsWithoutChangingCancelledResources() throws Exception {
+        UUID orderId = createConfirmedOrder();
+        UUID taskId = createTask(orderId);
+        cancel(orderId, "运营后台取消");
+        String originalCancelAuditId = auditLogRepository.findByEntityId(orderId).stream()
+                .filter(log -> log.getAction().equals("ORDER_CANCELLED"))
+                .findFirst()
+                .orElseThrow()
+                .getId()
+                .toString();
+
+        mockMvc.perform(post("/api/orders/" + orderId + "/cancellation-reason-confirmation")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"乘客取消\"}"))
+                .andExpect(status().isOk());
+
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.CANCELLED);
+        assertThat(vehicleTaskRepository.findById(taskId).orElseThrow().getStatus())
+                .isEqualTo(TaskStatus.CANCELLED);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("IDLE");
+        assertThat(auditLogRepository.findByEntityId(orderId))
+                .anyMatch(log -> log.getAction().equals("ORDER_CANCELLATION_REASON_CONFIRMED")
+                        && log.getReason().equals("乘客取消")
+                        && log.getMetadataJson().contains(originalCancelAuditId));
+        assertThat(auditLogRepository.findByEntityId(taskId))
+                .anyMatch(log -> log.getAction().equals("TASK_CANCELLATION_REASON_CONFIRMED")
+                        && log.getReason().equals("乘客取消")
+                        && log.getMetadataJson().contains(originalCancelAuditId));
+    }
+
+    @Test
     void noShowClosesOrderAsExceptionAndAuditsReason() throws Exception {
         UUID orderId = createConfirmedOrder();
         UUID taskId = createTask(orderId);
@@ -281,6 +362,14 @@ class OrderExceptionApiTest {
 
     private void noShow(UUID orderId) throws Exception {
         mockMvc.perform(noShowRequest(orderId, UUID.randomUUID()))
+                .andExpect(status().isOk());
+    }
+
+    private void cancel(UUID orderId, String reason) throws Exception {
+        mockMvc.perform(post("/api/orders/" + orderId + "/cancel")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"" + reason + "\"}"))
                 .andExpect(status().isOk());
     }
 

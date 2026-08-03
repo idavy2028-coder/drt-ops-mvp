@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 import {
   cancelOrder,
+  confirmCancellationReason,
   createOrder,
   dispatchOrder,
   listOrders,
@@ -30,6 +31,10 @@ function canDispatch(order: RideOrder) {
 
 function canCancel(order: RideOrder) {
   return !["UNSERVICEABLE", "CANCELLED", "COMPLETED", "EXCEPTION_CLOSED"].includes(order.status);
+}
+
+function canConfirmPassengerCancellation(order: RideOrder) {
+  return order.status === "CANCELLED";
 }
 
 function formatDateTime(value?: string) {
@@ -98,6 +103,16 @@ async function cancel(order: RideOrder) {
 
 function openNoShow(order: RideOrder): void {
   noShowOrder.value = order;
+}
+
+async function confirmPassengerCancellation(order: RideOrder) {
+  try {
+    await confirmCancellationReason(order.id, "乘客取消");
+    feedbackStore.success("已确认取消原因为乘客取消");
+    await loadOrders();
+  } catch (error) {
+    feedbackStore.error(userMessage(error, "取消原因确认失败"));
+  }
 }
 
 function noShowRemaining(order: RideOrder): string {
@@ -185,7 +200,8 @@ onMounted(() => {
               <div class="toolbar">
                 <template v-if="authStore.has('DISPATCH_EXECUTE')">
                   <button v-if="canDispatch(order)" class="secondary-button" type="button" @click="runDispatch(order)">调度</button>
-                  <button v-if="canCancel(order)" class="secondary-button" type="button" @click="cancel(order)">取消</button>
+                   <button v-if="canCancel(order)" class="secondary-button" type="button" @click="cancel(order)">取消</button>
+                   <button v-if="canConfirmPassengerCancellation(order)" class="secondary-button" type="button" @click="confirmPassengerCancellation(order)">确认乘客取消</button>
                   <button v-if="order.canMarkNoShow" class="danger-button" type="button" @click="openNoShow(order)">乘客未到</button>
                   <span
                     v-else-if="order.status === 'IN_PROGRESS' && order.noShowBlockReason"
@@ -194,7 +210,7 @@ onMounted(() => {
                     <span>{{ order.noShowBlockReason }}</span>
                     <span v-if="order.noShowEligibleAt">{{ noShowRemaining(order) }}</span>
                   </span>
-                  <span v-if="!canCancel(order)" class="action-hint">无需操作</span>
+                   <span v-if="!canCancel(order) && !canConfirmPassengerCancellation(order)" class="action-hint">无需操作</span>
                 </template>
               </div>
             </td>

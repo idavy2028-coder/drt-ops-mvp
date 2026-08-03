@@ -60,6 +60,13 @@ public class RideOrderController {
         return ApiResponse.ok(orderExceptionService.cancel(actorId(authentication), orderId, request.reason()));
     }
 
+    @PostMapping("/{orderId}/cancellation-reason-confirmation")
+    ApiResponse<RideOrder> confirmCancellationReason(
+            Authentication authentication, @PathVariable UUID orderId, @RequestBody ReasonRequest request) {
+        return ApiResponse.ok(orderExceptionService.confirmCancellationReason(
+                actorId(authentication), orderId, request.reason()));
+    }
+
     @PostMapping("/{orderId}/no-show")
     ApiResponse<RideOrder> noShow(
             Authentication authentication, @PathVariable UUID orderId, @Valid @RequestBody NoShowRequest request) {

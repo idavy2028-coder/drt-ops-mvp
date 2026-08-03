@@ -197,4 +197,55 @@ describe("OrdersPage", () => {
     });
     expect(JSON.parse(postedBodies[0]!).idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  it("confirms a cancelled order as passenger cancelled without cancelling it again", async () => {
+    const orderId = "66666666-6666-6666-6666-666666666666";
+    const postedBodies: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const url = String(input);
+      if (url.endsWith(`/api/orders/${orderId}/cancellation-reason-confirmation`) && options?.method === "POST") {
+        postedBodies.push(String(options.body));
+        return new Response(JSON.stringify({ data: { id: orderId, status: "CANCELLED" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({
+        data: postedBodies.length === 0 ? [{
+          id: orderId,
+          passengerName: "已取消乘客",
+          passengerPhone: "13800000000",
+          passengerCount: 1,
+          requestType: "IMMEDIATE",
+          originLng: 105.327705,
+          originLat: 35.283669,
+          destinationLng: 105.258224,
+          destinationLat: 35.197636,
+          originAddress: "测试起点",
+          destinationAddress: "测试终点",
+          coordinateSystem: "GCJ02",
+          originAddressSource: "VIRTUAL_STOP",
+          destinationAddressSource: "VIRTUAL_STOP",
+          boardingStopId: "55555555-5555-5555-5555-555555555551",
+          alightingStopId: "55555555-5555-5555-5555-555555555552",
+          requestedDepartureAt: "2026-07-30T12:00:00+08:00",
+          status: "CANCELLED"
+        }] : []
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    authStore.setSessionForTest({
+      accessToken: "dispatcher-token",
+      user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false }
+    });
+
+    render(OrdersPage);
+
+    await fireEvent.click(await screen.findByRole("button", { name: "确认乘客取消" }));
+
+    await waitFor(() => expect(postedBodies).toHaveLength(1));
+    expect(JSON.parse(postedBodies[0]!)).toEqual({ reason: "乘客取消" });
+  });
 });

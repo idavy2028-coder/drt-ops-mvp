@@ -49,7 +49,47 @@ public class OrderExceptionService {
         RideOrder order = order(orderId);
         order.cancel(reason);
         audit(actorId, order.getId(), "ORDER_CANCELLED", reason);
+        cancelActiveTasksForOrder(actorId, orderId, reason);
         return order;
+    }
+
+    @Transactional
+    public RideOrder confirmCancellationReason(UUID actorId, UUID orderId, String reason) {
+        RideOrder order = orderForUpdate(orderId);
+        if (order.getStatus() != OrderStatus.CANCELLED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "仅已取消订单可确认取消原因");
+        }
+        List<AuditLog> orderAudits = auditLogRepository.findByEntityId(orderId);
+        AuditLog originalCancellation = orderAudits.stream()
+                .filter(log -> "ORDER_CANCELLED".equals(log.getAction()))
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "订单缺少原始取消审计记录"));
+        if (orderAudits.stream().anyMatch(log -> "ORDER_CANCELLATION_REASON_CONFIRMED".equals(log.getAction()))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "订单取消原因已确认");
+        }
+
+        String metadata = "{\"originalCancelAuditId\":\"" + originalCancellation.getId() + "\"}";
+        audit(actorId, orderId, "ORDER_CANCELLATION_REASON_CONFIRMED", reason, metadata);
+        vehicleTaskRepository.findByRideOrderId(orderId).stream()
+                .filter(task -> task.getStatus() == com.idavy.drtops.domain.task.TaskStatus.CANCELLED)
+                .forEach(task -> auditTask(
+                        actorId, task.getId(), "TASK_CANCELLATION_REASON_CONFIRMED", reason, metadata));
+        return order;
+    }
+
+    private void cancelActiveTasksForOrder(UUID actorId, UUID orderId, String reason) {
+        for (VehicleTask task : vehicleTaskRepository.findActiveByRideOrderId(
+                orderId, TaskResourceCoordinator.ACTIVE_STATUSES)) {
+            if (task.activeOrderIds().size() <= 1) {
+                task.cancelStopsForOrder(orderId);
+                task.cancel(reason);
+                taskResourceCoordinator.releaseIfUnused(task);
+                auditTask(actorId, task.getId(), "TASK_CANCELLED_PASSENGER_CANCELLED", reason);
+            } else {
+                task.cancelStopsForOrder(orderId);
+                auditTask(actorId, task.getId(), "TASK_STOPS_CANCELLED_PASSENGER_CANCELLED", reason);
+            }
+        }
     }
 
     @Transactional
@@ -136,6 +176,10 @@ public class OrderExceptionService {
     }
 
     private void audit(UUID actorId, UUID orderId, String action, String reason) {
+        audit(actorId, orderId, action, reason, "{}");
+    }
+
+    private void audit(UUID actorId, UUID orderId, String action, String reason, String metadataJson) {
         auditLogRepository.save(AuditLog.record(
                 "RIDE_ORDER",
                 orderId,
@@ -143,10 +187,14 @@ public class OrderExceptionService {
                 "USER",
                 actorId.toString(),
                 reason,
-                "{}"));
+                metadataJson));
     }
 
     private void auditTask(UUID actorId, UUID taskId, String action, String reason) {
+        auditTask(actorId, taskId, action, reason, "{}");
+    }
+
+    private void auditTask(UUID actorId, UUID taskId, String action, String reason, String metadataJson) {
         auditLogRepository.save(AuditLog.record(
                 "VEHICLE_TASK",
                 taskId,
@@ -154,6 +202,6 @@ public class OrderExceptionService {
                 "USER",
                 actorId.toString(),
                 reason,
-                "{}"));
+                metadataJson));
     }
 }

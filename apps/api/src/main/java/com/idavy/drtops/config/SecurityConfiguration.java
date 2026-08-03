@@ -51,7 +51,8 @@ public class SecurityConfiguration {
                         .requestMatchers(HttpMethod.POST, "/api/service-areas/*/contains")
                         .hasAnyAuthority("ORDER_CREATE", "RESOURCE_MANAGE")
                         .requestMatchers(HttpMethod.POST, "/api/orders/*/dispatch").hasAuthority("DISPATCH_EXECUTE")
-                        .requestMatchers(HttpMethod.POST, "/api/orders/*/cancel", "/api/orders/*/no-show")
+                        .requestMatchers(HttpMethod.POST, "/api/orders/*/cancel", "/api/orders/*/no-show",
+                                "/api/orders/*/cancellation-reason-confirmation")
                         .hasAuthority("DISPATCH_EXECUTE")
                         .requestMatchers(HttpMethod.GET, "/api/dispatch-decisions/manual-review").hasAuthority("MANUAL_REVIEW")
                         .requestMatchers(HttpMethod.GET, "/api/dispatch-decisions").hasAuthority("DECISION_READ")

@@ -38,4 +38,12 @@ public interface VehicleTaskRepository extends JpaRepository<VehicleTask, UUID> 
     List<VehicleTask> findActiveByRideOrderId(
             @Param("orderId") UUID orderId,
             @Param("statuses") List<TaskStatus> statuses);
+
+    @EntityGraph(attributePaths = "stops")
+    @Query("""
+            select distinct task
+            from VehicleTask task join task.stops stop
+            where stop.rideOrderId = :orderId
+            """)
+    List<VehicleTask> findByRideOrderId(@Param("orderId") UUID orderId);
 }
