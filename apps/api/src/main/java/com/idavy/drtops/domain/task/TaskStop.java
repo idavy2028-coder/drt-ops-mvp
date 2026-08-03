@@ -78,6 +78,13 @@ public class TaskStop {
         this.vehicleTask = vehicleTask;
     }
 
+    void resequence(int sequenceNumber) {
+        if (sequenceNumber <= 0) {
+            throw new IllegalArgumentException("sequenceNumber must be positive");
+        }
+        this.sequenceNumber = sequenceNumber;
+    }
+
     public void arrive() {
         requireStatus("PLANNED");
         this.actualArrivalAt = OffsetDateTime.now();

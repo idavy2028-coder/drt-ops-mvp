@@ -124,6 +124,18 @@ public class VehicleTask {
         this.updatedAt = OffsetDateTime.now();
     }
 
+    public void insertStop(int index, TaskStop stop) {
+        if (index < 0 || index > stops.size()) {
+            throw new IllegalArgumentException("stop index out of range");
+        }
+        stop.assignTo(this);
+        stops.add(index, stop);
+        for (int position = 0; position < stops.size(); position++) {
+            stops.get(position).resequence(position + 1);
+        }
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public void markCurrentStop(UUID currentStopId) {
         this.currentStopId = currentStopId;
         this.updatedAt = OffsetDateTime.now();
