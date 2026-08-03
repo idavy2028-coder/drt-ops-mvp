@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from .schemas import CandidateTask, DirectionCompatibility, DispatchPlan, DispatchRuleSet
+from .schemas import (
+    CandidateTask,
+    CandidateType,
+    DispatchPlan,
+    DispatchRuleSet,
+)
 
 
 def score_candidate(task: CandidateTask, rule_set: DispatchRuleSet) -> DispatchPlan:
@@ -30,6 +35,13 @@ def score_candidate(task: CandidateTask, rule_set: DispatchRuleSet) -> DispatchP
         estimated_detour_minutes=task.estimated_detour_minutes,
         direction_compatibility=task.direction_compatibility,
         utilization_after_insert=task.utilization_after_insert,
+        candidate_type=task.candidate_type,
+        activation_cost=task.activation_cost,
+        selection_reason=(
+            "EXISTING_TASK_PREFERRED"
+            if task.candidate_type == CandidateType.EXISTING_TASK
+            else "NEW_VEHICLE_REQUIRED"
+        ),
     )
 
 
@@ -44,11 +56,7 @@ def bounded_score(value: float) -> float:
 
 
 def stability_component(task: CandidateTask) -> float:
-    if task.direction_compatibility == DirectionCompatibility.SAME_DIRECTION:
-        return bounded_score(95 - task.estimated_detour_minutes * 1.25)
-    if task.direction_compatibility == DirectionCompatibility.UNKNOWN:
-        return 65
-    return 40
+    return task.task_disruption_score
 
 
 def utilization_component(utilization_after_insert: float) -> float:

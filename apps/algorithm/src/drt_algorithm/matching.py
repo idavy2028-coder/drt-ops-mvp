@@ -27,9 +27,21 @@ def filter_feasible_candidates(
     return feasible, rejected
 
 
+def lowest_activation_cost_tier(candidates: list[CandidateTask]) -> list[CandidateTask]:
+    minimum_cost = min(candidate.activation_cost for candidate in candidates)
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.activation_cost == minimum_cost
+    ]
+
+
 def first_rejection_reason(
     request: DispatchEvaluateRequest, task: CandidateTask
 ) -> str | None:
+    if task.precheck_rejection_reason is not None:
+        return task.precheck_rejection_reason
+
     if task.available_seats < request.order.passenger_count:
         return "INSUFFICIENT_CAPACITY"
 

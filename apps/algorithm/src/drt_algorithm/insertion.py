@@ -7,7 +7,7 @@ from .explanations import (
     manual_review_explanation,
     no_candidate_explanation,
 )
-from .matching import filter_feasible_candidates
+from .matching import filter_feasible_candidates, lowest_activation_cost_tier
 from .schemas import (
     DispatchDecision,
     DispatchEvaluateRequest,
@@ -39,8 +39,9 @@ def evaluate_dispatch(request: DispatchEvaluateRequest) -> DispatchEvaluateRespo
             explanation=all_rejected_explanation(rejected_candidates),
         )
 
+    preferred_candidates = lowest_activation_cost_tier(feasible_candidates)
     best_plan = best_scored_plan(
-        [score_candidate(task, request.rule_set) for task in feasible_candidates]
+        [score_candidate(task, request.rule_set) for task in preferred_candidates]
     )
 
     if best_plan.score >= request.rule_set.auto_dispatch_score_threshold:

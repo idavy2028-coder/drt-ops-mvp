@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -35,6 +35,11 @@ class DirectionCompatibility(StrEnum):
     SAME_DIRECTION = "SAME_DIRECTION"
     OPPOSITE_DIRECTION = "OPPOSITE_DIRECTION"
     UNKNOWN = "UNKNOWN"
+
+
+class CandidateType(StrEnum):
+    EXISTING_TASK = "EXISTING_TASK"
+    NEW_TASK = "NEW_TASK"
 
 
 class StopType(StrEnum):
@@ -104,6 +109,10 @@ class CandidateTask(ApiModel):
     estimated_detour_minutes: int = Field(ge=0)
     direction_compatibility: DirectionCompatibility
     utilization_after_insert: float = Field(ge=0, le=1)
+    candidate_type: CandidateType
+    activation_cost: Literal[0, 1]
+    precheck_rejection_reason: str | None = None
+    task_disruption_score: float = Field(ge=0, le=100)
 
 
 class DispatchEvaluateRequest(ApiModel):
@@ -125,6 +134,9 @@ class DispatchPlan(ApiModel):
     estimated_detour_minutes: int = Field(ge=0)
     direction_compatibility: DirectionCompatibility
     utilization_after_insert: float = Field(ge=0, le=1)
+    candidate_type: CandidateType
+    activation_cost: Literal[0, 1]
+    selection_reason: str
 
 
 class DispatchExplanation(ApiModel):
