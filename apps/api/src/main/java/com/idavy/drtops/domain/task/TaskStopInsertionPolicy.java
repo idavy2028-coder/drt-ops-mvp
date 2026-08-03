@@ -31,11 +31,11 @@ public class TaskStopInsertionPolicy {
 
         int insertionIndex = sameStopInsertionIndex(task.getStops(), boardingStopId);
         if (insertionIndex < 0) {
-            task.addStop(boarding);
+            task.insertStop(task.getStops().size(), boarding);
         } else {
             task.insertStop(insertionIndex, boarding);
         }
-        task.addStop(alighting);
+        task.insertStop(task.getStops().size(), alighting);
     }
 
     private static int sameStopInsertionIndex(List<TaskStop> stops, UUID boardingStopId) {

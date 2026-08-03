@@ -13,6 +13,7 @@ class TaskStopInsertionPolicyTest {
     private static final UUID DRIVER_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final UUID FIRST_ORDER_ID = UUID.fromString("33333333-3333-3333-3333-333333333331");
     private static final UUID SECOND_ORDER_ID = UUID.fromString("33333333-3333-3333-3333-333333333332");
+    private static final UUID THIRD_ORDER_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final UUID HIGH_SPEED_RAIL_STOP_ID = UUID.fromString("44444444-4444-4444-4444-444444444441");
     private static final UUID ANCHUAN_STOP_ID = UUID.fromString("44444444-4444-4444-4444-444444444442");
     private static final UUID LONGYANG_STOP_ID = UUID.fromString("44444444-4444-4444-4444-444444444443");
@@ -44,8 +45,57 @@ class TaskStopInsertionPolicyTest {
     }
 
     @Test
+    void appendsNewBoardingToEndOfExistingSameStopGroup() {
+        VehicleTask task = taskWithFirstOrder();
+        task.insertStop(1, TaskStop.planned(
+                HIGH_SPEED_RAIL_STOP_ID,
+                THIRD_ORDER_ID,
+                2,
+                "BOARDING",
+                BOARDING_AT.minusMinutes(2)));
+
+        policy.insertOrderStops(
+                task,
+                HIGH_SPEED_RAIL_STOP_ID,
+                LONGYANG_STOP_ID,
+                SECOND_ORDER_ID,
+                BOARDING_AT,
+                ALIGHTING_AT);
+
+        assertThat(task.getStops())
+                .extracting(TaskStop::getRideOrderId, TaskStop::getStopType, TaskStop::getSequenceNumber)
+                .containsExactly(
+                        tuple(FIRST_ORDER_ID, "BOARDING", 1),
+                        tuple(THIRD_ORDER_ID, "BOARDING", 2),
+                        tuple(SECOND_ORDER_ID, "BOARDING", 3),
+                        tuple(FIRST_ORDER_ID, "ALIGHTING", 4),
+                        tuple(SECOND_ORDER_ID, "ALIGHTING", 5));
+    }
+
+    @Test
     void appendsNewOrderWhenBoardingStopDiffers() {
         VehicleTask task = taskWithFirstOrder();
+
+        policy.insertOrderStops(
+                task,
+                OTHER_BOARDING_STOP_ID,
+                LONGYANG_STOP_ID,
+                SECOND_ORDER_ID,
+                BOARDING_AT,
+                ALIGHTING_AT);
+
+        assertThat(task.getStops())
+                .extracting(TaskStop::getRideOrderId, TaskStop::getStopType, TaskStop::getSequenceNumber)
+                .containsExactly(
+                        tuple(FIRST_ORDER_ID, "BOARDING", 1),
+                        tuple(FIRST_ORDER_ID, "ALIGHTING", 2),
+                        tuple(SECOND_ORDER_ID, "BOARDING", 3),
+                        tuple(SECOND_ORDER_ID, "ALIGHTING", 4));
+    }
+
+    @Test
+    void normalizesExistingSequenceGapsWhenAppendingDifferentStop() {
+        VehicleTask task = taskWithFirstOrderSequenceGap();
 
         policy.insertOrderStops(
                 task,
@@ -100,6 +150,23 @@ class TaskStopInsertionPolicyTest {
                 ANCHUAN_STOP_ID,
                 FIRST_ORDER_ID,
                 2,
+                "ALIGHTING",
+                BOARDING_AT.plusMinutes(10)));
+        return task;
+    }
+
+    private static VehicleTask taskWithFirstOrderSequenceGap() {
+        VehicleTask task = VehicleTask.pendingDeparture(VEHICLE_ID, DRIVER_ID, BOARDING_AT.minusMinutes(5), "TEST");
+        task.addStop(TaskStop.planned(
+                HIGH_SPEED_RAIL_STOP_ID,
+                FIRST_ORDER_ID,
+                1,
+                "BOARDING",
+                BOARDING_AT.minusMinutes(4)));
+        task.addStop(TaskStop.planned(
+                ANCHUAN_STOP_ID,
+                FIRST_ORDER_ID,
+                4,
                 "ALIGHTING",
                 BOARDING_AT.plusMinutes(10)));
         return task;

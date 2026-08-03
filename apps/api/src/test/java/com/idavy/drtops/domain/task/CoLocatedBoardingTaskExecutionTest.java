@@ -126,6 +126,47 @@ class CoLocatedBoardingTaskExecutionTest {
     }
 
     @Test
+    void arrivalDoesNotCrossNonBoardingStopToReachSameVirtualStop() {
+        UUID sharedStopId = UUID.randomUUID();
+        VehicleTask task = inProgressTask();
+        TaskStop firstBoarding = boarding(sharedStopId, 1);
+        task.addStop(firstBoarding);
+        task.addStop(alighting(UUID.randomUUID(), 2));
+        task.addStop(boarding(sharedStopId, 3));
+        task = vehicleTaskRepository.save(task);
+
+        service.arrive(ACTOR_ID, task.getId(), firstBoarding.getId(), request(sharedStopId));
+
+        assertThat(reload(task.getId()).getStops())
+                .extracting(TaskStop::getStatus)
+                .containsExactly("ARRIVED", "PLANNED", "PLANNED");
+        assertThat(auditLogRepository.findByEntityId(task.getId())).hasSize(1);
+    }
+
+    @Test
+    void replayedSharedArrivalDoesNotDuplicateEventsOrAudits() {
+        UUID sharedStopId = UUID.randomUUID();
+        UUID idempotencyKey = UUID.randomUUID();
+        VehicleTask task = inProgressTask();
+        TaskStop firstBoarding = boarding(sharedStopId, 1);
+        task.addStop(firstBoarding);
+        task.addStop(boarding(sharedStopId, 2));
+        task = vehicleTaskRepository.save(task);
+        TaskLocationReportRequest request = request(sharedStopId, idempotencyKey);
+
+        service.arrive(ACTOR_ID, task.getId(), firstBoarding.getId(), request);
+        service.arrive(ACTOR_ID, task.getId(), firstBoarding.getId(), request);
+
+        assertThat(eventRepository.findAll()).hasSize(1);
+        assertThat(auditLogRepository.findByEntityId(task.getId()))
+                .extracting(AuditLog::getAction)
+                .containsExactly("TASK_STOP_ARRIVED", "TASK_STOP_ARRIVED");
+        assertThat(reload(task.getId()).getStops())
+                .extracting(TaskStop::getStatus)
+                .containsExactly("ARRIVED", "ARRIVED");
+    }
+
+    @Test
     void sharedArrivalStillRequiresAndAuditsBoardingPerOrder() {
         UUID sharedStopId = UUID.randomUUID();
         VehicleTask task = inProgressTask();
@@ -168,6 +209,10 @@ class CoLocatedBoardingTaskExecutionTest {
     }
 
     private static TaskLocationReportRequest request(UUID virtualStopId) {
+        return request(virtualStopId, UUID.randomUUID());
+    }
+
+    private static TaskLocationReportRequest request(UUID virtualStopId, UUID idempotencyKey) {
         return new TaskLocationReportRequest(
                 LONGITUDE,
                 LATITUDE,
@@ -175,7 +220,7 @@ class CoLocatedBoardingTaskExecutionTest {
                 REPORTED_AT,
                 virtualStopId,
                 "同站上车验收",
-                UUID.randomUUID());
+                idempotencyKey);
     }
 
     private static String metadata(UUID eventId) {
