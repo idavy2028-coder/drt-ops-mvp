@@ -8,6 +8,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
+import java.util.Objects;
 import java.util.UUID;
 
 @Entity
@@ -86,8 +87,12 @@ public class TaskStop {
     }
 
     public void arrive() {
+        arriveAt(OffsetDateTime.now());
+    }
+
+    public void arriveAt(OffsetDateTime actualArrivalAt) {
         requireStatus("PLANNED");
-        this.actualArrivalAt = OffsetDateTime.now();
+        this.actualArrivalAt = Objects.requireNonNull(actualArrivalAt, "actualArrivalAt");
         this.status = "ARRIVED";
     }
 
