@@ -192,6 +192,12 @@ class DispatchOrchestratorTest {
         assertThat(algorithmClient.lastRequest().candidateTasks())
                 .extracting(DispatchEvaluateRequest.CandidateTask::taskId)
                 .containsExactly(existingTaskId);
+        DispatchEvaluateRequest.CandidateTask candidate =
+                algorithmClient.lastRequest().candidateTasks().getFirst();
+        assertThat(candidate.candidateType()).isEqualTo("EXISTING_TASK");
+        assertThat(candidate.activationCost()).isZero();
+        assertThat(candidate.estimatedDetourMinutes()).isZero();
+        assertThat(candidate.precheckRejectionReason()).isNull();
     }
 
     @Test
@@ -360,6 +366,10 @@ class DispatchOrchestratorTest {
             return new RoutePlanningProvider() {
                 @Override
                 public RoutePlanResult drivingRoute(Coordinate origin, Coordinate destination, List<Coordinate> waypoints) {
+                    if (origin.longitude().compareTo(destination.longitude()) == 0
+                            && origin.latitude().compareTo(destination.latitude()) == 0) {
+                        return new RoutePlanResult(0, 0, List.of(origin, destination));
+                    }
                     return new RoutePlanResult(1_200, 360, List.of(origin, destination));
                 }
 

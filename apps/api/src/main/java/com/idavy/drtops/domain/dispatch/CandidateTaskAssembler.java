@@ -8,7 +8,6 @@ import com.idavy.drtops.domain.map.Coordinate;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStatus;
-import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
@@ -19,7 +18,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,18 +32,21 @@ public class CandidateTaskAssembler {
     private final VehicleTaskRepository vehicleTaskRepository;
     private final RideOrderRepository rideOrderRepository;
     private final TravelEstimateService travelEstimateService;
+    private final TaskInsertionPlanner taskInsertionPlanner;
 
     public CandidateTaskAssembler(
             VehicleRepository vehicleRepository,
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
             RideOrderRepository rideOrderRepository,
-            TravelEstimateService travelEstimateService) {
+            TravelEstimateService travelEstimateService,
+            TaskInsertionPlanner taskInsertionPlanner) {
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.rideOrderRepository = rideOrderRepository;
         this.travelEstimateService = travelEstimateService;
+        this.taskInsertionPlanner = taskInsertionPlanner;
     }
 
     public DispatchEvaluateRequest assemble(RideOrder order, DispatchRuleSet ruleSet) {
@@ -62,8 +63,10 @@ public class CandidateTaskAssembler {
             manualReviewReasons.add("MAP_ROUTE_UNAVAILABLE");
         }
         Map<UUID, CandidateTravelEstimates> candidateEstimates = new HashMap<>();
+        Map<UUID, TaskInsertionPlan> insertionPlans = new HashMap<>();
         List<DispatchEvaluateRequest.CandidateTask> candidates = toCandidateTasks(
-                order, ruleSet, pickupCoordinate, pickupToDestination, candidateEstimates, manualReviewReasons);
+                order, ruleSet, pickupCoordinate, pickupToDestination, candidateEstimates,
+                insertionPlans, manualReviewReasons);
         DispatchEvaluateRequest request = new DispatchEvaluateRequest(
                 new DispatchEvaluateRequest.Order(
                         order.getId(),
@@ -77,6 +80,7 @@ public class CandidateTaskAssembler {
         return new Assembly(
                 request,
                 Map.copyOf(candidateEstimates),
+                Map.copyOf(insertionPlans),
                 pickupToDestination,
                 manualReviewReasons.isEmpty() ? null : manualReviewReasons.getFirst());
     }
@@ -101,6 +105,7 @@ public class CandidateTaskAssembler {
             Coordinate pickupCoordinate,
             TravelEstimate pickupToDestination,
             Map<UUID, CandidateTravelEstimates> candidateEstimates,
+            Map<UUID, TaskInsertionPlan> insertionPlans,
             List<String> manualReviewReasons) {
         List<Vehicle> dispatchableVehicles = vehicleRepository.findAll().stream()
                 .filter(Vehicle::isDispatchable)
@@ -130,7 +135,7 @@ public class CandidateTaskAssembler {
             Vehicle vehicle = idleVehicles.get(index);
             addCandidateWithTravelEstimate(
                     candidates, candidateEstimates, manualReviewReasons, order, ruleSet, vehicle,
-                    pickupCoordinate, pickupToDestination, null);
+                    pickupCoordinate, pickupToDestination, insertionPlans, null);
         }
 
         for (VehicleTask task : tasks) {
@@ -138,7 +143,7 @@ public class CandidateTaskAssembler {
             if (vehicle != null && isInsertable(task)) {
                 addCandidateWithTravelEstimate(
                         candidates, candidateEstimates, manualReviewReasons, order, ruleSet, vehicle,
-                        pickupCoordinate, pickupToDestination, task);
+                        pickupCoordinate, pickupToDestination, insertionPlans, task);
             }
         }
         return candidates;
@@ -173,7 +178,11 @@ public class CandidateTaskAssembler {
                 estimatedWaitMinutes,
                 estimatedDetourMinutes,
                 "SAME_DIRECTION",
-                utilization(order, vehicle));
+                utilization(order, vehicle),
+                "NEW_TASK",
+                1,
+                null,
+                new BigDecimal("100.00"));
     }
 
     private DispatchEvaluateRequest.CandidateTask toExistingTaskCandidate(
@@ -181,41 +190,30 @@ public class CandidateTaskAssembler {
             DispatchRuleSet ruleSet,
             VehicleTask task,
             Vehicle vehicle,
-            TravelEstimate vehicleToPickup) {
-        int estimatedWaitMinutes = estimateWaitMinutes(vehicleToPickup);
-        int estimatedDetourMinutes = Math.min(ruleSet.getMaxDetourMinutes(), 3);
-        OffsetDateTime boardingAt = order.getRequestedDepartureAt().plusMinutes(estimatedWaitMinutes);
-        OffsetDateTime alightingAt = boardingAt.plusMinutes(estimatedDetourMinutes + 10L);
-        int nextSequence = nextSequence(task);
+            TravelEstimate vehicleToPickup,
+            TaskInsertionPlan plan) {
         List<DispatchEvaluateRequest.PlannedStop> plannedStops = new ArrayList<>();
-        for (TaskStop stop : task.getStops()) {
+        for (int index = 0; index < plan.orderedStops().size(); index++) {
+            TaskInsertionPlan.PlannedTaskStop stop = plan.orderedStops().get(index);
             plannedStops.add(new DispatchEvaluateRequest.PlannedStop(
-                    stop.getVirtualStopId(),
-                    stop.getSequenceNumber(),
-                    stop.getPlannedArrivalAt(),
-                    stop.getStopType()));
+                    stop.virtualStopId(), index + 1, stop.plannedArrivalAt(), stop.stopType()));
         }
-        plannedStops.add(new DispatchEvaluateRequest.PlannedStop(
-                order.getBoardingStopId(),
-                nextSequence,
-                boardingAt,
-                "BOARDING"));
-        plannedStops.add(new DispatchEvaluateRequest.PlannedStop(
-                order.getAlightingStopId(),
-                nextSequence + 1,
-                alightingAt,
-                "ALIGHTING"));
 
         return new DispatchEvaluateRequest.CandidateTask(
                 task.getId(),
                 task.getVehicleId(),
-                availableSeats(task, vehicle),
-                currentStopId(task, order),
+                Math.max(0, vehicle.getCapacity() - Math.max(0,
+                        plan.peakOccupiedSeats() - order.getPassengerCount())),
+                plannedStops.isEmpty() ? order.getBoardingStopId() : plannedStops.getFirst().stopId(),
                 plannedStops,
-                estimatedWaitMinutes,
-                estimatedDetourMinutes,
-                directionCompatibility(task, order),
-                utilizationAfterInsert(order, task, vehicle));
+                plan.estimatedWaitMinutes(),
+                plan.maxPassengerDetourMinutes(),
+                plan.feasible() ? "SAME_DIRECTION" : "UNKNOWN",
+                plan.utilizationAfterInsert(),
+                "EXISTING_TASK",
+                0,
+                plan.rejectionReason(),
+                BigDecimal.valueOf(plan.taskDisruptionScore()));
     }
 
     private boolean isInsertable(VehicleTask task) {
@@ -231,17 +229,31 @@ public class CandidateTaskAssembler {
             Vehicle vehicle,
             Coordinate pickupCoordinate,
             TravelEstimate pickupToDestination,
+            Map<UUID, TaskInsertionPlan> insertionPlans,
             VehicleTask existingTask) {
         try {
             TravelEstimate vehicleToPickup = travelEstimateService.estimateVehicleToPickup(vehicle.getId(), pickupCoordinate);
             if (vehicleToPickup.degraded() && !manualReviewReasons.contains("MAP_ROUTE_UNAVAILABLE")) {
                 manualReviewReasons.add("MAP_ROUTE_UNAVAILABLE");
             }
+            TaskInsertionPlan insertionPlan = existingTask == null
+                    ? null
+                    : taskInsertionPlanner.plan(
+                            order,
+                            vehicle,
+                            existingTask,
+                            ruleSet,
+                            stopCoordinates(order, existingTask),
+                            passengerCounts(order, existingTask));
             DispatchEvaluateRequest.CandidateTask candidate = existingTask == null
                     ? toNewTaskCandidate(order, ruleSet, vehicle, vehicleToPickup)
-                    : toExistingTaskCandidate(order, ruleSet, existingTask, vehicle, vehicleToPickup);
+                    : toExistingTaskCandidate(
+                            order, ruleSet, existingTask, vehicle, vehicleToPickup, insertionPlan);
             candidates.add(candidate);
             candidateEstimates.put(candidate.taskId(), new CandidateTravelEstimates(vehicleToPickup, pickupToDestination));
+            if (insertionPlan != null) {
+                insertionPlans.put(existingTask.getId(), insertionPlan);
+            }
         } catch (TravelEstimateService.MissingVehicleLocationSnapshotException exception) {
             if (!manualReviewReasons.contains("VEHICLE_LOCATION_SNAPSHOT_MISSING")) {
                 manualReviewReasons.add("VEHICLE_LOCATION_SNAPSHOT_MISSING");
@@ -249,61 +261,34 @@ public class CandidateTaskAssembler {
         }
     }
 
+    private Map<UUID, Coordinate> stopCoordinates(RideOrder newOrder, VehicleTask task) {
+        Map<UUID, Coordinate> coordinates = new HashMap<>();
+        addOrderCoordinates(coordinates, newOrder);
+        for (UUID orderId : task.activeOrderIds()) {
+            rideOrderRepository.findById(orderId).ifPresent(order -> addOrderCoordinates(coordinates, order));
+        }
+        return coordinates;
+    }
+
+    private void addOrderCoordinates(Map<UUID, Coordinate> coordinates, RideOrder order) {
+        coordinates.putIfAbsent(
+                order.getBoardingStopId(), new Coordinate(order.getOriginLng(), order.getOriginLat()));
+        coordinates.putIfAbsent(
+                order.getAlightingStopId(), new Coordinate(order.getDestinationLng(), order.getDestinationLat()));
+    }
+
+    private Map<UUID, Integer> passengerCounts(RideOrder newOrder, VehicleTask task) {
+        Map<UUID, Integer> passengerCounts = new HashMap<>();
+        passengerCounts.put(newOrder.getId(), newOrder.getPassengerCount());
+        for (UUID orderId : task.activeOrderIds()) {
+            rideOrderRepository.findById(orderId)
+                    .ifPresent(order -> passengerCounts.put(orderId, order.getPassengerCount()));
+        }
+        return passengerCounts;
+    }
+
     private int estimateWaitMinutes(TravelEstimate estimate) {
         return Math.max(1, (int) Math.ceil(estimate.durationSeconds() / 60D));
-    }
-
-    private int nextSequence(VehicleTask task) {
-        return task.getStops().stream()
-                .mapToInt(TaskStop::getSequenceNumber)
-                .max()
-                .orElse(0) + 1;
-    }
-
-    private int availableSeats(VehicleTask task, Vehicle vehicle) {
-        return Math.max(0, vehicle.getCapacity() - occupiedSeats(task));
-    }
-
-    private int occupiedSeats(VehicleTask task) {
-        Set<UUID> orderIds = new LinkedHashSet<>();
-        for (TaskStop stop : task.getStops()) {
-            if (stop.getRideOrderId() != null) {
-                orderIds.add(stop.getRideOrderId());
-            }
-        }
-        int occupiedSeats = 0;
-        for (UUID orderId : orderIds) {
-            occupiedSeats += rideOrderRepository.findById(orderId)
-                    .map(RideOrder::getPassengerCount)
-                    .orElse(0);
-        }
-        return occupiedSeats;
-    }
-
-    private UUID currentStopId(VehicleTask task, RideOrder order) {
-        return task.getStops().stream()
-                .filter(stop -> !stop.isExecutionComplete())
-                .findFirst()
-                .map(TaskStop::getVirtualStopId)
-                .orElse(order.getBoardingStopId());
-    }
-
-    private String directionCompatibility(VehicleTask task, RideOrder order) {
-        List<UUID> stopIds = task.getStops().stream()
-                .map(TaskStop::getVirtualStopId)
-                .toList();
-        int boardingIndex = stopIds.indexOf(order.getBoardingStopId());
-        int alightingIndex = stopIds.indexOf(order.getAlightingStopId());
-        if (boardingIndex >= 0 && alightingIndex >= boardingIndex) {
-            return "SAME_DIRECTION";
-        }
-        return "UNKNOWN";
-    }
-
-    private BigDecimal utilizationAfterInsert(RideOrder order, VehicleTask task, Vehicle vehicle) {
-        BigDecimal utilization = BigDecimal.valueOf(occupiedSeats(task) + order.getPassengerCount())
-                .divide(BigDecimal.valueOf(vehicle.getCapacity()), 2, RoundingMode.HALF_UP);
-        return utilization.min(BigDecimal.ONE);
     }
 
     private static UUID syntheticTaskId(UUID vehicleId) {
@@ -330,11 +315,12 @@ public class CandidateTaskAssembler {
     public record Assembly(
             DispatchEvaluateRequest request,
             Map<UUID, CandidateTravelEstimates> candidateEstimates,
+            Map<UUID, TaskInsertionPlan> insertionPlans,
             TravelEstimate pickupToDestination,
             String manualReviewReason) {
 
         public static Assembly requiresManualReview(DispatchEvaluateRequest request, String reason) {
-            return new Assembly(request, Map.of(), null, reason);
+            return new Assembly(request, Map.of(), Map.of(), null, reason);
         }
 
         public boolean requiresManualReview() {
@@ -361,6 +347,10 @@ public class CandidateTaskAssembler {
                     && bestPlan.taskId() != null
                     && bestPlan.vehicleId() != null
                     && bestPlan.taskId().equals(syntheticTaskId(bestPlan.vehicleId()));
+        }
+
+        public TaskInsertionPlan insertionPlanFor(UUID taskId) {
+            return insertionPlans.get(taskId);
         }
     }
 }

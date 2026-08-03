@@ -21,7 +21,24 @@ public record DispatchEvaluateResponse(
             int estimatedWaitMinutes,
             int estimatedDetourMinutes,
             String directionCompatibility,
-            BigDecimal utilizationAfterInsert) {
+            BigDecimal utilizationAfterInsert,
+            String candidateType,
+            int activationCost,
+            String selectionReason) {
+
+        public BestPlan(
+                UUID taskId,
+                UUID vehicleId,
+                BigDecimal score,
+                int estimatedWaitMinutes,
+                int estimatedDetourMinutes,
+                String directionCompatibility,
+                BigDecimal utilizationAfterInsert) {
+            this(
+                    taskId, vehicleId, score, estimatedWaitMinutes, estimatedDetourMinutes,
+                    directionCompatibility, utilizationAfterInsert, "NEW_TASK", 1,
+                    "NEW_VEHICLE_REQUIRED");
+        }
     }
 
     public record RejectedCandidate(

@@ -45,7 +45,27 @@ public record DispatchEvaluateRequest(
             int estimatedWaitMinutes,
             int estimatedDetourMinutes,
             String directionCompatibility,
-            BigDecimal utilizationAfterInsert) {
+            BigDecimal utilizationAfterInsert,
+            String candidateType,
+            int activationCost,
+            String precheckRejectionReason,
+            BigDecimal taskDisruptionScore) {
+
+        public CandidateTask(
+                UUID taskId,
+                UUID vehicleId,
+                int availableSeats,
+                UUID currentStopId,
+                List<PlannedStop> plannedStops,
+                int estimatedWaitMinutes,
+                int estimatedDetourMinutes,
+                String directionCompatibility,
+                BigDecimal utilizationAfterInsert) {
+            this(
+                    taskId, vehicleId, availableSeats, currentStopId, plannedStops,
+                    estimatedWaitMinutes, estimatedDetourMinutes, directionCompatibility,
+                    utilizationAfterInsert, "NEW_TASK", 1, null, new BigDecimal("100.00"));
+        }
     }
 
     public record PlannedStop(
