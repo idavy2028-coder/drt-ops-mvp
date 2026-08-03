@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.dispatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -142,6 +143,11 @@ class ManualReviewApiTest {
     @Test
     void approveManualReviewCanInsertOrderIntoExistingTask() throws Exception {
         UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID existingOrderId = vehicleTaskRepository.findWithStopsById(existingTaskId)
+                .orElseThrow()
+                .getStops()
+                .getFirst()
+                .getRideOrderId();
         UUID decisionId = createManualReviewDecision(existingTaskId);
 
         mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
@@ -157,9 +163,12 @@ class ManualReviewApiTest {
         assertThat(task.getStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
         assertThat(task.getStops()).hasSize(4);
         assertThat(task.getStops())
-                .filteredOn(stop -> insertedOrder.getId().equals(stop.getRideOrderId()))
-                .extracting(TaskStop::getStopType)
-                .containsExactly("BOARDING", "ALIGHTING");
+                .extracting(TaskStop::getRideOrderId, TaskStop::getStopType)
+                .containsExactly(
+                        tuple(existingOrderId, "BOARDING"),
+                        tuple(insertedOrder.getId(), "BOARDING"),
+                        tuple(existingOrderId, "ALIGHTING"),
+                        tuple(insertedOrder.getId(), "ALIGHTING"));
         assertThat(auditLogRepository.findByEntityId(insertedOrder.getId()))
                 .anyMatch(log -> log.getAction().equals("MANUAL_REVIEW_APPROVED"));
     }

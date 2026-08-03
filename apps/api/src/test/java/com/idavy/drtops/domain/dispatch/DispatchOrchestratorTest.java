@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.dispatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -162,6 +163,11 @@ class DispatchOrchestratorTest {
     @Test
     void autoDispatchCanInsertOrderIntoExistingInProgressTask() {
         UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID existingOrderId = vehicleTaskRepository.findWithStopsById(existingTaskId)
+                .orElseThrow()
+                .getStops()
+                .getFirst()
+                .getRideOrderId();
         UUID orderId = createPendingOrder();
         algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
 
@@ -173,9 +179,12 @@ class DispatchOrchestratorTest {
         assertThat(task.getStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
         assertThat(task.getStops()).hasSize(4);
         assertThat(task.getStops())
-                .filteredOn(stop -> orderId.equals(stop.getRideOrderId()))
-                .extracting(TaskStop::getStopType)
-                .containsExactly("BOARDING", "ALIGHTING");
+                .extracting(TaskStop::getRideOrderId, TaskStop::getStopType)
+                .containsExactly(
+                        tuple(existingOrderId, "BOARDING"),
+                        tuple(orderId, "BOARDING"),
+                        tuple(existingOrderId, "ALIGHTING"),
+                        tuple(orderId, "ALIGHTING"));
         assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
                 .isEqualTo(OrderStatus.CONFIRMED);
         assertThat(dispatchDecisionRepository.findByRideOrderId(orderId).getFirst().getBestTaskId())

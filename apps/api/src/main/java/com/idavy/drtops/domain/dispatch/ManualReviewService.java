@@ -10,6 +10,7 @@ import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStopInsertionPolicy;
 import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.TaskResourceCoordinator;
 import com.idavy.drtops.domain.task.VehicleTask;
@@ -33,6 +34,7 @@ public class ManualReviewService {
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
     private final TaskResourceCoordinator taskResourceCoordinator;
+    private final TaskStopInsertionPolicy taskStopInsertionPolicy;
     private final AuditLogRepository auditLogRepository;
     private final EntityManager entityManager;
 
@@ -43,6 +45,7 @@ public class ManualReviewService {
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
             TaskResourceCoordinator taskResourceCoordinator,
+            TaskStopInsertionPolicy taskStopInsertionPolicy,
             AuditLogRepository auditLogRepository,
             EntityManager entityManager) {
         this.dispatchDecisionRepository = dispatchDecisionRepository;
@@ -51,6 +54,7 @@ public class ManualReviewService {
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.taskResourceCoordinator = taskResourceCoordinator;
+        this.taskStopInsertionPolicy = taskStopInsertionPolicy;
         this.auditLogRepository = auditLogRepository;
         this.entityManager = entityManager;
     }
@@ -129,12 +133,13 @@ public class ManualReviewService {
         }
         assertCapacityAvailable(order, vehicle, task);
 
-        int nextSequence = task.getStops().stream()
-                .mapToInt(TaskStop::getSequenceNumber)
-                .max()
-                .orElse(0) + 1;
-        task.addStop(TaskStop.planned(order.getBoardingStopId(), order.getId(), nextSequence, "BOARDING", boardingAt));
-        task.addStop(TaskStop.planned(order.getAlightingStopId(), order.getId(), nextSequence + 1, "ALIGHTING", alightingAt));
+        taskStopInsertionPolicy.insertOrderStops(
+                task,
+                order.getBoardingStopId(),
+                order.getAlightingStopId(),
+                order.getId(),
+                boardingAt,
+                alightingAt);
         return vehicleTaskRepository.save(task);
     }
 

@@ -12,6 +12,7 @@ import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStopInsertionPolicy;
 import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
@@ -46,6 +47,7 @@ public class DispatchOrchestrator {
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
     private final TaskResourceCoordinator taskResourceCoordinator;
+    private final TaskStopInsertionPolicy taskStopInsertionPolicy;
     private final AuditLogRepository auditLogRepository;
     private final CandidateTaskAssembler candidateTaskAssembler;
     private final AlgorithmClient algorithmClient;
@@ -60,6 +62,7 @@ public class DispatchOrchestrator {
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
             TaskResourceCoordinator taskResourceCoordinator,
+            TaskStopInsertionPolicy taskStopInsertionPolicy,
             AuditLogRepository auditLogRepository,
             CandidateTaskAssembler candidateTaskAssembler,
             AlgorithmClient algorithmClient,
@@ -72,6 +75,7 @@ public class DispatchOrchestrator {
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.taskResourceCoordinator = taskResourceCoordinator;
+        this.taskStopInsertionPolicy = taskStopInsertionPolicy;
         this.auditLogRepository = auditLogRepository;
         this.candidateTaskAssembler = candidateTaskAssembler;
         this.algorithmClient = algorithmClient;
@@ -258,22 +262,13 @@ public class DispatchOrchestrator {
         }
         assertCapacityAvailable(order, vehicle, task);
 
-        int nextSequence = task.getStops().stream()
-                .mapToInt(TaskStop::getSequenceNumber)
-                .max()
-                .orElse(0) + 1;
-        task.addStop(TaskStop.planned(
+        taskStopInsertionPolicy.insertOrderStops(
+                task,
                 order.getBoardingStopId(),
-                order.getId(),
-                nextSequence,
-                "BOARDING",
-                estimatedBoardingAt));
-        task.addStop(TaskStop.planned(
                 order.getAlightingStopId(),
                 order.getId(),
-                nextSequence + 1,
-                "ALIGHTING",
-                estimatedArrivalAt));
+                estimatedBoardingAt,
+                estimatedArrivalAt);
         VehicleTask savedTask = vehicleTaskRepository.save(task);
         order.confirm(new RideOrder.OrderPromise(estimatedBoardingAt, estimatedArrivalAt));
         return savedTask;
