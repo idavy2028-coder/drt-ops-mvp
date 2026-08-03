@@ -49,6 +49,10 @@ public class TravelEstimateService {
         return estimate("PICKUP_TO_DESTINATION", pickupCoordinate, destinationCoordinate);
     }
 
+    public TravelEstimate estimateBetween(Coordinate origin, Coordinate destination) {
+        return estimate("ROUTE_SEGMENT", origin, destination);
+    }
+
     private TravelEstimate estimate(String requestType, Coordinate origin, Coordinate destination) {
         CacheKey key = CacheKey.of(requestType, origin, destination);
         CacheEntry cached = cache.get(key);
