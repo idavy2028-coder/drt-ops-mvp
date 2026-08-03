@@ -136,6 +136,29 @@ public class VehicleTask {
         this.updatedAt = OffsetDateTime.now();
     }
 
+    void replaceRemainingStops(List<TaskStop> reorderedRemainingStops) {
+        int historySize = 0;
+        while (historySize < stops.size() && stops.get(historySize).isExecutionComplete()) {
+            historySize++;
+        }
+        for (int index = historySize; index < stops.size(); index++) {
+            if (stops.get(index).isExecutionComplete()) {
+                throw new IllegalStateException("completed task stops must form a history prefix");
+            }
+        }
+        List<TaskStop> reordered = new ArrayList<>(stops.subList(0, historySize));
+        reordered.addAll(reorderedRemainingStops);
+        stops.clear();
+        for (TaskStop stop : reordered) {
+            stop.assignTo(this);
+            stops.add(stop);
+        }
+        for (int position = 0; position < stops.size(); position++) {
+            stops.get(position).resequence(position + 1);
+        }
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public void markCurrentStop(UUID currentStopId) {
         this.currentStopId = currentStopId;
         this.updatedAt = OffsetDateTime.now();

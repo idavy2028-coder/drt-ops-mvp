@@ -86,6 +86,13 @@ public class TaskStop {
         this.sequenceNumber = sequenceNumber;
     }
 
+    void reschedule(OffsetDateTime plannedArrivalAt) {
+        if (isExecutionComplete()) {
+            throw new IllegalStateException("completed task stop cannot be rescheduled");
+        }
+        this.plannedArrivalAt = Objects.requireNonNull(plannedArrivalAt, "plannedArrivalAt");
+    }
+
     public void arrive() {
         arriveAt(OffsetDateTime.now());
     }
