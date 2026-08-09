@@ -28,6 +28,7 @@ import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -57,6 +58,8 @@ class DispatchOrchestratorTest {
     private static final UUID RULE_SET_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID BOARDING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555551");
     private static final UUID ALIGHTING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555552");
+    private static final UUID INSERTED_BOARDING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555553");
+    private static final UUID INSERTED_ALIGHTING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555554");
     private static final UUID VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333331");
     private static final UUID DRIVER_ID = UUID.fromString("44444444-4444-4444-4444-444444444441");
 
@@ -183,8 +186,8 @@ class DispatchOrchestratorTest {
                 .containsExactly(
                         tuple(existingOrderId, "BOARDING"),
                         tuple(orderId, "BOARDING"),
-                        tuple(existingOrderId, "ALIGHTING"),
-                        tuple(orderId, "ALIGHTING"));
+                        tuple(orderId, "ALIGHTING"),
+                        tuple(existingOrderId, "ALIGHTING"));
         assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
                 .isEqualTo(OrderStatus.CONFIRMED);
         assertThat(dispatchDecisionRepository.findByRideOrderId(orderId).getFirst().getBestTaskId())
@@ -198,6 +201,70 @@ class DispatchOrchestratorTest {
         assertThat(candidate.activationCost()).isZero();
         assertThat(candidate.estimatedDetourMinutes()).isZero();
         assertThat(candidate.precheckRejectionReason()).isNull();
+    }
+
+    @Test
+    void autoDispatchAppliesRoutePlannedStopOrderInsteadOfAppending() {
+        UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID existingOrderId = vehicleTaskRepository.findWithStopsById(existingTaskId)
+                .orElseThrow().getStops().getFirst().getRideOrderId();
+        UUID orderId = createPendingOrder(
+                INSERTED_BOARDING_STOP_ID,
+                INSERTED_ALIGHTING_STOP_ID,
+                new BigDecimal("120.1550000"),
+                new BigDecimal("30.2741000"),
+                new BigDecimal("120.1688000"),
+                new BigDecimal("30.2799000"));
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+
+        orchestrator.dispatchOrder(orderId);
+
+        assertThat(vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow().getStops())
+                .extracting(TaskStop::getRideOrderId, TaskStop::getStopType)
+                .containsExactly(
+                        tuple(orderId, "BOARDING"),
+                        tuple(existingOrderId, "BOARDING"),
+                        tuple(orderId, "ALIGHTING"),
+                        tuple(existingOrderId, "ALIGHTING"));
+        String explanationJson = dispatchDecisionRepository.findByRideOrderId(orderId)
+                .getFirst().getExplanationJson();
+        assertThat(explanationJson)
+                .contains("\"candidateType\":\"EXISTING_TASK\"")
+                .contains("\"activationCost\":0")
+                .contains("\"selectionReason\":\"EXISTING_TASK_PREFERRED\"")
+                .contains("\"baselineRouteDurationSeconds\"")
+                .contains("\"plannedRouteDurationSeconds\"")
+                .contains("\"maxPassengerDetourMinutes\"")
+                .contains("\"peakOccupiedSeats\"")
+                .contains("\"insertionBoardingPosition\"")
+                .contains("\"insertionAlightingPosition\"");
+    }
+
+    @Test
+    void threeSequentialCompatibleOrdersReuseOneVehicleTask() {
+        algorithmClient.stubPreferFeasibleExistingTask();
+        UUID firstOrderId = createPendingOrder(1);
+        UUID secondOrderId = createPendingOrder(2);
+        UUID thirdOrderId = createPendingOrder(1);
+
+        DispatchResult firstResult = orchestrator.dispatchOrder(firstOrderId);
+        DispatchResult secondResult = orchestrator.dispatchOrder(secondOrderId);
+        DispatchResult thirdResult = orchestrator.dispatchOrder(thirdOrderId);
+
+        assertThat(vehicleTaskRepository.findAll()).hasSize(1);
+        assertThat(secondResult.vehicleTaskId()).isEqualTo(firstResult.vehicleTaskId());
+        assertThat(thirdResult.vehicleTaskId()).isEqualTo(firstResult.vehicleTaskId());
+        assertThat(vehicleTaskRepository.findWithStopsById(firstResult.vehicleTaskId()).orElseThrow()
+                .activeOrderIds())
+                .containsExactlyInAnyOrder(firstOrderId, secondOrderId, thirdOrderId);
+        assertThat(algorithmClient.lastRequest().candidateTasks())
+                .singleElement()
+                .satisfies(candidate -> {
+                    assertThat(candidate.candidateType()).isEqualTo("EXISTING_TASK");
+                    assertThat(candidate.activationCost()).isZero();
+                    assertThat(candidate.precheckRejectionReason()).isNull();
+                    assertThat(candidate.utilizationAfterInsert()).isEqualByComparingTo("0.50");
+                });
     }
 
     @Test
@@ -244,6 +311,26 @@ class DispatchOrchestratorTest {
     }
 
     @Test
+    void autoDispatchRollsBackWhenSelectedTaskChangesAfterEvaluation() {
+        UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+        algorithmClient.afterEvaluation(() -> vehicleTaskRepository.findById(existingTaskId)
+                .orElseThrow().markException("并发状态变化"));
+
+        org.springframework.web.server.ResponseStatusException exception =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> orchestrator.dispatchOrder(orderId));
+
+        assertThat(exception.getReason()).isEqualTo("DISPATCH_CANDIDATE_STALE");
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.PENDING_DISPATCH);
+        assertThat(vehicleTaskRepository.findWithStopsById(existingTaskId).orElseThrow().getStatus())
+                .isEqualTo(TaskStatus.IN_PROGRESS);
+    }
+
+    @Test
     void manualReviewKeepsOrderPendingManualReview() {
         UUID orderId = createPendingOrder();
         algorithmClient.stubManualReview(VEHICLE_ID);
@@ -282,17 +369,56 @@ class DispatchOrchestratorTest {
     }
 
     private UUID createPendingOrder() {
-        RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
-                "张三",
-                "13800000000",
-                1,
-                "IMMEDIATE",
+        return createPendingOrder(1);
+    }
+
+    private UUID createPendingOrder(int passengerCount) {
+        return createPendingOrder(
+                BOARDING_STOP_ID,
+                ALIGHTING_STOP_ID,
                 new BigDecimal("120.1550000"),
                 new BigDecimal("30.2741000"),
                 new BigDecimal("120.1688000"),
                 new BigDecimal("30.2799000"),
-                BOARDING_STOP_ID,
-                ALIGHTING_STOP_ID,
+                passengerCount);
+    }
+
+    private UUID createPendingOrder(
+            UUID boardingStopId,
+            UUID alightingStopId,
+            BigDecimal originLng,
+            BigDecimal originLat,
+            BigDecimal destinationLng,
+            BigDecimal destinationLat) {
+        return createPendingOrder(
+                boardingStopId,
+                alightingStopId,
+                originLng,
+                originLat,
+                destinationLng,
+                destinationLat,
+                1);
+    }
+
+    private UUID createPendingOrder(
+            UUID boardingStopId,
+            UUID alightingStopId,
+            BigDecimal originLng,
+            BigDecimal originLat,
+            BigDecimal destinationLng,
+            BigDecimal destinationLat,
+            int passengerCount) {
+        RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
+                "张三",
+                "13800000000",
+                passengerCount,
+                "IMMEDIATE",
+                originLng,
+                originLat,
+                destinationLng,
+                destinationLat,
+                boardingStopId,
+                alightingStopId,
                 OffsetDateTime.parse("2026-07-08T02:30:00Z")));
         return rideOrderRepository.save(order).getId();
     }
@@ -386,10 +512,23 @@ class DispatchOrchestratorTest {
         private DispatchEvaluateResponse nextResponse;
         private DispatchEvaluateRequest lastRequest;
         private boolean echoCandidateTaskId;
+        private boolean preferFeasibleExistingTask;
+        private Runnable afterEvaluation;
 
         @Override
         public DispatchEvaluateResponse evaluate(DispatchEvaluateRequest request) {
             this.lastRequest = request;
+            if (afterEvaluation != null) {
+                afterEvaluation.run();
+            }
+            if (preferFeasibleExistingTask) {
+                DispatchEvaluateRequest.CandidateTask candidate = request.candidateTasks().stream()
+                        .filter(item -> item.precheckRejectionReason() == null)
+                        .min(Comparator.comparingInt(DispatchEvaluateRequest.CandidateTask::activationCost)
+                                .thenComparing(DispatchEvaluateRequest.CandidateTask::taskDisruptionScore))
+                        .orElseThrow();
+                return response(DispatchDecisionType.AUTO_DISPATCH, candidate.taskId(), candidate.vehicleId());
+            }
             if (echoCandidateTaskId) {
                 DispatchEvaluateRequest.CandidateTask candidate = request.candidateTasks().getFirst();
                 return response(DispatchDecisionType.AUTO_DISPATCH, candidate.taskId(), candidate.vehicleId());
@@ -401,6 +540,8 @@ class DispatchOrchestratorTest {
             nextResponse = null;
             lastRequest = null;
             echoCandidateTaskId = false;
+            preferFeasibleExistingTask = false;
+            afterEvaluation = null;
         }
 
         DispatchEvaluateRequest lastRequest() {
@@ -415,6 +556,10 @@ class DispatchOrchestratorTest {
             echoCandidateTaskId = true;
         }
 
+        void stubPreferFeasibleExistingTask() {
+            preferFeasibleExistingTask = true;
+        }
+
         void stubAutoDispatchIntoTask(UUID taskId, UUID vehicleId) {
             nextResponse = response(DispatchDecisionType.AUTO_DISPATCH, taskId, vehicleId);
         }
@@ -427,11 +572,16 @@ class DispatchOrchestratorTest {
             nextResponse = response(DispatchDecisionType.MANUAL_REVIEW, taskId, vehicleId);
         }
 
+        void afterEvaluation(Runnable action) {
+            afterEvaluation = action;
+        }
+
         private DispatchEvaluateResponse response(DispatchDecisionType decision, UUID vehicleId) {
             return response(decision, null, vehicleId);
         }
 
         private DispatchEvaluateResponse response(DispatchDecisionType decision, UUID taskId, UUID vehicleId) {
+            boolean existingTask = taskId != null;
             return new DispatchEvaluateResponse(
                     decision,
                     new DispatchEvaluateResponse.BestPlan(
@@ -441,7 +591,10 @@ class DispatchOrchestratorTest {
                             6,
                             3,
                             "SAME_DIRECTION",
-                            new BigDecimal("0.67")),
+                            new BigDecimal("0.67"),
+                            existingTask ? "EXISTING_TASK" : "NEW_TASK",
+                            existingTask ? 0 : 1,
+                            existingTask ? "EXISTING_TASK_PREFERRED" : "NEW_VEHICLE_REQUIRED"),
                     1,
                     0,
                     List.of(),

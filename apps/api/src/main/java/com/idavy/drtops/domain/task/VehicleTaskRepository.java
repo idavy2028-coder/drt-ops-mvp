@@ -20,8 +20,13 @@ public interface VehicleTaskRepository extends JpaRepository<VehicleTask, UUID> 
     Optional<VehicleTask> findWithStopsById(@Param("id") UUID id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @EntityGraph(attributePaths = "stops")
     @Query("select task from VehicleTask task where task.id = :id")
-    Optional<VehicleTask> findByIdForExecution(@Param("id") UUID id);
+    Optional<VehicleTask> findByIdForUpdate(@Param("id") UUID id);
+
+    default Optional<VehicleTask> findByIdForExecution(UUID id) {
+        return findByIdForUpdate(id);
+    }
 
     boolean existsByVehicleIdAndStatusInAndIdNot(
             UUID vehicleId, List<TaskStatus> statuses, UUID excludedTaskId);

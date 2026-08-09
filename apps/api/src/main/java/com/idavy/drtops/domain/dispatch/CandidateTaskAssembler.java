@@ -53,6 +53,20 @@ public class CandidateTaskAssembler {
         return assembleWithTravelEstimates(order, ruleSet).request();
     }
 
+    public TaskInsertionPlan replanExistingTask(
+            RideOrder order,
+            DispatchRuleSet ruleSet,
+            Vehicle vehicle,
+            VehicleTask task) {
+        return taskInsertionPlanner.plan(
+                order,
+                vehicle,
+                task,
+                ruleSet,
+                stopCoordinates(order, task),
+                passengerCounts(order, task));
+    }
+
     public Assembly assembleWithTravelEstimates(RideOrder order, DispatchRuleSet ruleSet) {
         Coordinate pickupCoordinate = new Coordinate(order.getOriginLng(), order.getOriginLat());
         Coordinate destinationCoordinate = new Coordinate(order.getDestinationLng(), order.getDestinationLat());
@@ -238,13 +252,7 @@ public class CandidateTaskAssembler {
             }
             TaskInsertionPlan insertionPlan = existingTask == null
                     ? null
-                    : taskInsertionPlanner.plan(
-                            order,
-                            vehicle,
-                            existingTask,
-                            ruleSet,
-                            stopCoordinates(order, existingTask),
-                            passengerCounts(order, existingTask));
+                    : replanExistingTask(order, ruleSet, vehicle, existingTask);
             DispatchEvaluateRequest.CandidateTask candidate = existingTask == null
                     ? toNewTaskCandidate(order, ruleSet, vehicle, vehicleToPickup)
                     : toExistingTaskCandidate(
