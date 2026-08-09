@@ -199,6 +199,10 @@ public class VehicleTask {
         return plannedStartAt;
     }
 
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
+    }
+
     public List<TaskStop> getStops() {
         return List.copyOf(stops);
     }

@@ -240,6 +240,10 @@ public class RideOrder {
         return estimatedArrivalAt;
     }
 
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
+    }
+
     private void requireStatus(OrderStatus... allowedStatuses) {
         for (OrderStatus allowedStatus : allowedStatuses) {
             if (status == allowedStatus) {

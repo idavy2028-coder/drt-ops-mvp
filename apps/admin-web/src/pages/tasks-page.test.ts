@@ -30,6 +30,29 @@ describe("TasksPage", () => {
     expect(screen.getByText("站点时间线")).toBeInTheDocument();
   });
 
+  it("separates today's tasks from history by createdAt instead of planned start", async () => {
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [
+        { id: "today-task", vehicleId: "vehicle-today", vehiclePlateNumber: "甘J00001D", driverId: "driver-today", status: "COMPLETED", plannedStartAt: yesterday.toISOString(), createdAt: today.toISOString(), stops: [] },
+        { id: "history-task", vehicleId: "vehicle-history", vehiclePlateNumber: "甘J00002D", driverId: "driver-history", status: "EXCEPTION", plannedStartAt: today.toISOString(), createdAt: yesterday.toISOString(), stops: [] }
+      ] })
+    }));
+    render(TasksPage);
+
+    const todaySection = await screen.findByRole("heading", { name: "今日新增任务" });
+    const historySection = screen.getByRole("heading", { name: "历史任务" });
+    await waitFor(() => expect(todaySection.parentElement).toHaveTextContent("1 条"));
+    expect(historySection.parentElement).toHaveTextContent("1 条");
+    expect(todaySection.closest("section")).toHaveTextContent("甘J00001D");
+    expect(todaySection.closest("section")).not.toHaveTextContent("甘J00002D");
+    expect(historySection.closest("section")).toHaveTextContent("甘J00002D");
+    expect(historySection.closest("section")).not.toHaveTextContent("甘J00001D");
+  });
+
   it("hides task execution controls from an auditor", async () => {
     authStore.setSessionForTest({ accessToken: "auditor-token", user: { id: "auditor-1", username: "auditor01", roles: ["AUDITOR"], mustChangePassword: false } });
     render(TasksPage);

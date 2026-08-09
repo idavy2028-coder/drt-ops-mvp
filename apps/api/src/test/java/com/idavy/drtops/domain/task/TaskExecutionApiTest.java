@@ -131,7 +131,8 @@ class TaskExecutionApiTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].vehicleId").value(VEHICLE_ID.toString()))
-                .andExpect(jsonPath("$.data[0].vehiclePlateNumber").value("浙A00001"));
+                .andExpect(jsonPath("$.data[0].vehiclePlateNumber").value("浙A00001"))
+                .andExpect(jsonPath("$.data[0].createdAt").isNotEmpty());
     }
 
     @Test

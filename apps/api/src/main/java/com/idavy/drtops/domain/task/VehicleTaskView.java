@@ -14,6 +14,7 @@ public record VehicleTaskView(
         UUID driverId,
         TaskStatus status,
         OffsetDateTime plannedStartAt,
+        OffsetDateTime createdAt,
         List<TaskStop> stops) {
 
     static VehicleTaskView from(VehicleTask task, String vehiclePlateNumber) {
@@ -24,6 +25,7 @@ public record VehicleTaskView(
                 task.getDriverId(),
                 task.getStatus(),
                 task.getPlannedStartAt(),
+                task.getCreatedAt(),
                 task.getStops());
     }
 }

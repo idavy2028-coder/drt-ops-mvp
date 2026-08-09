@@ -300,6 +300,7 @@ export interface RideOrder {
   boardingStopId?: UUID;
   alightingStopId?: UUID;
   requestedDepartureAt: IsoDateTime;
+  createdAt?: IsoDateTime;
   estimatedBoardingAt?: IsoDateTime;
   estimatedArrivalAt?: IsoDateTime;
   status: string;
@@ -344,6 +345,7 @@ export interface VehicleTask {
   driverId: UUID;
   status: string;
   plannedStartAt: IsoDateTime;
+  createdAt?: IsoDateTime;
   stops: TaskStop[];
 }
 

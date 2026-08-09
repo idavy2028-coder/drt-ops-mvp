@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   cancelOrder,
   confirmCancellationReason,
@@ -25,6 +25,31 @@ const submitting = ref(false);
 const noShowOrder = ref<RideOrder | null>(null);
 const noShowSubmitting = ref(false);
 const expandedFailureOrderId = ref<string | null>(null);
+
+function localDateKey(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function orderCreatedAtValue(order: RideOrder): number {
+  const timestamp = order.createdAt ? Date.parse(order.createdAt) : Number.NEGATIVE_INFINITY;
+  return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
+}
+
+const orderGroups = computed(() => {
+  const todayKey = localDateKey(new Date().toISOString());
+  const sorted = [...orders.value].sort((left, right) => orderCreatedAtValue(right) - orderCreatedAtValue(left));
+  return [
+    { key: "today", title: "今日新增订单", empty: "暂无今日新增订单", items: sorted.filter((order) => localDateKey(order.createdAt) === todayKey) },
+    { key: "history", title: "历史订单", empty: "暂无历史订单", items: sorted.filter((order) => localDateKey(order.createdAt) !== todayKey) }
+  ];
+});
 
 function canDispatch(order: RideOrder) {
   return order.status === "PENDING_DISPATCH";
@@ -182,7 +207,11 @@ onMounted(() => {
     <p v-if="loading" class="page-state">正在同步订单数据…</p>
     <p v-else-if="status" class="page-state">{{ status }}</p>
 
-    <section class="table-panel">
+    <section v-for="group in orderGroups" :key="group.key" class="table-panel record-group">
+      <div class="record-group-header">
+        <h3 class="section-title">{{ group.title }}</h3>
+        <span class="record-group-count">{{ group.items.length }} 条</span>
+      </div>
       <table class="data-table">
         <thead>
           <tr>
@@ -195,7 +224,7 @@ onMounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="order in orders" :key="order.id">
+          <tr v-for="order in group.items" :key="order.id">
             <td>{{ order.id.slice(0, 8) }}</td>
             <td>{{ order.passengerName }} · {{ order.passengerCount }}人</td>
             <td>
@@ -243,8 +272,8 @@ onMounted(() => {
               </div>
             </td>
           </tr>
-          <tr v-if="orders.length === 0">
-            <td colspan="6">暂无订单，可由运营人员录入一条即时或预约需求。</td>
+          <tr v-if="group.items.length === 0">
+            <td colspan="6" class="record-group-empty">{{ group.empty }}</td>
           </tr>
         </tbody>
       </table>
@@ -253,6 +282,11 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.record-group { margin-top: 16px; }
+.record-group-header { align-items: center; display: flex; justify-content: space-between; margin-bottom: 10px; }
+.record-group-header .section-title { margin: 0; }
+.record-group-count { color: var(--ink-muted); font-size: 13px; font-weight: 800; }
+.record-group-empty { color: var(--ink-muted); padding: 24px 12px; text-align: center; }
 .action-hint { color: var(--ink-muted); display: grid; font-size: 13px; font-weight: 700; gap: 2px; }
 .dispatch-failure-summary { color: #9b2c2c; display: grid; font-size: 12px; gap: 4px; margin-top: 6px; max-width: 280px; }
 .dispatch-failure-details { background: #fff7ed; border-left: 3px solid #f59e0b; color: var(--ink); display: grid; gap: 3px; padding: 8px 10px; }

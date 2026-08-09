@@ -21,8 +21,46 @@ describe("OrdersPage", () => {
     render(OrdersPage);
 
     expect(await screen.findByRole("button", { name: "录入需求" })).toBeInTheDocument();
-    expect(screen.getByText("订单状态")).toBeInTheDocument();
-    expect(screen.getByText("预计上车时间")).toBeInTheDocument();
+    expect(screen.getAllByText("订单状态").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("预计上车时间").length).toBeGreaterThan(0);
+  });
+
+  it("separates today's orders from history by createdAt instead of departure time", async () => {
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: [
+      {
+        id: "today-order",
+        passengerName: "今日乘客",
+        passengerCount: 1,
+        requestedDepartureAt: yesterday.toISOString(),
+        createdAt: today.toISOString(),
+        status: "PENDING_DISPATCH",
+        canMarkNoShow: false,
+        noShowWaitedSeconds: 0
+      },
+      {
+        id: "history-order",
+        passengerName: "历史乘客",
+        passengerCount: 1,
+        requestedDepartureAt: today.toISOString(),
+        createdAt: yesterday.toISOString(),
+        status: "COMPLETED",
+        canMarkNoShow: false,
+        noShowWaitedSeconds: 0
+      }
+    ] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    authStore.setSessionForTest({ accessToken: "operator-token", user: { id: "operator-1", username: "operator01", roles: ["OPERATOR"], mustChangePassword: false } });
+    render(OrdersPage);
+
+    const todaySection = await screen.findByRole("heading", { name: "今日新增订单" });
+    const historySection = screen.getByRole("heading", { name: "历史订单" });
+    await waitFor(() => expect(todaySection.parentElement).toHaveTextContent("1 条"));
+    expect(historySection.parentElement).toHaveTextContent("1 条");
+    expect(todaySection.closest("section")).toHaveTextContent("今日乘客");
+    expect(todaySection.closest("section")).not.toHaveTextContent("历史乘客");
+    expect(historySection.closest("section")).toHaveTextContent("历史乘客");
+    expect(historySection.closest("section")).not.toHaveTextContent("今日乘客");
   });
 
   it("shows and expands the reason for an unserviceable order", async () => {
