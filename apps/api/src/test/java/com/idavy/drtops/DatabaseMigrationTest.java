@@ -31,6 +31,7 @@ class DatabaseMigrationTest {
         String refreshTokenVersion = readMigration("V4__add_refresh_token_version.sql");
         String dispatchMapEstimates = readMigration("V10__add_dispatch_map_estimates.sql");
         String pilotVirtualStops = readMigration("V11__enhance_virtual_stops_for_pilot.sql");
+        String deferredTaskStopSequence = readMigration("V12__defer_task_stop_sequence_constraint.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -87,6 +88,11 @@ class DatabaseMigrationTest {
                 "verified_by UUID",
                 "updated_at TIMESTAMPTZ",
                 "idx_virtual_stops_area_enabled");
+
+        assertThat(deferredTaskStopSequence).contains(
+                "DROP CONSTRAINT task_stops_vehicle_task_id_sequence_number_key",
+                "UNIQUE (vehicle_task_id, sequence_number)",
+                "DEFERRABLE INITIALLY DEFERRED");
     }
 
     @Test
@@ -167,6 +173,8 @@ class DatabaseMigrationTest {
             assertColumns(connection, "virtual_stops",
                     "address", "area_name", "coordinate_system", "source",
                     "verified_at", "verified_by", "updated_at");
+
+            assertTaskStopSequenceCanBeReorderedWithinTransaction(connection);
         }
 
         assertMutationRejected(
@@ -192,6 +200,59 @@ class DatabaseMigrationTest {
                 }
                 assertThat(columns).contains(expectedColumns);
             }
+        }
+    }
+
+    private static void assertTaskStopSequenceCanBeReorderedWithinTransaction(
+            java.sql.Connection connection) throws Exception {
+        UUID taskId = UUID.randomUUID();
+        UUID firstStopId = UUID.randomUUID();
+        UUID secondStopId = UUID.randomUUID();
+        UUID insertedStopId = UUID.randomUUID();
+        connection.setAutoCommit(false);
+        try {
+            try (var insertTask = connection.prepareStatement("""
+                    insert into vehicle_tasks (
+                      id, vehicle_id, driver_id, status, planned_start_at, source_type
+                    ) values (?, (select id from vehicles limit 1), (select id from drivers limit 1),
+                      'DISPATCHED', now(), 'MIGRATION_TEST')
+                    """)) {
+                insertTask.setObject(1, taskId);
+                insertTask.executeUpdate();
+            }
+            insertTaskStop(connection, firstStopId, taskId, 1);
+            insertTaskStop(connection, secondStopId, taskId, 2);
+
+            // Hibernate may insert the new sequence before updating the existing row.
+            // The constraint must therefore be deferred until the final route order is stable.
+            insertTaskStop(connection, insertedStopId, taskId, 2);
+            try (var resequence = connection.prepareStatement(
+                    "update task_stops set sequence_number = 3 where id = ?")) {
+                resequence.setObject(1, secondStopId);
+                resequence.executeUpdate();
+            }
+            connection.commit();
+        } finally {
+            connection.rollback();
+            connection.setAutoCommit(true);
+        }
+    }
+
+    private static void insertTaskStop(
+            java.sql.Connection connection,
+            UUID stopId,
+            UUID taskId,
+            int sequenceNumber) throws Exception {
+        try (var insertStop = connection.prepareStatement("""
+                insert into task_stops (
+                  id, vehicle_task_id, virtual_stop_id, sequence_number,
+                  stop_type, planned_arrival_at, status
+                ) values (?, ?, (select id from virtual_stops limit 1), ?, 'BOARDING', now(), 'PLANNED')
+                """)) {
+            insertStop.setObject(1, stopId);
+            insertStop.setObject(2, taskId);
+            insertStop.setInt(3, sequenceNumber);
+            insertStop.executeUpdate();
         }
     }
 
