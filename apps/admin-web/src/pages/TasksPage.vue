@@ -70,6 +70,10 @@ function taskLabel(task: VehicleTask) {
   return task.id.length > 8 ? task.id.slice(0, 8) : task.id;
 }
 
+function taskVehicleLabel(task: VehicleTask) {
+  return task.vehiclePlateNumber?.trim() || "未登记车牌";
+}
+
 function formatDateTime(value?: string) {
   if (!value) {
     return "--";
@@ -420,7 +424,7 @@ onMounted(() => {
           <tbody>
             <tr v-for="task in tasks" :key="task.id" :class="{ 'is-selected': task.id === selectedTaskId }">
               <td>{{ taskLabel(task) }}</td>
-              <td>{{ task.vehicleId }}</td>
+              <td>{{ taskVehicleLabel(task) }}</td>
               <td>
                 <div v-if="locationSnapshot(task.vehicleId)" class="location-cell">
                   <strong>{{ locationSourceLabel() }}</strong>

@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.task;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -123,6 +124,17 @@ class TaskExecutionApiTest {
     }
 
     @Test
+    void taskListIncludesVehiclePlateNumber() throws Exception {
+        createConfirmedTaskWithOneOrder();
+
+        mockMvc.perform(get("/api/vehicle-tasks")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].vehicleId").value(VEHICLE_ID.toString()))
+                .andExpect(jsonPath("$.data[0].vehiclePlateNumber").value("浙A00001"));
+    }
+
+    @Test
     void taskCanMoveThroughStartArriveBoardAlightComplete() throws Exception {
         UUID taskId = createConfirmedTaskWithOneOrder();
         String startRequest = actionRequest(UUID.randomUUID(), null, 0);
@@ -133,6 +145,7 @@ class TaskExecutionApiTest {
                         .content(startRequest))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.task.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.data.task.vehiclePlateNumber").value("浙A00001"))
                 .andExpect(jsonPath("$.data.locationEvent.eventType").value("TASK_STARTED"))
                 .andExpect(jsonPath("$.data.replayed").value(false));
         assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())

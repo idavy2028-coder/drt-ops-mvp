@@ -209,6 +209,18 @@ describe("TasksPage", () => {
     expect(screen.getByLabelText("标准化地址")).toHaveValue("解析失败站");
   });
 
+  it("shows a vehicle plate number and a clear fallback instead of vehicle UUIDs", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(multipleTaskResponse()));
+
+    render(TasksPage);
+
+    expect(await screen.findByText("甘J18817D")).toBeInTheDocument();
+    expect(screen.getByText("未登记车牌")).toBeInTheDocument();
+    expect(screen.queryByText("vehicle-2")).not.toBeInTheDocument();
+    expect(screen.queryByText("vehicle-1")).not.toBeInTheDocument();
+  });
+
   it("selects the exact task requested by the taskId query parameter", async () => {
     authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
     routeQuery.taskId = "task-dispatched";
@@ -280,6 +292,7 @@ function multipleTaskResponse(): Response {
     {
       id: "task-dispatched",
       vehicleId: "vehicle-2",
+      vehiclePlateNumber: "甘J18817D",
       driverId: "driver-2",
       status: "DISPATCHED",
       plannedStartAt: "2026-07-13T02:00:00Z",
