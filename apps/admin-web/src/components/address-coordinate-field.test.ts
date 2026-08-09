@@ -67,7 +67,7 @@ describe("AddressCoordinateField", () => {
     expect(tileMapRuntime.createTileMap).not.toHaveBeenCalled();
   });
 
-  it("writes back GCJ-02 coordinates when an open-tile map point is selected", async () => {
+  it("keeps an empty address when an open-tile map point is selected", async () => {
     const { emitted } = render(AddressCoordinateField, {
       props: { label: "终点", purpose: "ALIGHTING", modelValue: { address: "", virtualStopId: "stop-1" } }
     });
@@ -78,7 +78,7 @@ describe("AddressCoordinateField", () => {
 
     const changes = emitted()["update:modelValue"] as unknown[][] | undefined;
     expect(changes?.[changes.length - 1]?.[0]).toMatchObject({
-      address: "地图点选位置",
+      address: "",
       longitude: 105.245,
       latitude: 35.215,
       virtualStopId: undefined
