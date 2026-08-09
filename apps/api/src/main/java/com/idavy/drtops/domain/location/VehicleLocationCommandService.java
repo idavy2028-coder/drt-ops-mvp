@@ -3,6 +3,8 @@ package com.idavy.drtops.domain.location;
 import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.area.VirtualStopRepository;
+import com.idavy.drtops.domain.fleet.Vehicle;
+import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
@@ -21,18 +23,21 @@ public class VehicleLocationCommandService {
     private final AuditLogRepository auditLogRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
     private final VirtualStopRepository virtualStopRepository;
+    private final VehicleRepository vehicleRepository;
 
     public VehicleLocationCommandService(
             VehicleLocationRecorder recorder,
             VehicleLocationSnapshotService snapshotService,
             AuditLogRepository auditLogRepository,
             VehicleTaskRepository vehicleTaskRepository,
-            VirtualStopRepository virtualStopRepository) {
+            VirtualStopRepository virtualStopRepository,
+            VehicleRepository vehicleRepository) {
         this.recorder = recorder;
         this.snapshotService = snapshotService;
         this.auditLogRepository = auditLogRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.virtualStopRepository = virtualStopRepository;
+        this.vehicleRepository = vehicleRepository;
     }
 
     @Transactional
@@ -40,6 +45,7 @@ public class VehicleLocationCommandService {
             + "T(com.idavy.drtops.domain.location.LocationEventType).MANUAL_CORRECTION) "
             + "? hasAuthority('LOCATION_CORRECT') : hasAuthority('LOCATION_REPORT')")
     public LocationReportResponse report(UUID vehicleId, UUID actorId, LocationReportRequest request) {
+        validateStandaloneStandbyReport(vehicleId, request);
         validateAssociations(vehicleId, request);
         LocationReportResult result = recorder.append(new LocationReportCommand(
                 LocationReportScope.INDEPENDENT_REPORT,
@@ -57,6 +63,20 @@ public class VehicleLocationCommandService {
                 "{\"eventId\":\"" + result.event().getId() + "\",\"snapshotApplied\":"
                         + result.event().isSnapshotApplied() + "}"));
         return LocationReportResponse.from(result);
+    }
+
+    private void validateStandaloneStandbyReport(UUID vehicleId, LocationReportRequest request) {
+        if (request.eventType() != LocationEventType.MANUAL_REPORT
+                || request.vehicleTaskId() != null
+                || request.taskStopId() != null) {
+            return;
+        }
+        Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(vehicleId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "车辆不存在"));
+        if (!"IDLE".equals(vehicle.getCurrentStatus())) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT, "当前车辆正在执行或等待任务，不能上报待命位置");
+        }
     }
 
     private void validateAssociations(UUID vehicleId, LocationReportRequest request) {

@@ -8,6 +8,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
+import java.util.Objects;
 import java.util.UUID;
 
 @Entity
@@ -78,9 +79,27 @@ public class TaskStop {
         this.vehicleTask = vehicleTask;
     }
 
+    void resequence(int sequenceNumber) {
+        if (sequenceNumber <= 0) {
+            throw new IllegalArgumentException("sequenceNumber must be positive");
+        }
+        this.sequenceNumber = sequenceNumber;
+    }
+
+    void reschedule(OffsetDateTime plannedArrivalAt) {
+        if (isExecutionComplete()) {
+            throw new IllegalStateException("completed task stop cannot be rescheduled");
+        }
+        this.plannedArrivalAt = Objects.requireNonNull(plannedArrivalAt, "plannedArrivalAt");
+    }
+
     public void arrive() {
+        arriveAt(OffsetDateTime.now());
+    }
+
+    public void arriveAt(OffsetDateTime actualArrivalAt) {
         requireStatus("PLANNED");
-        this.actualArrivalAt = OffsetDateTime.now();
+        this.actualArrivalAt = Objects.requireNonNull(actualArrivalAt, "actualArrivalAt");
         this.status = "ARRIVED";
     }
 
@@ -96,7 +115,17 @@ public class TaskStop {
         this.status = "ALIGHTED";
     }
 
+    public void cancel() {
+        if (isExecutionComplete()) {
+            return;
+        }
+        this.status = "CANCELLED";
+    }
+
     public boolean isExecutionComplete() {
+        if ("CANCELLED".equals(status)) {
+            return true;
+        }
         if ("BOARDING".equals(stopType)) {
             return "BOARDED".equals(status);
         }
@@ -128,6 +157,10 @@ public class TaskStop {
 
     public OffsetDateTime getPlannedArrivalAt() {
         return plannedArrivalAt;
+    }
+
+    public OffsetDateTime getActualArrivalAt() {
+        return actualArrivalAt;
     }
 
     public String getStatus() {

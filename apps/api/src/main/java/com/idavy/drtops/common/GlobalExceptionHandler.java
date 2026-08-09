@@ -1,9 +1,12 @@
 package com.idavy.drtops.common;
 
 import com.idavy.drtops.domain.map.MapProviderException;
+import com.idavy.drtops.integration.algorithm.AlgorithmUnavailableException;
+import com.idavy.drtops.domain.order.NoShowConflictException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -16,6 +19,26 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(NoShowConflictException.class)
+    ResponseEntity<ApiResponse<Map<String, Object>>> handleNoShowConflict(NoShowConflictException exception) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("code", exception.getCode());
+        data.put("message", exception.getMessage());
+        if (exception.getEligibleAt() != null) {
+            data.put("eligibleAt", exception.getEligibleAt());
+        }
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.ok(data));
+    }
+
+    @ExceptionHandler(AlgorithmUnavailableException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> handleAlgorithmUnavailable(
+            AlgorithmUnavailableException exception) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.ok(Map.of(
+                        "code", AlgorithmUnavailableException.ERROR_CODE,
+                        "message", AlgorithmUnavailableException.USER_MESSAGE)));
+    }
 
     @ExceptionHandler(MapProviderException.class)
     ResponseEntity<ApiResponse<Map<String, String>>> handleMapProvider(MapProviderException exception) {

@@ -11,7 +11,9 @@ import com.idavy.drtops.domain.location.VehicleLocationSnapshotService;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -28,18 +30,21 @@ public class TaskExecutionService {
     private final AuditLogRepository auditLogRepository;
     private final VehicleLocationRecorder locationRecorder;
     private final VehicleLocationSnapshotService snapshotService;
+    private final TaskResourceCoordinator taskResourceCoordinator;
 
     public TaskExecutionService(
             VehicleTaskRepository vehicleTaskRepository,
             RideOrderRepository rideOrderRepository,
             AuditLogRepository auditLogRepository,
             VehicleLocationRecorder locationRecorder,
-            VehicleLocationSnapshotService snapshotService) {
+            VehicleLocationSnapshotService snapshotService,
+            TaskResourceCoordinator taskResourceCoordinator) {
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.rideOrderRepository = rideOrderRepository;
         this.auditLogRepository = auditLogRepository;
         this.locationRecorder = locationRecorder;
         this.snapshotService = snapshotService;
+        this.taskResourceCoordinator = taskResourceCoordinator;
     }
 
     @Transactional
@@ -56,6 +61,7 @@ public class TaskExecutionService {
         requireTaskStatus(task, TaskStatus.PENDING_DEPARTURE, TaskStatus.DISPATCHED);
         LocationReportResult result = requireFresh(locationRecorder.append(command));
         task.startExecution();
+        taskResourceCoordinator.start(task);
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() == OrderStatus.CONFIRMED) {
                 order.startExecution();
@@ -85,10 +91,20 @@ public class TaskExecutionService {
         requireInProgress(task);
         requireStopStatus(stop, "PLANNED", "当前任务节点不能执行到站");
         LocationReportResult result = requireFresh(locationRecorder.append(command));
-        stop.arrive();
+        List<TaskStop> arrivalStops = coLocatedArrivalStops(task, stop);
+        for (TaskStop arrivalStop : arrivalStops) {
+            arrivalStop.arriveAt(result.event().getDriverReportedAt());
+        }
         task.markCurrentStop(stop.getVirtualStopId());
         snapshotService.apply(result.event());
-        audit(actorId, task.getId(), "TASK_STOP_ARRIVED", stop.getId().toString(), result.event().getId());
+        for (TaskStop arrivalStop : arrivalStops) {
+            audit(
+                    actorId,
+                    task.getId(),
+                    "TASK_STOP_ARRIVED",
+                    arrivalStop.getId().toString(),
+                    result.event().getId());
+        }
         return TaskActionResponse.from(task, result);
     }
 
@@ -157,6 +173,7 @@ public class TaskExecutionService {
         }
         LocationReportResult result = requireFresh(locationRecorder.append(command));
         task.complete();
+        taskResourceCoordinator.releaseIfUnused(task);
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() == OrderStatus.IN_PROGRESS) {
                 order.complete();
@@ -180,6 +197,7 @@ public class TaskExecutionService {
     private VehicleTask closeTaskAsException(UUID actorId, UUID taskId, String reason, String auditAction) {
         VehicleTask task = taskForExecution(taskId);
         task.markException(reason);
+        taskResourceCoordinator.releaseIfUnused(task);
         for (RideOrder order : affectedOrders(task)) {
             if (order.getStatus() != OrderStatus.COMPLETED
                     && order.getStatus() != OrderStatus.CANCELLED
@@ -271,6 +289,26 @@ public class TaskExecutionService {
                 .filter(candidate -> candidate.getId().equals(taskStopId))
                 .findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "任务节点不存在"));
+    }
+
+    private static List<TaskStop> coLocatedArrivalStops(VehicleTask task, TaskStop triggerStop) {
+        if (!"BOARDING".equals(triggerStop.getStopType())) {
+            return List.of(triggerStop);
+        }
+
+        List<TaskStop> stops = task.getStops();
+        int triggerIndex = stops.indexOf(triggerStop);
+        List<TaskStop> arrivals = new ArrayList<>();
+        for (int index = triggerIndex; index < stops.size(); index++) {
+            TaskStop candidate = stops.get(index);
+            if (!"BOARDING".equals(candidate.getStopType())
+                    || !"PLANNED".equals(candidate.getStatus())
+                    || !triggerStop.getVirtualStopId().equals(candidate.getVirtualStopId())) {
+                break;
+            }
+            arrivals.add(candidate);
+        }
+        return List.copyOf(arrivals);
     }
 
     private Set<RideOrder> affectedOrders(VehicleTask task) {

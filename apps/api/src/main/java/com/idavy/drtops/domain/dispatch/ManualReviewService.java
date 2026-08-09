@@ -10,13 +10,12 @@ import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStopInsertionPolicy;
 import com.idavy.drtops.domain.task.TaskStatus;
+import com.idavy.drtops.domain.task.TaskResourceCoordinator;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
-import jakarta.persistence.EntityManager;
 import java.time.OffsetDateTime;
-import java.util.LinkedHashSet;
-import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -31,8 +30,11 @@ public class ManualReviewService {
     private final VehicleRepository vehicleRepository;
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
+    private final TaskResourceCoordinator taskResourceCoordinator;
+    private final TaskStopInsertionPolicy taskStopInsertionPolicy;
     private final AuditLogRepository auditLogRepository;
-    private final EntityManager entityManager;
+    private final DispatchRuleSetRepository ruleSetRepository;
+    private final CandidateTaskAssembler candidateTaskAssembler;
 
     public ManualReviewService(
             DispatchDecisionRepository dispatchDecisionRepository,
@@ -40,27 +42,32 @@ public class ManualReviewService {
             VehicleRepository vehicleRepository,
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
+            TaskResourceCoordinator taskResourceCoordinator,
+            TaskStopInsertionPolicy taskStopInsertionPolicy,
             AuditLogRepository auditLogRepository,
-            EntityManager entityManager) {
+            DispatchRuleSetRepository ruleSetRepository,
+            CandidateTaskAssembler candidateTaskAssembler) {
         this.dispatchDecisionRepository = dispatchDecisionRepository;
         this.rideOrderRepository = rideOrderRepository;
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
+        this.taskResourceCoordinator = taskResourceCoordinator;
+        this.taskStopInsertionPolicy = taskStopInsertionPolicy;
         this.auditLogRepository = auditLogRepository;
-        this.entityManager = entityManager;
+        this.ruleSetRepository = ruleSetRepository;
+        this.candidateTaskAssembler = candidateTaskAssembler;
     }
 
     @Transactional
     public DispatchResult approve(UUID actorId, UUID decisionId) {
         DispatchDecision decision = decision(decisionId);
         RideOrder order = pendingManualReviewOrder(decision);
-        VehicleTask task = createTask(order, decision);
-        order.confirm(new RideOrder.OrderPromise(
-                task.getStops().getFirst().getPlannedArrivalAt(),
-                task.getStops().getLast().getPlannedArrivalAt()));
+        TaskApproval approval = createTask(order, decision);
+        order.confirm(new RideOrder.OrderPromise(approval.boardingAt(), approval.alightingAt()));
         audit(actorId, order.getId(), "MANUAL_REVIEW_APPROVED", null);
-        return new DispatchResult(order.getId(), DispatchDecisionType.MANUAL_REVIEW, decision.getId(), task.getId());
+        return new DispatchResult(
+                order.getId(), DispatchDecisionType.MANUAL_REVIEW, decision.getId(), approval.task().getId());
     }
 
     @Transactional
@@ -72,7 +79,7 @@ public class ManualReviewService {
         return new DispatchResult(order.getId(), DispatchDecisionType.NO_FEASIBLE_PLAN, decision.getId(), null);
     }
 
-    private VehicleTask createTask(RideOrder order, DispatchDecision decision) {
+    private TaskApproval createTask(RideOrder order, DispatchDecision decision) {
         if (decision.getBestVehicleId() == null) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "人工确认缺少候选车辆");
         }
@@ -87,7 +94,7 @@ public class ManualReviewService {
         OffsetDateTime alightingAt = boardingAt.plusMinutes(detourMinutes + 10L);
 
         if (existingTask != null) {
-            return insertIntoExistingTask(order, vehicle, existingTask, boardingAt, alightingAt);
+            return insertIntoExistingTask(order, vehicle, existingTask);
         }
 
         Driver driver = driverRepository.findAll().stream()
@@ -100,60 +107,47 @@ public class ManualReviewService {
         task.addStop(TaskStop.planned(order.getBoardingStopId(), order.getId(), 1, "BOARDING", boardingAt));
         task.addStop(TaskStop.planned(order.getAlightingStopId(), order.getId(), 2, "ALIGHTING", alightingAt));
         task.dispatch();
-        return vehicleTaskRepository.save(task);
+        taskResourceCoordinator.reserve(vehicle.getId(), driver.getId());
+        return new TaskApproval(vehicleTaskRepository.save(task), boardingAt, alightingAt);
     }
 
     private VehicleTask taskForInsertion(UUID taskId) {
-        VehicleTask task = vehicleTaskRepository.findByIdForExecution(taskId)
+        VehicleTask task = vehicleTaskRepository.findByIdForUpdate(taskId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "候选任务不存在"));
-        entityManager.refresh(task);
         return task;
     }
 
-    private VehicleTask insertIntoExistingTask(
+    private TaskApproval insertIntoExistingTask(
             RideOrder order,
             Vehicle vehicle,
-            VehicleTask task,
-            OffsetDateTime boardingAt,
-            OffsetDateTime alightingAt) {
+            VehicleTask task) {
         if (!task.getVehicleId().equals(vehicle.getId())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "候选任务车辆不一致");
         }
         if (task.getStatus() != TaskStatus.DISPATCHED && task.getStatus() != TaskStatus.IN_PROGRESS) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "候选任务不可插单");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "DISPATCH_CANDIDATE_STALE");
         }
-        assertCapacityAvailable(order, vehicle, task);
-
-        int nextSequence = task.getStops().stream()
-                .mapToInt(TaskStop::getSequenceNumber)
-                .max()
-                .orElse(0) + 1;
-        task.addStop(TaskStop.planned(order.getBoardingStopId(), order.getId(), nextSequence, "BOARDING", boardingAt));
-        task.addStop(TaskStop.planned(order.getAlightingStopId(), order.getId(), nextSequence + 1, "ALIGHTING", alightingAt));
-        return vehicleTaskRepository.save(task);
+        DispatchRuleSet ruleSet = ruleSetRepository.findAll().stream()
+                .filter(DispatchRuleSet::isEnabled)
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "未配置启用的调度规则组"));
+        TaskInsertionPlan plan = candidateTaskAssembler.replanExistingTask(order, ruleSet, vehicle, task);
+        if (!plan.feasible()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "DISPATCH_CANDIDATE_STALE");
+        }
+        taskStopInsertionPolicy.applyPlan(task, order, plan);
+        return new TaskApproval(
+                vehicleTaskRepository.save(task),
+                plannedTime(plan, order.getId(), "BOARDING"),
+                plannedTime(plan, order.getId(), "ALIGHTING"));
     }
 
-    private void assertCapacityAvailable(RideOrder order, Vehicle vehicle, VehicleTask task) {
-        if (occupiedSeats(task) + order.getPassengerCount() > vehicle.getCapacity()) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "候选任务剩余座位不足");
-        }
-    }
-
-    private int occupiedSeats(VehicleTask task) {
-        Set<UUID> orderIds = new LinkedHashSet<>();
-        for (TaskStop stop : task.getStops()) {
-            if (stop.getRideOrderId() != null) {
-                orderIds.add(stop.getRideOrderId());
-            }
-        }
-
-        int occupiedSeats = 0;
-        for (UUID orderId : orderIds) {
-            occupiedSeats += rideOrderRepository.findById(orderId)
-                    .map(RideOrder::getPassengerCount)
-                    .orElse(0);
-        }
-        return occupiedSeats;
+    private OffsetDateTime plannedTime(TaskInsertionPlan plan, UUID orderId, String stopType) {
+        return plan.orderedStops().stream()
+                .filter(stop -> orderId.equals(stop.rideOrderId()) && stopType.equals(stop.stopType()))
+                .map(TaskInsertionPlan.PlannedTaskStop::plannedArrivalAt)
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "DISPATCH_CANDIDATE_STALE"));
     }
 
     private RideOrder pendingManualReviewOrder(DispatchDecision decision) {
@@ -184,5 +178,11 @@ public class ManualReviewService {
                 actorId.toString(),
                 reason,
                 "{}"));
+    }
+
+    private record TaskApproval(
+            VehicleTask task,
+            OffsetDateTime boardingAt,
+            OffsetDateTime alightingAt) {
     }
 }

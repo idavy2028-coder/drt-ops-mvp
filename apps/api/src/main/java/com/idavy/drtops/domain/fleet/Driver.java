@@ -99,6 +99,33 @@ public class Driver {
         return currentStatus;
     }
 
+    public void reserve() {
+        if (!"QUALIFIED".equals(qualificationStatus)) {
+            throw new IllegalStateException("Driver is not qualified");
+        }
+        if (!"AVAILABLE".equals(currentStatus)) {
+            throw new IllegalStateException("Driver status " + currentStatus + " is not available");
+        }
+        this.currentStatus = "BUSY";
+    }
+
+    public void startService() {
+        if ("BUSY".equals(currentStatus)) {
+            return;
+        }
+        reserve();
+    }
+
+    public void release() {
+        if ("AVAILABLE".equals(currentStatus)) {
+            return;
+        }
+        if (!"BUSY".equals(currentStatus)) {
+            throw new IllegalStateException("Driver status " + currentStatus + " cannot be released");
+        }
+        this.currentStatus = "AVAILABLE";
+    }
+
     public String getFleetName() {
         return fleetName;
     }

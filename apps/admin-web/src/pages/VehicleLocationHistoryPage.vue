@@ -17,6 +17,7 @@ const status = ref("请输入车辆编号或任务编号后查询位置历史。
 const loading = ref(false);
 const exporting = ref(false);
 const reportingResourcesLoading = ref(false);
+const reportingResourcesLoaded = ref(false);
 const reporting = ref(false);
 const reportingPanelVisible = ref(false);
 const reportingSetupMessage = ref("");
@@ -30,9 +31,10 @@ const vehicleExportUnsupportedMessage = "车辆维度导出需后端支持，请
 const canExport = computed(() => authStore.has("LOCATION_EXPORT"));
 const canCorrect = computed(() => authStore.has("LOCATION_CORRECT"));
 const canReport = computed(() => authStore.has("LOCATION_REPORT"));
+const idleReportVehicles = computed(() => reportVehicles.value.filter((vehicle) => vehicle.currentStatus === "IDLE"));
 const vehicleOnlyExportUnsupported = computed(() => vehicleId.value.trim() !== "" && taskId.value.trim() === "");
 const exportDisabled = computed(() => exporting.value || vehicleOnlyExportUnsupported.value);
-const selectedReportVehicle = computed(() => reportVehicles.value.find((vehicle) => vehicle.vehicleId === selectedReportVehicleId.value));
+const selectedReportVehicle = computed(() => idleReportVehicles.value.find((vehicle) => vehicle.vehicleId === selectedReportVehicleId.value));
 const selectedReportInitialLocation = computed<LocationCandidate | undefined>(() => {
   const latestLocation = selectedReportVehicle.value?.latestLocation;
   if (latestLocation === null || latestLocation === undefined) {
@@ -50,7 +52,9 @@ const selectedReportInitialLocation = computed<LocationCandidate | undefined>(()
     outsideServiceArea: latestLocation.outsideServiceArea
   };
 });
-const reportEntryDisabled = computed(() => reportingResourcesLoading.value || enabledServiceArea.value === undefined);
+const reportEntryDisabled = computed(() => reportingResourcesLoading.value
+  || idleReportVehicles.value.length === 0
+  || enabledServiceArea.value === undefined);
 
 onMounted(() => {
   if (canReport.value) {
@@ -105,6 +109,9 @@ async function loadReportingResources() {
       listVirtualStops({ enabled: true })
     ]);
     reportVehicles.value = vehicles;
+    if (!vehicles.some((vehicle) => vehicle.currentStatus === "IDLE" && vehicle.vehicleId === selectedReportVehicleId.value)) {
+      selectedReportVehicleId.value = "";
+    }
     enabledVirtualStops.value = stops;
     enabledServiceArea.value = toBoundaryView(serviceAreas.find((serviceArea) => serviceArea.enabled));
     if (enabledServiceArea.value === undefined) {
@@ -114,6 +121,7 @@ async function loadReportingResources() {
     reportingSetupMessage.value = userMessage(error, "待命位置上报资源加载失败");
   } finally {
     reportingResourcesLoading.value = false;
+    reportingResourcesLoaded.value = true;
   }
 }
 
@@ -240,6 +248,10 @@ function delayMinutes(event: VehicleLocationEventView): number {
   const delayMs = new Date(event.recordedAt).getTime() - new Date(event.driverReportedAt).getTime();
   return Math.max(0, Math.round(delayMs / 60_000));
 }
+
+function shortTaskId(value: string) {
+  return value.slice(0, 8);
+}
 </script>
 
 <template>
@@ -262,11 +274,12 @@ function delayMinutes(event: VehicleLocationEventView): number {
         <span>待命车辆</span>
         <select v-model="selectedReportVehicleId" :disabled="reportingResourcesLoading || reporting || reportingPanelVisible" @change="reportingEntryMessage = ''">
           <option value="">请选择车辆</option>
-          <option v-for="vehicle in reportVehicles" :key="vehicle.vehicleId" :value="vehicle.vehicleId">
+          <option v-for="vehicle in idleReportVehicles" :key="vehicle.vehicleId" :value="vehicle.vehicleId">
             {{ vehicle.plateNumber }} · {{ vehicle.currentStatus }} · {{ vehicle.dispatchable ? "可调度" : "不可调度" }}
           </option>
         </select>
       </label>
+      <p v-if="reportingResourcesLoaded && !reportingResourcesLoading && idleReportVehicles.length === 0" class="page-state">当前没有可上报待命位置的空闲车辆</p>
       <div class="standby-report-actions">
         <button class="primary-button" type="button" :disabled="reportEntryDisabled" @click="openStandbyLocationReport">上报待命位置</button>
         <button class="secondary-button" type="button" :disabled="reportingResourcesLoading || reporting" @click="loadReportingResources">刷新车辆</button>
@@ -292,8 +305,8 @@ function delayMinutes(event: VehicleLocationEventView): number {
         <input v-model="vehicleId" type="text" autocomplete="off" placeholder="vehicle-1" />
       </label>
       <label>
-        <span>任务编号</span>
-        <input v-model="taskId" type="text" autocomplete="off" placeholder="task-1" />
+        <span>任务编号（筛选条件）</span>
+        <input v-model="taskId" type="text" autocomplete="off" placeholder="输入完整任务编号" />
       </label>
       <label>
         <span>日期</span>
@@ -329,6 +342,10 @@ function delayMinutes(event: VehicleLocationEventView): number {
             <p>系统录入 {{ formatDateTime(event.recordedAt) }}</p>
             <p>录入延迟 {{ delayMinutes(event) }} 分钟</p>
             <p>操作人 {{ event.recordedBy }}</p>
+            <p v-if="event.vehicleTaskId">
+              <a :href="`/tasks?taskId=${encodeURIComponent(event.vehicleTaskId)}`">任务 {{ shortTaskId(event.vehicleTaskId) }}</a>
+            </p>
+            <p v-else>无任务关联</p>
             <p v-if="event.correctsEventId">修正原事件 {{ event.correctsEventId }}</p>
             <button v-if="canCorrect" class="secondary-button" type="button">修正位置</button>
           </div>

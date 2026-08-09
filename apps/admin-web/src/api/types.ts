@@ -300,9 +300,31 @@ export interface RideOrder {
   boardingStopId?: UUID;
   alightingStopId?: UUID;
   requestedDepartureAt: IsoDateTime;
+  createdAt?: IsoDateTime;
   estimatedBoardingAt?: IsoDateTime;
   estimatedArrivalAt?: IsoDateTime;
   status: string;
+  canMarkNoShow: boolean;
+  noShowEligibleAt?: IsoDateTime;
+  noShowWaitedSeconds: number;
+  noShowBlockReason?: string;
+  dispatchFailure?: DispatchFailure;
+}
+
+export interface DispatchFailure {
+  code: string;
+  summary: string;
+  candidateCount: number;
+  rejectedReasons: string[];
+  maxWaitMinutes?: number;
+  maxDetourMinutes?: number;
+  mapProvider?: string;
+  mapDegraded: boolean;
+  mapDegradedReason?: string;
+  vehicleToPickupDistanceMeters?: number;
+  vehicleToPickupDurationSeconds?: number;
+  pickupToDestinationDistanceMeters?: number;
+  pickupToDestinationDurationSeconds?: number;
 }
 
 export interface TaskStop {
@@ -319,9 +341,11 @@ export interface TaskStop {
 export interface VehicleTask {
   id: UUID;
   vehicleId: UUID;
+  vehiclePlateNumber?: string;
   driverId: UUID;
   status: string;
   plannedStartAt: IsoDateTime;
+  createdAt?: IsoDateTime;
   stops: TaskStop[];
 }
 

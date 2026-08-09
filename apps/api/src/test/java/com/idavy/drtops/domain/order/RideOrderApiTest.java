@@ -7,9 +7,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.idavy.drtops.domain.area.VirtualStop;
 import com.idavy.drtops.domain.area.VirtualStopRepository;
+import com.idavy.drtops.domain.dispatch.DispatchDecision;
+import com.idavy.drtops.domain.dispatch.DispatchDecisionRepository;
+import com.idavy.drtops.domain.dispatch.DispatchRuleSet;
+import com.idavy.drtops.domain.dispatch.DispatchRuleSetRepository;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import java.math.BigDecimal;
 import java.util.UUID;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,11 +54,19 @@ class RideOrderApiTest {
     RideOrderRepository rideOrderRepository;
 
     @Autowired
+    DispatchDecisionRepository dispatchDecisionRepository;
+
+    @Autowired
+    DispatchRuleSetRepository dispatchRuleSetRepository;
+
+    @Autowired
     VirtualStopRepository virtualStopRepository;
 
     @BeforeEach
     void setUp() {
         rideOrderRepository.deleteAll();
+        dispatchDecisionRepository.deleteAll();
+        dispatchRuleSetRepository.deleteAll();
         virtualStopRepository.deleteAll();
         virtualStopRepository.save(VirtualStop.create(
                 BOARDING_STOP_ID,
@@ -103,7 +118,55 @@ class RideOrderApiTest {
 
         mockMvc.perform(get("/api/orders"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1));
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.data[0].canMarkNoShow").value(false))
+                .andExpect(jsonPath("$.data[0].noShowBlockReason")
+                        .value("订单尚未开始执行"));
+    }
+
+    @Test
+    void listsUnserviceableOrderWithDispatchFailureDetails() throws Exception {
+        mockMvc.perform(post("/api/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"passengerName":"unserviceable","passengerPhone":"13800000002","passengerCount":1,
+                                 "originLng":120.1550,"originLat":30.2741,
+                                 "destinationLng":120.1688,"destinationLat":30.2799,
+                                 "requestType":"IMMEDIATE","requestedDepartureAt":"2026-07-08T02:30:00Z"}
+                                """))
+                .andExpect(status().isCreated());
+
+        RideOrder order = rideOrderRepository.findAll().getFirst();
+        order.markUnserviceable("ALL_CANDIDATES_REJECTED");
+        rideOrderRepository.save(order);
+        dispatchRuleSetRepository.save(DispatchRuleSet.create(
+                UUID.randomUUID(), "Test rules", 5, 8, 60,
+                new java.math.BigDecimal("82"), new java.math.BigDecimal("62"),
+                new java.math.BigDecimal("0.35"), new java.math.BigDecimal("0.20"),
+                new java.math.BigDecimal("0.30"), new java.math.BigDecimal("0.15"),
+                "REALTIME_INSERTION"));
+        dispatchDecisionRepository.save(DispatchDecision.fromAlgorithm(
+                order.getId(),
+                new DispatchEvaluateResponse(
+                        com.idavy.drtops.domain.dispatch.DispatchDecisionType.NO_FEASIBLE_PLAN,
+                        null,
+                        4,
+                        4,
+                        List.of(new DispatchEvaluateResponse.RejectedCandidate(UUID.randomUUID(), "WAIT_TIME_EXCEEDED")),
+                        Map.of("reason", "ALL_CANDIDATES_REJECTED")),
+                null,
+                "[{\"reason\":\"WAIT_TIME_EXCEEDED\"}]",
+                "{\"reason\":\"ALL_CANDIDATES_REJECTED\"}",
+                "0.1.0", "SYSTEM", "test"));
+
+        mockMvc.perform(get("/api/orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].dispatchFailure.code").value("ALL_CANDIDATES_REJECTED"))
+                .andExpect(jsonPath("$.data[0].dispatchFailure.summary").value("所有候选方案均未满足调度约束"))
+                .andExpect(jsonPath("$.data[0].dispatchFailure.candidateCount").value(4))
+                .andExpect(jsonPath("$.data[0].dispatchFailure.rejectedReasons[0]").value("WAIT_TIME_EXCEEDED"))
+                .andExpect(jsonPath("$.data[0].dispatchFailure.maxWaitMinutes").value(5));
     }
 
     @TestConfiguration(proxyBeanMethods = false)

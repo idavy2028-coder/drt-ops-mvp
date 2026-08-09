@@ -63,6 +63,7 @@ public class VehicleLocationQueryService {
     @PreAuthorize("hasAuthority('LOCATION_REPORT')")
     public List<VehicleLocationReportCandidate> reportableVehicles() {
         return metrics.recordQuery(() -> vehicleRepository.findAll().stream()
+                .filter(vehicle -> "IDLE".equals(vehicle.getCurrentStatus()))
                 .map(vehicle -> new VehicleLocationReportCandidate(
                         vehicle.getId(), vehicle.getPlateNumber(), vehicle.getCurrentStatus(),
                         vehicle.isDispatchable(), VehicleLocationSnapshotView.from(vehicle)))

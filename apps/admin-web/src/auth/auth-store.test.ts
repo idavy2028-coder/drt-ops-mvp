@@ -24,4 +24,30 @@ describe("authStore", () => {
     expect(authStore.has("DISPATCH_EXECUTE")).toBe(false);
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/login", expect.objectContaining({ method: "POST" }));
   });
+
+  it("changes password with the access token and clears the expired session", async () => {
+    authStore.setSessionForTest({
+      accessToken: "temporary-token",
+      user: { id: "dispatcher-2", username: "dispatcher02", roles: ["DISPATCHER"], mustChangePassword: true }
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authStore.changePassword("dispatcher02", "NewDispatcher02!");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/password",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({
+          currentPassword: "dispatcher02",
+          newPassword: "NewDispatcher02!"
+        })
+      })
+    );
+    const headers = fetchMock.mock.calls[0][1].headers as Headers;
+    expect(headers.get("Authorization")).toBe("Bearer temporary-token");
+    expect(authStore.authenticated).toBe(false);
+  });
 });

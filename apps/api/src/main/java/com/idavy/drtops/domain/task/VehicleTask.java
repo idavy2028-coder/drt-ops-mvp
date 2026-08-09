@@ -12,6 +12,8 @@ import jakarta.persistence.Table;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
@@ -122,9 +124,59 @@ public class VehicleTask {
         this.updatedAt = OffsetDateTime.now();
     }
 
+    public void insertStop(int index, TaskStop stop) {
+        if (index < 0 || index > stops.size()) {
+            throw new IllegalArgumentException("stop index out of range");
+        }
+        stop.assignTo(this);
+        stops.add(index, stop);
+        for (int position = 0; position < stops.size(); position++) {
+            stops.get(position).resequence(position + 1);
+        }
+        this.updatedAt = OffsetDateTime.now();
+    }
+
+    void replaceRemainingStops(List<TaskStop> reorderedRemainingStops) {
+        int historySize = 0;
+        while (historySize < stops.size() && stops.get(historySize).isExecutionComplete()) {
+            historySize++;
+        }
+        for (int index = historySize; index < stops.size(); index++) {
+            if (stops.get(index).isExecutionComplete()) {
+                throw new IllegalStateException("completed task stops must form a history prefix");
+            }
+        }
+        List<TaskStop> reordered = new ArrayList<>(stops.subList(0, historySize));
+        reordered.addAll(reorderedRemainingStops);
+        stops.clear();
+        for (TaskStop stop : reordered) {
+            stop.assignTo(this);
+            stops.add(stop);
+        }
+        for (int position = 0; position < stops.size(); position++) {
+            stops.get(position).resequence(position + 1);
+        }
+        this.updatedAt = OffsetDateTime.now();
+    }
+
     public void markCurrentStop(UUID currentStopId) {
         this.currentStopId = currentStopId;
         this.updatedAt = OffsetDateTime.now();
+    }
+
+    public void cancelStopsForOrder(UUID rideOrderId) {
+        stops.stream()
+                .filter(stop -> rideOrderId.equals(stop.getRideOrderId()))
+                .forEach(TaskStop::cancel);
+        this.updatedAt = OffsetDateTime.now();
+    }
+
+    public Set<UUID> activeOrderIds() {
+        return stops.stream()
+                .filter(stop -> !stop.isExecutionComplete())
+                .map(TaskStop::getRideOrderId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     public UUID getId() {
@@ -145,6 +197,10 @@ public class VehicleTask {
 
     public OffsetDateTime getPlannedStartAt() {
         return plannedStartAt;
+    }
+
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
     }
 
     public List<TaskStop> getStops() {

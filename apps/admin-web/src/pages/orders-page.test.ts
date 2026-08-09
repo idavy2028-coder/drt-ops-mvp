@@ -1,19 +1,337 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/vue";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
 import OrdersPage from "./OrdersPage.vue";
 
 describe("OrdersPage", () => {
-  afterEach(() => authStore.clearSessionForTest());
+  afterEach(() => {
+    cleanup();
+    authStore.clearSessionForTest();
+    vi.restoreAllMocks();
+  });
 
   it("shows create order action and order status columns", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }));
     authStore.setSessionForTest({ accessToken: "operator-token", user: { id: "operator-1", username: "operator01", roles: ["OPERATOR"], mustChangePassword: false } });
     render(OrdersPage);
 
     expect(await screen.findByRole("button", { name: "录入需求" })).toBeInTheDocument();
-    expect(screen.getByText("订单状态")).toBeInTheDocument();
-    expect(screen.getByText("预计上车时间")).toBeInTheDocument();
+    expect(screen.getAllByText("订单状态").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("预计上车时间").length).toBeGreaterThan(0);
+  });
+
+  it("separates today's orders from history by createdAt instead of departure time", async () => {
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: [
+      {
+        id: "today-order",
+        passengerName: "今日乘客",
+        passengerCount: 1,
+        requestedDepartureAt: yesterday.toISOString(),
+        createdAt: today.toISOString(),
+        status: "PENDING_DISPATCH",
+        canMarkNoShow: false,
+        noShowWaitedSeconds: 0
+      },
+      {
+        id: "history-order",
+        passengerName: "历史乘客",
+        passengerCount: 1,
+        requestedDepartureAt: today.toISOString(),
+        createdAt: yesterday.toISOString(),
+        status: "COMPLETED",
+        canMarkNoShow: false,
+        noShowWaitedSeconds: 0
+      }
+    ] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    authStore.setSessionForTest({ accessToken: "operator-token", user: { id: "operator-1", username: "operator01", roles: ["OPERATOR"], mustChangePassword: false } });
+    render(OrdersPage);
+
+    const todaySection = await screen.findByRole("heading", { name: "今日新增订单" });
+    const historySection = screen.getByRole("heading", { name: "历史订单" });
+    await waitFor(() => expect(todaySection.parentElement).toHaveTextContent("1 条"));
+    expect(historySection.parentElement).toHaveTextContent("1 条");
+    expect(todaySection.closest("section")).toHaveTextContent("今日乘客");
+    expect(todaySection.closest("section")).not.toHaveTextContent("历史乘客");
+    expect(historySection.closest("section")).toHaveTextContent("历史乘客");
+    expect(historySection.closest("section")).not.toHaveTextContent("今日乘客");
+  });
+
+  it("shows and expands the reason for an unserviceable order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: [{
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      passengerName: "罗老师",
+      passengerPhone: "13800000000",
+      passengerCount: 1,
+      requestType: "IMMEDIATE",
+      originLng: 105.258224,
+      originLat: 35.197636,
+      destinationLng: 105.327705,
+      destinationLat: 35.283669,
+      originAddress: "高铁站",
+      destinationAddress: "陇阳镇",
+      coordinateSystem: "GCJ02",
+      originAddressSource: "VIRTUAL_STOP",
+      destinationAddressSource: "VIRTUAL_STOP",
+      requestedDepartureAt: "2026-08-03T06:57:00Z",
+      status: "UNSERVICEABLE",
+      dispatchFailure: {
+        code: "ALL_CANDIDATES_REJECTED",
+        summary: "所有候选方案均未满足调度约束",
+        candidateCount: 4,
+        rejectedReasons: ["WAIT_TIME_EXCEEDED"],
+        maxWaitMinutes: 5,
+        maxDetourMinutes: 8,
+        mapProvider: "AMAP",
+        mapDegraded: false,
+        pickupToDestinationDistanceMeters: 13523,
+        pickupToDestinationDurationSeconds: 1391
+      }
+    }] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    authStore.setSessionForTest({
+      accessToken: "dispatcher-token",
+      user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false }
+    });
+
+    render(OrdersPage);
+
+    expect(await screen.findByText("所有候选方案均未满足调度约束")).toBeInTheDocument();
+    const reasonButton = screen.getByRole("button", { name: "查看不可服务原因" });
+    expect(reasonButton).toHaveAttribute("aria-expanded", "false");
+    await fireEvent.click(reasonButton);
+    expect(reasonButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("候选方案数：4")).toBeInTheDocument();
+    expect(screen.getByText("拒绝原因：WAIT_TIME_EXCEEDED")).toBeInTheDocument();
+    expect(screen.getByText("最大等候：5 分钟")).toBeInTheDocument();
+  });
+
+  it("shows algorithm unavailable instead of login expired when dispatch returns the tagged 503", async () => {
+    const orderId = "77777777-7777-7777-7777-777777777777";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const url = String(input);
+      if (url.endsWith(`/api/orders/${orderId}/dispatch`) && options?.method === "POST") {
+        return new Response(JSON.stringify({
+          data: {
+            code: "ALGORITHM_UNAVAILABLE",
+            message: "算法服务不可用"
+          }
+        }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({
+        data: [{
+          id: orderId,
+          passengerName: "P1-4 测试乘客",
+          passengerPhone: "13800000000",
+          passengerCount: 1,
+          requestType: "IMMEDIATE",
+          originLng: 105.327705,
+          originLat: 35.283669,
+          destinationLng: 105.258224,
+          destinationLat: 35.197636,
+          originAddress: "P1-4 测试起点",
+          destinationAddress: "P1-4 测试终点",
+          coordinateSystem: "GCJ-02",
+          originAddressSource: "VIRTUAL_STOP",
+          destinationAddressSource: "VIRTUAL_STOP",
+          boardingStopId: "55555555-5555-5555-5555-555555555551",
+          alightingStopId: "55555555-5555-5555-5555-555555555552",
+          requestedDepartureAt: "2026-07-29T17:00:00+08:00",
+          status: "PENDING_DISPATCH"
+        }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    authStore.setSessionForTest({
+      accessToken: "dispatcher-token",
+      user: {
+        id: "dispatcher-1",
+        username: "dispatcher01",
+        roles: ["DISPATCHER"],
+        mustChangePassword: false
+      }
+    });
+    render(OrdersPage);
+
+    await fireEvent.click(await screen.findByRole("button", { name: "调度" }));
+
+    expect(await screen.findByText("算法服务不可用")).toBeInTheDocument();
+    expect(screen.queryByText("登录状态已失效，请重新登录")).not.toBeInTheDocument();
+  });
+
+  it("uses the server eligibility snapshot instead of order status for no-show actions", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      data: [{
+        id: "88888888-8888-8888-8888-888888888888",
+        passengerName: "试运行乘客",
+        passengerPhone: "13800000000",
+        passengerCount: 1,
+        requestType: "IMMEDIATE",
+        originLng: 105.327705,
+        originLat: 35.283669,
+        destinationLng: 105.258224,
+        destinationLat: 35.197636,
+        originAddress: "测试起点",
+        destinationAddress: "测试终点",
+        coordinateSystem: "GCJ02",
+        originAddressSource: "VIRTUAL_STOP",
+        destinationAddressSource: "VIRTUAL_STOP",
+        boardingStopId: "55555555-5555-5555-5555-555555555551",
+        alightingStopId: "55555555-5555-5555-5555-555555555552",
+        requestedDepartureAt: "2026-07-30T12:00:00+08:00",
+        estimatedBoardingAt: "2026-07-30T12:05:00+08:00",
+        status: "IN_PROGRESS",
+        canMarkNoShow: false,
+        noShowEligibleAt: "2026-07-30T12:10:00+08:00",
+        noShowWaitedSeconds: 120,
+        noShowBlockReason: "乘客等候期尚未结束"
+      }]
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }));
+    authStore.setSessionForTest({
+      accessToken: "dispatcher-token",
+      user: {
+        id: "dispatcher-1",
+        username: "dispatcher01",
+        roles: ["DISPATCHER"],
+        mustChangePassword: false
+      }
+    });
+
+    render(OrdersPage);
+
+    expect(await screen.findByText("乘客等候期尚未结束")).toBeInTheDocument();
+    expect(screen.getByText("剩余 3 分 0 秒")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "乘客未到" })).not.toBeInTheDocument();
+  });
+
+  it("requires the confirmation dialog and submits one idempotent no-show request", async () => {
+    const orderId = "99999999-9999-9999-9999-999999999999";
+    const postedBodies: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const url = String(input);
+      if (url.endsWith(`/api/orders/${orderId}/no-show`) && options?.method === "POST") {
+        postedBodies.push(String(options.body));
+        return new Response(JSON.stringify({ data: { id: orderId, status: "EXCEPTION_CLOSED" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({
+        data: postedBodies.length === 0 ? [{
+          id: orderId,
+          passengerName: "试运行乘客",
+          passengerPhone: "13800000000",
+          passengerCount: 1,
+          requestType: "IMMEDIATE",
+          originLng: 105.327705,
+          originLat: 35.283669,
+          destinationLng: 105.258224,
+          destinationLat: 35.197636,
+          originAddress: "测试起点",
+          destinationAddress: "测试终点",
+          coordinateSystem: "GCJ02",
+          originAddressSource: "VIRTUAL_STOP",
+          destinationAddressSource: "VIRTUAL_STOP",
+          boardingStopId: "55555555-5555-5555-5555-555555555551",
+          alightingStopId: "55555555-5555-5555-5555-555555555552",
+          requestedDepartureAt: "2026-07-30T12:00:00+08:00",
+          estimatedBoardingAt: "2026-07-30T12:05:00+08:00",
+          status: "IN_PROGRESS",
+          canMarkNoShow: true,
+          noShowEligibleAt: "2026-07-30T12:10:00+08:00",
+          noShowWaitedSeconds: 301
+        }] : []
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    authStore.setSessionForTest({
+      accessToken: "dispatcher-token",
+      user: {
+        id: "dispatcher-1",
+        username: "dispatcher01",
+        roles: ["DISPATCHER"],
+        mustChangePassword: false
+      }
+    });
+    render(OrdersPage);
+
+    await fireEvent.click(await screen.findByRole("button", { name: "乘客未到" }));
+    expect(screen.getByRole("dialog", { name: "确认乘客未到" })).toBeInTheDocument();
+    expect(postedBodies).toHaveLength(0);
+
+    await fireEvent.update(screen.getByRole("combobox", { name: "爽约原因" }), "WAITING_PERIOD_EXPIRED");
+    await fireEvent.click(screen.getByRole("button", { name: "确认乘客未到并关闭订单" }));
+
+    await waitFor(() => expect(postedBodies).toHaveLength(1));
+    expect(JSON.parse(postedBodies[0]!)).toMatchObject({
+      reason: "乘客在等待期内未出现"
+    });
+    expect(JSON.parse(postedBodies[0]!).idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("confirms a cancelled order as passenger cancelled without cancelling it again", async () => {
+    const orderId = "66666666-6666-6666-6666-666666666666";
+    const postedBodies: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const url = String(input);
+      if (url.endsWith(`/api/orders/${orderId}/cancellation-reason-confirmation`) && options?.method === "POST") {
+        postedBodies.push(String(options.body));
+        return new Response(JSON.stringify({ data: { id: orderId, status: "CANCELLED" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({
+        data: postedBodies.length === 0 ? [{
+          id: orderId,
+          passengerName: "已取消乘客",
+          passengerPhone: "13800000000",
+          passengerCount: 1,
+          requestType: "IMMEDIATE",
+          originLng: 105.327705,
+          originLat: 35.283669,
+          destinationLng: 105.258224,
+          destinationLat: 35.197636,
+          originAddress: "测试起点",
+          destinationAddress: "测试终点",
+          coordinateSystem: "GCJ02",
+          originAddressSource: "VIRTUAL_STOP",
+          destinationAddressSource: "VIRTUAL_STOP",
+          boardingStopId: "55555555-5555-5555-5555-555555555551",
+          alightingStopId: "55555555-5555-5555-5555-555555555552",
+          requestedDepartureAt: "2026-07-30T12:00:00+08:00",
+          status: "CANCELLED"
+        }] : []
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    authStore.setSessionForTest({
+      accessToken: "dispatcher-token",
+      user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false }
+    });
+
+    render(OrdersPage);
+
+    await fireEvent.click(await screen.findByRole("button", { name: "确认乘客取消" }));
+
+    await waitFor(() => expect(postedBodies).toHaveLength(1));
+    expect(JSON.parse(postedBodies[0]!)).toEqual({ reason: "乘客取消" });
   });
 });

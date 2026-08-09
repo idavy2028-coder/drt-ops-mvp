@@ -12,19 +12,18 @@ import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStop;
+import com.idavy.drtops.domain.task.TaskStopInsertionPolicy;
 import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
+import com.idavy.drtops.domain.task.TaskResourceCoordinator;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
-import jakarta.persistence.EntityManager;
 import java.time.OffsetDateTime;
 import java.time.Duration;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -34,7 +33,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class DispatchOrchestrator {
 
-    private static final String ALGORITHM_VERSION = "0.1.0";
+    private static final String ALGORITHM_VERSION = "0.2.0";
     private static final String SYSTEM_ACTOR_TYPE = "SYSTEM";
     private static final String SYSTEM_ACTOR_ID = "dispatch-orchestrator";
 
@@ -44,11 +43,12 @@ public class DispatchOrchestrator {
     private final VehicleRepository vehicleRepository;
     private final DriverRepository driverRepository;
     private final VehicleTaskRepository vehicleTaskRepository;
+    private final TaskResourceCoordinator taskResourceCoordinator;
+    private final TaskStopInsertionPolicy taskStopInsertionPolicy;
     private final AuditLogRepository auditLogRepository;
     private final CandidateTaskAssembler candidateTaskAssembler;
     private final AlgorithmClient algorithmClient;
     private final ObjectMapper objectMapper;
-    private final EntityManager entityManager;
 
     public DispatchOrchestrator(
             RideOrderRepository rideOrderRepository,
@@ -57,22 +57,24 @@ public class DispatchOrchestrator {
             VehicleRepository vehicleRepository,
             DriverRepository driverRepository,
             VehicleTaskRepository vehicleTaskRepository,
+            TaskResourceCoordinator taskResourceCoordinator,
+            TaskStopInsertionPolicy taskStopInsertionPolicy,
             AuditLogRepository auditLogRepository,
             CandidateTaskAssembler candidateTaskAssembler,
             AlgorithmClient algorithmClient,
-            ObjectMapper objectMapper,
-            EntityManager entityManager) {
+            ObjectMapper objectMapper) {
         this.rideOrderRepository = rideOrderRepository;
         this.ruleSetRepository = ruleSetRepository;
         this.dispatchDecisionRepository = dispatchDecisionRepository;
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
+        this.taskResourceCoordinator = taskResourceCoordinator;
+        this.taskStopInsertionPolicy = taskStopInsertionPolicy;
         this.auditLogRepository = auditLogRepository;
         this.candidateTaskAssembler = candidateTaskAssembler;
         this.algorithmClient = algorithmClient;
         this.objectMapper = objectMapper;
-        this.entityManager = entityManager;
     }
 
     @Transactional
@@ -89,14 +91,14 @@ public class DispatchOrchestrator {
         response = forceManualReviewWhenRequired(response, assembly);
         CandidateTaskAssembler.CandidateTravelEstimates travelEstimates = assembly.estimatesFor(response.bestPlan());
 
-        VehicleTask vehicleTask = applyDecision(order, response, travelEstimates);
+        VehicleTask vehicleTask = applyDecision(order, ruleSet, response, travelEstimates, assembly);
         DispatchDecision decision = dispatchDecisionRepository.save(DispatchDecision.fromAlgorithm(
                 order.getId(),
                 response,
                 persistedTaskId(response, vehicleTask),
                 travelEstimates,
                 toJson(response.rejectedCandidates()),
-                toJson(explanationWithTravelEstimates(response, travelEstimates, assembly.manualReviewReason())),
+                toJson(explanationWithTravelEstimates(response, travelEstimates, assembly)),
                 ALGORITHM_VERSION,
                 SYSTEM_ACTOR_TYPE,
                 SYSTEM_ACTOR_ID));
@@ -162,10 +164,17 @@ public class DispatchOrchestrator {
 
     private VehicleTask applyDecision(
             RideOrder order,
+            DispatchRuleSet ruleSet,
             DispatchEvaluateResponse response,
-            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates) {
+            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates,
+            CandidateTaskAssembler.Assembly assembly) {
         return switch (response.decision()) {
-            case AUTO_DISPATCH -> autoDispatch(order, response.bestPlan(), travelEstimates);
+            case AUTO_DISPATCH -> autoDispatch(
+                    order,
+                    ruleSet,
+                    response.bestPlan(),
+                    travelEstimates,
+                    assembly.isNewTaskCandidate(response.bestPlan()));
             case MANUAL_REVIEW -> {
                 order.markPendingManualReview(explanationReason(response));
                 yield null;
@@ -179,13 +188,15 @@ public class DispatchOrchestrator {
 
     private VehicleTask autoDispatch(
             RideOrder order,
+            DispatchRuleSet ruleSet,
             DispatchEvaluateResponse.BestPlan bestPlan,
-            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates) {
+            CandidateTaskAssembler.CandidateTravelEstimates travelEstimates,
+            boolean newTaskCandidate) {
         if (bestPlan == null) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "算法自动派发结果缺少最优方案");
         }
 
-        VehicleTask existingTask = bestPlan.taskId() == null
+        VehicleTask existingTask = bestPlan.taskId() == null || newTaskCandidate
                 ? null : taskForInsertion(bestPlan.taskId());
         Vehicle vehicle = vehicleRepository.findById(bestPlan.vehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的车辆不存在"));
@@ -198,7 +209,7 @@ public class DispatchOrchestrator {
                 : estimatedBoardingAt.plus(Duration.ofSeconds(travelEstimates.pickupToDestination().durationSeconds()));
 
         if (existingTask != null) {
-            return insertIntoExistingTask(order, vehicle, existingTask, estimatedBoardingAt, estimatedArrivalAt);
+            return insertIntoExistingTask(order, ruleSet, vehicle, existingTask);
         }
 
         Driver driver = availableDriver();
@@ -221,74 +232,48 @@ public class DispatchOrchestrator {
                 estimatedArrivalAt));
         task.dispatch();
 
+        taskResourceCoordinator.reserve(vehicle.getId(), driver.getId());
         VehicleTask savedTask = vehicleTaskRepository.save(task);
         order.confirm(new RideOrder.OrderPromise(estimatedBoardingAt, estimatedArrivalAt));
         return savedTask;
     }
 
     private VehicleTask taskForInsertion(UUID taskId) {
-        VehicleTask task = vehicleTaskRepository.findByIdForExecution(taskId)
+        VehicleTask task = vehicleTaskRepository.findByIdForUpdate(taskId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务不存在"));
-        entityManager.refresh(task);
         return task;
     }
 
     private VehicleTask insertIntoExistingTask(
             RideOrder order,
+            DispatchRuleSet ruleSet,
             Vehicle vehicle,
-            VehicleTask task,
-            OffsetDateTime estimatedBoardingAt,
-            OffsetDateTime estimatedArrivalAt) {
+            VehicleTask task) {
         if (!task.getVehicleId().equals(vehicle.getId())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务车辆不一致");
         }
         if (task.getStatus() != TaskStatus.DISPATCHED && task.getStatus() != TaskStatus.IN_PROGRESS) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务不可插单");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "DISPATCH_CANDIDATE_STALE");
         }
-        assertCapacityAvailable(order, vehicle, task);
-
-        int nextSequence = task.getStops().stream()
-                .mapToInt(TaskStop::getSequenceNumber)
-                .max()
-                .orElse(0) + 1;
-        task.addStop(TaskStop.planned(
-                order.getBoardingStopId(),
-                order.getId(),
-                nextSequence,
-                "BOARDING",
-                estimatedBoardingAt));
-        task.addStop(TaskStop.planned(
-                order.getAlightingStopId(),
-                order.getId(),
-                nextSequence + 1,
-                "ALIGHTING",
-                estimatedArrivalAt));
+        TaskInsertionPlan plan = candidateTaskAssembler.replanExistingTask(order, ruleSet, vehicle, task);
+        if (!plan.feasible()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "DISPATCH_CANDIDATE_STALE");
+        }
+        taskStopInsertionPolicy.applyPlan(task, order, plan);
+        OffsetDateTime estimatedBoardingAt = plannedTime(plan, order.getId(), "BOARDING");
+        OffsetDateTime estimatedArrivalAt = plannedTime(plan, order.getId(), "ALIGHTING");
         VehicleTask savedTask = vehicleTaskRepository.save(task);
         order.confirm(new RideOrder.OrderPromise(estimatedBoardingAt, estimatedArrivalAt));
         return savedTask;
     }
 
-    private void assertCapacityAvailable(RideOrder order, Vehicle vehicle, VehicleTask task) {
-        if (occupiedSeats(task) + order.getPassengerCount() > vehicle.getCapacity()) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "算法返回的任务剩余座位不足");
-        }
-    }
-
-    private int occupiedSeats(VehicleTask task) {
-        Set<UUID> orderIds = new LinkedHashSet<>();
-        for (TaskStop stop : task.getStops()) {
-            if (stop.getRideOrderId() != null) {
-                orderIds.add(stop.getRideOrderId());
-            }
-        }
-
-        int occupiedSeats = 0;
-        for (UUID orderId : orderIds) {
-            occupiedSeats += rideOrderRepository.findById(orderId)
-                    .map(RideOrder::getPassengerCount)
-                    .orElse(0);
-        }
-        return occupiedSeats;
+    private OffsetDateTime plannedTime(TaskInsertionPlan plan, UUID orderId, String stopType) {
+        return plan.orderedStops().stream()
+                .filter(stop -> orderId.equals(stop.rideOrderId()) && stopType.equals(stop.stopType()))
+                .map(TaskInsertionPlan.PlannedTaskStop::plannedArrivalAt)
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.CONFLICT, "DISPATCH_CANDIDATE_STALE"));
     }
 
     private Driver availableDriver() {
@@ -315,17 +300,38 @@ public class DispatchOrchestrator {
     private Map<String, Object> explanationWithTravelEstimates(
             DispatchEvaluateResponse response,
             CandidateTaskAssembler.CandidateTravelEstimates travelEstimates,
-            String manualReviewReason) {
+            CandidateTaskAssembler.Assembly assembly) {
         Map<String, Object> explanation = new LinkedHashMap<>();
         if (response.explanation() != null) {
             explanation.putAll(response.explanation());
+        }
+        DispatchEvaluateResponse.BestPlan bestPlan = response.bestPlan();
+        if (bestPlan != null) {
+            explanation.put("candidateType", bestPlan.candidateType());
+            explanation.put("activationCost", bestPlan.activationCost());
+            explanation.put("selectionReason", bestPlan.selectionReason());
+            explanation.put("estimatedWaitMinutes", bestPlan.estimatedWaitMinutes());
+            explanation.put("maxPassengerDetourMinutes", bestPlan.estimatedDetourMinutes());
+            TaskInsertionPlan insertionPlan = bestPlan.taskId() == null
+                    ? null : assembly.insertionPlanFor(bestPlan.taskId());
+            if (insertionPlan != null) {
+                explanation.put("baselineRouteDurationSeconds", insertionPlan.baselineRouteDurationSeconds());
+                explanation.put("plannedRouteDurationSeconds", insertionPlan.plannedRouteDurationSeconds());
+                explanation.put("peakOccupiedSeats", insertionPlan.peakOccupiedSeats());
+                explanation.put("insertionBoardingPosition", insertionPlan.boardingIndex());
+                explanation.put("insertionAlightingPosition", insertionPlan.alightingIndex());
+                explanation.put("routeDegraded", insertionPlan.degraded());
+                if (insertionPlan.degradedReason() != null) {
+                    explanation.put("routeDegradedReason", insertionPlan.degradedReason());
+                }
+            }
         }
         if (travelEstimates != null) {
             explanation.put("vehicleToPickup", estimateDetails(travelEstimates.vehicleToPickup()));
             explanation.put("pickupToDestination", estimateDetails(travelEstimates.pickupToDestination()));
         }
-        if (manualReviewReason != null) {
-            explanation.put("manualReviewReason", manualReviewReason);
+        if (assembly.manualReviewReason() != null) {
+            explanation.put("manualReviewReason", assembly.manualReviewReason());
         }
         return explanation;
     }

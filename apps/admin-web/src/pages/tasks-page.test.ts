@@ -5,8 +5,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
 import TasksPage from "./TasksPage.vue";
 
+const routeQuery = vi.hoisted(() => ({ taskId: undefined as string | undefined }));
+vi.mock("vue-router", () => ({ useRoute: () => ({ query: routeQuery }) }));
+
 describe("TasksPage", () => {
-  afterEach(() => { cleanup(); authStore.clearSessionForTest(); vi.unstubAllGlobals(); });
+  afterEach(() => {
+    cleanup();
+    authStore.clearSessionForTest();
+    routeQuery.taskId = undefined;
+    vi.unstubAllGlobals();
+  });
 
   it("shows task execution controls and stop timeline", async () => {
     authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
@@ -20,6 +28,29 @@ describe("TasksPage", () => {
     expect(screen.getByRole("button", { name: "车辆故障" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "严重延误" })).toBeInTheDocument();
     expect(screen.getByText("站点时间线")).toBeInTheDocument();
+  });
+
+  it("separates today's tasks from history by createdAt instead of planned start", async () => {
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [
+        { id: "today-task", vehicleId: "vehicle-today", vehiclePlateNumber: "甘J00001D", driverId: "driver-today", status: "COMPLETED", plannedStartAt: yesterday.toISOString(), createdAt: today.toISOString(), stops: [] },
+        { id: "history-task", vehicleId: "vehicle-history", vehiclePlateNumber: "甘J00002D", driverId: "driver-history", status: "EXCEPTION", plannedStartAt: today.toISOString(), createdAt: yesterday.toISOString(), stops: [] }
+      ] })
+    }));
+    render(TasksPage);
+
+    const todaySection = await screen.findByRole("heading", { name: "今日新增任务" });
+    const historySection = screen.getByRole("heading", { name: "历史任务" });
+    await waitFor(() => expect(todaySection.parentElement).toHaveTextContent("1 条"));
+    expect(historySection.parentElement).toHaveTextContent("1 条");
+    expect(todaySection.closest("section")).toHaveTextContent("甘J00001D");
+    expect(todaySection.closest("section")).not.toHaveTextContent("甘J00002D");
+    expect(historySection.closest("section")).toHaveTextContent("甘J00002D");
+    expect(historySection.closest("section")).not.toHaveTextContent("甘J00001D");
   });
 
   it("hides task execution controls from an auditor", async () => {
@@ -200,6 +231,58 @@ describe("TasksPage", () => {
     expect((screen.getByLabelText("纬度") as HTMLInputElement).value).toBe("");
     expect(screen.getByLabelText("标准化地址")).toHaveValue("解析失败站");
   });
+
+  it("shows a vehicle plate number and a clear fallback instead of vehicle UUIDs", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(multipleTaskResponse()));
+
+    render(TasksPage);
+
+    expect(await screen.findByText("甘J18817D")).toBeInTheDocument();
+    expect(screen.getByText("未登记车牌")).toBeInTheDocument();
+    expect(screen.queryByText("vehicle-2")).not.toBeInTheDocument();
+    expect(screen.queryByText("vehicle-1")).not.toBeInTheDocument();
+  });
+
+  it("selects the exact task requested by the taskId query parameter", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    routeQuery.taskId = "task-dispatched";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(multipleTaskResponse()));
+
+    render(TasksPage);
+
+    const dispatchedTaskRow = (await screen.findByText("待发车")).closest("tr");
+    const completedTaskRow = screen.getByText("已完成").closest("tr");
+    expect(dispatchedTaskRow).toHaveClass("is-selected");
+    expect(completedTaskRow).not.toHaveClass("is-selected");
+    expect(screen.getByText("计划到站 2026-07-13T02:01:00Z")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发车" })).toBeEnabled();
+  });
+
+  it("does not submit a virtual stop id for task-level completion", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    const fetchMock = taskPageFetchMock({
+      taskResponse: completableTaskResponse(),
+      virtualStops: [virtualStopFixture("virtual-stop-2", "终点站", "POINT(104.6500 35.2200)")]
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(TasksPage);
+
+    await screen.findByText("执行中");
+    await fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await fireEvent.update(await screen.findByLabelText("驾驶员反馈时间"), "2026-07-13T03:20");
+    await fireEvent.click(screen.getByRole("button", { name: "确认完成" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/complete"))).toBe(true));
+    const completeCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/complete"));
+    const body = JSON.parse((completeCall?.[1] as RequestInit).body as string);
+    expect(body.locationReport).not.toHaveProperty("virtualStopId");
+    expect(body.locationReport).toMatchObject({
+      longitude: 104.65,
+      latitude: 35.22,
+      standardizedAddress: "终点站"
+    });
+  });
 });
 
 function completedTaskResponse(): Response {
@@ -232,6 +315,7 @@ function multipleTaskResponse(): Response {
     {
       id: "task-dispatched",
       vehicleId: "vehicle-2",
+      vehiclePlateNumber: "甘J18817D",
       driverId: "driver-2",
       status: "DISPATCHED",
       plannedStartAt: "2026-07-13T02:00:00Z",
@@ -252,6 +336,20 @@ function inProgressTaskResponse(): Response {
     plannedStartAt: "2026-07-13T03:00:00Z",
     stops: [
       { id: "invalid-stop", virtualStopId: "virtual-stop-invalid", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T03:01:00Z", status: "PLANNED" }
+    ]
+  }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function completableTaskResponse(): Response {
+  return new Response(JSON.stringify({ data: [{
+    id: "task-completable",
+    vehicleId: "vehicle-3",
+    driverId: "driver-3",
+    status: "IN_PROGRESS",
+    plannedStartAt: "2026-07-13T03:00:00Z",
+    stops: [
+      { id: "boarding-complete", virtualStopId: "virtual-stop-1", sequenceNumber: 1, stopType: "BOARDING", plannedArrivalAt: "2026-07-13T03:01:00Z", status: "BOARDED" },
+      { id: "alighting-complete", virtualStopId: "virtual-stop-2", sequenceNumber: 2, stopType: "ALIGHTING", plannedArrivalAt: "2026-07-13T03:11:00Z", status: "ALIGHTED" }
     ]
   }] }), { status: 200, headers: { "Content-Type": "application/json" } });
 }

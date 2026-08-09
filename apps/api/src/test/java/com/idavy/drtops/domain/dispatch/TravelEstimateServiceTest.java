@@ -81,6 +81,18 @@ class TravelEstimateServiceTest {
     }
 
     @Test
+    void estimatesAndCachesAnArbitraryRouteSegment() {
+        routePlanningProvider.nextRoute = new RoutePlanResult(2_400, 360, List.of());
+
+        TravelEstimate first = travelEstimateService.estimateBetween(PICKUP, DESTINATION);
+        TravelEstimate second = travelEstimateService.estimateBetween(PICKUP, DESTINATION);
+
+        assertThat(first).isEqualTo(new TravelEstimate(2_400, 360, "AMAP", false, null));
+        assertThat(second).isEqualTo(first);
+        assertThat(routePlanningProvider.drivingRouteCalls).isEqualTo(1);
+    }
+
+    @Test
     void rejectsVehicleWithoutRecordedLocationSnapshot() {
         vehicleRepository.save(Vehicle.create(
                 VEHICLE_ID, "DRT-201", "Microbus", 8, "IDLE", "POINT(105.230000 35.200000)", "Test", true));

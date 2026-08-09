@@ -26,4 +26,31 @@ describe("userMessage", () => {
 
     expect(userMessage(error, "加载失败")).toBe("服务暂时不可用，请稍后重试");
   });
+
+  it("maps the whitelisted algorithm error code without trusting the server message", async () => {
+    const error = await apiErrorFromResponse(new Response(JSON.stringify({
+      data: {
+        code: "ALGORITHM_UNAVAILABLE",
+        message: "java.net.ConnectException: 127.0.0.1:8090"
+      }
+    }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" }
+    }));
+
+    expect(error.code).toBe("ALGORITHM_UNAVAILABLE");
+    expect(userMessage(error, "调度操作失败")).toBe("算法服务不可用");
+  });
+
+  it("keeps an untagged service unavailable response generic", async () => {
+    const error = await apiErrorFromResponse(new Response(JSON.stringify({
+      data: { message: "org.postgresql.util.PSQLException: connection refused" }
+    }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" }
+    }));
+
+    expect(error.code).toBeUndefined();
+    expect(userMessage(error, "加载失败")).toBe("服务暂时不可用，请稍后重试");
+  });
 });

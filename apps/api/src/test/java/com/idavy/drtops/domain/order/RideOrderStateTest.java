@@ -29,6 +29,17 @@ class RideOrderStateTest {
     }
 
     @Test
+    void confirmingManualReviewOrderClearsPreviousFailureReason() {
+        RideOrder order = RideOrder.pendingDispatch(sampleCreateOrder());
+        order.markPendingManualReview("MAP_ROUTE_UNAVAILABLE");
+
+        order.confirm(samplePromise());
+
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(order).extracting("failureReason").isNull();
+    }
+
+    @Test
     void cancelledOrderCannotBeConfirmed() {
         RideOrder order = RideOrder.pendingDispatch(sampleCreateOrder());
 

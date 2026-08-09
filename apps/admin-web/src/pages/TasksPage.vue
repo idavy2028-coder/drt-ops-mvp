@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useRoute } from "vue-router";
 import {
   alightStop,
   arriveStop,
@@ -21,6 +22,7 @@ import { userMessage } from "../api/errors";
 import { feedbackStore } from "../stores/feedbackStore";
 
 const tasks = ref<VehicleTask[]>([]);
+const route = useRoute();
 const selectedTaskId = ref("");
 const status = ref("");
 const lastAction = ref("等待操作");
@@ -28,6 +30,31 @@ const loading = ref(false);
 const submittingLocation = ref(false);
 const virtualStops = ref<VirtualStop[]>([]);
 const latestLocationItems = ref<VehicleLocationSnapshotItem[]>([]);
+
+function localDateKey(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function taskCreatedAtValue(task: VehicleTask): number {
+  const timestamp = task.createdAt ? Date.parse(task.createdAt) : Number.NEGATIVE_INFINITY;
+  return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
+}
+
+const taskGroups = computed(() => {
+  const todayKey = localDateKey(new Date().toISOString());
+  const sorted = [...tasks.value].sort((left, right) => taskCreatedAtValue(right) - taskCreatedAtValue(left));
+  return [
+    { key: "today", title: "今日新增任务", empty: "暂无今日新增任务", items: sorted.filter((task) => localDateKey(task.createdAt) === todayKey) },
+    { key: "history", title: "历史任务", empty: "暂无历史任务", items: sorted.filter((task) => localDateKey(task.createdAt) !== todayKey) }
+  ];
+});
 
 type PendingTaskAction =
   | { type: "start"; label: "发车"; task: VehicleTask; initialLocation?: LocationCandidate }
@@ -68,6 +95,10 @@ function taskLabel(task: VehicleTask) {
   return task.id.length > 8 ? task.id.slice(0, 8) : task.id;
 }
 
+function taskVehicleLabel(task: VehicleTask) {
+  return task.vehiclePlateNumber?.trim() || "未登记车牌";
+}
+
 function formatDateTime(value?: string) {
   if (!value) {
     return "--";
@@ -93,7 +124,10 @@ async function loadVehicleTasks() {
   loading.value = true;
   try {
     tasks.value = await listTasks();
-    if (!selectedTaskId.value && tasks.value.length > 0) {
+    const requestedTaskId = typeof route.query.taskId === "string" ? route.query.taskId : undefined;
+    if (requestedTaskId && tasks.value.some((task) => task.id === requestedTaskId)) {
+      selectedTaskId.value = requestedTaskId;
+    } else if (!selectedTaskId.value && tasks.value.length > 0) {
       selectedTaskId.value = tasks.value[0].id;
     }
   } catch (error) {
@@ -199,7 +233,9 @@ function openCompleteTaskPanel() {
     type: "complete",
     label: "完成",
     task: selectedTask.value,
-    initialLocation: lastStop ? stopCandidate(lastStop) : snapshotCandidate(selectedTask.value.vehicleId)
+    initialLocation: lastStop
+      ? taskCompletionCandidate(lastStop)
+      : snapshotCandidate(selectedTask.value.vehicleId)
   };
 }
 
@@ -296,6 +332,15 @@ function stopCandidate(stop: TaskStop): LocationCandidate | undefined {
   };
 }
 
+function taskCompletionCandidate(stop: TaskStop): LocationCandidate | undefined {
+  const candidate = stopCandidate(stop);
+  if (!candidate) {
+    return undefined;
+  }
+  const { virtualStopId: _virtualStopId, ...location } = candidate;
+  return location;
+}
+
 function applyLocationEvent(response: TaskActionResponse) {
   if (!response.snapshotApplied || !response.locationEvent) {
     return;
@@ -390,6 +435,11 @@ onMounted(() => {
     <div class="split-grid">
       <section class="work-panel">
         <h3 class="section-title">任务执行</h3>
+        <section v-for="group in taskGroups" :key="group.key" class="record-group">
+          <div class="record-group-header">
+            <h4 class="record-group-title">{{ group.title }}</h4>
+            <span class="record-group-count">{{ group.items.length }} 条</span>
+          </div>
         <table class="data-table">
           <thead>
             <tr>
@@ -402,9 +452,9 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="task in tasks" :key="task.id" :class="{ 'is-selected': task.id === selectedTaskId }">
+            <tr v-for="task in group.items" :key="task.id" :class="{ 'is-selected': task.id === selectedTaskId }">
               <td>{{ taskLabel(task) }}</td>
-              <td>{{ task.vehicleId }}</td>
+              <td>{{ taskVehicleLabel(task) }}</td>
               <td>
                 <div v-if="locationSnapshot(task.vehicleId)" class="location-cell">
                   <strong>{{ locationSourceLabel() }}</strong>
@@ -419,11 +469,12 @@ onMounted(() => {
                 <button class="secondary-button" type="button" :aria-pressed="task.id === selectedTaskId" @click="selectedTaskId = task.id">选择</button>
               </td>
             </tr>
-            <tr v-if="tasks.length === 0">
-              <td colspan="6">暂无车辆任务</td>
+            <tr v-if="group.items.length === 0">
+              <td colspan="6" class="record-group-empty">{{ group.empty }}</td>
             </tr>
           </tbody>
         </table>
+        </section>
         <div v-if="authStore.has('TASK_EXECUTE')" class="toolbar">
           <button class="primary-button" type="button" :disabled="!canStartTask" @click="openStartTaskPanel">发车</button>
           <button class="secondary-button" type="button" :disabled="!canOperateStops || !nextPlannedStop" @click="openArriveStopPanel">到站</button>
@@ -452,3 +503,11 @@ onMounted(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+.record-group { margin-top: 14px; }
+.record-group-header { align-items: center; display: flex; justify-content: space-between; margin-bottom: 8px; }
+.record-group-title { color: var(--ink); font-size: 15px; margin: 0; }
+.record-group-count { color: var(--ink-muted); font-size: 12px; font-weight: 800; }
+.record-group-empty { color: var(--ink-muted); padding: 20px 12px; text-align: center; }
+</style>

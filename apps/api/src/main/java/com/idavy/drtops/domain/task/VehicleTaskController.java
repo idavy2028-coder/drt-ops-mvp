@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.task;
 
 import com.idavy.drtops.common.ApiResponse;
+import com.idavy.drtops.domain.fleet.VehicleRepository;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -17,70 +18,88 @@ import org.springframework.web.bind.annotation.RestController;
 public class VehicleTaskController {
 
     private final VehicleTaskRepository vehicleTaskRepository;
+    private final VehicleRepository vehicleRepository;
     private final TaskExecutionService taskExecutionService;
 
-    public VehicleTaskController(VehicleTaskRepository vehicleTaskRepository, TaskExecutionService taskExecutionService) {
+    public VehicleTaskController(
+            VehicleTaskRepository vehicleTaskRepository,
+            VehicleRepository vehicleRepository,
+            TaskExecutionService taskExecutionService) {
         this.vehicleTaskRepository = vehicleTaskRepository;
+        this.vehicleRepository = vehicleRepository;
         this.taskExecutionService = taskExecutionService;
     }
 
     @GetMapping
-    ApiResponse<List<VehicleTask>> list() {
-        return ApiResponse.ok(vehicleTaskRepository.findAllByOrderByPlannedStartAtAsc());
+    ApiResponse<List<VehicleTaskView>> list() {
+        return ApiResponse.ok(vehicleTaskRepository.findAllByOrderByPlannedStartAtAsc().stream()
+                .map(this::toView)
+                .toList());
     }
 
     @PostMapping("/{taskId}/start")
-    ApiResponse<TaskActionResponse> start(
+    ApiResponse<TaskActionView> start(
             Authentication authentication, @PathVariable UUID taskId, @Valid @RequestBody TaskActionRequest request) {
-        return ApiResponse.ok(taskExecutionService.start(actorId(authentication), taskId, request.locationReport()));
+        return ApiResponse.ok(toView(taskExecutionService.start(actorId(authentication), taskId, request.locationReport())));
     }
 
     @PostMapping("/{taskId}/stops/{taskStopId}/arrive")
-    ApiResponse<TaskActionResponse> arrive(
+    ApiResponse<TaskActionView> arrive(
             Authentication authentication,
             @PathVariable UUID taskId,
             @PathVariable UUID taskStopId,
             @Valid @RequestBody TaskActionRequest request) {
-        return ApiResponse.ok(taskExecutionService.arrive(
-                actorId(authentication), taskId, taskStopId, request.locationReport()));
+        return ApiResponse.ok(toView(taskExecutionService.arrive(
+                actorId(authentication), taskId, taskStopId, request.locationReport())));
     }
 
     @PostMapping("/{taskId}/stops/{taskStopId}/board")
-    ApiResponse<TaskActionResponse> board(
+    ApiResponse<TaskActionView> board(
             Authentication authentication,
             @PathVariable UUID taskId,
             @PathVariable UUID taskStopId,
             @Valid @RequestBody TaskActionRequest request) {
-        return ApiResponse.ok(taskExecutionService.board(
-                actorId(authentication), taskId, taskStopId, request.locationReport()));
+        return ApiResponse.ok(toView(taskExecutionService.board(
+                actorId(authentication), taskId, taskStopId, request.locationReport())));
     }
 
     @PostMapping("/{taskId}/stops/{taskStopId}/alight")
-    ApiResponse<TaskActionResponse> alight(
+    ApiResponse<TaskActionView> alight(
             Authentication authentication,
             @PathVariable UUID taskId,
             @PathVariable UUID taskStopId,
             @Valid @RequestBody TaskActionRequest request) {
-        return ApiResponse.ok(taskExecutionService.alight(
-                actorId(authentication), taskId, taskStopId, request.locationReport()));
+        return ApiResponse.ok(toView(taskExecutionService.alight(
+                actorId(authentication), taskId, taskStopId, request.locationReport())));
     }
 
     @PostMapping("/{taskId}/complete")
-    ApiResponse<TaskActionResponse> complete(
+    ApiResponse<TaskActionView> complete(
             Authentication authentication, @PathVariable UUID taskId, @Valid @RequestBody TaskActionRequest request) {
-        return ApiResponse.ok(taskExecutionService.complete(actorId(authentication), taskId, request.locationReport()));
+        return ApiResponse.ok(toView(taskExecutionService.complete(actorId(authentication), taskId, request.locationReport())));
     }
 
     @PostMapping("/{taskId}/exception")
-    ApiResponse<VehicleTask> markException(
+    ApiResponse<VehicleTaskView> markException(
             Authentication authentication, @PathVariable UUID taskId, @RequestBody ReasonRequest request) {
-        return ApiResponse.ok(taskExecutionService.markException(actorId(authentication), taskId, request.reason()));
+        return ApiResponse.ok(toView(taskExecutionService.markException(actorId(authentication), taskId, request.reason())));
     }
 
     @PostMapping("/{taskId}/delay")
-    ApiResponse<VehicleTask> markSevereDelay(
+    ApiResponse<VehicleTaskView> markSevereDelay(
             Authentication authentication, @PathVariable UUID taskId, @RequestBody ReasonRequest request) {
-        return ApiResponse.ok(taskExecutionService.markSevereDelay(actorId(authentication), taskId, request.reason()));
+        return ApiResponse.ok(toView(taskExecutionService.markSevereDelay(actorId(authentication), taskId, request.reason())));
+    }
+
+    private TaskActionView toView(TaskActionResponse response) {
+        return TaskActionView.from(response, toView(response.task()));
+    }
+
+    private VehicleTaskView toView(VehicleTask task) {
+        String plateNumber = vehicleRepository.findById(task.getVehicleId())
+                .map(vehicle -> vehicle.getPlateNumber())
+                .orElse(null);
+        return VehicleTaskView.from(task, plateNumber);
     }
 
     private UUID actorId(Authentication authentication) {

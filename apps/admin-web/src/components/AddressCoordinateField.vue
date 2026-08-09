@@ -88,7 +88,7 @@ async function openMap(): Promise<void> {
     );
     unsubscribeClick = tileMap.onClick((point) => {
       update({
-        address: keyword.value.trim() || "地图点选位置",
+        address: keyword.value.trim(),
         longitude: normalizeCoordinate(point.longitude),
         latitude: normalizeCoordinate(point.latitude),
         virtualStopId: undefined

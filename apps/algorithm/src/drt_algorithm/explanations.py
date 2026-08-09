@@ -29,6 +29,7 @@ def auto_dispatch_explanation(best_plan: DispatchPlan, threshold: float) -> Disp
         details={
             "score": best_plan.score,
             "threshold": threshold,
+            **selection_details(best_plan),
         },
     )
 
@@ -40,6 +41,7 @@ def manual_review_explanation(best_plan: DispatchPlan, threshold: float) -> Disp
         details={
             "score": best_plan.score,
             "threshold": threshold,
+            **selection_details(best_plan),
         },
     )
 
@@ -51,5 +53,14 @@ def low_score_explanation(best_plan: DispatchPlan, threshold: float) -> Dispatch
         details={
             "score": best_plan.score,
             "threshold": threshold,
+            **selection_details(best_plan),
         },
     )
+
+
+def selection_details(best_plan: DispatchPlan) -> dict[str, object]:
+    return {
+        "candidateType": best_plan.candidate_type,
+        "activationCost": best_plan.activation_cost,
+        "selectionReason": best_plan.selection_reason,
+    }

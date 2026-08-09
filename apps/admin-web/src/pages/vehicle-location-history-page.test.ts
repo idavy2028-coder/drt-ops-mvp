@@ -72,7 +72,7 @@ describe("VehicleLocationHistoryPage", () => {
     render(VehicleLocationHistoryPage);
 
     await fireEvent.update(screen.getByLabelText("车辆编号"), "vehicle-1");
-    await fireEvent.update(screen.getByLabelText("任务编号"), "task-1");
+    await fireEvent.update(screen.getByLabelText("任务编号（筛选条件）"), "task-1");
     await fireEvent.update(screen.getByLabelText("日期"), "2026-07-13");
     await fireEvent.update(screen.getByLabelText("事件类型"), "PASSENGER_BOARDED");
     await fireEvent.click(screen.getByRole("button", { name: "查询" }));
@@ -117,7 +117,7 @@ describe("VehicleLocationHistoryPage", () => {
     expect(screen.getByText("车辆维度导出需后端支持，请改用任务编号或清空车辆筛选")).toBeInTheDocument();
   });
 
-  it("shows the standby location entry and selectable report candidates to a dispatcher, including a vehicle without a snapshot", async () => {
+  it("shows only idle standby location candidates to a dispatcher", async () => {
     setDispatcherSession();
     render(VehicleLocationHistoryPage);
 
@@ -127,7 +127,20 @@ describe("VehicleLocationHistoryPage", () => {
     expect(screen.getByRole("button", { name: "上报待命位置" })).toBeEnabled();
     expect(screen.getByLabelText("待命车辆")).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "甘G00856D · IDLE · 可调度" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "甘G00857D · IN_SERVICE · 不可调度" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "甘G00857D · IN_SERVICE · 不可调度" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("任务编号（筛选条件）")).toHaveAttribute("placeholder", "输入完整任务编号");
+  });
+
+  it("shows an explicit empty state when no idle vehicle can report a standby location", async () => {
+    setDispatcherSession();
+    vehicleLocationApi.listLocationReportVehicles.mockResolvedValue([
+      { vehicleId: "vehicle-busy", plateNumber: "甘G00857D", currentStatus: "IN_SERVICE", dispatchable: false, latestLocation: null }
+    ]);
+
+    render(VehicleLocationHistoryPage);
+
+    expect(await screen.findByText("当前没有可上报待命位置的空闲车辆")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "上报待命位置" })).toBeDisabled();
   });
 
   it("does not open the standby panel before a vehicle is selected", async () => {
@@ -145,8 +158,8 @@ describe("VehicleLocationHistoryPage", () => {
     setDispatcherSession();
     render(VehicleLocationHistoryPage);
 
-    await screen.findByRole("option", { name: "甘G00857D · IN_SERVICE · 不可调度" });
-    await fireEvent.update(screen.getByLabelText("待命车辆"), "vehicle-busy");
+    await screen.findByRole("option", { name: "甘G00858D · IDLE · 可调度" });
+    await fireEvent.update(screen.getByLabelText("待命车辆"), "vehicle-corrupt");
     await fireEvent.click(screen.getByRole("button", { name: "上报待命位置" }));
 
     expect(await screen.findByLabelText("待命位置上报面板")).toBeInTheDocument();
@@ -320,6 +333,24 @@ describe("VehicleLocationHistoryPage", () => {
 
     expect(await screen.findByText("未找到已启用服务区，无法校验待命位置")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "上报待命位置" })).toBeDisabled();
+  });
+
+  it("links task-associated events without exposing passenger private data", async () => {
+    const taskId = "12345678-1234-4234-8234-123456789abc";
+    vehicleLocationApi.listVehicleLocationEvents.mockResolvedValue([
+      { ...locationEvent(), vehicleTaskId: taskId, passengerName: "敏感乘客", passengerPhone: "13800000000" },
+      { ...locationEvent(), id: "event-without-task", vehicleTaskId: undefined }
+    ]);
+    render(VehicleLocationHistoryPage);
+
+    await fireEvent.update(screen.getByLabelText("车辆编号"), "vehicle-1");
+    await fireEvent.click(screen.getByRole("button", { name: "查询" }));
+
+    const taskLink = await screen.findByRole("link", { name: "任务 12345678" });
+    expect(taskLink).toHaveAttribute("href", `/tasks?taskId=${taskId}`);
+    expect(screen.getByText("无任务关联")).toBeInTheDocument();
+    expect(screen.queryByText("敏感乘客")).not.toBeInTheDocument();
+    expect(screen.queryByText("13800000000")).not.toBeInTheDocument();
   });
 });
 

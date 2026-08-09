@@ -42,9 +42,16 @@ export function cancelOrder(orderId: UUID, reason: string): Promise<RideOrder> {
   });
 }
 
-export function markOrderNoShow(orderId: UUID, reason: string): Promise<RideOrder> {
-  return request<RideOrder>(`/api/orders/${orderId}/no-show`, {
+export function confirmCancellationReason(orderId: UUID, reason: string): Promise<RideOrder> {
+  return request<RideOrder>(`/api/orders/${orderId}/cancellation-reason-confirmation`, {
     method: "POST",
     body: JSON.stringify({ reason })
+  });
+}
+
+export function markOrderNoShow(orderId: UUID, reason: string, idempotencyKey: UUID): Promise<RideOrder> {
+  return request<RideOrder>(`/api/orders/${orderId}/no-show`, {
+    method: "POST",
+    body: JSON.stringify({ reason, idempotencyKey })
   });
 }

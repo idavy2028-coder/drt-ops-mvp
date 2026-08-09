@@ -31,4 +31,30 @@ describe("router authentication", () => {
 
     expect(router.currentRoute.value.name).toBe("dashboard");
   });
+
+  it("redirects a user who must change password away from every business route", async () => {
+    authStore.setSessionForTest({
+      accessToken: "temporary-token",
+      user: { id: "dispatcher-2", username: "dispatcher02", roles: ["DISPATCHER"], mustChangePassword: true }
+    });
+    const router = createAppRouter(createMemoryHistory());
+
+    await router.push("/dispatch");
+    await router.isReady();
+
+    expect(router.currentRoute.value.name).toBe("changePassword");
+  });
+
+  it("allows a user who must change password to visit the password page", async () => {
+    authStore.setSessionForTest({
+      accessToken: "temporary-token",
+      user: { id: "dispatcher-2", username: "dispatcher02", roles: ["DISPATCHER"], mustChangePassword: true }
+    });
+    const router = createAppRouter(createMemoryHistory());
+
+    await router.push("/change-password");
+    await router.isReady();
+
+    expect(router.currentRoute.value.name).toBe("changePassword");
+  });
 });

@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.dispatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -13,6 +14,11 @@ import com.idavy.drtops.domain.fleet.Driver;
 import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.location.LocationSource;
+import com.idavy.drtops.domain.map.Coordinate;
+import com.idavy.drtops.domain.map.DistanceResult;
+import com.idavy.drtops.domain.map.RoutePlanResult;
+import com.idavy.drtops.domain.map.RoutePlanningProvider;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
@@ -32,6 +38,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -45,6 +55,7 @@ import org.springframework.test.web.servlet.MockMvc;
         "spring.jpa.hibernate.ddl-auto=create-drop"
 })
 @AutoConfigureMockMvc
+@Import(ManualReviewApiTest.RouteTestConfiguration.class)
 class ManualReviewApiTest {
 
     private static final UUID VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333331");
@@ -74,6 +85,9 @@ class ManualReviewApiTest {
     AuditLogRepository auditLogRepository;
 
     @Autowired
+    DispatchRuleSetRepository ruleSetRepository;
+
+    @Autowired
     UserAccountRepository userAccountRepository;
 
     @Autowired
@@ -90,6 +104,7 @@ class ManualReviewApiTest {
         rideOrderRepository.deleteAll();
         vehicleRepository.deleteAll();
         driverRepository.deleteAll();
+        ruleSetRepository.deleteAll();
         userAccountRepository.deleteAll();
 
         UserAccount dispatcher = UserAccount.create("dispatcher01", "dispatcher01", "not-used-in-manual-review-test");
@@ -98,7 +113,7 @@ class ManualReviewApiTest {
         dispatcherId = dispatcher.getId();
         dispatcherToken = jwtTokenService.issue(dispatcher).value();
 
-        vehicleRepository.save(Vehicle.create(
+        Vehicle vehicle = Vehicle.create(
                 VEHICLE_ID,
                 "DRT-301",
                 "Microbus",
@@ -106,7 +121,14 @@ class ManualReviewApiTest {
                 "IDLE",
                 "POINT(120.1550000 30.2741000)",
                 "演示车队",
-                true));
+                true);
+        OffsetDateTime reportedAt = OffsetDateTime.parse("2026-07-08T02:20:00Z");
+        vehicle.applyLocationSnapshot(
+                "POINT(120.1550000 30.2741000)", "测试车辆位置",
+                LocationSource.MANUAL_DISPATCHER, "GCJ-02", reportedAt, reportedAt,
+                UUID.randomUUID(), null);
+        vehicleRepository.save(vehicle);
+        ruleSetRepository.save(DispatchRuleSet.defaultRules(UUID.randomUUID()));
         driverRepository.save(Driver.create(
                 DRIVER_ID,
                 "王师傅",
@@ -129,6 +151,10 @@ class ManualReviewApiTest {
         RideOrder order = rideOrderRepository.findAll().getFirst();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
         assertThat(vehicleTaskRepository.findAll()).hasSize(1);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("DISPATCHED");
+        assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
+                .isEqualTo("BUSY");
         assertThat(auditLogRepository.findByEntityId(order.getId()))
                 .anyMatch(log -> log.getAction().equals("MANUAL_REVIEW_APPROVED")
                         && log.getActorType().equals("USER")
@@ -138,6 +164,11 @@ class ManualReviewApiTest {
     @Test
     void approveManualReviewCanInsertOrderIntoExistingTask() throws Exception {
         UUID existingTaskId = createInProgressTaskWithOneOrder();
+        UUID existingOrderId = vehicleTaskRepository.findWithStopsById(existingTaskId)
+                .orElseThrow()
+                .getStops()
+                .getFirst()
+                .getRideOrderId();
         UUID decisionId = createManualReviewDecision(existingTaskId);
 
         mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
@@ -153,9 +184,12 @@ class ManualReviewApiTest {
         assertThat(task.getStatus()).isEqualTo(TaskStatus.IN_PROGRESS);
         assertThat(task.getStops()).hasSize(4);
         assertThat(task.getStops())
-                .filteredOn(stop -> insertedOrder.getId().equals(stop.getRideOrderId()))
-                .extracting(TaskStop::getStopType)
-                .containsExactly("BOARDING", "ALIGHTING");
+                .extracting(TaskStop::getRideOrderId, TaskStop::getStopType)
+                .containsExactly(
+                        tuple(existingOrderId, "BOARDING"),
+                        tuple(insertedOrder.getId(), "BOARDING"),
+                        tuple(insertedOrder.getId(), "ALIGHTING"),
+                        tuple(existingOrderId, "ALIGHTING"));
         assertThat(auditLogRepository.findByEntityId(insertedOrder.getId()))
                 .anyMatch(log -> log.getAction().equals("MANUAL_REVIEW_APPROVED"));
     }
@@ -298,5 +332,30 @@ class ManualReviewApiTest {
         task.dispatch();
         task.startExecution();
         return vehicleTaskRepository.save(task).getId();
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class RouteTestConfiguration {
+
+        @Bean
+        @Primary
+        RoutePlanningProvider routePlanningProvider() {
+            return new RoutePlanningProvider() {
+                @Override
+                public RoutePlanResult drivingRoute(
+                        Coordinate origin, Coordinate destination, List<Coordinate> waypoints) {
+                    if (origin.longitude().compareTo(destination.longitude()) == 0
+                            && origin.latitude().compareTo(destination.latitude()) == 0) {
+                        return new RoutePlanResult(0, 0, List.of(origin, destination));
+                    }
+                    return new RoutePlanResult(1_200, 360, List.of(origin, destination));
+                }
+
+                @Override
+                public DistanceResult distance(Coordinate origin, Coordinate destination) {
+                    return new DistanceResult(1_200, 360);
+                }
+            };
+        }
     }
 }
