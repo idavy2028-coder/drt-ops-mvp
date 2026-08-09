@@ -1,0 +1,23 @@
+{
+  "sampleCount" : 20,
+  "callCount" : 200,
+  "successCount" : 200,
+  "failureCount" : 0,
+  "successRate" : 1.0000,
+  "meetsSuccessThreshold" : true,
+  "samplesWithoutSuccess" : [ ],
+  "failuresByReason" : { },
+  "latency" : {
+    "minimumMs" : 1131,
+    "medianMs" : 1361,
+    "p90Ms" : 2330,
+    "maximumMs" : 5621
+  },
+  "anomalies" : [ {
+    "sampleId" : "S03",
+    "type" : "ETA_CHANGE_OVER_20_PERCENT",
+    "changeRate" : 0.3171,
+    "iteration" : 10
+  } ],
+  "etaUsage" : "REFERENCE_ONLY"
+}

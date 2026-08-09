@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -138,6 +139,31 @@ class AmapRoutePlanningProviderTest {
                 .isInstanceOf(MapProviderException.class);
         assertThat(registry.get("drt.map.provider.degraded.total")
                 .tag("operation", "distance").tag("reason", "upstream-response-invalid").counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    void rejectsOutOfRangeCoordinatesBeforeCallingAmap() throws Exception {
+        AtomicInteger upstreamCalls = new AtomicInteger();
+        startServer(exchange -> {
+            upstreamCalls.incrementAndGet();
+            respond(exchange, 200,
+                    "{\"status\":\"1\",\"route\":{\"paths\":[{\"distance\":\"1\",\"duration\":\"1\",\"steps\":[]}]}}");
+        });
+        AmapRoutePlanningProvider provider = provider(new SimpleMeterRegistry());
+
+        assertThatThrownBy(() -> provider.drivingRoute(
+                new Coordinate("181.000000", "35.210000"),
+                new Coordinate("105.242000", "35.212000"),
+                List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("经度必须在 -180 到 180 之间");
+        assertThatThrownBy(() -> provider.drivingRoute(
+                new Coordinate("105.240000", "-91.000000"),
+                new Coordinate("105.242000", "35.212000"),
+                List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("纬度必须在 -90 到 90 之间");
+        assertThat(upstreamCalls).hasValue(0);
     }
 
     private AmapRoutePlanningProvider provider(SimpleMeterRegistry registry) {
