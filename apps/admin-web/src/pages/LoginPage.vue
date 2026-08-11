@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { nextTick, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { authStore } from "../auth/authStore";
+import { ApiError, userMessage } from "../api/errors";
 
 const route = useRoute();
 const router = useRouter();
@@ -9,6 +10,7 @@ const username = ref("");
 const password = ref("");
 const submitting = ref(false);
 const errorMessage = ref("");
+const passwordInput = ref<HTMLInputElement | null>(null);
 
 async function submit(): Promise<void> {
   submitting.value = true;
@@ -17,11 +19,30 @@ async function submit(): Promise<void> {
     await authStore.login(username.value, password.value);
     const redirect = typeof route.query.redirect === "string" ? route.query.redirect : "/";
     await router.replace(redirect);
-  } catch {
-    errorMessage.value = "用户名或密码不正确";
+  } catch (error) {
+    await handleAuthenticationFailure(error);
   } finally {
     submitting.value = false;
   }
+}
+
+async function handleAuthenticationFailure(error: unknown): Promise<void> {
+  if (error instanceof ApiError && error.status === 401) {
+    password.value = "";
+    errorMessage.value = "用户名或密码不正确；若密码刚被重置，请重新输入并更新浏览器保存的旧密码。[LOGIN-401]";
+    await nextTick();
+    passwordInput.value?.focus();
+    return;
+  }
+  if (error instanceof ApiError && error.status === 403) {
+    errorMessage.value = "当前访问地址未被运营服务允许，请检查本地前端地址和 CORS 白名单。[LOGIN-ORIGIN-403]";
+    return;
+  }
+  if (error instanceof TypeError) {
+    errorMessage.value = `${userMessage(error, "登录失败，请稍后重试")} [LOGIN-NETWORK]`;
+    return;
+  }
+  errorMessage.value = "登录失败，请稍后重试。[LOGIN-UNKNOWN]";
 }
 </script>
 
@@ -38,7 +59,7 @@ async function submit(): Promise<void> {
         </label>
         <label>
           <span>密码</span>
-          <input v-model="password" type="password" autocomplete="current-password" required />
+          <input ref="passwordInput" v-model="password" type="password" autocomplete="current-password" required />
         </label>
         <p v-if="errorMessage" class="error" role="alert">{{ errorMessage }}</p>
         <button class="primary-button" type="submit" :disabled="submitting">登录</button>
