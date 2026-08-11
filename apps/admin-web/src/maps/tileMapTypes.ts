@@ -10,6 +10,8 @@ export interface TileMapHandle {
   readonly baseLayerFailed: boolean;
   destroy(): void;
   fitLayers(layers: L.Layer[]): void;
+  focusPoint(point: GeoPoint, zoom?: number): void;
+  invalidateSize(): void;
   onBaseLayerError(listener: () => void): () => void;
   onClick(listener: (point: GeoPoint) => void): () => void;
 }
