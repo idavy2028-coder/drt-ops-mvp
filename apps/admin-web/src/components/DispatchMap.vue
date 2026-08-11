@@ -12,22 +12,32 @@ const props = withDefaults(defineProps<{
   locations?: VehicleLocationSnapshotItem[];
   eventChain?: VehicleLocationEventView[];
   selectedTask?: VehicleTask;
+  selectedVehicleId?: string;
 }>(), {
   serviceArea: undefined,
   stops: () => [],
   locations: () => [],
   eventChain: () => [],
-  selectedTask: undefined
+  selectedTask: undefined,
+  selectedVehicleId: undefined
 });
 
+const emit = defineEmits<{
+  selectVehicle: [vehicleId: string];
+}>();
+
+const mapRoot = ref<HTMLElement>();
 const mapContainer = ref<HTMLDivElement>();
 const mapReady = ref(false);
 const mapFeedback = ref("");
 const mapWarning = ref("");
-const layers = ref({ serviceArea: true, stops: true, route: true, locations: true });
+const layers = ref({ serviceArea: true, stops: true, locations: true });
 const tileMap = ref<TileMapHandle>();
 let renderedLayers: L.Layer[] = [];
+let vehicleMarkers = new Map<string, L.Marker>();
+let hasFittedInitialLayers = false;
 let unsubscribeBaseLayerError: (() => void) | undefined;
+let resizeObserver: ResizeObserver | undefined;
 
 const orderedChain = computed(() => [...props.eventChain].sort((left, right) => new Date(left.driverReportedAt).getTime() - new Date(right.driverReportedAt).getTime()));
 const visibleStops = computed(() => props.stops.filter(hasCoordinates));
@@ -46,10 +56,12 @@ const chainPoints = computed(() => orderedChain.value
 onMounted(() => { void initializeMap(); });
 onBeforeUnmount(() => {
   unsubscribeBaseLayerError?.();
+  resizeObserver?.disconnect();
   clearRenderedLayers();
   tileMap.value?.destroy();
 });
 watch([() => props.serviceArea, () => props.stops, () => props.locations, () => props.eventChain, () => props.selectedTask, layers], () => renderMapLayers(), { deep: true });
+watch(() => props.selectedVehicleId, () => focusSelectedVehicle(), { flush: "post" });
 
 async function initializeMap(): Promise<void> {
   await nextTick();
@@ -61,6 +73,7 @@ async function initializeMap(): Promise<void> {
       mapWarning.value = "开放底图暂不可用";
     });
     mapReady.value = true;
+    observeMapSize();
     renderMapLayers();
   } catch {
     mapFeedback.value = "开放底图暂不可用";
@@ -87,19 +100,33 @@ function renderMapLayers(): void {
         .bindTooltip(label, { direction: "top" }).addTo(map));
     });
   }
-  if (layers.value.route) {
-    addDashedLine(selectedTaskStops.value.map((stop) => ({ longitude: stop.longitude!, latitude: stop.latitude! })), "#17634b", "8 6");
-    addDashedLine(chainPoints.value, "#496b5e", "4 8");
-  }
+  addDashedLine(selectedTaskStops.value.map((stop) => ({ longitude: stop.longitude!, latitude: stop.latitude! })), "#17634b", "8 6");
+  addDashedLine(chainPoints.value, "#496b5e", "4 8");
   if (layers.value.locations) {
     props.locations.filter((item) => hasFiniteCoordinates({ longitude: Number(item.latestLocation.longitude), latitude: Number(item.latestLocation.latitude) })).forEach((item) => {
       const location = item.latestLocation;
-      const label = `${item.plateNumber} · ${statusLabel(item.currentStatus)} · 最后反馈 ${formatDateTime(location.driverReportedAt)} · 人工上报 · 任务 ${location.vehicleTaskId ?? "--"}`;
-      renderedLayers.push(L.marker(toLeafletLatLng({ longitude: Number(location.longitude), latitude: Number(location.latitude) }), { title: label })
-        .bindTooltip(label, { direction: "top" }).addTo(map));
+      const marker = L.marker(toLeafletLatLng({ longitude: Number(location.longitude), latitude: Number(location.latitude) }), {
+        title: item.plateNumber,
+        icon: L.divIcon({
+          className: `dispatch-vehicle-marker ${vehicleStatusClass(item)}`,
+          html: '<span aria-hidden="true">车</span>',
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
+          popupAnchor: [0, -18]
+        })
+      });
+      marker.bindPopup(vehiclePopup(item));
+      marker.on("click", () => emit("selectVehicle", item.vehicleId));
+      marker.addTo(map);
+      vehicleMarkers.set(item.vehicleId, marker);
+      renderedLayers.push(marker);
     });
   }
-  tileMap.value.fitLayers(renderedLayers);
+  if (!hasFittedInitialLayers && renderedLayers.length > 0) {
+    tileMap.value.fitLayers(renderedLayers);
+    hasFittedInitialLayers = true;
+  }
+  focusSelectedVehicle();
 }
 
 function addDashedLine(points: GeoPoint[], color: string, dashArray: string): void {
@@ -110,6 +137,30 @@ function addDashedLine(points: GeoPoint[], color: string, dashArray: string): vo
 function clearRenderedLayers(): void {
   renderedLayers.forEach((layer) => layer.remove());
   renderedLayers = [];
+  vehicleMarkers = new Map<string, L.Marker>();
+}
+
+function observeMapSize(): void {
+  if (!mapRoot.value || typeof ResizeObserver === "undefined") return;
+  resizeObserver = new ResizeObserver(() => {
+    requestAnimationFrame(() => tileMap.value?.invalidateSize());
+  });
+  resizeObserver.observe(mapRoot.value);
+  requestAnimationFrame(() => tileMap.value?.invalidateSize());
+}
+
+function focusSelectedVehicle(): void {
+  if (!tileMap.value || !props.selectedVehicleId) return;
+  const item = props.locations.find((location) => location.vehicleId === props.selectedVehicleId);
+  if (!item) return;
+  const point = { longitude: Number(item.latestLocation.longitude), latitude: Number(item.latestLocation.latitude) };
+  if (!hasFiniteCoordinates(point)) return;
+  tileMap.value.focusPoint(point);
+  vehicleMarkers.get(item.vehicleId)?.openPopup();
+}
+
+function fitAllLayers(): void {
+  tileMap.value?.fitLayers(renderedLayers);
 }
 
 function parsePolygon(value: string): GeoPoint[] {
@@ -133,6 +184,22 @@ function statusLabel(status: string): string {
   return ({ IN_SERVICE: "执行中", DISPATCHED: "已派单", IDLE: "空闲", OFFLINE: "离线", COMPLETED: "已完成" } as Record<string, string>)[status] ?? status;
 }
 
+function vehicleStatusClass(item: VehicleLocationSnapshotItem): string {
+  if (item.latestLocation.outsideServiceArea || item.currentStatus === "OFFLINE") return "is-alert";
+  if (item.currentStatus === "IDLE") return "is-idle";
+  if (item.currentStatus === "IN_SERVICE" || item.currentStatus === "DISPATCHED") return "is-active";
+  return "is-unknown";
+}
+
+function vehiclePopup(item: VehicleLocationSnapshotItem): string {
+  const taskId = item.latestLocation.vehicleTaskId;
+  return `<div class="dispatch-vehicle-popup"><strong>${escapeHtml(item.plateNumber)}</strong><dl><div><dt>状态</dt><dd>${escapeHtml(statusLabel(item.currentStatus))}</dd></div><div><dt>当前任务</dt><dd>${taskId ? `任务 ${escapeHtml(taskId.slice(0, 8))}` : "--"}</dd></div><div><dt>最后位置</dt><dd>${escapeHtml(formatDateTime(item.latestLocation.driverReportedAt))}</dd></div></dl></div>`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]!);
+}
+
 function eventLabel(eventType: string): string {
   return ({ TASK_STARTED: "发车", TASK_STOP_ARRIVED: "到站", PASSENGER_BOARDED: "上车", PASSENGER_ALIGHTED: "下车", TASK_COMPLETED: "完成", MANUAL_CORRECTION: "人工补报" } as Record<string, string>)[eventType] ?? eventType;
 }
@@ -142,40 +209,37 @@ function formatDateTime(value?: string): string {
   return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
 }
 
-function markerStyle(index: number): Record<string, string> {
-  const positions = [{ left: "48%", top: "43%" }, { left: "58%", top: "36%" }, { left: "38%", top: "54%" }, { left: "66%", top: "52%" }];
-  return positions[index % positions.length];
-}
 </script>
 
 <template>
-  <section class="dispatch-map" :class="{ 'map-degraded': !mapReady }" aria-label="调度地图">
+  <section ref="mapRoot" class="dispatch-map" :class="{ 'map-degraded': !mapReady }" aria-label="调度地图">
     <div ref="mapContainer" class="map-canvas"></div>
     <div v-if="!mapReady" class="fallback-surface"><strong>{{ mapFeedback || "开放底图暂不可用" }}</strong><span>服务区、虚拟站点、任务与人工位置仍可在下方图层摘要中核对。</span></div>
     <p v-if="mapReady && mapWarning" class="map-warning" role="status">{{ mapWarning }}</p>
     <div class="map-controls" aria-label="地图图层控制">
       <label><input v-model="layers.serviceArea" type="checkbox" aria-label="服务区图层" />服务区</label>
       <label><input v-model="layers.stops" type="checkbox" aria-label="虚拟站点图层" />虚拟站点</label>
-      <label><input v-model="layers.route" type="checkbox" aria-label="任务路线图层" />任务路线</label>
       <label><input v-model="layers.locations" type="checkbox" aria-label="车辆位置图层" />车辆位置</label>
+      <button type="button" class="map-reset-button" @click="fitAllLayers">回到全局</button>
     </div>
     <div v-if="!mapReady && layers.serviceArea && serviceArea" class="map-overlay service-area"><strong>{{ serviceArea.name }}</strong><span>已发布服务区</span></div>
-    <div v-if="!mapReady && layers.route && selectedTaskStops.length > 1" class="map-route"><strong>任务 {{ selectedTask?.id.slice(0, 8) }}</strong><span>{{ selectedTaskStops.length }} 个站点连接</span></div>
+    <div v-if="!mapReady && selectedTaskStops.length > 1" class="map-route"><strong>任务 {{ selectedTask?.id.slice(0, 8) }}</strong><span>{{ selectedTaskStops.length }} 个站点连接</span></div>
     <div v-if="!mapReady && layers.stops" class="fallback-stops" aria-label="虚拟站点图层内容"><span v-for="stop in visibleStops" :key="stop.id" class="stop-chip" :class="{ disabled: !stop.enabled }">{{ stop.name }}</span></div>
-    <article v-for="(item, index) in locations" v-show="layers.locations" :key="item.vehicleId" class="vehicle-location-card" :style="markerStyle(index)" :aria-label="`车辆位置 ${item.plateNumber}`"><div class="vehicle-dot">车</div><div><strong>{{ item.plateNumber }}</strong><span>{{ statusLabel(item.currentStatus) }}</span><small>任务 {{ item.latestLocation.vehicleTaskId ?? "--" }}</small><small>最后反馈 {{ formatDateTime(item.latestLocation.driverReportedAt) }}</small><small>{{ item.latestLocation.standardizedAddress }}</small></div><em>人工上报</em></article>
-    <div v-if="layers.route" class="map-chain" aria-label="人工节点链"><p>离散节点链，仅表示人工上报节点，不是实际行驶轨迹</p><ol><li v-for="event in orderedChain" :key="event.id"><span>{{ eventLabel(event.eventType) }}</span><small>{{ formatDateTime(event.driverReportedAt) }}</small></li></ol></div>
-    <div class="map-legend"><span>服务区</span><span>虚拟站点</span><span>任务路线</span><span>人工上报</span></div>
+    <div v-if="orderedChain.length" class="map-chain" aria-label="人工节点链"><p>离散节点链，仅表示人工上报节点，不是实际行驶轨迹</p><ol><li v-for="event in orderedChain" :key="event.id"><span>{{ eventLabel(event.eventType) }}</span><small>{{ formatDateTime(event.driverReportedAt) }}</small></li></ol></div>
+    <div class="map-legend"><span><i class="legend-dot is-idle"></i>空闲</span><span><i class="legend-dot is-active"></i>执行中</span><span><i class="legend-dot is-alert"></i>异常/越界</span></div>
   </section>
 </template>
 
 <style scoped>
-.dispatch-map { background: #eef2ef; border: 1px solid #d9e1dc; border-radius: 8px; min-height: 430px; overflow: hidden; position: relative; }
-.map-canvas, .fallback-surface { inset: 0; position: absolute; }
+.dispatch-map { background: #eef2ef; border: 1px solid #d9e1dc; border-radius: 8px; height: 100%; min-height: 560px; overflow: hidden; position: relative; }
+.map-canvas, .fallback-surface { height: 100%; inset: 0; position: absolute; width: 100%; }
 .fallback-surface { background: #e5eee9; color: #365348; display: grid; gap: 7px; place-content: center; text-align: center; }
 .fallback-surface span { font-size: 13px; }
 .map-controls, .map-warning, .map-overlay, .map-route, .fallback-stops, .vehicle-location-card, .map-chain, .map-legend { position: absolute; z-index: 2; }
 .map-controls { display: flex; flex-wrap: wrap; gap: 8px; left: 14px; top: 14px; }
-.map-controls label { align-items: center; background: #fffc; border: 1px solid #d9e1dc; color: #40574e; display: flex; font-size: 12px; font-weight: 800; gap: 4px; padding: 5px 7px; }
+.map-controls label, .map-reset-button { align-items: center; background: #fffffff2; border: 1px solid #cbd8d1; color: #40574e; display: flex; font-size: 12px; font-weight: 800; gap: 4px; padding: 6px 8px; }
+.map-reset-button { cursor: pointer; font-family: inherit; }
+.map-reset-button:hover { border-color: #17634b; color: #17634b; }
 .map-warning { background: #fff7d8; border: 1px solid #d1a749; color: #6a4a00; font-size: 12px; font-weight: 800; margin: 0; padding: 6px 9px; right: 14px; top: 14px; }
 .map-overlay { background: #e1f2eaeb; border: 2px solid #43846d; bottom: 58px; color: #1b6049; display: grid; gap: 2px; left: 62px; padding: 10px; right: 54px; top: 62px; }
 .map-overlay span, .map-route span { font-size: 12px; }
@@ -183,17 +247,27 @@ function markerStyle(index: number): Record<string, string> {
 .fallback-stops { display: flex; flex-wrap: wrap; gap: 6px; left: 18px; max-width: 52%; top: 110px; }
 .stop-chip { background: #fff; border: 1px solid #17634b; color: #17634b; font-size: 12px; font-weight: 800; padding: 4px 7px; }
 .stop-chip.disabled { border-color: #9f2424; color: #9f2424; }
-.vehicle-location-card { background: #fffffff0; border: 1px solid #17634b33; box-shadow: 0 12px 24px #17201c24; display: grid; gap: 10px; grid-template-columns: 34px minmax(0, 1fr); max-width: 260px; min-width: 210px; padding: 10px; }
-.vehicle-dot { background: #17201c; color: #fff; display: grid; font-size: 12px; font-weight: 900; height: 32px; place-items: center; width: 32px; }
-.vehicle-location-card strong, .vehicle-location-card span, .vehicle-location-card small { display: block; overflow-wrap: anywhere; }
-.vehicle-location-card strong { color: #17201c; font-size: 14px; }
-.vehicle-location-card span, .vehicle-location-card small { color: #53615a; font-size: 12px; font-weight: 800; }
-.vehicle-location-card em { background: #dff4ed; color: #007a5d; font-size: 12px; font-style: normal; font-weight: 900; grid-column: 1 / -1; justify-self: start; padding: 3px 8px; }
 .map-chain { background: #fffffff0; border: 1px dashed #17634b76; bottom: 14px; left: 18px; max-width: 360px; padding: 9px 10px; }
 .map-chain p { color: #3f4c46; font-size: 12px; font-weight: 900; margin: 0 0 8px; }
 .map-chain ol { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
 .map-chain li { border-left: 2px dashed #17634b; color: #53615a; font-size: 12px; font-weight: 800; padding-left: 8px; }
 .map-chain span, .map-chain small { display: block; }
-.map-legend { background: #fffffff0; bottom: 14px; color: #53615a; display: flex; flex-wrap: wrap; font-size: 12px; font-weight: 800; gap: 8px; max-width: 320px; padding: 8px 10px; right: 14px; }
-@media (max-width: 700px) { .vehicle-location-card { left: 18px !important; max-width: calc(100% - 36px); right: auto; top: 180px !important; }.fallback-stops { max-width: calc(100% - 36px); }.map-chain { display: none; } }
+.map-legend { background: #fffffff0; bottom: 14px; color: #53615a; display: flex; flex-wrap: wrap; font-size: 12px; font-weight: 800; gap: 10px; max-width: 320px; padding: 8px 10px; right: 14px; }
+.map-legend span { align-items: center; display: inline-flex; gap: 5px; }
+.legend-dot { background: #74827b; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #17201c25; display: inline-block; height: 10px; width: 10px; }
+.legend-dot.is-idle { background: #16885d; }
+.legend-dot.is-active { background: #1774c9; }
+.legend-dot.is-alert { background: #d4473f; }
+:deep(.dispatch-vehicle-marker) { align-items: center; background: #74827b; border: 3px solid #fff; border-radius: 50% 50% 50% 8px; box-shadow: 0 6px 14px #17201c40; color: #fff; display: flex; font-size: 12px; font-weight: 900; justify-content: center; transform: rotate(-45deg); }
+:deep(.dispatch-vehicle-marker span) { transform: rotate(45deg); }
+:deep(.dispatch-vehicle-marker.is-idle) { background: #16885d; }
+:deep(.dispatch-vehicle-marker.is-active) { background: #1774c9; }
+:deep(.dispatch-vehicle-marker.is-alert) { background: #d4473f; }
+:deep(.dispatch-vehicle-popup) { min-width: 180px; }
+:deep(.dispatch-vehicle-popup strong) { color: #17201c; display: block; font-size: 15px; margin-bottom: 8px; }
+:deep(.dispatch-vehicle-popup dl) { display: grid; gap: 5px; margin: 0; }
+:deep(.dispatch-vehicle-popup dl div) { display: grid; gap: 8px; grid-template-columns: 56px 1fr; }
+:deep(.dispatch-vehicle-popup dt) { color: #718078; }
+:deep(.dispatch-vehicle-popup dd) { color: #263d33; font-weight: 800; margin: 0; }
+@media (max-width: 700px) { .dispatch-map { min-height: 520px; }.fallback-stops { max-width: calc(100% - 36px); }.map-chain { display: none; } }
 </style>
