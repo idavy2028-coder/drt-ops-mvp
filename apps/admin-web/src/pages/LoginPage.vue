@@ -16,11 +16,23 @@ async function submit(): Promise<void> {
   submitting.value = true;
   errorMessage.value = "";
   try {
-    await authStore.login(username.value, password.value);
-    const redirect = typeof route.query.redirect === "string" ? route.query.redirect : "/";
-    await router.replace(redirect);
-  } catch (error) {
-    await handleAuthenticationFailure(error);
+    try {
+      await authStore.login(username.value, password.value);
+    } catch (error) {
+      await handleAuthenticationFailure(error);
+      return;
+    }
+
+    const destination = authStore.user?.mustChangePassword === true
+      ? { name: "changePassword" }
+      : typeof route.query.redirect === "string"
+        ? route.query.redirect
+        : "/";
+    try {
+      await router.replace(destination);
+    } catch {
+      errorMessage.value = "登录成功，但页面跳转失败，请刷新后重试。[LOGIN-NAVIGATION]";
+    }
   } finally {
     submitting.value = false;
   }

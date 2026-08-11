@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/vue";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory } from "vue-router";
 import { authStore } from "../auth/authStore";
@@ -61,6 +61,29 @@ describe("LoginPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("LOGIN-UNKNOWN");
     expect(screen.getByRole("alert")).toHaveTextContent("登录失败，请稍后重试");
   });
+
+  it("临时密码账号登录成功后直接请求进入改密页", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(successfulSessionResponse(true)));
+    const { router } = await renderLogin();
+    const replaceSpy = vi.spyOn(router, "replace");
+
+    await submitCredentials();
+
+    await waitFor(() => expect(replaceSpy).toHaveBeenCalledWith({ name: "changePassword" }));
+    expect(router.currentRoute.value.name).toBe("changePassword");
+  });
+
+  it("认证成功但导航失败时不误报密码错误", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(successfulSessionResponse(false)));
+    const { router } = await renderLogin();
+    vi.spyOn(router, "replace").mockRejectedValueOnce(new Error("navigation failed"));
+
+    await submitCredentials();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("LOGIN-NAVIGATION");
+    expect(screen.queryByText("用户名或密码不正确")).not.toBeInTheDocument();
+    expect(authStore.authenticated).toBe(true);
+  });
 });
 
 async function renderLogin() {
@@ -75,4 +98,22 @@ async function submitCredentials(password = "TemporaryPassword123!") {
   await fireEvent.update(screen.getByLabelText("用户名"), "admin");
   await fireEvent.update(screen.getByLabelText("密码"), password);
   await fireEvent.click(screen.getByRole("button", { name: "登录" }));
+}
+
+function successfulSessionResponse(mustChangePassword: boolean): Response {
+  return new Response(JSON.stringify({
+    data: {
+      accessToken: "test-access-token",
+      expiresAt: "2099-01-01T00:00:00Z",
+      user: {
+        id: "admin-1",
+        username: "admin",
+        roles: ["SYSTEM_ADMIN"],
+        mustChangePassword
+      }
+    }
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
 }
