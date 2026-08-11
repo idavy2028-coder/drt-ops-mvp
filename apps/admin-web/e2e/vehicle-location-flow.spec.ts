@@ -12,6 +12,7 @@ const standbyVehicleId = "vehicle-standby-0000-4000-8000-000000000001";
 const serviceAreaId = "service-area-0000-4000-8000-000000000001";
 
 test("dispatcher completes manual location task chain and admin exports location history", async ({ page }) => {
+  test.slow();
   const state = createState();
   await installSessionMocks(page);
   await installVehicleLocationMocks(page, state);
@@ -20,7 +21,9 @@ test("dispatcher completes manual location task chain and admin exports location
   await login(page, "dispatcher01");
 
   await expect(page.getByText("task-don")).toBeVisible();
-  await page.getByRole("row", { name: new RegExp(taskId.slice(0, 8)) }).getByRole("button", { name: "选择" }).click();
+  const selectTaskButton = page.getByRole("row", { name: new RegExp(taskId.slice(0, 8)) }).getByRole("button", { name: "选择" });
+  await selectTaskButton.focus();
+  await selectTaskButton.press("Enter");
   await submitLocationAction(page, "发车", "2026-07-14T09:00");
   await submitLocationAction(page, "到站", "2026-07-14T09:03");
   await submitLocationAction(page, "上车", "2026-07-14T09:04");
@@ -51,8 +54,9 @@ test("dispatcher reports a first standby location and confirms an outside-servic
   await installSessionMocks(page);
   await installVehicleLocationMocks(page, state);
 
-  await page.goto("/vehicle-locations");
+  await page.goto("/tasks");
   await login(page, "dispatcher01");
+  await page.getByRole("link", { name: "位置历史" }).click();
 
   await expect(page.getByLabel("待命车辆")).toContainText("甘G00856D");
   await page.getByLabel("待命车辆").selectOption(standbyVehicleId);
@@ -107,7 +111,7 @@ async function installSessionMocks(page: Page) {
     const admin = body.username === "admin";
     await json(route, {
       accessToken: `${body.username}-token`,
-      expiresAt: "2026-07-14T19:00:00+08:00",
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       user: {
         id: admin ? "admin-user" : "dispatcher-user",
         username: body.username,
@@ -119,6 +123,17 @@ async function installSessionMocks(page: Page) {
 }
 
 async function installVehicleLocationMocks(page: Page, state: FlowState) {
+  await page.route("**/api/metrics/operations-summary**", async (route) => json(route, {
+    orderCount: 0,
+    confirmationRate: 0,
+    autoDispatchRate: 0,
+    manualReviewRate: 0,
+    averageWaitMinutes: 0,
+    averageDetourMinutes: 0,
+    taskCompletionRate: 0,
+    exceptionCloseRate: 0,
+    vehicleUtilizationRate: 0
+  }));
   await page.route("**/api/virtual-stops**", async (route) => {
     await json(route, [
       {

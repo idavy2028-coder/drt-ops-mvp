@@ -1,36 +1,47 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 test("operator can create demand dispatch it and complete the task", async ({ page }) => {
+  test.slow();
   await installSessionMocks(page, ["OPERATOR", "DISPATCHER"]);
   await installDispatchFlowMocks(page);
+  await installDispatchPageResourceMocks(page);
 
   await page.goto("/orders");
   await login(page);
   await page.getByRole("button", { name: "录入需求" }).click();
+  await page.locator("details.manual-coordinates > summary").nth(0).click();
+  await page.locator("details.manual-coordinates > summary").nth(1).click();
+  await page.getByLabel("起点经度").fill("120.155");
+  await page.getByLabel("起点纬度").fill("30.2741");
+  await page.getByLabel("终点经度").fill("120.1688");
+  await page.getByLabel("终点纬度").fill("30.2799");
+  await page.getByLabel("起点地址").fill("测试起点");
+  await page.getByLabel("终点地址").fill("测试终点");
   await page.getByLabel("乘客姓名").fill("张三");
   await page.getByLabel(/乘客(电话|手机号)/).fill("13800000000");
   await page.getByLabel("乘客人数").fill("1");
   await page.getByRole("button", { name: "提交需求" }).click();
   await expect(page.getByText("张三")).toBeVisible();
 
-  await page.getByRole("button", { name: "调度" }).click();
-  await expect(page.getByText("CONFIRMED")).toBeVisible();
+  await page.getByRole("button", { name: "调度", exact: true }).click();
+  await expect(page.getByText("已确认")).toBeVisible();
 
   await page.getByRole("link", { name: "车辆任务" }).click();
   await expect(page.getByText("DRT-201")).toBeVisible();
-  await page.getByRole("button", { name: "发车" }).click();
-  await expect(page.getByText("IN_PROGRESS")).toBeVisible();
-  await page.getByRole("button", { name: "到站" }).click();
-  await page.getByRole("button", { name: "上车" }).click();
-  await page.getByRole("button", { name: "到站" }).click();
-  await page.getByRole("button", { name: "下车" }).click();
-  await page.getByRole("button", { name: "完成" }).click();
-  await expect(page.getByText("COMPLETED")).toBeVisible();
+  await submitLocationAction(page, "发车", "2026-07-08T10:36");
+  await expect(page.getByText("执行中")).toBeVisible();
+  await submitLocationAction(page, "到站", "2026-07-08T10:40");
+  await submitLocationAction(page, "上车", "2026-07-08T10:41");
+  await submitLocationAction(page, "到站", "2026-07-08T10:53");
+  await submitLocationAction(page, "下车", "2026-07-08T10:54");
+  await submitLocationAction(page, "完成", "2026-07-08T10:55");
+  await expect(page.getByText("已完成", { exact: true })).toBeVisible();
 });
 
 test("operator can approve manual review from dispatch workbench", async ({ page }) => {
   await installSessionMocks(page, ["DISPATCHER"]);
   await installManualReviewWorkbenchMocks(page);
+  await installDispatchPageResourceMocks(page);
 
   await page.goto("/dispatch");
   await login(page);
@@ -40,7 +51,7 @@ test("operator can approve manual review from dispatch workbench", async ({ page
   await page.getByRole("button", { name: "确认派单" }).click();
 
   await expect(page.getByText("暂无待复核订单")).toBeVisible();
-  await expect(page.getByText("DISPATCHED")).toBeVisible();
+  await expect(page.getByText("待发车")).toBeVisible();
 });
 
 async function installSessionMocks(page: Page, roles: string[]) {
@@ -48,7 +59,7 @@ async function installSessionMocks(page: Page, roles: string[]) {
   await page.route("**/api/auth/login", async (route) => {
     await json(route, {
       accessToken: "workflow-token",
-      expiresAt: "2026-07-12T16:00:00+08:00",
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       user: { id: "workflow-user", username: "workflow01", roles, mustChangePassword: false }
     });
   });
@@ -58,6 +69,24 @@ async function login(page: Page) {
   await page.getByLabel("用户名").fill("workflow01");
   await page.getByLabel("密码").fill("Secret123!");
   await page.getByRole("button", { name: "登录" }).click();
+}
+
+async function submitLocationAction(page: Page, actionLabel: string, reportedAt: string) {
+  await page.getByRole("button", { name: actionLabel, exact: true }).click();
+  await expect(page.getByRole("heading", { name: `确认${actionLabel}位置` })).toBeVisible();
+  await page.getByLabel("驾驶员反馈时间").fill(reportedAt);
+  await page.getByLabel("经度").fill("120.155");
+  await page.getByLabel("纬度").fill("30.2741");
+  await page.getByLabel("标准化地址").fill("测试任务位置");
+  await page.getByRole("button", { name: `确认${actionLabel}`, exact: true }).click();
+  await expect(page.getByRole("heading", { name: `确认${actionLabel}位置` })).not.toBeVisible();
+}
+
+async function installDispatchPageResourceMocks(page: Page) {
+  await page.route("**/api/vehicles/locations/latest", async (route) => json(route, []));
+  await page.route("**/api/service-areas", async (route) => json(route, []));
+  await page.route("**/api/virtual-stops", async (route) => json(route, []));
+  await page.route("**/api/vehicle-tasks/*/location-events**", async (route) => json(route, []));
 }
 
 async function installDispatchFlowMocks(page: Page) {
@@ -213,6 +242,7 @@ function demoTask(status: string, boardingStatus: string, alightingStatus: strin
   return {
     id: "33333333-3333-4333-8333-333333333333",
     vehicleId: "DRT-201",
+    vehiclePlateNumber: "DRT-201",
     driverId: "王师傅",
     status,
     plannedStartAt: "2026-07-08T02:36:00Z",
