@@ -15,10 +15,14 @@ vi.mock("../components/DispatchMap.vue", async () => {
   return {
     default: defineComponent({
       name: "DispatchMapStub",
-      props: ["serviceArea", "stops", "locations", "eventChain", "selectedTask"],
-      setup(props) {
+      props: ["serviceArea", "stops", "locations", "eventChain", "selectedTask", "selectedVehicleId"],
+      emits: ["selectVehicle"],
+      setup(props, { emit }) {
         dispatchMap.receivedProps.push(props as Record<string, unknown>);
-        return () => h("section", { "aria-label": "调度地图" }, "开放瓦片调度地图");
+        return () => h("section", { "aria-label": "调度地图" }, [
+          "开放瓦片调度地图",
+          h("button", { type: "button", onClick: () => emit("selectVehicle", "vehicle-1") }, "选择地图车辆")
+        ]);
       }
     })
   };
@@ -80,6 +84,17 @@ describe("DispatchWorkbenchPage", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: "查看地图" })).toHaveLength(2));
     await fireEvent.click(screen.getAllByRole("button", { name: "查看地图" })[1]);
     await waitFor(() => expect(vehicleLocationApi.listVehicleLocationEvents).toHaveBeenLastCalledWith({ taskId: "task-2" }));
+  });
+
+  it("keeps the vehicle sidebar and map marker selection in sync", async () => {
+    render(DispatchWorkbenchPage);
+
+    const vehicleButton = await screen.findByRole("button", { name: "定位车辆 甘G-T001" });
+    await fireEvent.click(vehicleButton);
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1].selectedVehicleId).toBe("vehicle-1"));
+
+    await fireEvent.click(screen.getByRole("button", { name: "选择地图车辆" }));
+    expect(vehicleButton).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps the last location snapshot after a polling failure", async () => {
