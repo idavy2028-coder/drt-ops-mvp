@@ -87,6 +87,7 @@ services:
       DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME: ${DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME:-admin}
       DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD:-pilot-only-password}
       DRT_AUTH_REFRESH_COOKIE_SECURE: ${DRT_AUTH_REFRESH_COOKIE_SECURE:-false}
+      DRT_WEB_ALLOWED_ORIGINS: ${DRT_WEB_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5176,http://127.0.0.1:5176}
     depends_on:
       postgres:
         condition: service_healthy
