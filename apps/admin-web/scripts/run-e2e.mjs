@@ -1,47 +1,45 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
 const host = "127.0.0.1";
-const port = "5173";
+const port = await availablePort(host);
 const baseUrl = `http://${host}:${port}`;
 const args = process.argv.slice(2);
 
 let server;
 
 try {
-  const alreadyRunning = await isAvailable(baseUrl);
-  if (!alreadyRunning) {
-    server = spawn(
-      process.execPath,
-      ["./node_modules/vite/bin/vite.js", "--host", host, "--port", port],
-      {
-        cwd: process.cwd(),
-        env: { ...process.env, BROWSER: "none" },
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true
-      }
-    );
+  server = spawn(
+    process.execPath,
+    ["./node_modules/vite/bin/vite.js", "--host", host, "--port", String(port), "--strictPort"],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, BROWSER: "none" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    }
+  );
 
-    server.stdout.on("data", (chunk) => process.stdout.write(`[vite] ${chunk}`));
-    server.stderr.on("data", (chunk) => process.stderr.write(`[vite] ${chunk}`));
+  server.stdout.on("data", (chunk) => process.stdout.write(`[vite] ${chunk}`));
+  server.stderr.on("data", (chunk) => process.stderr.write(`[vite] ${chunk}`));
 
-    await waitForServer(baseUrl, server);
-  }
+  await waitForServer(baseUrl, server);
 
-  const exitCode = await runPlaywright(args);
+  const exitCode = await runPlaywright(args, baseUrl);
   process.exitCode = exitCode;
 } finally {
   await stopServer(server);
 }
 
-async function runPlaywright(playwrightArgs) {
+async function runPlaywright(playwrightArgs, url) {
   return await new Promise((resolve) => {
     const child = spawn(
       process.execPath,
       ["./node_modules/playwright/cli.js", "test", ...playwrightArgs],
       {
         cwd: process.cwd(),
-        env: process.env,
+        env: { ...process.env, PLAYWRIGHT_BASE_URL: url },
         stdio: "inherit",
         windowsHide: true
       }
@@ -53,6 +51,28 @@ async function runPlaywright(playwrightArgs) {
         return;
       }
       resolve(code ?? 1);
+    });
+  });
+}
+
+async function availablePort(address) {
+  return await new Promise((resolve, reject) => {
+    const reservation = createServer();
+    reservation.once("error", reject);
+    reservation.listen(0, address, () => {
+      const boundAddress = reservation.address();
+      const selectedPort = typeof boundAddress === "object" && boundAddress !== null ? boundAddress.port : undefined;
+      reservation.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        if (selectedPort === undefined) {
+          reject(new Error("Unable to reserve a local port for Playwright."));
+          return;
+        }
+        resolve(selectedPort);
+      });
     });
   });
 }
