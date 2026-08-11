@@ -40,6 +40,8 @@
   - 定义 `drt.web.allowed-origins` 及 5173、5174、5176 的本地精确默认值。
 - `apps/api/src/test/java/com/idavy/drtops/WebCorsConfigurationTest.java`
   - 覆盖允许来源、未知来源和通配符拒绝。
+- `apps/api/src/test/resources/application.yml`
+  - 为测试类路径提供与主配置一致的精确本地来源，避免测试资源覆盖主资源后缺少属性。
 - `infra/docker-compose.pilot.yml`
   - 显式注入 `DRT_WEB_ALLOWED_ORIGINS`，允许部署环境覆盖。
 
@@ -331,6 +333,7 @@ git commit -m "fix: separate login and navigation failures"
 - Modify: `apps/api/src/main/resources/application.yml`
 - Modify: `apps/api/src/main/java/com/idavy/drtops/config/WebCorsConfiguration.java`
 - Modify: `apps/api/src/test/java/com/idavy/drtops/WebCorsConfigurationTest.java`
+- Modify: `apps/api/src/test/resources/application.yml`
 - Modify: `infra/docker-compose.pilot.yml`
 
 **Interfaces:**
@@ -380,7 +383,7 @@ void wildcardOriginIsRejected() {
 Run:
 
 ```powershell
-.\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api -Dtest=WebCorsConfigurationTest test
+& 'D:\codex-projects\.worktrees\drt-ops-mvp\.tools\apache-maven-3.9.11\bin\mvn.cmd' -q -pl apps/api -Dtest=WebCorsConfigurationTest test
 ```
 
 Expected: FAIL；5174、5176 尚未出现在默认来源列表。
@@ -412,7 +415,7 @@ DRT_WEB_ALLOWED_ORIGINS: ${DRT_WEB_ALLOWED_ORIGINS:-http://localhost:5173,http:/
 
 - [ ] **Step 5: 运行 CORS 测试并确认 GREEN**
 
-Run: `.\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api -Dtest=WebCorsConfigurationTest test`
+Run: `& 'D:\codex-projects\.worktrees\drt-ops-mvp\.tools\apache-maven-3.9.11\bin\mvn.cmd' -q -pl apps/api -Dtest=WebCorsConfigurationTest test`
 
 Expected: PASS。
 
@@ -429,7 +432,7 @@ Expected: API 环境中存在精确 `DRT_WEB_ALLOWED_ORIGINS`，值不含 `*`，
 - [ ] **Step 7: 提交 Task 3**
 
 ```powershell
-git add -- apps/api/src/main/resources/application.yml apps/api/src/main/java/com/idavy/drtops/config/WebCorsConfiguration.java apps/api/src/test/java/com/idavy/drtops/WebCorsConfigurationTest.java infra/docker-compose.pilot.yml
+git add -- apps/api/src/main/resources/application.yml apps/api/src/main/java/com/idavy/drtops/config/WebCorsConfiguration.java apps/api/src/test/java/com/idavy/drtops/WebCorsConfigurationTest.java apps/api/src/test/resources/application.yml infra/docker-compose.pilot.yml
 git commit -m "fix: declare local admin web origins"
 ```
 
@@ -509,8 +512,8 @@ Expected: 全部 exit 0；若既有 E2E 夹具失败，不得写成通过，必�
 - [ ] **Step 2: 运行 API 验证**
 
 ```powershell
-.\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api -Dtest=WebCorsConfigurationTest test
-.\.tools\apache-maven-3.9.11\bin\mvn.cmd -q -pl apps/api test
+& 'D:\codex-projects\.worktrees\drt-ops-mvp\.tools\apache-maven-3.9.11\bin\mvn.cmd' -q -pl apps/api -Dtest=WebCorsConfigurationTest test
+& 'D:\codex-projects\.worktrees\drt-ops-mvp\.tools\apache-maven-3.9.11\bin\mvn.cmd' -q -pl apps/api test
 ```
 
 Expected: exit 0。

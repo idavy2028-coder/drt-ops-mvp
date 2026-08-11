@@ -12,8 +12,7 @@ public class WebCorsConfiguration implements WebMvcConfigurer {
     private final String[] allowedOrigins;
 
     public WebCorsConfiguration(
-            @Value("${drt.web.allowed-origins:http://localhost:5173,http://127.0.0.1:5173}")
-                    String allowedOrigins) {
+            @Value("${drt.web.allowed-origins}") String allowedOrigins) {
         this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim)
                 .filter(origin -> !origin.isEmpty())
