@@ -41,6 +41,12 @@ export function createTileMap(container: HTMLElement, centerGcj02: GeoPoint, zoo
         map.fitBounds(bounds, { padding: [24, 24] });
       }
     },
+    focusPoint(point: GeoPoint, zoom = Math.max(map.getZoom(), 15)): void {
+      map.flyTo(toLeafletLatLng(point), zoom, { animate: true, duration: 0.45 });
+    },
+    invalidateSize(): void {
+      map.invalidateSize({ pan: false });
+    },
     onBaseLayerError(listener: () => void): () => void {
       baseLayerErrorListeners.add(listener);
       return () => baseLayerErrorListeners.delete(listener);

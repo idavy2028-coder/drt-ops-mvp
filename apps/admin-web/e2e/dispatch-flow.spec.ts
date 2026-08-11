@@ -54,6 +54,66 @@ test("operator can approve manual review from dispatch workbench", async ({ page
   await expect(page.getByText("待发车")).toBeVisible();
 });
 
+test("dispatch map fills the workspace and keeps live vehicle layers interactive", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await installSessionMocks(page, ["DISPATCHER"]);
+  await installMapWorkbenchMocks(page);
+
+  await page.goto("/dispatch");
+  await login(page);
+  await expect(page.getByRole("heading", { name: "车辆位置" })).toBeVisible();
+
+  const mapBox = await page.getByLabel("调度地图").boundingBox();
+  const canvasBox = await page.locator(".leaflet-container").boundingBox();
+  expect(mapBox).not.toBeNull();
+  expect(canvasBox).not.toBeNull();
+  expect(Math.abs((mapBox?.height ?? 0) - (canvasBox?.height ?? 0))).toBeLessThanOrEqual(1);
+  await expect(page.locator(".leaflet-popup")).toHaveCount(0);
+
+  await page.locator(".leaflet-tile").first().evaluate((tile) => tile.dispatchEvent(new Event("error")));
+  const mapWarning = page.getByRole("status").filter({ hasText: "开放底图暂不可用" });
+  await expect(mapWarning).toBeVisible();
+  const warningBox = await mapWarning.boundingBox();
+  const metricsBox = await page.getByLabel("调度关键指标").boundingBox();
+  expect(warningBox).not.toBeNull();
+  expect(metricsBox).not.toBeNull();
+  expect(rectanglesOverlap(warningBox!, metricsBox!)).toBe(false);
+
+  await page.getByRole("button", { name: "定位车辆 甘G-T001" }).click();
+  await expect(page.getByLabel("调度地图").getByText("任务 12345678")).toBeVisible();
+  await expect(page.getByText("12345678-1234-4234-8234-123456789abc", { exact: true })).toHaveCount(0);
+
+  await expect(page.locator(".dispatch-vehicle-marker")).toHaveCount(2);
+  await page.getByLabel("车辆位置图层").uncheck();
+  await expect(page.locator(".dispatch-vehicle-marker")).toHaveCount(0);
+  await page.getByLabel("车辆位置图层").check();
+  await expect(page.locator(".dispatch-vehicle-marker")).toHaveCount(2);
+
+  await expect(page.locator(".leaflet-marker-icon:not(.dispatch-vehicle-marker)")).toHaveCount(2);
+  await page.getByLabel("虚拟站点图层").uncheck();
+  await expect(page.locator(".leaflet-marker-icon:not(.dispatch-vehicle-marker)")).toHaveCount(0);
+  await page.getByLabel("虚拟站点图层").check();
+  await expect(page.locator(".leaflet-marker-icon:not(.dispatch-vehicle-marker)")).toHaveCount(2);
+
+  await expect(page.locator(".leaflet-overlay-pane path")).toHaveCount(1);
+  await page.getByLabel("服务区图层").uncheck();
+  await expect(page.locator(".leaflet-overlay-pane path")).toHaveCount(0);
+  await page.getByLabel("服务区图层").check();
+  await expect(page.locator(".leaflet-overlay-pane path")).toHaveCount(1);
+
+  await page.screenshot({ path: testInfo.outputPath("dispatch-map-1366.png"), fullPage: true });
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await expect(page.getByLabel("调度地图")).toBeVisible();
+  const wideMapBox = await page.getByLabel("调度地图").boundingBox();
+  const wideCanvasBox = await page.locator(".leaflet-container").boundingBox();
+  expect(Math.abs((wideMapBox?.height ?? 0) - (wideCanvasBox?.height ?? 0))).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: testInfo.outputPath("dispatch-map-1920.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 768, height: 1024 });
+  const hasHorizontalOverflow = await page.locator("html").evaluate((element) => element.scrollWidth > element.clientWidth);
+  expect(hasHorizontalOverflow).toBe(false);
+});
+
 async function installSessionMocks(page: Page, roles: string[]) {
   await page.route("**/api/auth/refresh", (route) => route.fulfill({ status: 401 }));
   await page.route("**/api/auth/login", async (route) => {
@@ -87,6 +147,57 @@ async function installDispatchPageResourceMocks(page: Page) {
   await page.route("**/api/service-areas", async (route) => json(route, []));
   await page.route("**/api/virtual-stops", async (route) => json(route, []));
   await page.route("**/api/vehicle-tasks/*/location-events**", async (route) => json(route, []));
+}
+
+async function installMapWorkbenchMocks(page: Page) {
+  await page.route("**/api/orders", async (route) => json(route, []));
+  await page.route("**/api/vehicle-tasks", async (route) => json(route, []));
+  await page.route("**/api/dispatch-decisions/manual-review", async (route) => json(route, []));
+  await page.route("**/api/vehicle-tasks/*/location-events**", async (route) => json(route, []));
+  await page.route("**/api/service-areas", async (route) => json(route, [{
+    id: "area-1",
+    name: "通渭县试点服务区",
+    boundary: "POLYGON((104.56 35.14,104.72 35.14,104.72 35.28,104.56 35.28,104.56 35.14))",
+    coordinateSystem: "GCJ02",
+    serviceStart: "06:30",
+    serviceEnd: "19:00",
+    ruleSetId: "rule-1",
+    enabled: true
+  }]));
+  await page.route("**/api/virtual-stops", async (route) => json(route, [
+    { id: "stop-1", name: "通渭汽车站", longitude: 104.6378, latitude: 35.2109, coordinateSystem: "GCJ02", enabled: true },
+    { id: "stop-2", name: "中医院", longitude: 104.662, latitude: 35.225, coordinateSystem: "GCJ02", enabled: true }
+  ]));
+  await page.route("**/api/vehicles/locations/latest", async (route) => json(route, [
+    mapVehicle("vehicle-1", "甘G-T001", "IN_SERVICE", 104.6378, 35.2109, "12345678-1234-4234-8234-123456789abc"),
+    mapVehicle("vehicle-2", "甘G-T002", "IDLE", 104.662, 35.225)
+  ]));
+}
+
+function mapVehicle(vehicleId: string, plateNumber: string, currentStatus: string, longitude: number, latitude: number, vehicleTaskId?: string) {
+  return {
+    vehicleId,
+    plateNumber,
+    currentStatus,
+    latestLocation: {
+      longitude,
+      latitude,
+      standardizedAddress: "通渭县测试位置",
+      source: "MANUAL_DISPATCHER",
+      coordinateSystem: "GCJ02",
+      driverReportedAt: "2026-08-11T02:33:00Z",
+      recordedAt: "2026-08-11T02:33:30Z",
+      eventId: `event-${vehicleId}`,
+      vehicleTaskId
+    }
+  };
+}
+
+function rectanglesOverlap(left: { x: number; y: number; width: number; height: number }, right: { x: number; y: number; width: number; height: number }): boolean {
+  return left.x < right.x + right.width
+    && left.x + left.width > right.x
+    && left.y < right.y + right.height
+    && left.y + left.height > right.y;
 }
 
 async function installDispatchFlowMocks(page: Page) {

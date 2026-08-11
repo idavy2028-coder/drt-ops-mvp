@@ -11,7 +11,10 @@ const leaflet = vi.hoisted(() => {
     off: vi.fn(),
     remove: vi.fn(),
     setView: vi.fn(() => map),
-    fitBounds: vi.fn()
+    fitBounds: vi.fn(),
+    invalidateSize: vi.fn(),
+    flyTo: vi.fn(),
+    getZoom: vi.fn(() => 12)
   };
   const layer = {
     on: vi.fn((event: string, handler: (event?: unknown) => void) => {
@@ -48,6 +51,9 @@ describe("开放瓦片地图运行时", () => {
     leaflet.map.remove.mockClear();
     leaflet.map.setView.mockClear();
     leaflet.map.fitBounds.mockClear();
+    leaflet.map.invalidateSize.mockClear();
+    leaflet.map.flyTo.mockClear();
+    leaflet.map.getZoom.mockClear();
     leaflet.layer.on.mockClear();
     leaflet.layer.addTo.mockClear();
     leaflet.layer.remove.mockClear();
@@ -107,6 +113,30 @@ describe("开放瓦片地图运行时", () => {
     leaflet.handlers.get("layer:tileerror")?.forEach((handler) => handler());
 
     expect(listener).toHaveBeenCalledTimes(1);
+    handle.destroy();
+  });
+
+  it("在父容器尺寸变化后同步 Leaflet 画布且不改变当前中心", () => {
+    const container = document.createElement("div");
+    const handle = createTileMap(container, { longitude: 105.2421, latitude: 35.2103 }, 12);
+
+    handle.invalidateSize();
+
+    expect(leaflet.map.invalidateSize).toHaveBeenCalledWith({ pan: false });
+    handle.destroy();
+  });
+
+  it("使用转换后的 WGS84 坐标聚焦车辆", () => {
+    const container = document.createElement("div");
+    const handle = createTileMap(container, { longitude: 105.2421, latitude: 35.2103 }, 12);
+
+    handle.focusPoint({ longitude: 105.250351, latitude: 35.207657 }, 15);
+
+    expect(leaflet.map.flyTo).toHaveBeenCalledWith(
+      [expect.closeTo(35.2083275, 6), expect.closeTo(105.2467432, 6)],
+      15,
+      { animate: true, duration: 0.45 }
+    );
     handle.destroy();
   });
 });
