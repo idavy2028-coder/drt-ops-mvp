@@ -24,6 +24,7 @@ const virtualStops = ref<VirtualStop[]>([]);
 const eventChain = ref<VehicleLocationEventView[]>([]);
 const selectedTaskId = ref<UUID>();
 const selectedVehicleId = ref<UUID>();
+const vehicleFocusRequest = ref(0);
 const processingDecisionId = ref<UUID>();
 const status = ref("");
 const locationStatus = ref("");
@@ -70,6 +71,7 @@ async function selectTask(taskId: UUID): Promise<void> {
 
 function selectVehicle(vehicleId: UUID): void {
   selectedVehicleId.value = vehicleId;
+  vehicleFocusRequest.value += 1;
 }
 
 async function loadTaskChain(taskId?: UUID): Promise<void> {
@@ -120,6 +122,7 @@ onBeforeUnmount(() => { if (locationPollTimer !== undefined) window.clearInterva
           :event-chain="eventChain"
           :selected-task="selectedTask"
           :selected-vehicle-id="selectedVehicleId"
+          :vehicle-focus-request="vehicleFocusRequest"
           @select-vehicle="selectVehicle"
         />
         <div class="map-metrics" aria-label="调度关键指标">
@@ -150,6 +153,9 @@ onBeforeUnmount(() => { if (locationPollTimer !== undefined) window.clearInterva
 .map-metrics strong { font-size: 17px; }
 .stale-panel { background: #fff7f7; border: 1px solid #edc8c8; color: #9f2424; display: grid; font-size: 13px; font-weight: 800; gap: 4px; margin-bottom: 10px; padding: 9px 12px; }
 .stale-panel strong, .stale-panel p { margin: 0; }
+@media (max-width: 1500px) {
+  .map-metrics { top: 58px; }
+}
 @media (max-width: 1180px) {
   .dispatch-console { grid-template-columns: minmax(220px, 260px) minmax(0, 1fr); }
   .vehicle-sidebar { grid-column: 1 / -1; max-height: 330px; }

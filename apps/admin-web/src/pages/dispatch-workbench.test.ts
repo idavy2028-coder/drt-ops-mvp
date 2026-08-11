@@ -15,7 +15,7 @@ vi.mock("../components/DispatchMap.vue", async () => {
   return {
     default: defineComponent({
       name: "DispatchMapStub",
-      props: ["serviceArea", "stops", "locations", "eventChain", "selectedTask", "selectedVehicleId"],
+      props: ["serviceArea", "stops", "locations", "eventChain", "selectedTask", "selectedVehicleId", "vehicleFocusRequest"],
       emits: ["selectVehicle"],
       setup(props, { emit }) {
         dispatchMap.receivedProps.push(props as Record<string, unknown>);
@@ -92,6 +92,9 @@ describe("DispatchWorkbenchPage", () => {
     const vehicleButton = await screen.findByRole("button", { name: "定位车辆 甘G-T001" });
     await fireEvent.click(vehicleButton);
     await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1].selectedVehicleId).toBe("vehicle-1"));
+    expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1].vehicleFocusRequest).toBe(1);
+    await fireEvent.click(vehicleButton);
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1].vehicleFocusRequest).toBe(2));
 
     await fireEvent.click(screen.getByRole("button", { name: "选择地图车辆" }));
     expect(vehicleButton).toHaveAttribute("aria-pressed", "true");

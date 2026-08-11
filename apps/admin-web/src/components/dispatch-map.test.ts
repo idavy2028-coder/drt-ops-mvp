@@ -188,12 +188,27 @@ describe("DispatchMap", () => {
     expect(view.emitted("selectVehicle")).toEqual([["vehicle-1"]]);
   });
 
-  it("focuses and opens the popup for the selected vehicle", async () => {
-    renderMap({ selectedVehicleId: "vehicle-1" });
+  it("keeps the initial overview and focuses again for every explicit vehicle request", async () => {
+    const view = renderMap({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 0 });
     await waitFor(() => expect(leaflet.markerLayers).toHaveLength(3));
 
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 1 }));
+    await waitFor(() => expect(tileMapRuntime.handle.focusPoint).toHaveBeenCalledWith({ longitude: 104.6378, latitude: 35.2109 }));
     expect(tileMapRuntime.handle.focusPoint).toHaveBeenCalledWith({ longitude: 104.6378, latitude: 35.2109 });
-    expect(leaflet.markerLayers[2].openPopup).toHaveBeenCalled();
+    expect(leaflet.markerLayers[leaflet.markerLayers.length - 1].openPopup).toHaveBeenCalled();
+
+    tileMapRuntime.handle.focusPoint.mockClear();
+    const markerCountAfterFocus = leaflet.markerLayers.length;
+    const movedLocation = latestLocation();
+    movedLocation.latestLocation.longitude = 104.6401;
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 1, locations: [movedLocation] }));
+    await waitFor(() => expect(leaflet.markerLayers.length).toBeGreaterThan(markerCountAfterFocus));
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 2, locations: [movedLocation] }));
+    await waitFor(() => expect(tileMapRuntime.handle.focusPoint).toHaveBeenCalledWith({ longitude: 104.6401, latitude: 35.2109 }));
   });
 
   it("invalidates the Leaflet canvas when the map container changes size", async () => {
@@ -218,20 +233,25 @@ describe("DispatchMap", () => {
   });
 });
 
-function renderMap(overrides: { selectedVehicleId?: string } = {}) {
+function renderMap(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number } = {}) {
   return render(DispatchMap, {
-    props: {
-      serviceArea,
-      stops,
-      locations: [latestLocation()],
-      selectedVehicleId: overrides.selectedVehicleId,
-      selectedTask,
-      eventChain: [
-        locationEvent("PASSENGER_BOARDED", "2026-07-13T00:42:00Z", 104.637, 35.212),
-        locationEvent("TASK_STARTED", "2026-07-13T00:32:00Z", 104.638, 35.211)
-      ]
-    }
+    props: mapProps(overrides)
   });
+}
+
+function mapProps(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; locations?: VehicleLocationSnapshotItem[] } = {}) {
+  return {
+    serviceArea,
+    stops,
+    locations: overrides.locations ?? [latestLocation()],
+    selectedVehicleId: overrides.selectedVehicleId,
+    vehicleFocusRequest: overrides.vehicleFocusRequest,
+    selectedTask,
+    eventChain: [
+      locationEvent("PASSENGER_BOARDED", "2026-07-13T00:42:00Z", 104.637, 35.212),
+      locationEvent("TASK_STARTED", "2026-07-13T00:32:00Z", 104.638, 35.211)
+    ]
+  };
 }
 
 const serviceArea: ServiceArea = {

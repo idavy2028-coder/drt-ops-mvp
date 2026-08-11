@@ -13,13 +13,15 @@ const props = withDefaults(defineProps<{
   eventChain?: VehicleLocationEventView[];
   selectedTask?: VehicleTask;
   selectedVehicleId?: string;
+  vehicleFocusRequest?: number;
 }>(), {
   serviceArea: undefined,
   stops: () => [],
   locations: () => [],
   eventChain: () => [],
   selectedTask: undefined,
-  selectedVehicleId: undefined
+  selectedVehicleId: undefined,
+  vehicleFocusRequest: 0
 });
 
 const emit = defineEmits<{
@@ -61,7 +63,7 @@ onBeforeUnmount(() => {
   tileMap.value?.destroy();
 });
 watch([() => props.serviceArea, () => props.stops, () => props.locations, () => props.eventChain, () => props.selectedTask, layers], () => renderMapLayers(), { deep: true });
-watch(() => props.selectedVehicleId, () => focusSelectedVehicle(), { flush: "post" });
+watch(() => props.vehicleFocusRequest, () => focusSelectedVehicle(), { flush: "post" });
 
 async function initializeMap(): Promise<void> {
   await nextTick();
@@ -109,7 +111,7 @@ function renderMapLayers(): void {
         title: item.plateNumber,
         icon: L.divIcon({
           className: `dispatch-vehicle-marker ${vehicleStatusClass(item)}`,
-          html: '<span aria-hidden="true">车</span>',
+          html: '<span class="vehicle-marker-pin"><span aria-hidden="true">车</span></span>',
           iconSize: [36, 36],
           iconAnchor: [18, 18],
           popupAnchor: [0, -18]
@@ -126,7 +128,6 @@ function renderMapLayers(): void {
     tileMap.value.fitLayers(renderedLayers);
     hasFittedInitialLayers = true;
   }
-  focusSelectedVehicle();
 }
 
 function addDashedLine(points: GeoPoint[], color: string, dashArray: string): void {
@@ -231,16 +232,16 @@ function formatDateTime(value?: string): string {
 </template>
 
 <style scoped>
-.dispatch-map { background: #eef2ef; border: 1px solid #d9e1dc; border-radius: 8px; height: 100%; min-height: 560px; overflow: hidden; position: relative; }
+.dispatch-map { background: #eef2ef; border: 0; border-radius: 8px; box-shadow: inset 0 0 0 1px #d9e1dc; height: 100%; min-height: 560px; overflow: hidden; position: relative; }
 .map-canvas, .fallback-surface { height: 100%; inset: 0; position: absolute; width: 100%; }
 .fallback-surface { background: #e5eee9; color: #365348; display: grid; gap: 7px; place-content: center; text-align: center; }
 .fallback-surface span { font-size: 13px; }
-.map-controls, .map-warning, .map-overlay, .map-route, .fallback-stops, .vehicle-location-card, .map-chain, .map-legend { position: absolute; z-index: 2; }
-.map-controls { display: flex; flex-wrap: wrap; gap: 8px; left: 14px; top: 14px; }
+.map-controls, .map-warning, .map-overlay, .map-route, .fallback-stops, .map-chain, .map-legend { position: absolute; z-index: 500; }
+.map-controls { display: flex; flex-wrap: wrap; gap: 8px; left: 58px; top: 14px; z-index: 800; }
 .map-controls label, .map-reset-button { align-items: center; background: #fffffff2; border: 1px solid #cbd8d1; color: #40574e; display: flex; font-size: 12px; font-weight: 800; gap: 4px; padding: 6px 8px; }
 .map-reset-button { cursor: pointer; font-family: inherit; }
 .map-reset-button:hover { border-color: #17634b; color: #17634b; }
-.map-warning { background: #fff7d8; border: 1px solid #d1a749; color: #6a4a00; font-size: 12px; font-weight: 800; margin: 0; padding: 6px 9px; right: 14px; top: 14px; }
+.map-warning { background: #fff7d8; border: 1px solid #d1a749; color: #6a4a00; font-size: 12px; font-weight: 800; left: 14px; margin: 0; padding: 6px 9px; top: 100px; }
 .map-overlay { background: #e1f2eaeb; border: 2px solid #43846d; bottom: 58px; color: #1b6049; display: grid; gap: 2px; left: 62px; padding: 10px; right: 54px; top: 62px; }
 .map-overlay span, .map-route span { font-size: 12px; }
 .map-route { background: #17634beb; bottom: 90px; color: #fff; display: grid; gap: 2px; left: 32%; padding: 8px 10px; top: 46%; }
@@ -258,11 +259,12 @@ function formatDateTime(value?: string): string {
 .legend-dot.is-idle { background: #16885d; }
 .legend-dot.is-active { background: #1774c9; }
 .legend-dot.is-alert { background: #d4473f; }
-:deep(.dispatch-vehicle-marker) { align-items: center; background: #74827b; border: 3px solid #fff; border-radius: 50% 50% 50% 8px; box-shadow: 0 6px 14px #17201c40; color: #fff; display: flex; font-size: 12px; font-weight: 900; justify-content: center; transform: rotate(-45deg); }
-:deep(.dispatch-vehicle-marker span) { transform: rotate(45deg); }
-:deep(.dispatch-vehicle-marker.is-idle) { background: #16885d; }
-:deep(.dispatch-vehicle-marker.is-active) { background: #1774c9; }
-:deep(.dispatch-vehicle-marker.is-alert) { background: #d4473f; }
+:deep(.dispatch-vehicle-marker) { background: transparent; border: 0; }
+:deep(.vehicle-marker-pin) { align-items: center; background: #74827b; border: 3px solid #fff; border-radius: 50% 50% 50% 8px; box-shadow: 0 6px 14px #17201c40; color: #fff; display: flex; font-size: 12px; font-weight: 900; height: 30px; justify-content: center; transform: rotate(-45deg); width: 30px; }
+:deep(.vehicle-marker-pin > span) { transform: rotate(45deg); }
+:deep(.dispatch-vehicle-marker.is-idle .vehicle-marker-pin) { background: #16885d; }
+:deep(.dispatch-vehicle-marker.is-active .vehicle-marker-pin) { background: #1774c9; }
+:deep(.dispatch-vehicle-marker.is-alert .vehicle-marker-pin) { background: #d4473f; }
 :deep(.dispatch-vehicle-popup) { min-width: 180px; }
 :deep(.dispatch-vehicle-popup strong) { color: #17201c; display: block; font-size: 15px; margin-bottom: 8px; }
 :deep(.dispatch-vehicle-popup dl) { display: grid; gap: 5px; margin: 0; }
