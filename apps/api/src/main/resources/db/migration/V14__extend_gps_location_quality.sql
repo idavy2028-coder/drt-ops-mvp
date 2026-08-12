@@ -17,7 +17,7 @@ ALTER TABLE vehicle_location_events
   ADD COLUMN status_bits BIGINT CHECK (status_bits >= 0),
   ADD COLUMN coordinate_transform_version VARCHAR(80) NOT NULL DEFAULT 'LEGACY_NONE',
   ADD COLUMN quality_status VARCHAR(20) NOT NULL DEFAULT 'GOOD'
-    CHECK (quality_status IN ('GOOD', 'WARNING', 'QUARANTINED')),
+    CHECK (quality_status IN ('GOOD', 'WARNING', 'QUARANTINED', 'REJECTED')),
   ADD COLUMN quality_reasons JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 ALTER TABLE vehicle_location_events DISABLE TRIGGER prevent_vehicle_location_event_mutation;
@@ -40,7 +40,17 @@ ALTER TABLE vehicle_location_events
       AND recorded_by IS NOT NULL
       AND terminal_id IS NULL
       AND standardized_address IS NOT NULL)
-    OR (source = 'GPS_DEVICE' AND terminal_id IS NOT NULL)
+    OR (source = 'GPS_DEVICE'
+      AND terminal_id IS NOT NULL
+      AND protocol_version IS NOT NULL
+      AND message_serial_no IS NOT NULL
+      AND raw_longitude IS NOT NULL
+      AND raw_latitude IS NOT NULL
+      AND raw_coordinate_system IS NOT NULL
+      AND gateway_received_at IS NOT NULL
+      AND payload_digest IS NOT NULL
+      AND coordinate_transform_version IS NOT NULL
+      AND quality_status IS NOT NULL)
   );
 
 CREATE INDEX idx_vehicle_location_events_terminal_time
@@ -54,7 +64,7 @@ CREATE INDEX idx_vehicle_location_events_reported_at_brin
 ALTER TABLE vehicles
   ADD COLUMN current_location_terminal_id UUID REFERENCES jt_terminals(id),
   ADD COLUMN current_location_quality_status VARCHAR(20) NOT NULL DEFAULT 'GOOD'
-    CHECK (current_location_quality_status IN ('GOOD', 'WARNING', 'QUARANTINED')),
+    CHECK (current_location_quality_status IN ('GOOD', 'WARNING', 'QUARANTINED', 'REJECTED')),
   ADD COLUMN current_location_quality_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
   ADD COLUMN current_location_gateway_received_at TIMESTAMPTZ,
   ADD COLUMN current_location_speed_kph NUMERIC(6,2) CHECK (current_location_speed_kph >= 0),
