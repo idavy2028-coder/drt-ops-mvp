@@ -29,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RegistrationAuthenticationHandlerTest {
     private static final UUID TERMINAL_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final String TERMINAL_NUMBER = "123456789012";
     private static final String AUTHENTICATION_TOKEN = "PILOT-TEST-TOKEN";
 
@@ -184,7 +185,8 @@ class RegistrationAuthenticationHandlerTest {
 
     @Test
     void issuesHighEntropyTokenAndRedactsItFromDiagnosticText() throws Exception {
-        RegistrationDecision decision = RegistrationDecision.issue(TERMINAL_ID, 7, new SecureRandom());
+        RegistrationDecision decision = RegistrationDecision.issue(
+                TERMINAL_ID, VEHICLE_ID, "WGS84", 7, new SecureRandom());
         byte[] token = decision.authenticationToken();
 
         assertTrue(token.length >= 43);
@@ -361,6 +363,8 @@ class RegistrationAuthenticationHandlerTest {
             assertEquals("PILOT-A", identity.vehicleIdentifier());
             return RegistrationDecision.approved(
                     TERMINAL_ID,
+                    VEHICLE_ID,
+                    "WGS84",
                     5,
                     AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII),
                     uncheckedSha256(AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII)));

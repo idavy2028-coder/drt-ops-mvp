@@ -379,7 +379,12 @@ class JtGatewayServerIntegrationTest {
         public RegistrationDecision verifyRegistration(TerminalRegistrationIdentity identity) {
             byte[] token = "PIPELINE-TEST-TOKEN".getBytes(StandardCharsets.US_ASCII);
             return RegistrationDecision.approved(
-                    TERMINAL_ID, 1, token, sha256(token));
+                    TERMINAL_ID,
+                    UUID.fromString("33333333-3333-3333-3333-333333333333"),
+                    "WGS84",
+                    1,
+                    token,
+                    sha256(token));
         }
 
         @Override

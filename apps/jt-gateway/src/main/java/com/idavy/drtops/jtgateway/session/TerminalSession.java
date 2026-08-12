@@ -15,6 +15,8 @@ public final class TerminalSession {
     private final Instant connectedAt;
     private TerminalSessionState state = TerminalSessionState.CONNECTED_UNAUTHENTICATED;
     private UUID terminalId;
+    private UUID vehicleId;
+    private String sourceCoordinateSystem;
     private int tokenVersion;
     private String terminalAlias = "unknown";
     private byte[] terminalIdentityDigest;
@@ -27,9 +29,19 @@ public final class TerminalSession {
         this.lastValidMessageAt = connectedAt;
     }
 
-    public void registrationAccepted(UUID terminalId, int tokenVersion, String terminalIdentity) {
+    public void registrationAccepted(
+            UUID terminalId,
+            UUID vehicleId,
+            String sourceCoordinateSystem,
+            int tokenVersion,
+            String terminalIdentity) {
         requireState(TerminalSessionState.CONNECTED_UNAUTHENTICATED);
         this.terminalId = Objects.requireNonNull(terminalId, "terminalId");
+        this.vehicleId = Objects.requireNonNull(vehicleId, "vehicleId");
+        if (!"WGS84".equals(sourceCoordinateSystem) && !"GCJ02".equals(sourceCoordinateSystem)) {
+            throw new IllegalArgumentException("sourceCoordinateSystem must be WGS84 or GCJ02");
+        }
+        this.sourceCoordinateSystem = sourceCoordinateSystem;
         this.tokenVersion = tokenVersion;
         String identity = Objects.requireNonNull(terminalIdentity, "terminalIdentity");
         this.terminalIdentityDigest = identityDigest(identity);
@@ -39,7 +51,7 @@ public final class TerminalSession {
 
     public void authenticated(Instant at) {
         requireState(TerminalSessionState.CONNECTED_UNAUTHENTICATED);
-        if (terminalId == null) {
+        if (terminalId == null || vehicleId == null || sourceCoordinateSystem == null) {
             throw new IllegalStateException("registration is required before authentication");
         }
         state = TerminalSessionState.AUTHENTICATED;
@@ -84,6 +96,14 @@ public final class TerminalSession {
 
     public UUID terminalId() {
         return terminalId;
+    }
+
+    public UUID vehicleId() {
+        return vehicleId;
+    }
+
+    public String sourceCoordinateSystem() {
+        return sourceCoordinateSystem;
     }
 
     public int tokenVersion() {
