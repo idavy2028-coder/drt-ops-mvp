@@ -161,7 +161,7 @@ class P6TerminalLocationMigrationTest {
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("duplicate key");
         assertThatThrownBy(() -> insertBindingWithValidity(connection, UUID.randomUUID(), secondTerminalId, secondVehicleId,
-                        "ACTIVE", OffsetDateTime.parse("2026-08-02T10:00:00+08:00")))
+                        "ACTIVE", OffsetDateTime.parse("2099-08-02T10:00:00+08:00")))
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("check constraint");
         assertThatThrownBy(() -> insertBindingWithValidity(connection, UUID.randomUUID(), secondTerminalId, secondVehicleId,
@@ -311,10 +311,13 @@ class P6TerminalLocationMigrationTest {
         UUID terminalId = UUID.randomUUID();
         UUID vehicleId = queryUuid(connection, "select id from vehicles order by id limit 1");
         insertTerminal(connection, terminalId, "VIRTUAL-TERM-CONSTRAINT", "VIRTUAL-CODE-CONSTRAINT");
-        assertThatThrownBy(() -> insertGpsLocation(connection, UUID.randomUUID(), vehicleId, terminalId,
-                        null, null, null, null, null, null, null, "GCJ02-2026-08", "GOOD"))
-                .isInstanceOf(SQLException.class)
-                .hasMessageContaining("check constraint");
+        GpsLocationFacts completeFacts = GpsLocationFacts.complete(terminalId);
+        for (GpsTraceabilityField missingField : GpsTraceabilityField.values()) {
+            GpsLocationFacts incompleteFacts = completeFacts.withMissing(missingField);
+            assertThatThrownBy(() -> insertGpsLocation(connection, UUID.randomUUID(), vehicleId, incompleteFacts))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("constraint");
+        }
         insertGpsLocation(connection, UUID.randomUUID(), vehicleId, terminalId,
                 "JT808-2019", 3, new BigDecimal("121.5037000"), new BigDecimal("31.2304000"),
                 "GCJ02", OffsetDateTime.now(), "f".repeat(64), "GCJ02-2026-08", "REJECTED");
@@ -352,6 +355,13 @@ class P6TerminalLocationMigrationTest {
             insert.setString(13, qualityStatus);
             insert.executeUpdate();
         }
+    }
+
+    private static void insertGpsLocation(
+            Connection connection, UUID eventId, UUID vehicleId, GpsLocationFacts facts) throws SQLException {
+        insertGpsLocation(connection, eventId, vehicleId, facts.terminalId(), facts.protocolVersion(),
+                facts.messageSerialNo(), facts.rawLongitude(), facts.rawLatitude(), facts.rawCoordinateSystem(),
+                facts.gatewayReceivedAt(), facts.payloadDigest(), facts.coordinateTransformVersion(), facts.qualityStatus());
     }
 
     private static void assertGatewayAuditConstraints(Connection connection) throws Exception {
@@ -499,5 +509,73 @@ class P6TerminalLocationMigrationTest {
     }
 
     private record IndexDefinition(String accessMethod, List<String> columns, String predicate) {
+    }
+
+    private enum GpsTraceabilityField {
+        TERMINAL_ID,
+        PROTOCOL_VERSION,
+        MESSAGE_SERIAL_NO,
+        RAW_LONGITUDE,
+        RAW_LATITUDE,
+        RAW_COORDINATE_SYSTEM,
+        GATEWAY_RECEIVED_AT,
+        PAYLOAD_DIGEST,
+        COORDINATE_TRANSFORM_VERSION,
+        QUALITY_STATUS
+    }
+
+    private record GpsLocationFacts(
+            UUID terminalId,
+            String protocolVersion,
+            Integer messageSerialNo,
+            BigDecimal rawLongitude,
+            BigDecimal rawLatitude,
+            String rawCoordinateSystem,
+            OffsetDateTime gatewayReceivedAt,
+            String payloadDigest,
+            String coordinateTransformVersion,
+            String qualityStatus) {
+
+        private static GpsLocationFacts complete(UUID terminalId) {
+            return new GpsLocationFacts(terminalId, "JT808-2019", 2,
+                    new BigDecimal("121.5037000"), new BigDecimal("31.2304000"), "GCJ02",
+                    OffsetDateTime.parse("2026-08-02T10:00:00+08:00"), "e".repeat(64),
+                    "GCJ02-2026-08", "GOOD");
+        }
+
+        private GpsLocationFacts withMissing(GpsTraceabilityField field) {
+            return switch (field) {
+                case TERMINAL_ID -> new GpsLocationFacts(null, protocolVersion, messageSerialNo, rawLongitude,
+                        rawLatitude, rawCoordinateSystem, gatewayReceivedAt, payloadDigest,
+                        coordinateTransformVersion, qualityStatus);
+                case PROTOCOL_VERSION -> new GpsLocationFacts(terminalId, null, messageSerialNo, rawLongitude,
+                        rawLatitude, rawCoordinateSystem, gatewayReceivedAt, payloadDigest,
+                        coordinateTransformVersion, qualityStatus);
+                case MESSAGE_SERIAL_NO -> new GpsLocationFacts(terminalId, protocolVersion, null, rawLongitude,
+                        rawLatitude, rawCoordinateSystem, gatewayReceivedAt, payloadDigest,
+                        coordinateTransformVersion, qualityStatus);
+                case RAW_LONGITUDE -> new GpsLocationFacts(terminalId, protocolVersion, messageSerialNo, null,
+                        rawLatitude, rawCoordinateSystem, gatewayReceivedAt, payloadDigest,
+                        coordinateTransformVersion, qualityStatus);
+                case RAW_LATITUDE -> new GpsLocationFacts(terminalId, protocolVersion, messageSerialNo, rawLongitude,
+                        null, rawCoordinateSystem, gatewayReceivedAt, payloadDigest,
+                        coordinateTransformVersion, qualityStatus);
+                case RAW_COORDINATE_SYSTEM -> new GpsLocationFacts(terminalId, protocolVersion, messageSerialNo,
+                        rawLongitude, rawLatitude, null, gatewayReceivedAt, payloadDigest,
+                        coordinateTransformVersion, qualityStatus);
+                case GATEWAY_RECEIVED_AT -> new GpsLocationFacts(terminalId, protocolVersion, messageSerialNo,
+                        rawLongitude, rawLatitude, rawCoordinateSystem, null, payloadDigest,
+                        coordinateTransformVersion, qualityStatus);
+                case PAYLOAD_DIGEST -> new GpsLocationFacts(terminalId, protocolVersion, messageSerialNo,
+                        rawLongitude, rawLatitude, rawCoordinateSystem, gatewayReceivedAt, null,
+                        coordinateTransformVersion, qualityStatus);
+                case COORDINATE_TRANSFORM_VERSION -> new GpsLocationFacts(terminalId, protocolVersion, messageSerialNo,
+                        rawLongitude, rawLatitude, rawCoordinateSystem, gatewayReceivedAt, payloadDigest,
+                        null, qualityStatus);
+                case QUALITY_STATUS -> new GpsLocationFacts(terminalId, protocolVersion, messageSerialNo,
+                        rawLongitude, rawLatitude, rawCoordinateSystem, gatewayReceivedAt, payloadDigest,
+                        coordinateTransformVersion, null);
+            };
+        }
     }
 }
