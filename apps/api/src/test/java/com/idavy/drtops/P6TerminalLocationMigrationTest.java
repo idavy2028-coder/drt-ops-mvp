@@ -45,6 +45,7 @@ class P6TerminalLocationMigrationTest {
 
             try (Connection connection = DriverManager.getConnection(jdbcUrl, postgres.getUsername(), postgres.getPassword())) {
                 assertTerminalRegistryAndBindings(connection);
+                assertDigestColumnTypes(connection);
                 assertLocationQualitySchema(connection);
                 assertLegacyHistoryAndSnapshotArePreserved(connection, legacyHistory);
                 assertGpsLocationAllowsMissingManualOnlyFields(connection);
@@ -53,6 +54,32 @@ class P6TerminalLocationMigrationTest {
                 assertVehicleLocationEventsRemainImmutable(connection);
             }
         }
+    }
+
+    @Test
+    void mapsFixedLengthDigestsExplicitlyAsChar64() throws Exception {
+        assertChar64Mapping(com.idavy.drtops.domain.terminal.JtTerminal.class, "authTokenHash");
+        assertChar64Mapping(com.idavy.drtops.domain.terminal.JtGatewayAuditEvent.class, "payloadDigest");
+    }
+
+    private static void assertChar64Mapping(Class<?> entityType, String fieldName) throws Exception {
+        jakarta.persistence.Column column = entityType.getDeclaredField(fieldName)
+                .getAnnotation(jakarta.persistence.Column.class);
+        assertThat(column.length()).isEqualTo(64);
+        assertThat(column.columnDefinition()).isEqualTo("char(64)");
+    }
+
+    private static void assertDigestColumnTypes(Connection connection) throws SQLException {
+        assertThat(queryStrings(connection, """
+                select table_name || '.' || column_name || ':' || data_type || ':' || character_maximum_length
+                from information_schema.columns
+                where table_schema = 'public'
+                  and ((table_name = 'jt_terminals' and column_name = 'auth_token_hash')
+                    or (table_name = 'jt_gateway_audit_events' and column_name = 'payload_digest'))
+                order by table_name, column_name
+                """)).containsExactly(
+                        "jt_gateway_audit_events.payload_digest:character:64",
+                        "jt_terminals.auth_token_hash:character:64");
     }
 
     private static void migrateToV12(String jdbcUrl, String username, String password) {

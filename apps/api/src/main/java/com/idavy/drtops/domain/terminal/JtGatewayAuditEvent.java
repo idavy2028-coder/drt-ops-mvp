@@ -41,7 +41,7 @@ public class JtGatewayAuditEvent {
 
     private Integer messageId;
 
-    @Column(length = 64)
+    @Column(length = 64, columnDefinition = "char(64)")
     private String payloadDigest;
 
     @Column(length = 80)
@@ -114,4 +114,5 @@ public class JtGatewayAuditEvent {
     public UUID getVehicleId() { return vehicleId; }
     public EventType getEventType() { return eventType; }
     public Result getResult() { return result; }
+    public String getGatewayInstance() { return gatewayInstance; }
 }

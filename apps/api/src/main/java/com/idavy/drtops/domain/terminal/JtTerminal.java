@@ -64,7 +64,7 @@ public class JtTerminal {
     @Column(nullable = false, length = 20)
     private Status status;
 
-    @Column(nullable = false, length = 64)
+    @Column(nullable = false, length = 64, columnDefinition = "char(64)")
     private String authTokenHash;
 
     @Column(nullable = false)
@@ -136,13 +136,15 @@ public class JtTerminal {
         touch();
     }
 
-    public void rotateAuthentication(int tokenVersion, String tokenSha256) {
+    public void beginAuthenticationRotation() {
         requireMutable();
-        if (tokenVersion <= authTokenVersion) {
-            throw new IllegalArgumentException("tokenVersion must increase");
+        if (status != Status.ACTIVE && status != Status.SUSPENDED) {
+            throw new IllegalStateException("terminal cannot rotate authentication from " + status);
         }
-        this.authTokenVersion = tokenVersion;
-        this.authTokenHash = requireSha256(tokenSha256);
+        authTokenVersion++;
+        authTokenHash = unregisteredHash();
+        lastRegisteredAt = null;
+        status = Status.SUSPENDED;
         touch();
     }
 
@@ -170,6 +172,25 @@ public class JtTerminal {
     public void retire() {
         requireMutable();
         status = Status.RETIRED;
+        touch();
+    }
+
+    public void retireAndInvalidateAuthentication() {
+        requireMutable();
+        authTokenVersion++;
+        authTokenHash = unregisteredHash();
+        status = Status.RETIRED;
+        touch();
+    }
+
+    public void prepareForReplacementRegistration() {
+        requireMutable();
+        if (status != Status.PENDING) {
+            throw new IllegalStateException("replacement terminal must be pending");
+        }
+        authTokenVersion++;
+        authTokenHash = unregisteredHash();
+        lastRegisteredAt = null;
         touch();
     }
 

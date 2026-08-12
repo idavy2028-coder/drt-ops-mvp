@@ -49,20 +49,17 @@ public enum Permission {
                     TASK_EXECUTE,
                     DECISION_READ,
                     LOCATION_READ,
-                    LOCATION_REPORT,
-                    TERMINAL_READ),
+                    LOCATION_REPORT),
             RoleCode.OPERATOR, Set.of(
                     RESOURCE_MANAGE,
                     ORDER_CREATE,
                     ORDER_READ,
                     TASK_READ,
-                    METRICS_READ,
-                    TERMINAL_READ),
+                    METRICS_READ),
             RoleCode.AUDITOR, Set.of(
                     AUDIT_READ,
                     METRICS_READ,
-                    DECISION_READ,
-                    TERMINAL_READ));
+                    DECISION_READ));
 
     public static Set<Permission> permissionsFor(Set<RoleCode> roles) {
         EnumSet<Permission> permissions = EnumSet.noneOf(Permission.class);

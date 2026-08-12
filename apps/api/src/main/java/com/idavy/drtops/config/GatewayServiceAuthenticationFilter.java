@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -52,7 +54,9 @@ public class GatewayServiceAuthenticationFilter extends OncePerRequestFilter {
             FilterChain filterChain) throws ServletException, IOException {
         String authorization = request.getHeader("Authorization");
         String version = request.getHeader(VERSION_HEADER);
-        if (!StringUtils.hasText(authorization)
+        if (headerCount(request, "Authorization") != 1
+                || headerCount(request, VERSION_HEADER) != 1
+                || !StringUtils.hasText(authorization)
                 || !authorization.startsWith(BEARER_PREFIX)
                 || authorization.length() == BEARER_PREFIX.length()
                 || !matches(version, authorization.substring(BEARER_PREFIX.length()))) {
@@ -72,6 +76,10 @@ public class GatewayServiceAuthenticationFilter extends OncePerRequestFilter {
         } finally {
             SecurityContextHolder.setContext(previousContext);
         }
+    }
+
+    private static int headerCount(HttpServletRequest request, String name) {
+        return Collections.list(request.getHeaders(name)).size();
     }
 
     private boolean matches(String version, String credential) {
@@ -127,6 +135,14 @@ public class GatewayServiceAuthenticationFilter extends OncePerRequestFilter {
                 return null;
             }
             return super.getHeader(name);
+        }
+
+        @Override
+        public Enumeration<String> getHeaders(String name) {
+            if ("Authorization".equalsIgnoreCase(name)) {
+                return Collections.emptyEnumeration();
+            }
+            return super.getHeaders(name);
         }
     }
 }

@@ -15,11 +15,20 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
 public class SecurityConfiguration {
+
+    @Bean
+    FilterRegistrationBean<GatewayServiceAuthenticationFilter> gatewayServiceAuthenticationFilterRegistration(
+            GatewayServiceAuthenticationFilter filter) {
+        FilterRegistrationBean<GatewayServiceAuthenticationFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
+    }
 
     @Bean
     @Order(1)

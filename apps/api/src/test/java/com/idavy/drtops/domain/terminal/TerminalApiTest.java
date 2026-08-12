@@ -35,6 +35,10 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.http.client.reactive.MockClientHttpRequest;
 import org.springframework.security.test.context.support.WithMockUser;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import com.idavy.drtops.auth.Permission;
+import com.idavy.drtops.auth.RoleCode;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -66,6 +70,9 @@ class TerminalApiTest {
 
     @Autowired
     MockMvc mockMvc;
+
+    @Autowired
+    TerminalManagementService service;
 
     @Autowired
     JtTerminalRepository terminalRepository;
@@ -131,6 +138,17 @@ class TerminalApiTest {
                 .andExpect(jsonPath("$.data[0].terminalPhoneMasked").value("****9001"))
                 .andExpect(content().string(org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString(TOKEN_HASH))));
+    }
+
+    @Test
+    void neverReconstructsACompleteShortTerminalPhone() throws Exception {
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-API-SHORT", "ABCD")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.terminalPhoneMasked").value("****"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("ABCD"))));
     }
 
     @Test
@@ -252,6 +270,92 @@ class TerminalApiTest {
     }
 
     @Test
+    void rejectsOversizedPublicRequestFieldsAsBadRequest() throws Exception {
+        String oversizedReason = "R".repeat(301);
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-SIZE-1", "P".repeat(31))))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("C".repeat(81), "PHONE-SIZE")))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequestWithIdentity("T-SIZE-2", "PHONE-SIZE-2",
+                                "M".repeat(81), "MODEL-X", "JT808_2019", "reason")))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequestWithIdentity("T-SIZE-3", "PHONE-SIZE-3",
+                                "MFG01", "X".repeat(121), "JT808_2019", "reason")))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequestWithIdentity("T-SIZE-4", "PHONE-SIZE-4",
+                                "MFG01", "MODEL-X", "P".repeat(41), "reason")))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequestWithIdentity("T-SIZE-5", "PHONE-SIZE-5",
+                                "MFG01", "MODEL-X", "JT808_2019", oversizedReason)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void rotatesAuthenticationWithoutAcceptingBrowserSuppliedDigest() throws Exception {
+        JtTerminal terminal = registerBindAndActivate("T-API-ROTATE", "PHONE-ROTATE");
+        int oldTokenVersion = terminal.getAuthTokenVersion();
+        String oldHash = terminal.getAuthTokenHash();
+
+        mockMvc.perform(post("/api/terminals/T-API-ROTATE/rotate-auth")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(action(terminal.getVersion(), "安全轮换")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.terminal.status").value("SUSPENDED"))
+                .andExpect(jsonPath("$.data.terminal.registrationCompleted").value(false))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString(oldHash))));
+
+        JtTerminal pending = terminalRepository.findByTerminalCode("T-API-ROTATE").orElseThrow();
+        assertThat(pending.getAuthTokenVersion()).isEqualTo(oldTokenVersion + 1);
+        assertThat(pending.getAuthTokenHash()).isNotEqualTo(oldHash);
+        assertThat(serviceAuthentication(pending.getId(), oldTokenVersion, oldHash)).isFalse();
+
+        String verification = internalPost("/internal/jt-gateway/registrations/verify", """
+                {"terminalPhone":"PHONE-ROTATE","terminalCode":"T-API-ROTATE",
+                 "manufacturerId":"MFG01","model":"MODEL-X","vehicleIdentifier":"浙A20001",
+                 "protocolVersion":"JT808_2019"}
+                """).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.tokenVersion").value(oldTokenVersion + 1))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(verification).doesNotContain(oldHash);
+
+        internalPost("/internal/jt-gateway/registrations/" + pending.getId() + "/complete", """
+                {"tokenVersion":%d,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(oldTokenVersion + 1, TOKEN_HASH)).andExpect(status().isOk());
+        pending = terminalRepository.findByTerminalCode("T-API-ROTATE").orElseThrow();
+        mockMvc.perform(post("/api/terminals/T-API-ROTATE/activate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(action(pending.getVersion(), "恢复上线")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("ACTIVE"));
+    }
+
+    @Test
+    void deniesTerminalReadToEveryNonAdminRole() throws Exception {
+        for (RoleCode role : java.util.List.of(RoleCode.DISPATCHER, RoleCode.OPERATOR, RoleCode.AUDITOR)) {
+            SimpleGrantedAuthority[] authorities = Permission.permissionsFor(java.util.Set.of(role)).stream()
+                    .map(Permission::name)
+                    .map(SimpleGrantedAuthority::new)
+                    .toArray(SimpleGrantedAuthority[]::new);
+            mockMvc.perform(get("/api/terminals").with(user(role.name()).authorities(authorities)))
+                    .andExpect(status().isForbidden());
+        }
+    }
+
+    @Test
     void returnsAcceptedForReplacementWhenOldTerminalDisconnectIsPending() throws Exception {
         JtTerminal oldTerminal = registerBindAndActivate("T-API-006", "PHONE-9006");
         mockMvc.perform(post("/api/terminals")
@@ -259,10 +363,6 @@ class TerminalApiTest {
                         .content(presetRequest("T-API-007", "PHONE-9007")))
                 .andExpect(status().isCreated());
         JtTerminal replacement = terminalRepository.findByTerminalCode("T-API-007").orElseThrow();
-        internalPost("/internal/jt-gateway/registrations/" + replacement.getId() + "/complete", """
-                {"tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
-                """.formatted(TOKEN_HASH)).andExpect(status().isOk());
-        replacement = terminalRepository.findByTerminalCode("T-API-007").orElseThrow();
         controlClient.available = false;
 
         mockMvc.perform(post("/api/terminals/T-API-006/replace")
@@ -272,7 +372,9 @@ class TerminalApiTest {
                                  "replacementExpectedVersion":%d,"reason":"设备换机"}
                                 """.formatted(oldTerminal.getVersion(), replacement.getVersion())))
                 .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.data.code").value("DISCONNECT_PENDING_CONFIRMATION"));
+                .andExpect(jsonPath("$.data.code").value("DISCONNECT_PENDING_CONFIRMATION"))
+                .andExpect(jsonPath("$.data.terminal.status").value("PENDING"))
+                .andExpect(jsonPath("$.data.terminal.registrationCompleted").value(false));
 
         assertThat(terminalRepository.findByTerminalCode("T-API-006").orElseThrow().getStatus())
                 .isEqualTo(JtTerminal.Status.RETIRED);
@@ -359,11 +461,20 @@ class TerminalApiTest {
     }
 
     private String presetRequest(String code, String phone) {
+        return presetRequestWithIdentity(code, phone, "MFG01", "MODEL-X", "JT808_2019", "设备预置");
+    }
+
+    private String presetRequestWithIdentity(
+            String code, String phone, String manufacturer, String model, String protocol, String reason) {
         return """
-                {"terminalPhone":"%s","terminalCode":"%s","manufacturerId":"MFG01",
-                 "model":"MODEL-X","protocolVersion":"JT808_2019","sourceCoordinateSystem":"GCJ02",
-                 "reason":"设备预置"}
-                """.formatted(phone, code);
+                {"terminalPhone":"%s","terminalCode":"%s","manufacturerId":"%s",
+                 "model":"%s","protocolVersion":"%s","sourceCoordinateSystem":"GCJ02",
+                 "reason":"%s"}
+                """.formatted(phone, code, manufacturer, model, protocol, reason);
+    }
+
+    private boolean serviceAuthentication(UUID terminalId, int version, String hash) {
+        return service.verifyAuthentication(terminalId, version, hash, "gateway-a").approved();
     }
 
     private String action(long version, String reason) {

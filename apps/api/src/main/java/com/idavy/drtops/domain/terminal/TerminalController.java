@@ -4,7 +4,7 @@ import com.idavy.drtops.common.ApiResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -106,13 +106,12 @@ public class TerminalController {
     }
 
     @PostMapping("/{terminalCode}/rotate-auth")
-    ApiResponse<TerminalView> rotateAuthentication(
+    ResponseEntity<ApiResponse<ActionView>> rotateAuthentication(
             @PathVariable String terminalCode,
             Authentication authentication,
-            @Valid @RequestBody RotateAuthRequest request) {
-        return ApiResponse.ok(TerminalView.from(service.rotateAuthentication(
-                terminalCode, request.expectedVersion(), request.tokenVersion(), request.tokenSha256(),
-                request.reason(), actorId(authentication))));
+            @Valid @RequestBody ActionRequest request) {
+        return actionResponse(service.rotateAuthentication(
+                terminalCode, request.expectedVersion(), request.reason(), actorId(authentication)));
     }
 
     private ResponseEntity<ApiResponse<ActionView>> actionResponse(TerminalManagementService.ActionResult result) {
@@ -128,33 +127,27 @@ public class TerminalController {
     }
 
     public record PresetRequest(
-            @NotBlank String terminalPhone,
-            @NotBlank String terminalCode,
-            @NotBlank String manufacturerId,
-            @NotBlank String model,
-            @NotBlank String protocolVersion,
-            @NotBlank String sourceCoordinateSystem,
-            @NotBlank String reason) {
+            @NotBlank @Size(max = 30) String terminalPhone,
+            @NotBlank @Size(max = 80) String terminalCode,
+            @NotBlank @Size(max = 80) String manufacturerId,
+            @NotBlank @Size(max = 120) String model,
+            @NotBlank @Size(max = 40) String protocolVersion,
+            @NotBlank @Size(max = 20) String sourceCoordinateSystem,
+            @NotBlank @Size(max = 300) String reason) {
     }
 
-    public record ActionRequest(@NotNull Long expectedVersion, @NotBlank String reason) {
+    public record ActionRequest(@NotNull Long expectedVersion, @NotBlank @Size(max = 300) String reason) {
     }
 
-    public record BindRequest(@NotNull UUID vehicleId, @NotNull Long expectedVersion, @NotBlank String reason) {
+    public record BindRequest(
+            @NotNull UUID vehicleId, @NotNull Long expectedVersion, @NotBlank @Size(max = 300) String reason) {
     }
 
     public record ReplaceRequest(
-            @NotBlank String replacementTerminalCode,
+            @NotBlank @Size(max = 80) String replacementTerminalCode,
             @NotNull Long expectedVersion,
             @NotNull Long replacementExpectedVersion,
-            @NotBlank String reason) {
-    }
-
-    public record RotateAuthRequest(
-            @NotNull Long expectedVersion,
-            @Positive int tokenVersion,
-            @NotBlank String tokenSha256,
-            @NotBlank String reason) {
+            @NotBlank @Size(max = 300) String reason) {
     }
 
     public record TerminalView(
@@ -175,6 +168,9 @@ public class TerminalController {
         }
 
         private static String mask(String value) {
+            if (value.length() <= 4) {
+                return "****";
+            }
             int visible = Math.min(4, value.length());
             return "****" + value.substring(value.length() - visible);
         }

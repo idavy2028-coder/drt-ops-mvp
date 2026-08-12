@@ -17,6 +17,8 @@ import java.util.HexFormat;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.ApplicationContext;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.MockMvcPrint;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -30,6 +32,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.servlet.http.HttpServletRequest;
 
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:gateway_service_auth;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
@@ -49,6 +52,9 @@ class GatewayServiceAuthenticationTest {
     @Autowired
     MockMvc mockMvc;
 
+    @Autowired
+    ApplicationContext applicationContext;
+
     @DynamicPropertySource
     static void gatewayCredentials(DynamicPropertyRegistry registry) {
         registry.add("jt.gateway.service-credentials.current.version", () -> "2");
@@ -58,18 +64,15 @@ class GatewayServiceAuthenticationTest {
     }
 
     @Test
-    void assignsTerminalPermissionsWithoutGrantingManagementOutsideSystemAdmin() {
+    void grantsTerminalPermissionsOnlyToSystemAdmin() {
         assertThat(Permission.permissionsFor(Set.of(RoleCode.SYSTEM_ADMIN)))
                 .contains(Permission.TERMINAL_READ, Permission.TERMINAL_MANAGE);
         assertThat(Permission.permissionsFor(Set.of(RoleCode.DISPATCHER)))
-                .contains(Permission.TERMINAL_READ)
-                .doesNotContain(Permission.TERMINAL_MANAGE);
+                .doesNotContain(Permission.TERMINAL_READ, Permission.TERMINAL_MANAGE);
         assertThat(Permission.permissionsFor(Set.of(RoleCode.OPERATOR)))
-                .contains(Permission.TERMINAL_READ)
-                .doesNotContain(Permission.TERMINAL_MANAGE);
+                .doesNotContain(Permission.TERMINAL_READ, Permission.TERMINAL_MANAGE);
         assertThat(Permission.permissionsFor(Set.of(RoleCode.AUDITOR)))
-                .contains(Permission.TERMINAL_READ)
-                .doesNotContain(Permission.TERMINAL_MANAGE);
+                .doesNotContain(Permission.TERMINAL_READ, Permission.TERMINAL_MANAGE);
     }
 
     @Test
@@ -113,6 +116,30 @@ class GatewayServiceAuthenticationTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void rejectsDuplicateAuthorizationOrCredentialVersionHeaders() throws Exception {
+        mockMvc.perform(get("/internal/jt-gateway/probe")
+                        .header("Authorization", "Bearer " + CURRENT, "Bearer " + CURRENT)
+                        .header("X-Service-Credential-Version", "2"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/internal/jt-gateway/probe")
+                        .header("Authorization", "Bearer " + CURRENT)
+                        .header("X-Service-Credential-Version", "2", "2"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void masksAuthorizationThroughBothHeaderAccessorsAndDisablesContainerRegistration() throws Exception {
+        performInternal("2", CURRENT)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authorizationHeaderMasked").value(true))
+                .andExpect(jsonPath("$.authorizationHeadersMasked").value(true));
+
+        FilterRegistrationBean<?> registration = applicationContext.getBean(
+                "gatewayServiceAuthenticationFilterRegistration", FilterRegistrationBean.class);
+        assertThat(registration.isEnabled()).isFalse();
+    }
+
     private org.springframework.test.web.servlet.ResultActions performInternal(String version, String credential)
             throws Exception {
         return mockMvc.perform(get("/internal/jt-gateway/probe")
@@ -140,8 +167,11 @@ class GatewayServiceAuthenticationTest {
     @RestController
     static class ProbeController {
         @GetMapping("/internal/jt-gateway/probe")
-        java.util.Map<String, String> internal(Authentication authentication) {
-            return java.util.Map.of("principal", authentication.getName());
+        java.util.Map<String, Object> internal(Authentication authentication, HttpServletRequest request) {
+            return java.util.Map.of(
+                    "principal", authentication.getName(),
+                    "authorizationHeaderMasked", request.getHeader("Authorization") == null,
+                    "authorizationHeadersMasked", !request.getHeaders("Authorization").hasMoreElements());
         }
 
         @GetMapping("/api/test-operator-domain")
