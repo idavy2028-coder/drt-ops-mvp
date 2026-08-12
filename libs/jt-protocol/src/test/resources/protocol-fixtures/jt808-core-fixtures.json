@@ -1,0 +1,70 @@
+[
+  {
+    "id": "registration-2013",
+    "messageName": "终端注册",
+    "version": "JT808_2013",
+    "messageId": "0100",
+    "terminalIdentity": "012345678901",
+    "serialNumber": 32767,
+    "bodyHex": "001f00730000000034000000000000000000000042534a2d47462d30367465737431323301b2e241383838383838",
+    "frameHex": "7e0100002e0123456789017fff001f00730000000034000000000000000000000042534a2d47462d30367465737431323301b2e241383838383838157e",
+    "source": {
+      "url": "https://github.com/yezhihao/jt808-server/blob/master/README.md#%E7%BB%88%E7%AB%AF%E6%B3%A8%E5%86%8C",
+      "license": "Apache-2.0",
+      "retrievedAt": "2026-08-12",
+      "provenance": "公开仓库 README 的合成终端注册示例，未包含真实终端或鉴权信息",
+      "frameAsciiSha256": "a5fd618f4433864521b2beedbbff7fa7ba72f3aada1e833b5212fc78e0a14bbd"
+    }
+  },
+  {
+    "id": "location-2013",
+    "messageName": "位置信息汇报",
+    "version": "JT808_2013",
+    "messageId": "0200",
+    "terminalIdentity": "123456789012",
+    "serialNumber": 126,
+    "bodyHex": "000000010000000200ba7f0e07e4f11c0028003c00001810151010100104000000640202007d",
+    "frameHex": "7e02000026123456789012007d02000000010000000200ba7f0e07e4f11c0028003c00001810151010100104000000640202007d01137e",
+    "source": {
+      "url": "https://github.com/SmallChi/JT808#%E4%B8%BE%E4%B8%AA%E6%A0%97%E5%AD%90-1",
+      "license": "MIT",
+      "retrievedAt": "2026-08-12",
+      "provenance": "公开仓库 README 的编码/解码断言示例，号码为文档合成值",
+      "frameAsciiSha256": "8ea93de2e8dc8ae2a6c0fa1ffa3ae7f8ab90cfa58f7c5966236405133249f4cf"
+    }
+  },
+  {
+    "id": "heartbeat-2019",
+    "messageName": "终端心跳",
+    "version": "JT808_2019",
+    "messageId": "0002",
+    "terminalIdentity": "00000000123456789012",
+    "serialNumber": 1,
+    "bodyHex": "",
+    "frameHex": "7e0002400001000000001234567890120001c87e",
+    "source": {
+      "url": "https://github.com/SmallChi/JT808#jt808-%E6%95%B0%E6%8D%AE%E7%BB%93%E6%9E%84%E8%A7%A3%E6%9E%90",
+      "license": "MIT",
+      "retrievedAt": "2026-08-12",
+      "provenance": "按公开的 2019 消息头结构和 0x0002 空消息体生成的脱敏确定性向量",
+      "frameAsciiSha256": "744d2957baea378fc6efeec3d1399da6bdddb9045d10275287ed6aa8b12dd203"
+    }
+  },
+  {
+    "id": "authentication-2019",
+    "messageName": "终端鉴权",
+    "version": "JT808_2019",
+    "messageId": "0102",
+    "terminalIdentity": "00000000123456789012",
+    "serialNumber": 2,
+    "bodyHex": "045445535431323334353637383930313233343550494c4f542d53572d312e300000000000000000",
+    "frameHex": "7e0102402801000000001234567890120002045445535431323334353637383930313233343550494c4f542d53572d312e300000000000000000a57e",
+    "source": {
+      "url": "https://www.mot.gov.cn/yijianzhengji/201706/P020170629514064508301.pdf",
+      "license": "交通运输行业标准公开征求意见稿",
+      "retrievedAt": "2026-08-12",
+      "provenance": "按 JT/T 808-2019 鉴权体字段生成；鉴权码、IMEI 和版本号均为测试专用合成值",
+      "frameAsciiSha256": "9f5c4789d0ac2259119c0bb2a78846bf51e25b31e21f2b4aac6fd5fbc16eaee1"
+    }
+  }
+]
