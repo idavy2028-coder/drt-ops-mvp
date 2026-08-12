@@ -3,6 +3,7 @@ package com.idavy.drtops.config;
 import com.idavy.drtops.auth.AuthAuditService;
 import java.util.UUID;
 import org.springframework.http.HttpMethod;
+import org.springframework.core.annotation.Order;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
@@ -21,6 +22,25 @@ import org.springframework.security.core.context.SecurityContextHolder;
 public class SecurityConfiguration {
 
     @Bean
+    @Order(1)
+    SecurityFilterChain gatewaySecurityFilterChain(
+            HttpSecurity http,
+            GatewayServiceAuthenticationFilter gatewayServiceAuthenticationFilter,
+            AuthenticationFailureHandler authenticationFailureHandler) throws Exception {
+        http.securityMatcher("/internal/jt-gateway/**")
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(authenticationFailureHandler)
+                        .accessDeniedHandler((request, response, exception) -> response.sendError(403)))
+                .authorizeHttpRequests(authorize -> authorize
+                        .anyRequest().hasAuthority(GatewayServiceAuthenticationFilter.PRINCIPAL))
+                .addFilterBefore(gatewayServiceAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             JwtAuthenticationFilter jwtAuthenticationFilter,
@@ -63,6 +83,8 @@ public class SecurityConfiguration {
                         .requestMatchers("/api/users/**").hasAuthority("USER_MANAGE")
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/location-reporting-candidates")
                         .hasAuthority("LOCATION_REPORT")
+                        .requestMatchers(HttpMethod.GET, "/api/terminals/**").hasAuthority("TERMINAL_READ")
+                        .requestMatchers("/api/terminals/**").hasAuthority("TERMINAL_MANAGE")
                         .requestMatchers(HttpMethod.POST, "/api/vehicles/*/location-reports").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/locations/latest").hasAuthority("LOCATION_READ")
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/*/location-events").hasAuthority("LOCATION_READ")

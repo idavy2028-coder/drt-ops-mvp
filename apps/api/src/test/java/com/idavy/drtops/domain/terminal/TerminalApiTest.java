@@ -1,0 +1,401 @@
+package com.idavy.drtops.domain.terminal;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.hasKey;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.idavy.drtops.domain.audit.AuditLogRepository;
+import com.idavy.drtops.domain.fleet.Vehicle;
+import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
+import com.jayway.jsonpath.JsonPath;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.autoconfigure.web.servlet.MockMvcPrint;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
+import org.springframework.http.MediaType;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.mock.http.client.reactive.MockClientHttpRequest;
+import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.reactive.function.BodyInserter;
+import org.springframework.web.reactive.function.BodyInserters;
+import org.springframework.web.reactive.function.client.ClientRequest;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
+
+@SpringBootTest(properties = {
+        "spring.datasource.url=jdbc:h2:mem:terminal_api;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+        "spring.datasource.username=sa",
+        "spring.datasource.password=",
+        "spring.datasource.driver-class-name=org.h2.Driver",
+        "spring.flyway.enabled=false",
+        "spring.jpa.hibernate.ddl-auto=create-drop"
+})
+@AutoConfigureMockMvc(print = MockMvcPrint.NONE, printOnlyOnFailure = false)
+@WithMockUser(username = "11111111-1111-1111-1111-111111111111",
+        authorities = {"TERMINAL_READ", "TERMINAL_MANAGE"})
+@Import(TerminalApiTest.ControlClientConfiguration.class)
+class TerminalApiTest {
+
+    private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final String SERVICE_CREDENTIAL = UUID.randomUUID().toString();
+    private static final String TOKEN_HASH = sha256(UUID.randomUUID().toString());
+
+    @Autowired
+    MockMvc mockMvc;
+
+    @Autowired
+    JtTerminalRepository terminalRepository;
+
+    @Autowired
+    JtTerminalVehicleBindingRepository bindingRepository;
+
+    @Autowired
+    JtGatewayAuditEventRepository gatewayAuditRepository;
+
+    @Autowired
+    AuditLogRepository auditLogRepository;
+
+    @Autowired
+    VehicleRepository vehicleRepository;
+
+    @Autowired
+    FakeControlClient controlClient;
+
+    @DynamicPropertySource
+    static void gatewayCredential(DynamicPropertyRegistry registry) {
+        registry.add("jt.gateway.service-credentials.current.version", () -> "7");
+        registry.add("jt.gateway.service-credentials.current.hash", () -> sha256(SERVICE_CREDENTIAL));
+    }
+
+    @BeforeEach
+    void setUp() {
+        gatewayAuditRepository.deleteAll();
+        auditLogRepository.deleteAll();
+        bindingRepository.deleteAll();
+        terminalRepository.deleteAll();
+        vehicleRepository.deleteAll();
+        controlClient.available = true;
+        controlClient.requests.clear();
+        vehicleRepository.save(Vehicle.create(
+                VEHICLE_ID, "浙A20001", "Microbus", 8, "IDLE",
+                "POINT(120.155 30.274)", "测试车队", true));
+    }
+
+    @Test
+    void managesTerminalByPublicCodeAndNeverReturnsInternalIdentityOrDigest() throws Exception {
+        String createResponse = mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-API-001", "PHONE-9001")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.terminalCode").value("T-API-001"))
+                .andExpect(jsonPath("$.data.terminalPhoneMasked").value("****9001"))
+                .andExpect(jsonPath("$.data", not(hasKey("id"))))
+                .andExpect(jsonPath("$.data", not(hasKey("authTokenHash"))))
+                .andReturn().getResponse().getContentAsString();
+
+        long version = ((Number) JsonPath.read(createResponse, "$.data.version")).longValue();
+        mockMvc.perform(post("/api/terminals/T-API-001/bind")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"vehicleId":"%s","expectedVersion":%d,"reason":"首配车辆"}
+                                """.formatted(VEHICLE_ID, version)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.terminalCode").value("T-API-001"));
+
+        mockMvc.perform(get("/api/terminals"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].terminalPhoneMasked").value("****9001"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString(TOKEN_HASH))));
+    }
+
+    @Test
+    void verifiesCompleteIdentityAndAcceptsOnlyGatewayGeneratedDigestOnCompletion() throws Exception {
+        JtTerminal terminal = presetAndBind("T-API-002", "PHONE-9002");
+
+        String verification = internalPost("/internal/jt-gateway/registrations/verify", """
+                {"terminalPhone":"PHONE-9002","terminalCode":"T-API-002",
+                 "manufacturerId":"MFG01","model":"MODEL-X","vehicleIdentifier":"浙A20001",
+                 "protocolVersion":"JT808_2019"}
+                """)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.terminalId").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+        UUID terminalId = UUID.fromString(JsonPath.read(verification, "$.data.terminalId"));
+        assertThat(terminalId).isEqualTo(terminal.getId());
+
+        internalPost("/internal/jt-gateway/registrations/verify", """
+                {"terminalPhone":"PHONE-OTHER","terminalCode":"T-API-002",
+                 "manufacturerId":"MFG01","model":"MODEL-X","vehicleIdentifier":"浙A20001",
+                 "protocolVersion":"JT808_2019"}
+                """)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(false))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("PHONE-OTHER"))));
+
+        internalPost("/internal/jt-gateway/registrations/" + terminalId + "/complete", """
+                {"tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(TOKEN_HASH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.completed").value(true))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString(TOKEN_HASH))));
+
+        JtTerminal registered = terminalRepository.findById(terminalId).orElseThrow();
+        mockMvc.perform(post("/api/terminals/T-API-002/activate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(action(registered.getVersion(), "正式启用")))
+                .andExpect(status().isOk());
+
+        internalPost("/internal/jt-gateway/authentications/verify", """
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(terminalId, TOKEN_HASH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true));
+        internalPost("/internal/jt-gateway/authentications/verify", """
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(terminalId, sha256(UUID.randomUUID().toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(false));
+    }
+
+    @Test
+    void appendsAllowedGatewayAuditEventWithoutEchoingTerminalIdentity() throws Exception {
+        JtTerminal terminal = presetAndBind("T-API-003", "PHONE-9003");
+        internalPost("/internal/jt-gateway/audit-events", """
+                {"terminalId":"%s","vehicleId":"%s","eventType":"ONLINE","result":"APPLIED",
+                 "reasonCode":"SESSION_ESTABLISHED","protocolVersion":"JT808_2019",
+                 "occurredAt":"2026-08-12T08:00:00Z","gatewayInstance":"gateway-a"}
+                """.formatted(terminal.getId(), VEHICLE_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.recorded").value(true));
+
+        assertThat(gatewayAuditRepository.findAll())
+                .singleElement()
+                .satisfies(event -> {
+                    assertThat(event.getEventType()).isEqualTo(JtGatewayAuditEvent.EventType.ONLINE);
+                    assertThat(event.getResult()).isEqualTo(JtGatewayAuditEvent.Result.APPLIED);
+                    assertThat(event.getTerminalId()).isEqualTo(terminal.getId());
+                });
+    }
+
+    @Test
+    void returnsConflictForStaleVersionAndAcceptedWhenDisconnectIsPending() throws Exception {
+        JtTerminal terminal = registerBindAndActivate("T-API-004", "PHONE-9004");
+
+        mockMvc.perform(post("/api/terminals/T-API-004/suspend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(action(terminal.getVersion() - 1, "过期请求")))
+                .andExpect(status().isConflict());
+
+        controlClient.available = false;
+        mockMvc.perform(post("/api/terminals/T-API-004/suspend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(action(terminal.getVersion(), "安全停用")))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.code").value("DISCONNECT_PENDING_CONFIRMATION"));
+
+        assertThat(terminalRepository.findByTerminalCode("T-API-004").orElseThrow().getStatus())
+                .isEqualTo(JtTerminal.Status.SUSPENDED);
+    }
+
+    @Test
+    void returnsConflictWhenActivationPreconditionsAreNotMet() throws Exception {
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-API-005", "PHONE-9005")))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/terminals/T-API-005/activate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(action(0, "提前启用")))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void rejectsActionWithoutExpectedVersion() throws Exception {
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-API-008", "PHONE-9008")))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/terminals/T-API-008/activate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"缺少版本\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void returnsAcceptedForReplacementWhenOldTerminalDisconnectIsPending() throws Exception {
+        JtTerminal oldTerminal = registerBindAndActivate("T-API-006", "PHONE-9006");
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-API-007", "PHONE-9007")))
+                .andExpect(status().isCreated());
+        JtTerminal replacement = terminalRepository.findByTerminalCode("T-API-007").orElseThrow();
+        internalPost("/internal/jt-gateway/registrations/" + replacement.getId() + "/complete", """
+                {"tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(TOKEN_HASH)).andExpect(status().isOk());
+        replacement = terminalRepository.findByTerminalCode("T-API-007").orElseThrow();
+        controlClient.available = false;
+
+        mockMvc.perform(post("/api/terminals/T-API-006/replace")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"replacementTerminalCode":"T-API-007","expectedVersion":%d,
+                                 "replacementExpectedVersion":%d,"reason":"设备换机"}
+                                """.formatted(oldTerminal.getVersion(), replacement.getVersion())))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.code").value("DISCONNECT_PENDING_CONFIRMATION"));
+
+        assertThat(terminalRepository.findByTerminalCode("T-API-006").orElseThrow().getStatus())
+                .isEqualTo(JtTerminal.Status.RETIRED);
+    }
+
+    @Test
+    void controlClientSendsOnlyInternalIdReasonAndIndependentControlCredential() {
+        java.util.concurrent.atomic.AtomicReference<ClientRequest> captured = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> capturedBody = new java.util.concurrent.atomic.AtomicReference<>();
+        WebClient.Builder builder = WebClient.builder().exchangeFunction(request -> {
+            captured.set(request);
+            MockClientHttpRequest outbound = new MockClientHttpRequest(request.method(), request.url());
+            request.body().insert(outbound, new BodyInserter.Context() {
+                @Override
+                public java.util.List<org.springframework.http.codec.HttpMessageWriter<?>> messageWriters() {
+                    return ExchangeStrategies.withDefaults().messageWriters();
+                }
+
+                @Override
+                public java.util.Optional<org.springframework.http.server.reactive.ServerHttpRequest> serverRequest() {
+                    return java.util.Optional.empty();
+                }
+
+                @Override
+                public java.util.Map<String, Object> hints() {
+                    return java.util.Map.of();
+                }
+            }).block();
+            capturedBody.set(outbound.getBodyAsString().block());
+            return Mono.just(ClientResponse.create(HttpStatus.OK).build());
+        });
+        String controlCredential = UUID.randomUUID().toString();
+        JtGatewayControlClient client = new JtGatewayControlClient.Http(
+                builder, "http://gateway.invalid", controlCredential, "11");
+        UUID terminalId = UUID.fromString("99999999-9999-9999-9999-999999999999");
+
+        assertThat(client.disconnect(terminalId, "TERMINAL_SUSPENDED")).isTrue();
+        assertThat(captured.get().method()).isEqualTo(HttpMethod.POST);
+        assertThat(captured.get().url().getPath())
+                .isEqualTo("/internal/control/terminals/" + terminalId + "/disconnect");
+        assertThat(captured.get().headers().getFirst("Authorization")).isEqualTo("Bearer " + controlCredential);
+        assertThat(captured.get().headers().getFirst("X-Control-Credential-Version")).isEqualTo("11");
+        assertThat(capturedBody.get()).isEqualTo("{\"reasonCode\":\"TERMINAL_SUSPENDED\"}");
+        assertThat(capturedBody.get()).doesNotContain(terminalId.toString());
+
+        JtGatewayControlClient unconfigured = new JtGatewayControlClient.Http(builder, "", "", "");
+        assertThat(unconfigured.disconnect(terminalId, "TERMINAL_SUSPENDED")).isFalse();
+    }
+
+    private JtTerminal presetAndBind(String code, String phone) throws Exception {
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest(code, phone)))
+                .andExpect(status().isCreated());
+        JtTerminal terminal = terminalRepository.findByTerminalCode(code).orElseThrow();
+        mockMvc.perform(post("/api/terminals/" + code + "/bind")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"vehicleId":"%s","expectedVersion":%d,"reason":"首配车辆"}
+                                """.formatted(VEHICLE_ID, terminal.getVersion())))
+                .andExpect(status().isOk());
+        return terminalRepository.findByTerminalCode(code).orElseThrow();
+    }
+
+    private JtTerminal registerBindAndActivate(String code, String phone) throws Exception {
+        JtTerminal terminal = presetAndBind(code, phone);
+        internalPost("/internal/jt-gateway/registrations/" + terminal.getId() + "/complete", """
+                {"tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(TOKEN_HASH)).andExpect(status().isOk());
+        terminal = terminalRepository.findByTerminalCode(code).orElseThrow();
+        mockMvc.perform(post("/api/terminals/" + code + "/activate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(action(terminal.getVersion(), "正式启用")))
+                .andExpect(status().isOk());
+        return terminalRepository.findByTerminalCode(code).orElseThrow();
+    }
+
+    private org.springframework.test.web.servlet.ResultActions internalPost(String path, String body) throws Exception {
+        return mockMvc.perform(post(path)
+                .header("Authorization", "Bearer " + SERVICE_CREDENTIAL)
+                .header("X-Service-Credential-Version", "7")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
+
+    private String presetRequest(String code, String phone) {
+        return """
+                {"terminalPhone":"%s","terminalCode":"%s","manufacturerId":"MFG01",
+                 "model":"MODEL-X","protocolVersion":"JT808_2019","sourceCoordinateSystem":"GCJ02",
+                 "reason":"设备预置"}
+                """.formatted(phone, code);
+    }
+
+    private String action(long version, String reason) {
+        return "{\"expectedVersion\":" + version + ",\"reason\":\"" + reason + "\"}";
+    }
+
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    @TestConfiguration
+    static class ControlClientConfiguration {
+        @Bean
+        @Primary
+        FakeControlClient fakeControlClient() {
+            return new FakeControlClient();
+        }
+    }
+
+    static final class FakeControlClient implements JtGatewayControlClient {
+        boolean available = true;
+        final ArrayList<String> requests = new ArrayList<>();
+
+        @Override
+        public boolean disconnect(UUID terminalId, String reasonCode) {
+            requests.add(reasonCode);
+            return available;
+        }
+    }
+}
