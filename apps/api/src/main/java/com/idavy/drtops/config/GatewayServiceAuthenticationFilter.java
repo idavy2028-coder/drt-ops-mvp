@@ -131,7 +131,7 @@ public class GatewayServiceAuthenticationFilter extends OncePerRequestFilter {
 
         @Override
         public String getHeader(String name) {
-            if ("Authorization".equalsIgnoreCase(name)) {
+            if (isCredentialHeader(name)) {
                 return null;
             }
             return super.getHeader(name);
@@ -139,10 +139,14 @@ public class GatewayServiceAuthenticationFilter extends OncePerRequestFilter {
 
         @Override
         public Enumeration<String> getHeaders(String name) {
-            if ("Authorization".equalsIgnoreCase(name)) {
+            if (isCredentialHeader(name)) {
                 return Collections.emptyEnumeration();
             }
             return super.getHeaders(name);
+        }
+
+        private static boolean isCredentialHeader(String name) {
+            return "Authorization".equalsIgnoreCase(name) || VERSION_HEADER.equalsIgnoreCase(name);
         }
     }
 }

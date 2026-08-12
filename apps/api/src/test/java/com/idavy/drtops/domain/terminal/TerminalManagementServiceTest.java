@@ -18,6 +18,11 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
+import jakarta.persistence.EntityManager;
 
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:terminal_management;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
@@ -56,6 +61,12 @@ class TerminalManagementServiceTest {
 
     @Autowired
     FakeControlClient controlClient;
+
+    @Autowired
+    EntityManager entityManager;
+
+    @Autowired
+    PlatformTransactionManager transactionManager;
 
     @BeforeEach
     void setUp() {
@@ -108,6 +119,28 @@ class TerminalManagementServiceTest {
         assertThat(terminalRepository.findByTerminalCode("T-002").orElseThrow().getStatus())
                 .isEqualTo(JtTerminal.Status.ACTIVE);
         assertThat(auditActions()).doesNotContain("JT_TERMINAL_SUSPENDED");
+    }
+
+    @Test
+    void exposesARealOptimisticLockFailureFromIndependentTransactions() {
+        JtTerminal terminal = preset("T-OPTIMISTIC", "PHONE-OPTIMISTIC");
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        JtTerminal stale = transaction.execute(status -> entityManager.find(JtTerminal.class, terminal.getId()));
+        transaction.executeWithoutResult(status -> {
+            JtTerminal current = entityManager.find(JtTerminal.class, terminal.getId());
+            current.touch();
+            entityManager.flush();
+        });
+        stale.touch();
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+                    terminalRepository.saveAndFlush(stale);
+                }))
+                .isInstanceOfAny(
+                        ObjectOptimisticLockingFailureException.class,
+                        jakarta.persistence.OptimisticLockException.class);
     }
 
     @Test

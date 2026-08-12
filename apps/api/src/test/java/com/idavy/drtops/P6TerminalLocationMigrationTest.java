@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import org.postgresql.util.PSQLException;
 
 class P6TerminalLocationMigrationTest {
 
@@ -180,13 +181,15 @@ class P6TerminalLocationMigrationTest {
                 .hasMessageContaining("duplicate key");
 
         insertBinding(connection, firstTerminalId, firstVehicleId);
-        assertThatThrownBy(() -> insertBinding(connection, firstTerminalId, secondVehicleId))
-                .isInstanceOf(SQLException.class)
-                .hasMessageContaining("duplicate key");
+        SQLException activeTerminalViolation = org.assertj.core.api.Assertions.catchThrowableOfType(
+                () -> insertBinding(connection, firstTerminalId, secondVehicleId), SQLException.class);
+        assertUniqueConstraint(activeTerminalViolation,
+                "uq_jt_terminal_vehicle_bindings_active_terminal");
         insertTerminal(connection, secondTerminalId, "VIRTUAL-TERM-002", "VIRTUAL-CODE-002");
-        assertThatThrownBy(() -> insertBinding(connection, secondTerminalId, firstVehicleId))
-                .isInstanceOf(SQLException.class)
-                .hasMessageContaining("duplicate key");
+        SQLException activeVehicleViolation = org.assertj.core.api.Assertions.catchThrowableOfType(
+                () -> insertBinding(connection, secondTerminalId, firstVehicleId), SQLException.class);
+        assertUniqueConstraint(activeVehicleViolation,
+                "uq_jt_terminal_vehicle_bindings_active_vehicle");
         assertThatThrownBy(() -> insertBindingWithValidity(connection, UUID.randomUUID(), secondTerminalId, secondVehicleId,
                         "ACTIVE", OffsetDateTime.parse("2099-08-02T10:00:00+08:00")))
                 .isInstanceOf(SQLException.class)
@@ -203,6 +206,22 @@ class P6TerminalLocationMigrationTest {
                         "VIRTUAL-CODE-VERSION", "a".repeat(64), 0))
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("check constraint");
+    }
+
+    private static void assertUniqueConstraint(SQLException exception, String expectedConstraint) {
+        assertThat((Object) exception).isNotNull();
+        assertThat(exception.getSQLState()).isEqualTo("23505");
+        assertThat(postgresConstraintName(exception)).isEqualTo(expectedConstraint);
+    }
+
+    private static String postgresConstraintName(SQLException exception) {
+        for (SQLException current = exception; current != null; current = current.getNextException()) {
+            if (current instanceof PSQLException postgresException
+                    && postgresException.getServerErrorMessage() != null) {
+                return postgresException.getServerErrorMessage().getConstraint();
+            }
+        }
+        return null;
     }
 
     private static void insertTerminal(Connection connection, UUID terminalId, String terminalPhone, String terminalCode)

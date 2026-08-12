@@ -133,7 +133,9 @@ class GatewayServiceAuthenticationTest {
         performInternal("2", CURRENT)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.authorizationHeaderMasked").value(true))
-                .andExpect(jsonPath("$.authorizationHeadersMasked").value(true));
+                .andExpect(jsonPath("$.authorizationHeadersMasked").value(true))
+                .andExpect(jsonPath("$.versionHeaderMasked").value(true))
+                .andExpect(jsonPath("$.versionHeadersMasked").value(true));
 
         FilterRegistrationBean<?> registration = applicationContext.getBean(
                 "gatewayServiceAuthenticationFilterRegistration", FilterRegistrationBean.class);
@@ -171,7 +173,10 @@ class GatewayServiceAuthenticationTest {
             return java.util.Map.of(
                     "principal", authentication.getName(),
                     "authorizationHeaderMasked", request.getHeader("Authorization") == null,
-                    "authorizationHeadersMasked", !request.getHeaders("Authorization").hasMoreElements());
+                    "authorizationHeadersMasked", !request.getHeaders("Authorization").hasMoreElements(),
+                    "versionHeaderMasked", request.getHeader("X-Service-Credential-Version") == null,
+                    "versionHeadersMasked",
+                    !request.getHeaders("X-Service-Credential-Version").hasMoreElements());
         }
 
         @GetMapping("/api/test-operator-domain")
