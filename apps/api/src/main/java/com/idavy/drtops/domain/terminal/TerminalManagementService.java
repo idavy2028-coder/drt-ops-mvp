@@ -7,12 +7,14 @@ import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.OffsetDateTime;
+import java.time.Clock;
 import java.util.Map;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -31,6 +33,7 @@ public class TerminalManagementService {
     private final JtGatewayControlClient controlClient;
     private final TransactionTemplate committedStateTransaction;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
 
     public TerminalManagementService(
             JtTerminalRepository terminalRepository,
@@ -40,7 +43,8 @@ public class TerminalManagementService {
             JtGatewayAuditEventRepository gatewayAuditRepository,
             JtGatewayControlClient controlClient,
             PlatformTransactionManager transactionManager,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            ObjectProvider<Clock> clocks) {
         this.terminalRepository = terminalRepository;
         this.bindingRepository = bindingRepository;
         this.vehicleRepository = vehicleRepository;
@@ -50,6 +54,7 @@ public class TerminalManagementService {
         this.committedStateTransaction = new TransactionTemplate(transactionManager);
         this.committedStateTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.objectMapper = objectMapper;
+        this.clock = clocks.getIfAvailable(Clock::systemUTC);
     }
 
     @Transactional(readOnly = true)
@@ -79,9 +84,15 @@ public class TerminalManagementService {
                 .toList();
         OffsetDateTime lastSeenAt = terminal.getLastSeenAt();
         OnlineStatus onlineStatus = lastSeenAt == null ? OnlineStatus.NEVER_SEEN
-                : lastSeenAt.isBefore(OffsetDateTime.now().minusSeconds(180)) ? OnlineStatus.OFFLINE : OnlineStatus.ONLINE;
+                : lastSeenAt.isBefore(OffsetDateTime.now(clock).minusSeconds(180)) ? OnlineStatus.OFFLINE : OnlineStatus.ONLINE;
+        BindingSummary currentBinding = bindingRepository.findByTerminalIdAndStatus(terminal.getId(),
+                        JtTerminalVehicleBinding.Status.ACTIVE)
+                .map(binding -> new BindingSummary(vehicleRepository.findById(binding.getVehicleId())
+                        .map(vehicle -> vehicle.getPlateNumber()).orElse("车辆已不可用"), binding.getStatus().name(),
+                        binding.getValidFrom(), binding.getValidTo()))
+                .orElse(null);
         return new TerminalDetail(terminal, onlineStatus, lastSeenAt,
-                lastSeenAt == null ? null : lastSeenAt.plusSeconds(180), bindings.isEmpty() ? null : bindings.get(0), bindings, audits);
+                onlineStatus == OnlineStatus.OFFLINE ? lastSeenAt.plusSeconds(180) : null, currentBinding, bindings, audits);
     }
 
     @Transactional

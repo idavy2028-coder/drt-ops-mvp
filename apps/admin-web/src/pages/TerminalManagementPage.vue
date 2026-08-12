@@ -9,6 +9,8 @@ type RiskAction = "preset" | "bind" | "activate" | "suspend" | "retire" | "repla
 
 const terminals = ref<TerminalSummary[]>([]);
 const selected = ref<TerminalDetail | null>(null);
+const selectedCode = ref("");
+let selectionRequest = 0;
 const vehicles = ref<Vehicle[]>([]);
 const loading = ref(false);
 const error = ref("");
@@ -17,7 +19,6 @@ const reason = ref("");
 const confirmed = ref(false);
 const vehicleId = ref("");
 const replacementTerminalCode = ref("");
-const replacementExpectedVersion = ref(0);
 const preset = ref({ terminalPhone: "", terminalCode: "", manufacturerId: "", model: "", protocolVersion: "JT808_2019", sourceCoordinateSystem: "GCJ02" });
 const canManage = computed(() => authStore.has("TERMINAL_MANAGE"));
 
@@ -39,11 +40,16 @@ async function load() {
 }
 
 async function select(terminalCode: string) {
+  const request = ++selectionRequest;
+  selectedCode.value = terminalCode;
+  selected.value = null;
+  action.value = null;
   error.value = "";
   try {
-    selected.value = await terminalApi.getTerminalDetail(terminalCode);
+    const detail = await terminalApi.getTerminalDetail(terminalCode);
+    if (request === selectionRequest && selectedCode.value === terminalCode) selected.value = detail;
   } catch {
-    error.value = "终端详情暂时不可用，请稍后重试";
+    if (request === selectionRequest) error.value = "终端详情暂时不可用，请稍后重试";
   }
 }
 
@@ -53,7 +59,6 @@ function beginAction(next: RiskAction) {
   confirmed.value = false;
   vehicleId.value = "";
   replacementTerminalCode.value = "";
-  replacementExpectedVersion.value = 0;
 }
 
 async function submitAction() {
@@ -66,25 +71,30 @@ async function submitAction() {
       if (terminals.value[0]) await select(terminals.value[0].terminalCode);
       return;
     }
-    if (!selected.value) return;
-    const input = { expectedVersion: selected.value.version, reason: reason.value.trim() };
+    if (!selected.value || selected.value.terminalCode !== selectedCode.value) return;
+    const sourceCode = selectedCode.value;
+    const latestSource = await terminalApi.getTerminalDetail(sourceCode);
+    if (sourceCode !== selectedCode.value || !action.value) return;
+    const input = { expectedVersion: latestSource.version, reason: reason.value.trim() };
     switch (action.value) {
       case "bind":
         if (!vehicleId.value) return;
-        await terminalApi.bindTerminal(selected.value.terminalCode, { ...input, vehicleId: vehicleId.value });
+        await terminalApi.bindTerminal(sourceCode, { ...input, vehicleId: vehicleId.value });
         break;
-      case "activate": await terminalApi.activateTerminal(selected.value.terminalCode, input); break;
-      case "suspend": await terminalApi.suspendTerminal(selected.value.terminalCode, input); break;
-      case "retire": await terminalApi.retireTerminal(selected.value.terminalCode, input); break;
-      case "rotate": await terminalApi.rotateTerminalAuthentication(selected.value.terminalCode, input); break;
-      case "disconnect": await terminalApi.disconnectTerminal(selected.value.terminalCode, input); break;
+      case "activate": await terminalApi.activateTerminal(sourceCode, input); break;
+      case "suspend": await terminalApi.suspendTerminal(sourceCode, input); break;
+      case "retire": await terminalApi.retireTerminal(sourceCode, input); break;
+      case "rotate": await terminalApi.rotateTerminalAuthentication(sourceCode, input); break;
+      case "disconnect": await terminalApi.disconnectTerminal(sourceCode, input); break;
       case "replace":
-        if (!replacementTerminalCode.value || replacementExpectedVersion.value < 0) return;
-        await terminalApi.replaceTerminal(selected.value.terminalCode, { ...input, replacementTerminalCode: replacementTerminalCode.value, replacementExpectedVersion: replacementExpectedVersion.value });
+        if (!replacementTerminalCode.value || replacementTerminalCode.value === sourceCode) return;
+        const latestReplacement = await terminalApi.getTerminalDetail(replacementTerminalCode.value);
+        if (sourceCode !== selectedCode.value) return;
+        await terminalApi.replaceTerminal(sourceCode, { ...input, replacementTerminalCode: replacementTerminalCode.value, replacementExpectedVersion: latestReplacement.version });
         break;
     }
     action.value = null;
-    await select(selected.value.terminalCode);
+    await select(sourceCode);
     terminals.value = await terminalApi.listTerminals();
   } catch {
     error.value = "管理操作未完成，请刷新终端状态后重试";
@@ -103,7 +113,7 @@ function time(value: string | null) { return value ? new Date(value).toLocaleStr
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <div class="layout">
       <aside class="terminal-list" aria-label="终端列表">
-        <button v-for="terminal in terminals" :key="terminal.terminalCode" type="button" :class="{ selected: selected?.terminalCode === terminal.terminalCode }" @click="select(terminal.terminalCode)">
+        <button v-for="terminal in terminals" :key="terminal.terminalCode" type="button" :class="{ selected: selectedCode === terminal.terminalCode }" @click="select(terminal.terminalCode)">
           <strong>{{ terminal.terminalCode }}</strong><span>{{ terminal.terminalPhoneMasked }}</span><small>{{ terminal.status }} · {{ terminal.registrationCompleted ? "已注册" : "待注册" }}</small>
         </button>
         <p v-if="!loading && terminals.length === 0">暂无终端</p>
@@ -118,7 +128,7 @@ function time(value: string | null) { return value ? new Date(value).toLocaleStr
         </div>
         <section class="audit"><h4>安全审计</h4><p v-if="selected.securityAudits.length === 0">尚无数据</p><table v-else><thead><tr><th>事件</th><th>结果</th><th>原因码</th><th>协议/消息 ID</th><th>发生时间</th></tr></thead><tbody><tr v-for="audit in selected.securityAudits" :key="`${audit.eventType}-${audit.occurredAt}`"><td>{{ audit.eventType }}</td><td>{{ audit.result }}</td><td>{{ audit.reasonCode ?? "—" }}</td><td>{{ audit.protocolVersion ?? "—" }}{{ audit.messageId === null ? "" : ` / ${audit.messageId}` }}</td><td>{{ time(audit.occurredAt) }}</td></tr></tbody></table></section>
         <section v-if="canManage" class="actions"><h4>受控管理操作</h4><p>所有操作须填写原因，并在提交前进行第二次确认；提交时使用当前版本 {{ selected.version }}。</p><div class="action-buttons"><button type="button" @click="beginAction('bind')">绑定车辆</button><button type="button" @click="beginAction('activate')">激活终端</button><button type="button" @click="beginAction('replace')">换机</button><button type="button" @click="beginAction('suspend')">暂停终端</button><button type="button" @click="beginAction('retire')">退役终端</button><button type="button" @click="beginAction('rotate')">轮换鉴权</button><button type="button" @click="beginAction('disconnect')">强制断开</button></div>
-          <form v-if="action" class="confirmation" @submit.prevent="submitAction"><h5>二次确认：{{ action }}</h5><label>操作原因<textarea v-model="reason" required maxlength="300" /></label><label v-if="action === 'bind'">车辆<select v-model="vehicleId" required><option value="">请选择</option><option v-for="vehicle in vehicles" :key="vehicle.id" :value="vehicle.id">{{ vehicle.plateNumber }}</option></select></label><template v-if="action === 'replace'"><label>替换终端代码<input v-model="replacementTerminalCode" required /></label><label>替换终端版本<input v-model.number="replacementExpectedVersion" type="number" min="0" required /></label></template><label class="check"><input v-model="confirmed" type="checkbox" /> 我已核对风险与原因，确认执行。</label><button type="submit" :disabled="!confirmed || !reason.trim()">确认执行</button><button class="secondary-button" type="button" @click="action = null">取消</button></form>
+          <form v-if="action" class="confirmation" @submit.prevent="submitAction"><h5>二次确认：{{ selected.terminalCode }} · {{ action }}</h5><label>操作原因<textarea v-model="reason" required maxlength="300" /></label><label v-if="action === 'bind'">车辆<select v-model="vehicleId" required><option value="">请选择</option><option v-for="vehicle in vehicles" :key="vehicle.id" :value="vehicle.id">{{ vehicle.plateNumber }}</option></select></label><template v-if="action === 'replace'"><label>替换终端<select v-model="replacementTerminalCode" required><option value="">请选择</option><option v-for="terminal in terminals.filter(item => item.terminalCode !== selectedCode)" :key="terminal.terminalCode" :value="terminal.terminalCode">{{ terminal.terminalCode }} · {{ terminal.terminalPhoneMasked }}</option></select></label></template><label class="check"><input v-model="confirmed" type="checkbox" /> 我已核对风险与原因，确认执行。</label><button type="submit" :disabled="!confirmed || !reason.trim()">确认执行</button><button class="secondary-button" type="button" @click="action = null">取消</button></form>
         </section>
       </article>
     </div>

@@ -20,6 +20,10 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.UUID;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.OffsetDateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -386,6 +390,53 @@ class TerminalApiTest {
     }
 
     @Test
+    void detailHasNoCurrentBindingAfterRetireOrReplacement() throws Exception {
+        JtTerminal retired = registerBindAndActivate("T-DETAIL-RETIRED", "PHONE-RETIRED");
+        mockMvc.perform(post("/api/terminals/T-DETAIL-RETIRED/retire")
+                        .contentType(MediaType.APPLICATION_JSON).content(action(retired.getVersion(), "设备退役")))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/terminals/T-DETAIL-RETIRED"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.currentBinding").doesNotExist());
+
+        JtTerminal oldTerminal = registerBindAndActivate("T-DETAIL-OLD", "PHONE-OLD");
+        mockMvc.perform(post("/api/terminals").contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-DETAIL-NEW", "PHONE-NEW"))).andExpect(status().isCreated());
+        JtTerminal replacement = terminalRepository.findByTerminalCode("T-DETAIL-NEW").orElseThrow();
+        mockMvc.perform(post("/api/terminals/T-DETAIL-OLD/replace").contentType(MediaType.APPLICATION_JSON).content("""
+                {"replacementTerminalCode":"T-DETAIL-NEW","expectedVersion":%d,"replacementExpectedVersion":%d,"reason":"换机"}
+                """.formatted(oldTerminal.getVersion(), replacement.getVersion()))) .andExpect(status().isOk());
+        mockMvc.perform(get("/api/terminals/T-DETAIL-OLD"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.currentBinding").doesNotExist());
+    }
+
+    @Test
+    void reportsOnlineBoundaryAndOnlyExposesOfflineTimeWhenOffline() throws Exception {
+        JtTerminal terminal = presetAndBind("T-DETAIL-CLOCK", "PHONE-CLOCK");
+        org.springframework.test.util.ReflectionTestUtils.setField(terminal, "lastSeenAt", OffsetDateTime.parse("2026-08-12T08:57:00Z"));
+        terminalRepository.saveAndFlush(terminal);
+        mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.onlineStatus").value("ONLINE"))
+                .andExpect(jsonPath("$.data.offlineAt").doesNotExist());
+        terminal = terminalRepository.findByTerminalCode("T-DETAIL-CLOCK").orElseThrow();
+        org.springframework.test.util.ReflectionTestUtils.setField(terminal, "lastSeenAt", OffsetDateTime.parse("2026-08-12T08:56:59Z"));
+        terminalRepository.saveAndFlush(terminal);
+        mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.onlineStatus").value("OFFLINE"))
+                .andExpect(jsonPath("$.data.offlineAt").value("2026-08-12T08:59:59Z"));
+    }
+
+    @Test
+    void deniesTerminalDetailAndManagementActionToNonAdminRoles() throws Exception {
+        for (RoleCode role : java.util.List.of(RoleCode.DISPATCHER, RoleCode.OPERATOR, RoleCode.AUDITOR)) {
+            SimpleGrantedAuthority[] authorities = Permission.permissionsFor(java.util.Set.of(role)).stream()
+                    .map(Permission::name).map(SimpleGrantedAuthority::new).toArray(SimpleGrantedAuthority[]::new);
+            mockMvc.perform(get("/api/terminals/anything").with(user(role.name()).authorities(authorities))).andExpect(status().isForbidden());
+            mockMvc.perform(post("/api/terminals/anything/suspend").contentType(MediaType.APPLICATION_JSON)
+                    .content(action(1, "未授权")).with(user(role.name()).authorities(authorities))).andExpect(status().isForbidden());
+        }
+    }
+
+    @Test
     void returnsAcceptedForReplacementWhenOldTerminalDisconnectIsPending() throws Exception {
         JtTerminal oldTerminal = registerBindAndActivate("T-API-006", "PHONE-9006");
         mockMvc.perform(post("/api/terminals")
@@ -526,6 +577,11 @@ class TerminalApiTest {
         @Primary
         FakeControlClient fakeControlClient() {
             return new FakeControlClient();
+        }
+
+        @Bean
+        Clock terminalClock() {
+            return Clock.fixed(Instant.parse("2026-08-12T09:00:00Z"), ZoneOffset.UTC);
         }
     }
 

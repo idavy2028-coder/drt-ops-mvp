@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/vue";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
 import TerminalManagementPage from "./TerminalManagementPage.vue";
@@ -58,11 +58,68 @@ describe("TerminalManagementPage", () => {
     await Promise.resolve();
     expect(screen.queryByRole("button", { name: "暂停终端" })).not.toBeInTheDocument();
   });
+
+  it("uses freshly loaded versions for replacement and blocks an unconfirmed action", async () => {
+    terminalApi.listTerminals.mockResolvedValue([
+      summary("JT-001", 4), summary("JT-002", 9)
+    ]);
+    terminalApi.getTerminalDetail.mockImplementation(async (code: string) => detail(code, code === "JT-002" ? 11 : 6));
+    render(TerminalManagementPage);
+    await screen.findByRole("button", { name: "换机" });
+    await fireEvent.click(screen.getByRole("button", { name: "换机" }));
+    await fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    expect(terminalApi.replaceTerminal).not.toHaveBeenCalled();
+    await fireEvent.update(screen.getByLabelText("操作原因"), "换机原因");
+    await fireEvent.update(screen.getByLabelText("替换终端"), "JT-002");
+    await fireEvent.click(screen.getByLabelText("我已核对风险与原因，确认执行。"));
+    await fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    await waitFor(() => expect(terminalApi.replaceTerminal).toHaveBeenCalledWith("JT-001", expect.objectContaining({ expectedVersion: 6, replacementTerminalCode: "JT-002", replacementExpectedVersion: 11, reason: "换机原因" })));
+  });
+
+  it("keeps the newest terminal selection when an earlier detail request resolves late", async () => {
+    let resolveFirst: (value: ReturnType<typeof detail>) => void;
+    terminalApi.listTerminals.mockResolvedValue([summary("JT-001", 4), summary("JT-002", 5)]);
+    terminalApi.getTerminalDetail.mockImplementation((code: string) => code === "JT-001"
+      ? new Promise((resolve) => { resolveFirst = resolve; })
+      : Promise.resolve(detail("JT-002", 5)));
+    render(TerminalManagementPage);
+    await screen.findByText("JT-002");
+    await fireEvent.click(screen.getByRole("button", { name: /JT-002/ }));
+    expect(await screen.findByRole("heading", { name: "JT-002" })).toBeInTheDocument();
+    resolveFirst!(detail("JT-001", 4));
+    await Promise.resolve();
+    expect(screen.getByRole("heading", { name: "JT-002" })).toBeInTheDocument();
+  });
+
+  it("clears old detail and disables actions when the current detail load fails", async () => {
+    terminalApi.listTerminals.mockResolvedValue([summary("JT-001", 4), summary("JT-002", 5)]);
+    terminalApi.getTerminalDetail.mockImplementation((code: string) => code === "JT-002"
+      ? Promise.reject(new Error("unavailable")) : Promise.resolve(detail("JT-001", 4)));
+    render(TerminalManagementPage);
+    await screen.findByRole("button", { name: "暂停终端" });
+    await fireEvent.click(screen.getByRole("button", { name: /JT-002/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("终端详情暂时不可用");
+    expect(screen.queryByRole("button", { name: "暂停终端" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["暂停终端", "suspendTerminal"], ["退役终端", "retireTerminal"], ["轮换鉴权", "rotateTerminalAuthentication"], ["强制断开", "disconnectTerminal"]
+  ])("refreshes the source version before %s", async (label, method) => {
+    terminalApi.getTerminalDetail.mockResolvedValue(detail("JT-001", 12));
+    render(TerminalManagementPage);
+    await screen.findByRole("button", { name: label });
+    await fireEvent.click(screen.getByRole("button", { name: label }));
+    await fireEvent.update(screen.getByLabelText("操作原因"), "安全原因");
+    await fireEvent.click(screen.getByLabelText("我已核对风险与原因，确认执行。"));
+    await fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    await waitFor(() => expect(terminalApi[method as keyof typeof terminalApi]).toHaveBeenCalledWith("JT-001", { expectedVersion: 12, reason: "安全原因" }));
+  });
 });
 
-function detail() {
+function summary(terminalCode = "JT-001", version = 4) { return { terminalCode, terminalPhoneMasked: "****9012", manufacturerId: "MFG", model: "X1", protocolVersion: "JT808_2019", sourceCoordinateSystem: "GCJ02", status: "ACTIVE", registrationCompleted: true, version }; }
+function detail(terminalCode = "JT-001", version = 4) {
   return {
-    terminalCode: "JT-001",
+    terminalCode,
     terminalPhoneMasked: "****9012",
     manufacturerId: "MFG",
     model: "X1",
@@ -74,7 +131,7 @@ function detail() {
     status: "ACTIVE",
     onlineStatus: "NEVER_SEEN",
     registrationCompleted: true,
-    version: 4,
+    version,
     lastRegisteredAt: "2026-08-12T08:00:00Z",
     lastAuthenticatedAt: null,
     lastValidMessageAt: null,
