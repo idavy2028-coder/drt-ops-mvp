@@ -141,6 +141,36 @@ class TerminalApiTest {
     }
 
     @Test
+    void returnsAReadOnlyTerminalDetailWithoutSensitiveGatewayFields() throws Exception {
+        JtTerminal terminal = presetAndBind("T-API-DETAIL", "PHONE-9012");
+        JtGatewayAuditEvent event = JtGatewayAuditEvent.record(
+                terminal.getId(), VEHICLE_ID, JtGatewayAuditEvent.EventType.ONLINE,
+                JtGatewayAuditEvent.Result.APPLIED, "SESSION_ESTABLISHED", "JT808_2019", 2,
+                TOKEN_HASH, "203.0.113.7:8800", java.time.OffsetDateTime.parse("2026-08-12T08:00:00Z"), "gateway-a");
+        gatewayAuditRepository.save(event);
+
+        String response = mockMvc.perform(get("/api/terminals/T-API-DETAIL"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.terminalCode").value("T-API-DETAIL"))
+                .andExpect(jsonPath("$.data.terminalPhoneMasked").value("****9012"))
+                .andExpect(jsonPath("$.data.onlineStatus").value("NEVER_SEEN"))
+                .andExpect(jsonPath("$.data.lastAuthenticatedAt").isEmpty())
+                .andExpect(jsonPath("$.data.lastHeartbeatAt").isEmpty())
+                .andExpect(jsonPath("$.data.lastLocationAt").isEmpty())
+                .andExpect(jsonPath("$.data.currentBinding.plateNumber").value("浙A20001"))
+                .andExpect(jsonPath("$.data.bindingHistory[0].plateNumber").value("浙A20001"))
+                .andExpect(jsonPath("$.data.securityAudits[0].eventType").value("ONLINE"))
+                .andExpect(jsonPath("$.data.securityAudits[0].reasonCode").value("SESSION_ESTABLISHED"))
+                .andExpect(jsonPath("$.data", not(hasKey("id"))))
+                .andExpect(jsonPath("$.data", not(hasKey("authTokenHash"))))
+                .andExpect(jsonPath("$.data", not(hasKey("authTokenVersion"))))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(response).doesNotContain(terminal.getId().toString(), VEHICLE_ID.toString(), "PHONE-9012",
+                TOKEN_HASH, "203.0.113.7:8800");
+    }
+
+    @Test
     void neverReconstructsACompleteShortTerminalPhone() throws Exception {
         mockMvc.perform(post("/api/terminals")
                         .contentType(MediaType.APPLICATION_JSON)

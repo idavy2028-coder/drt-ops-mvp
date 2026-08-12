@@ -33,8 +33,8 @@ public class TerminalController {
     }
 
     @GetMapping("/{terminalCode}")
-    ApiResponse<TerminalView> get(@PathVariable String terminalCode) {
-        return ApiResponse.ok(TerminalView.from(service.get(terminalCode)));
+    ApiResponse<TerminalDetailView> get(@PathVariable String terminalCode) {
+        return ApiResponse.ok(TerminalDetailView.from(service.getDetail(terminalCode)));
     }
 
     @PostMapping
@@ -177,5 +177,49 @@ public class TerminalController {
     }
 
     public record ActionView(String code, TerminalView terminal) {
+    }
+
+    public record TerminalDetailView(
+            String terminalCode,
+            String terminalPhoneMasked,
+            String manufacturerId,
+            String model,
+            String protocolVersion,
+            String sourceCoordinateSystem,
+            String activeSafetyStandard,
+            java.util.List<String> activeSafetyModules,
+            boolean jt1078Enabled,
+            String status,
+            String onlineStatus,
+            boolean registrationCompleted,
+            long version,
+            java.time.OffsetDateTime lastRegisteredAt,
+            java.time.OffsetDateTime lastAuthenticatedAt,
+            java.time.OffsetDateTime lastValidMessageAt,
+            java.time.OffsetDateTime lastHeartbeatAt,
+            java.time.OffsetDateTime lastLocationAt,
+            java.time.OffsetDateTime offlineAt,
+            TerminalManagementService.BindingSummary currentBinding,
+            java.util.List<TerminalManagementService.BindingSummary> bindingHistory,
+            java.util.List<TerminalManagementService.GatewayAuditSummary> securityAudits) {
+        static TerminalDetailView from(TerminalManagementService.TerminalDetail detail) {
+            JtTerminal terminal = detail.terminal();
+            return new TerminalDetailView(terminal.getTerminalCode(), TerminalView.mask(terminal.getTerminalPhone()),
+                    terminal.getManufacturerId(), terminal.getModel(), terminal.getProtocolVersion(),
+                    terminal.getSourceCoordinateSystem(), terminal.getActiveSafetyStandard(),
+                    parseModules(terminal.getActiveSafetyModules()), terminal.isJt1078Enabled(), terminal.getStatus().name(),
+                    detail.onlineStatus().name(), terminal.getLastRegisteredAt() != null, terminal.getVersion(),
+                    terminal.getLastRegisteredAt(), terminal.getLastAuthenticatedAt(), detail.lastValidMessageAt(),
+                    null, null, detail.offlineAt(), detail.currentBinding(), detail.bindingHistory(), detail.securityAudits());
+        }
+
+        private static java.util.List<String> parseModules(String serialized) {
+            try {
+                return new com.fasterxml.jackson.databind.ObjectMapper().readValue(serialized,
+                        new com.fasterxml.jackson.core.type.TypeReference<java.util.List<String>>() { });
+            } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+                return java.util.List.of();
+            }
+        }
     }
 }

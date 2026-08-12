@@ -114,5 +114,9 @@ public class JtGatewayAuditEvent {
     public UUID getVehicleId() { return vehicleId; }
     public EventType getEventType() { return eventType; }
     public Result getResult() { return result; }
+    public String getReasonCode() { return reasonCode; }
+    public String getProtocolVersion() { return protocolVersion; }
+    public Integer getMessageId() { return messageId; }
+    public OffsetDateTime getOccurredAt() { return occurredAt; }
     public String getGatewayInstance() { return gatewayInstance; }
 }

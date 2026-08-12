@@ -65,6 +65,25 @@ public class TerminalManagementService {
                 .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "terminal not found"));
     }
 
+    @Transactional(readOnly = true)
+    public TerminalDetail getDetail(String terminalCode) {
+        JtTerminal terminal = get(terminalCode);
+        List<BindingSummary> bindings = bindingRepository.findByTerminalIdOrderByValidFromDesc(terminal.getId()).stream()
+                .map(binding -> new BindingSummary(
+                        vehicleRepository.findById(binding.getVehicleId()).map(vehicle -> vehicle.getPlateNumber()).orElse("车辆已不可用"),
+                        binding.getStatus().name(), binding.getValidFrom(), binding.getValidTo()))
+                .toList();
+        List<GatewayAuditSummary> audits = gatewayAuditRepository.findByTerminalIdOrderByOccurredAtDesc(terminal.getId()).stream()
+                .map(event -> new GatewayAuditSummary(event.getEventType().name(), event.getResult().name(),
+                        event.getReasonCode(), event.getProtocolVersion(), event.getMessageId(), event.getOccurredAt()))
+                .toList();
+        OffsetDateTime lastSeenAt = terminal.getLastSeenAt();
+        OnlineStatus onlineStatus = lastSeenAt == null ? OnlineStatus.NEVER_SEEN
+                : lastSeenAt.isBefore(OffsetDateTime.now().minusSeconds(180)) ? OnlineStatus.OFFLINE : OnlineStatus.ONLINE;
+        return new TerminalDetail(terminal, onlineStatus, lastSeenAt,
+                lastSeenAt == null ? null : lastSeenAt.plusSeconds(180), bindings.isEmpty() ? null : bindings.get(0), bindings, audits);
+    }
+
     @Transactional
     public JtTerminal preset(PresetCommand command) {
         requireReason(command.reason());
@@ -378,6 +397,26 @@ public class TerminalManagementService {
     }
 
     public record ActionResult(JtTerminal terminal, String disconnectStatus) {
+    }
+
+    public enum OnlineStatus { ONLINE, OFFLINE, NEVER_SEEN }
+
+    public record BindingSummary(String plateNumber, String status, OffsetDateTime validFrom, OffsetDateTime validTo) {
+    }
+
+    public record GatewayAuditSummary(
+            String eventType, String result, String reasonCode, String protocolVersion, Integer messageId,
+            OffsetDateTime occurredAt) {
+    }
+
+    public record TerminalDetail(
+            JtTerminal terminal,
+            OnlineStatus onlineStatus,
+            OffsetDateTime lastValidMessageAt,
+            OffsetDateTime offlineAt,
+            BindingSummary currentBinding,
+            List<BindingSummary> bindingHistory,
+            List<GatewayAuditSummary> securityAudits) {
     }
 
     public record ReplacementResult(JtTerminal terminal, String disconnectStatus) {

@@ -209,6 +209,11 @@ public class JtTerminal {
     public String getAuthTokenHash() { return authTokenHash; }
     public int getAuthTokenVersion() { return authTokenVersion; }
     public OffsetDateTime getLastRegisteredAt() { return lastRegisteredAt; }
+    public OffsetDateTime getLastAuthenticatedAt() { return lastAuthenticatedAt; }
+    public OffsetDateTime getLastSeenAt() { return lastSeenAt; }
+    public String getActiveSafetyStandard() { return activeSafetyStandard; }
+    public String getActiveSafetyModules() { return activeSafetyModules; }
+    public boolean isJt1078Enabled() { return jt1078Enabled; }
     public long getVersion() { return version; }
 
     private void requireMutable() {

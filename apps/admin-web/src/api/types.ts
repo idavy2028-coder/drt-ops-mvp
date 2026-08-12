@@ -256,6 +256,55 @@ export interface Driver {
   fleetName: string;
 }
 
+export interface TerminalSummary {
+  terminalCode: string;
+  terminalPhoneMasked: string;
+  manufacturerId: string;
+  model: string;
+  protocolVersion: string;
+  sourceCoordinateSystem: string;
+  status: string;
+  registrationCompleted: boolean;
+  version: number;
+}
+
+export interface TerminalBindingSummary {
+  plateNumber: string;
+  status: string;
+  validFrom: IsoDateTime;
+  validTo: IsoDateTime | null;
+}
+
+export interface TerminalSecurityAudit {
+  eventType: string;
+  result: string;
+  reasonCode: string | null;
+  protocolVersion: string | null;
+  messageId: number | null;
+  occurredAt: IsoDateTime;
+}
+
+export interface TerminalDetail extends TerminalSummary {
+  activeSafetyStandard: string | null;
+  activeSafetyModules: string[];
+  jt1078Enabled: boolean;
+  onlineStatus: "ONLINE" | "OFFLINE" | "NEVER_SEEN";
+  lastRegisteredAt: IsoDateTime | null;
+  lastAuthenticatedAt: IsoDateTime | null;
+  lastValidMessageAt: IsoDateTime | null;
+  lastHeartbeatAt: IsoDateTime | null;
+  lastLocationAt: IsoDateTime | null;
+  offlineAt: IsoDateTime | null;
+  currentBinding: TerminalBindingSummary | null;
+  bindingHistory: TerminalBindingSummary[];
+  securityAudits: TerminalSecurityAudit[];
+}
+
+export interface TerminalActionInput {
+  expectedVersion: number;
+  reason: string;
+}
+
 export interface CreateDriverInput {
   name: string;
   phone: string;

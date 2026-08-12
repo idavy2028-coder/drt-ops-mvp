@@ -12,4 +12,5 @@ public interface JtTerminalVehicleBindingRepository
     Optional<JtTerminalVehicleBinding> findByVehicleIdAndStatus(
             UUID vehicleId, JtTerminalVehicleBinding.Status status);
     List<JtTerminalVehicleBinding> findByVehicleIdOrderByValidFromAsc(UUID vehicleId);
+    List<JtTerminalVehicleBinding> findByTerminalIdOrderByValidFromDesc(UUID terminalId);
 }

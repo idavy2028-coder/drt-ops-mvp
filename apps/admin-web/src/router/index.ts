@@ -12,6 +12,7 @@ import LoginPage from "../pages/LoginPage.vue";
 import UserManagementPage from "../pages/UserManagementPage.vue";
 import VehicleLocationHistoryPage from "../pages/VehicleLocationHistoryPage.vue";
 import ChangePasswordPage from "../pages/ChangePasswordPage.vue";
+import TerminalManagementPage from "../pages/TerminalManagementPage.vue";
 
 export const routes: RouteRecordRaw[] = [
   { path: "/login", name: "login", component: LoginPage, meta: { public: true } },
@@ -24,6 +25,7 @@ export const routes: RouteRecordRaw[] = [
   { path: "/tasks", name: "tasks", component: TasksPage, meta: { title: "车辆任务", permission: "TASK_READ" } },
   { path: "/vehicle-locations", name: "vehicleLocations", component: VehicleLocationHistoryPage, meta: { title: "位置历史", permission: "LOCATION_READ" } },
   { path: "/audit-logs", name: "auditLogs", component: AuditLogsPage, meta: { title: "审计日志", permission: "AUDIT_READ" } },
+  { path: "/terminals", name: "terminals", component: TerminalManagementPage, meta: { title: "终端管理", permission: "TERMINAL_READ" } },
   { path: "/users", name: "users", component: UserManagementPage, meta: { title: "用户与权限", permission: "USER_MANAGE" } }
 ];
 
