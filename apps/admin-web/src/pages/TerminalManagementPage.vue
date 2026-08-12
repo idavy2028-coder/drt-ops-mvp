@@ -72,9 +72,10 @@ async function submitAction() {
       return;
     }
     if (!selected.value || selected.value.terminalCode !== selectedCode.value) return;
+    const requestedAction = action.value;
     const sourceCode = selectedCode.value;
     const latestSource = await terminalApi.getTerminalDetail(sourceCode);
-    if (sourceCode !== selectedCode.value || !action.value) return;
+    if (sourceCode !== selectedCode.value || action.value !== requestedAction) return;
     const input = { expectedVersion: latestSource.version, reason: reason.value.trim() };
     switch (action.value) {
       case "bind":
@@ -87,10 +88,16 @@ async function submitAction() {
       case "rotate": await terminalApi.rotateTerminalAuthentication(sourceCode, input); break;
       case "disconnect": await terminalApi.disconnectTerminal(sourceCode, input); break;
       case "replace":
-        if (!replacementTerminalCode.value || replacementTerminalCode.value === sourceCode) return;
-        const latestReplacement = await terminalApi.getTerminalDetail(replacementTerminalCode.value);
-        if (sourceCode !== selectedCode.value) return;
-        await terminalApi.replaceTerminal(sourceCode, { ...input, replacementTerminalCode: replacementTerminalCode.value, replacementExpectedVersion: latestReplacement.version });
+        const replacementCode = replacementTerminalCode.value;
+        if (!replacementCode || replacementCode === sourceCode) return;
+        const latestReplacement = await terminalApi.getTerminalDetail(replacementCode);
+        if (sourceCode !== selectedCode.value || replacementCode !== replacementTerminalCode.value || action.value !== requestedAction) {
+          action.value = null;
+          confirmed.value = false;
+          error.value = "换机目标已变化，请重新确认";
+          return;
+        }
+        await terminalApi.replaceTerminal(sourceCode, { ...input, replacementTerminalCode: replacementCode, replacementExpectedVersion: latestReplacement.version });
         break;
     }
     action.value = null;
@@ -127,7 +134,7 @@ function time(value: string | null) { return value ? new Date(value).toLocaleStr
           <section><h4>绑定</h4><p>当前：{{ selected.currentBinding?.plateNumber ?? "尚未绑定" }}</p><ul><li v-for="binding in selected.bindingHistory" :key="`${binding.plateNumber}-${binding.validFrom}`">{{ binding.plateNumber }} · {{ binding.status }} · {{ time(binding.validFrom) }}</li></ul></section>
         </div>
         <section class="audit"><h4>安全审计</h4><p v-if="selected.securityAudits.length === 0">尚无数据</p><table v-else><thead><tr><th>事件</th><th>结果</th><th>原因码</th><th>协议/消息 ID</th><th>发生时间</th></tr></thead><tbody><tr v-for="audit in selected.securityAudits" :key="`${audit.eventType}-${audit.occurredAt}`"><td>{{ audit.eventType }}</td><td>{{ audit.result }}</td><td>{{ audit.reasonCode ?? "—" }}</td><td>{{ audit.protocolVersion ?? "—" }}{{ audit.messageId === null ? "" : ` / ${audit.messageId}` }}</td><td>{{ time(audit.occurredAt) }}</td></tr></tbody></table></section>
-        <section v-if="canManage" class="actions"><h4>受控管理操作</h4><p>所有操作须填写原因，并在提交前进行第二次确认；提交时使用当前版本 {{ selected.version }}。</p><div class="action-buttons"><button type="button" @click="beginAction('bind')">绑定车辆</button><button type="button" @click="beginAction('activate')">激活终端</button><button type="button" @click="beginAction('replace')">换机</button><button type="button" @click="beginAction('suspend')">暂停终端</button><button type="button" @click="beginAction('retire')">退役终端</button><button type="button" @click="beginAction('rotate')">轮换鉴权</button><button type="button" @click="beginAction('disconnect')">强制断开</button></div>
+        <section v-if="canManage" class="actions"><h4>受控管理操作</h4><p>所有操作须填写原因，并在提交前进行第二次确认；提交前会重新读取最新版本。</p><div class="action-buttons"><button type="button" @click="beginAction('bind')">绑定车辆</button><button type="button" @click="beginAction('activate')">激活终端</button><button type="button" @click="beginAction('replace')">换机</button><button type="button" @click="beginAction('suspend')">暂停终端</button><button type="button" @click="beginAction('retire')">退役终端</button><button type="button" @click="beginAction('rotate')">轮换鉴权</button><button type="button" @click="beginAction('disconnect')">强制断开</button></div>
           <form v-if="action" class="confirmation" @submit.prevent="submitAction"><h5>二次确认：{{ selected.terminalCode }} · {{ action }}</h5><label>操作原因<textarea v-model="reason" required maxlength="300" /></label><label v-if="action === 'bind'">车辆<select v-model="vehicleId" required><option value="">请选择</option><option v-for="vehicle in vehicles" :key="vehicle.id" :value="vehicle.id">{{ vehicle.plateNumber }}</option></select></label><template v-if="action === 'replace'"><label>替换终端<select v-model="replacementTerminalCode" required><option value="">请选择</option><option v-for="terminal in terminals.filter(item => item.terminalCode !== selectedCode)" :key="terminal.terminalCode" :value="terminal.terminalCode">{{ terminal.terminalCode }} · {{ terminal.terminalPhoneMasked }}</option></select></label></template><label class="check"><input v-model="confirmed" type="checkbox" /> 我已核对风险与原因，确认执行。</label><button type="submit" :disabled="!confirmed || !reason.trim()">确认执行</button><button class="secondary-button" type="button" @click="action = null">取消</button></form>
         </section>
       </article>

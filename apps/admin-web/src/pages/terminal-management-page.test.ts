@@ -44,6 +44,7 @@ describe("TerminalManagementPage", () => {
     expect(screen.getByText("JT/T 1078：支持")).toBeInTheDocument();
     expect(screen.getByText("最近鉴权：尚无数据")).toBeInTheDocument();
     expect(screen.getByText("SESSION_ESTABLISHED")).toBeInTheDocument();
+    expect(screen.getByText("所有操作须填写原因，并在提交前进行第二次确认；提交前会重新读取最新版本。")).toBeInTheDocument();
     expect(screen.queryByText("PHONE-9012")).not.toBeInTheDocument();
     expect(screen.queryByText("auth-token-digest")).not.toBeInTheDocument();
     expect(screen.queryByText("raw-payload")).not.toBeInTheDocument();
@@ -74,6 +75,47 @@ describe("TerminalManagementPage", () => {
     await fireEvent.click(screen.getByLabelText("我已核对风险与原因，确认执行。"));
     await fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
     await waitFor(() => expect(terminalApi.replaceTerminal).toHaveBeenCalledWith("JT-001", expect.objectContaining({ expectedVersion: 6, replacementTerminalCode: "JT-002", replacementExpectedVersion: 11, reason: "换机原因" })));
+  });
+
+  it("cancels a replacement when its selected target changes while target detail is loading", async () => {
+    let resolveTarget: (value: ReturnType<typeof detail>) => void;
+    terminalApi.listTerminals.mockResolvedValue([summary("JT-001", 4), summary("JT-002", 8), summary("JT-003", 9)]);
+    let sourceReads = 0;
+    terminalApi.getTerminalDetail.mockImplementation((code: string) => {
+      if (code === "JT-001") return Promise.resolve(detail("JT-001", sourceReads++ === 0 ? 4 : 12));
+      if (code === "JT-002") return new Promise((resolve) => { resolveTarget = resolve; });
+      return Promise.resolve(detail("JT-003", 13));
+    });
+    render(TerminalManagementPage);
+    await screen.findByRole("button", { name: "换机" });
+    await fireEvent.click(screen.getByRole("button", { name: "换机" }));
+    await fireEvent.update(screen.getByLabelText("操作原因"), "换机原因");
+    await fireEvent.update(screen.getByLabelText("替换终端"), "JT-002");
+    await fireEvent.click(screen.getByLabelText("我已核对风险与原因，确认执行。"));
+    await fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    await waitFor(() => expect(terminalApi.getTerminalDetail).toHaveBeenCalledWith("JT-002"));
+    await fireEvent.update(screen.getByLabelText("替换终端"), "JT-003");
+    resolveTarget!(detail("JT-002", 15));
+    await Promise.resolve();
+    expect(terminalApi.replaceTerminal).not.toHaveBeenCalled();
+  });
+
+  it("does not send a management request when confirmation is checked but the reason is blank", async () => {
+    render(TerminalManagementPage);
+    await screen.findByRole("button", { name: "暂停终端" });
+    await fireEvent.click(screen.getByRole("button", { name: "暂停终端" }));
+    await fireEvent.click(screen.getByLabelText("我已核对风险与原因，确认执行。"));
+    await fireEvent.submit(screen.getByRole("button", { name: "确认执行" }).closest("form")!);
+    expect(terminalApi.suspendTerminal).not.toHaveBeenCalled();
+  });
+
+  it("does not send a management request when the reason is valid but confirmation is unchecked", async () => {
+    render(TerminalManagementPage);
+    await screen.findByRole("button", { name: "暂停终端" });
+    await fireEvent.click(screen.getByRole("button", { name: "暂停终端" }));
+    await fireEvent.update(screen.getByLabelText("操作原因"), "安全停用");
+    await fireEvent.submit(screen.getByRole("button", { name: "确认执行" }).closest("form")!);
+    expect(terminalApi.suspendTerminal).not.toHaveBeenCalled();
   });
 
   it("keeps the newest terminal selection when an earlier detail request resolves late", async () => {
