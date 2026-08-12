@@ -17,6 +17,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 class DatabaseMigrationTest {
 
@@ -101,7 +102,8 @@ class DatabaseMigrationTest {
                 "Set -D" + POSTGIS_INTEGRATION_PROPERTY + "=true to run the PostGIS migration test");
         Assumptions.assumeTrue(dockerIsAvailable(), "需要 Docker/Testcontainers 提供隔离 PostGIS 数据库");
 
-        try (PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgis/postgis:16-3.5")
+        try (PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgis/postgis:16-3.5")
+                .asCompatibleSubstituteFor("postgres"))
                 .withDatabaseName("drt_ops")
                 .withUsername("drt_ops")
                 .withPassword("drt_ops")) {
@@ -262,6 +264,8 @@ class DatabaseMigrationTest {
             connection.setAutoCommit(false);
             try {
                 UUID eventId = UUID.randomUUID();
+                UUID actorId = UUID.randomUUID();
+                insertMigrationTestActor(connection, actorId);
                 try (var insert = connection.prepareStatement("""
                         insert into vehicle_location_events (
                           id, vehicle_id, event_type, source, location, longitude, latitude,
@@ -269,11 +273,12 @@ class DatabaseMigrationTest {
                           idempotency_key, request_fingerprint, snapshot_applied, outside_service_area
                         ) values (?, (select id from vehicles limit 1), 'TASK_STARTED', 'MANUAL_DISPATCHER',
                           ST_SetSRID(ST_MakePoint(121.4737, 31.2304), 4326)::geography, 121.4737000, 31.2304000,
-                          'GCJ02', 'test address', now(), (select id from user_accounts limit 1),
+                          'GCJ02', 'test address', now(), ?,
                           ?, repeat('a', 64), true, false)
                         """)) {
                     insert.setObject(1, eventId);
-                    insert.setObject(2, UUID.randomUUID());
+                    insert.setObject(2, actorId);
+                    insert.setObject(3, UUID.randomUUID());
                     insert.executeUpdate();
                 }
 
@@ -285,6 +290,18 @@ class DatabaseMigrationTest {
             } finally {
                 connection.rollback();
             }
+        }
+    }
+
+    private static void insertMigrationTestActor(java.sql.Connection connection, UUID actorId) throws Exception {
+        try (var insert = connection.prepareStatement("""
+                insert into user_accounts (
+                  id, username, display_name, password_hash, enabled, must_change_password
+                ) values (?, ?, 'Migration test actor', 'not-used', true, false)
+                """)) {
+            insert.setObject(1, actorId);
+            insert.setString(2, "migration-test-" + actorId);
+            insert.executeUpdate();
         }
     }
 
