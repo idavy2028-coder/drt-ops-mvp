@@ -25,6 +25,8 @@ class LocationReportCodecTest {
     @Test
     void decodesTheAudited2013LocationBodyWithEitherVerifiedHeaderVersion() throws Exception {
         byte[] body = auditedLocationBody();
+        assertEquals("35efad69597feac5fed7258bddb2bef840dede5ad8f9281951a3722077d107a4",
+                java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(body)));
 
         for (ProtocolVersion version : ProtocolVersion.values()) {
             LocationReport report = CODEC.decode(header(version, body.length), Unpooled.wrappedBuffer(body));
@@ -131,6 +133,75 @@ class LocationReportCodecTest {
             assertArrayEquals(body, actual);
         } finally {
             encoded.release();
+        }
+    }
+
+    @Test
+    void encodesUnsignedWireBoundariesWithoutWritingPartialOutput() {
+        LocationReport largestWireValues = new LocationReport(
+                0, 0, new BigDecimal("4294.967295"), new BigDecimal("4294.967295"),
+                65535, new BigDecimal("6553.5"), 359,
+                Instant.parse("2099-12-31T15:59:59Z"), null, java.util.List.of());
+        ByteBuf encoded = Unpooled.buffer();
+        try {
+            CODEC.encode(largestWireValues, encoded);
+            assertEquals(28, encoded.readableBytes());
+            assertEquals(0xffff_ffffL, encoded.getUnsignedInt(encoded.readerIndex() + 8));
+            assertEquals(0xffff_ffffL, encoded.getUnsignedInt(encoded.readerIndex() + 12));
+        } finally {
+            encoded.release();
+        }
+
+        assertAtomicEncodeRejects(largestWireValues, new BigDecimal("4294.967296"), null, null, null, null,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, new BigDecimal("4294.967296"), null, null, null,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, 65536, null, null,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, -1, null, null,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, new BigDecimal("0.05"), null,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, new BigDecimal("6553.6"), null,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, new BigDecimal("-0.1"), null,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, null, 360,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, null, -1,
+                Instant.parse("2099-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, null, null,
+                Instant.parse("2100-01-01T00:00:00Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, null, null,
+                Instant.parse("1999-12-31T15:59:59Z"));
+        assertAtomicEncodeRejects(largestWireValues, null, null, null, null, null,
+                Instant.parse("2099-12-31T15:59:59.001Z"));
+    }
+
+    private static void assertAtomicEncodeRejects(
+            LocationReport base,
+            BigDecimal longitude,
+            BigDecimal latitude,
+            Integer altitude,
+            BigDecimal speed,
+            Integer direction,
+            Instant locatedAt) {
+        LocationReport invalid = new LocationReport(
+                base.alarmBits(), base.statusBits(),
+                longitude == null ? base.longitude() : longitude,
+                latitude == null ? base.latitude() : latitude,
+                altitude == null ? base.altitudeMeters() : altitude,
+                speed == null ? base.speedKph() : speed,
+                direction == null ? base.directionDegrees() : direction,
+                locatedAt, base.satelliteCount(), base.additionalItems());
+        ByteBuf target = Unpooled.buffer();
+        target.writeByte(0x55);
+        try {
+            assertThrows(IllegalArgumentException.class, () -> CODEC.encode(invalid, target));
+            assertEquals(1, target.readableBytes());
+            assertEquals(0x55, target.getUnsignedByte(target.readerIndex()));
+        } finally {
+            target.release();
         }
     }
 

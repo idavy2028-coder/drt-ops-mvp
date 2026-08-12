@@ -13,7 +13,7 @@ public final class TerminalSession {
     private final UUID connectionId = UUID.randomUUID();
     private final Channel channel;
     private final Instant connectedAt;
-    private TerminalSessionState state = TerminalSessionState.CONNECTED_UNAUTHENTICATED;
+    private volatile TerminalSessionState state = TerminalSessionState.CONNECTED_UNAUTHENTICATED;
     private UUID terminalId;
     private UUID vehicleId;
     private String sourceCoordinateSystem;

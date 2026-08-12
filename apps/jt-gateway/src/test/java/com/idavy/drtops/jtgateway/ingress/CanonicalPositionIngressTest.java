@@ -5,8 +5,10 @@ import com.idavy.drtops.jt.protocol.codec.Jt808Frame;
 import com.idavy.drtops.jt.protocol.codec.Jt808MessageHeader;
 import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jt.protocol.core.LocationReportCodec;
+import com.idavy.drtops.jt.protocol.core.Jt808CoreModule;
 import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
 import com.idavy.drtops.jtgateway.session.TerminalSession;
+import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.Test;
@@ -19,6 +21,12 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,7 +45,7 @@ class CanonicalPositionIngressTest {
         TerminalSession session = authenticatedSession(VEHICLE_ID, "GCJ02");
         CapturingBuffer buffer = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
-                new LocationReportCodec(), buffer, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+                new Jt808CoreModule(new LocationReportCodec()), buffer, claimed(session), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
         Jt808Frame frame = locationFrame(126);
 
         ProtocolModuleRegistry.DispatchResult result = registry.dispatch(session, frame);
@@ -54,7 +62,7 @@ class CanonicalPositionIngressTest {
         TerminalSession session = new TerminalSession(new EmbeddedChannel(), RECEIVED_AT);
         CapturingBuffer buffer = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
-                new LocationReportCodec(), buffer, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+                new Jt808CoreModule(new LocationReportCodec()), buffer, new TerminalSessionRegistry(), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
         Jt808Frame frame = locationFrame(126);
 
         ProtocolModuleRegistry.DispatchResult result = registry.dispatch(session, frame);
@@ -78,10 +86,10 @@ class CanonicalPositionIngressTest {
         CapturingBuffer first = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
         CapturingBuffer second = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
-                new LocationReportCodec(), first, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+                new Jt808CoreModule(new LocationReportCodec()), first, claimed(session), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
 
         registry.dispatch(session, locationFrame(126));
-        new ProtocolModuleRegistry(new LocationReportCodec(), second, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC))
+        new ProtocolModuleRegistry(new Jt808CoreModule(new LocationReportCodec()), second, claimed(session), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC))
                 .dispatch(session, locationFrame(126));
 
         assertEquals(
@@ -89,7 +97,7 @@ class CanonicalPositionIngressTest {
                 ProtocolModuleRegistry.idempotencyKeyFor(second.envelope()));
 
         CapturingBuffer changedSerial = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
-        new ProtocolModuleRegistry(new LocationReportCodec(), changedSerial, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC))
+        new ProtocolModuleRegistry(new Jt808CoreModule(new LocationReportCodec()), changedSerial, claimed(session), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC))
                 .dispatch(session, locationFrame(127));
         assertNotEquals(
                 ProtocolModuleRegistry.idempotencyKeyFor(first.envelope()),
@@ -104,15 +112,16 @@ class CanonicalPositionIngressTest {
                 GatewayIngressBuffer.WriteResult.STORED,
                 GatewayIngressBuffer.WriteResult.DUPLICATE}) {
             ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
-                    new LocationReportCodec(), new CapturingBuffer(result), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+                    new Jt808CoreModule(new LocationReportCodec()), new CapturingBuffer(result), claimed(session), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
             Jt808Frame frame = locationFrame(126);
             assertTrue(registry.dispatch(session, frame).mayAcknowledgeSuccess());
             assertEquals(0, frame.body().refCnt());
         }
 
         ProtocolModuleRegistry unavailable = new ProtocolModuleRegistry(
-                new LocationReportCodec(),
+                new Jt808CoreModule(new LocationReportCodec()),
                 new CapturingBuffer(GatewayIngressBuffer.WriteResult.UNAVAILABLE),
+                claimed(session),
                 Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
         Jt808Frame unavailableFrame = locationFrame(126);
         assertFalse(unavailable.dispatch(session, unavailableFrame).mayAcknowledgeSuccess());
@@ -124,7 +133,7 @@ class CanonicalPositionIngressTest {
         TerminalSession session = authenticatedSession(VEHICLE_ID, "WGS84");
         CapturingBuffer buffer = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
-                new LocationReportCodec(), buffer, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+                new Jt808CoreModule(new LocationReportCodec()), buffer, claimed(session), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
 
         Jt808Frame frame = unknownFrame();
         ProtocolModuleRegistry.DispatchResult result = registry.dispatch(session, frame);
@@ -136,7 +145,22 @@ class CanonicalPositionIngressTest {
     }
 
     @Test
-    void persistsCanonicalPositionsThroughTheRealH2GatewayBufferBeforeReportingAcknowledgement() {
+    void refusesUnknownMessagesBeforeTheSessionIsAuthenticatedAndCurrent() {
+        TerminalSession unauthenticated = new TerminalSession(new EmbeddedChannel(), RECEIVED_AT);
+        CapturingBuffer buffer = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
+        ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
+                new Jt808CoreModule(new LocationReportCodec()), buffer, new TerminalSessionRegistry(),
+                Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+        Jt808Frame frame = unknownFrame();
+
+        assertFalse(registry.dispatch(unauthenticated, frame).mayAcknowledgeSuccess());
+        assertEquals(0, registry.unknownMessageCount());
+        assertNull(buffer.envelope());
+        assertEquals(0, frame.body().refCnt());
+    }
+
+    @Test
+    void persistsCanonicalPositionsThroughTheRealH2GatewayBufferBeforeReportingAcknowledgement() throws Exception {
         DataSource dataSource = new DriverManagerDataSource(
                 "jdbc:h2:mem:position_" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1;MODE=PostgreSQL", "sa", "");
         Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
@@ -144,32 +168,140 @@ class CanonicalPositionIngressTest {
         ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         GatewayIngressBuffer buffer = new GatewayIngressBuffer(
                 repository, objectMapper, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
-        ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
-                new LocationReportCodec(), buffer, objectMapper, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+        TerminalSession session = authenticatedSession(VEHICLE_ID, "WGS84");
+        TerminalSessionRegistry sessions = claimed(session);
+        ProtocolModuleRegistry registry = new ProtocolModuleRegistry(new Jt808CoreModule(new LocationReportCodec()), buffer, objectMapper, sessions,
+                Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
         Jt808Frame frame = locationFrame(126);
-
-        assertTrue(registry.dispatch(authenticatedSession(VEHICLE_ID, "WGS84"), frame).mayAcknowledgeSuccess());
+        assertTrue(registry.dispatch(session, frame).mayAcknowledgeSuccess());
         assertEquals(1, repository.totalCount());
         assertEquals(0, frame.body().refCnt());
+        CanonicalPositionIngress payload = objectMapper.readValue(repository.find(ProtocolModuleRegistry.idempotencyKeyFor(position(
+                TERMINAL_ID, "JT808_2013", 126, Instant.parse("2018-10-15T02:10:10Z"),
+                "35efad69597feac5fed7258bddb2bef840dede5ad8f9281951a3722077d107a4", RECEIVED_AT, VEHICLE_ID)))
+                .orElseThrow().payloadJson(), CanonicalPositionIngress.class);
+        assertEquals(TERMINAL_ID, payload.terminalId());
+        assertEquals(VEHICLE_ID, payload.vehicleId());
+        assertEquals(new BigDecimal("132.444444"), payload.rawLongitude());
+        assertEquals(new BigDecimal("12.222222"), payload.rawLatitude());
+        assertEquals(Instant.parse("2018-10-15T02:10:10Z"), payload.terminalLocatedAt());
+        assertEquals(1, payload.alarmBits());
+        assertEquals(2, payload.statusBits());
+        assertEquals("35efad69597feac5fed7258bddb2bef840dede5ad8f9281951a3722077d107a4", payload.payloadDigest());
 
         Jt808Frame duplicate = locationFrame(126);
-        assertTrue(registry.dispatch(authenticatedSession(VEHICLE_ID, "WGS84"), duplicate).mayAcknowledgeSuccess());
+        assertTrue(registry.dispatch(session, duplicate).mayAcknowledgeSuccess());
         assertEquals(1, repository.totalCount());
         assertEquals(0, duplicate.body().refCnt());
     }
 
     @Test
+    void rejectsUnauthenticatedIdentityMismatchEncryptionAndConsumedHandshakeMessagesBeforeUnknownClassification() {
+        TerminalSession session = authenticatedSession(VEHICLE_ID, "WGS84");
+        CapturingBuffer buffer = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
+        ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
+                new Jt808CoreModule(new LocationReportCodec()), buffer, claimed(session), Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+
+        assertFalse(registry.dispatch(session, frame(0x0fff, 0, "999999999999")).mayAcknowledgeSuccess());
+        assertFalse(registry.dispatch(session, frame(0x0fff, 1, "123456789012")).mayAcknowledgeSuccess());
+        assertFalse(registry.dispatch(session, frame(0x0100, 0, "123456789012")).mayAcknowledgeSuccess());
+        assertFalse(registry.dispatch(session, frame(0x0102, 0, "123456789012")).mayAcknowledgeSuccess());
+        assertFalse(registry.dispatch(session, frame(0x0002, 0, "123456789012")).mayAcknowledgeSuccess());
+        assertEquals(0, registry.unknownMessageCount());
+        assertNull(buffer.envelope());
+    }
+
+    @Test
+    void linearizesDispatchBeforeOrAfterSessionTakeoverWithoutDeadlock() throws Exception {
+        TerminalSession oldSession = authenticatedSession(VEHICLE_ID, "WGS84");
+        TerminalSessionRegistry sessions = claimed(oldSession);
+        BlockingBuffer buffer = new BlockingBuffer();
+        ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
+                new Jt808CoreModule(new LocationReportCodec()), buffer, sessions, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<ProtocolModuleRegistry.DispatchResult> firstDispatch = executor.submit(
+                    () -> registry.dispatch(oldSession, locationFrame(126)));
+            assertTrue(buffer.entered.await(5, TimeUnit.SECONDS));
+            TerminalSession replacement = authenticatedSession(VEHICLE_ID, "WGS84");
+            CountDownLatch takeoverStarted = new CountDownLatch(1);
+            AtomicReference<Thread> takeoverThread = new AtomicReference<>();
+            Future<?> takeover = executor.submit(() -> {
+                takeoverThread.set(Thread.currentThread());
+                takeoverStarted.countDown();
+                sessions.claim(replacement);
+            });
+            assertTrue(takeoverStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(awaitBlocked(takeoverThread, 5));
+            assertFalse(takeover.isDone());
+            buffer.release.countDown();
+            assertTrue(firstDispatch.get(5, TimeUnit.SECONDS).mayAcknowledgeSuccess());
+            takeover.get(5, TimeUnit.SECONDS);
+
+            Jt808Frame staleFrame = locationFrame(127);
+            assertFalse(registry.dispatch(oldSession, staleFrame).mayAcknowledgeSuccess());
+            assertEquals(1, buffer.appended);
+            assertEquals(0, staleFrame.body().refCnt());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void rejectsAnOldDispatchQueuedAfterTakeoverHasCompleted() throws Exception {
+        TerminalSession oldSession = authenticatedSession(VEHICLE_ID, "WGS84");
+        TerminalSessionRegistry sessions = claimed(oldSession);
+        TerminalSession replacement = authenticatedSession(VEHICLE_ID, "WGS84");
+        sessions.claim(replacement);
+        CapturingBuffer buffer = new CapturingBuffer(GatewayIngressBuffer.WriteResult.STORED);
+        ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
+                new Jt808CoreModule(new LocationReportCodec()), buffer, sessions, Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
+        CountDownLatch currentLockHeld = new CountDownLatch(1);
+        CountDownLatch releaseCurrentLock = new CountDownLatch(1);
+        CountDownLatch staleDispatchStarted = new CountDownLatch(1);
+        AtomicReference<Thread> staleDispatchThread = new AtomicReference<>();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        Jt808Frame staleFrame = locationFrame(127);
+        try {
+            Future<?> currentOperation = executor.submit(() -> sessions.executeIfCurrent(replacement, () -> {
+                currentLockHeld.countDown();
+                await(releaseCurrentLock);
+                return "held";
+            }));
+            assertTrue(currentLockHeld.await(5, TimeUnit.SECONDS));
+            Future<ProtocolModuleRegistry.DispatchResult> staleDispatch = executor.submit(() -> {
+                staleDispatchThread.set(Thread.currentThread());
+                staleDispatchStarted.countDown();
+                return registry.dispatch(oldSession, staleFrame);
+            });
+            assertTrue(staleDispatchStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(awaitBlocked(staleDispatchThread, 5));
+            releaseCurrentLock.countDown();
+
+            currentOperation.get(5, TimeUnit.SECONDS);
+            assertFalse(staleDispatch.get(5, TimeUnit.SECONDS).mayAcknowledgeSuccess());
+            assertNull(buffer.envelope());
+            assertEquals(0, staleFrame.body().refCnt());
+        } finally {
+            releaseCurrentLock.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void refusesSuccessDecisionWhenTheRealGatewayBufferIsUnavailable() {
+        TerminalSession session = authenticatedSession(VEHICLE_ID, "WGS84");
         GatewayIngressBuffer buffer = new GatewayIngressBuffer(
                 new GatewayOutboxRepository(new AlwaysFailingDataSource()),
                 new ObjectMapper().findAndRegisterModules(),
                 Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
-                new LocationReportCodec(), buffer, new ObjectMapper().findAndRegisterModules(),
+                new Jt808CoreModule(new LocationReportCodec()), buffer, new ObjectMapper().findAndRegisterModules(),
+                claimed(session),
                 Clock.fixed(RECEIVED_AT, ZoneOffset.UTC));
         Jt808Frame frame = locationFrame(126);
 
-        assertFalse(registry.dispatch(authenticatedSession(VEHICLE_ID, "WGS84"), frame).mayAcknowledgeSuccess());
+        assertFalse(registry.dispatch(session, frame).mayAcknowledgeSuccess());
         assertFalse(buffer.bufferWritable());
         assertEquals(0, frame.body().refCnt());
     }
@@ -204,6 +336,35 @@ class CanonicalPositionIngressTest {
         return session;
     }
 
+    private static boolean awaitBlocked(AtomicReference<Thread> threadReference, int timeoutSeconds) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        while (System.nanoTime() < deadline) {
+            Thread thread = threadReference.get();
+            if (thread != null && thread.getState() == Thread.State.BLOCKED) {
+                return true;
+            }
+            Thread.sleep(10);
+        }
+        return false;
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("test did not release terminal lock");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
+    }
+
+    private static TerminalSessionRegistry claimed(TerminalSession session) {
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        sessions.claim(session);
+        return sessions;
+    }
+
     private static Jt808Frame locationFrame(int serialNumber) {
         byte[] body = java.util.HexFormat.of().parseHex(
                 "000000010000000200ba7f0e07e4f11c0028003c00001810151010100104000000640202007d");
@@ -216,6 +377,12 @@ class CanonicalPositionIngressTest {
         return new Jt808Frame(new Jt808MessageHeader(
                 0x0fff, 0, 0, 0, false, ProtocolVersion.JT808_2013, 0,
                 "123456789012", 126, null, null), Unpooled.buffer(0), (byte) 0);
+    }
+
+    private static Jt808Frame frame(int messageId, int encryptionType, String terminalIdentity) {
+        return new Jt808Frame(new Jt808MessageHeader(
+                messageId, encryptionType << 10, 0, encryptionType, false, ProtocolVersion.JT808_2013, 0,
+                terminalIdentity, 126, null, null), Unpooled.buffer(0), (byte) 0);
     }
 
     private static CanonicalPositionIngress position(
@@ -252,6 +419,27 @@ class CanonicalPositionIngressTest {
 
         CanonicalPositionIngress envelope() {
             return captured;
+        }
+    }
+
+    private static final class BlockingBuffer implements PositionIngressBuffer {
+        private final CountDownLatch entered = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private volatile int appended;
+
+        @Override
+        public GatewayIngressBuffer.WriteResult append(CanonicalPositionIngress envelope) {
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("test did not release blocked buffer");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+            appended++;
+            return GatewayIngressBuffer.WriteResult.STORED;
         }
     }
 

@@ -77,13 +77,14 @@ public final class LocationReportCodec implements Jt808MessageCodec<LocationRepo
 
     @Override
     public void encode(LocationReport value, ByteBuf target) {
+        EncodedLocation encoded = validateForWire(value);
         target.writeInt(value.alarmBits());
         int statusBits = coordinateStatus(value.statusBits(), value.latitude(), value.longitude());
         target.writeInt(statusBits);
-        target.writeInt(coordinateMagnitude(value.latitude()));
-        target.writeInt(coordinateMagnitude(value.longitude()));
-        target.writeShort(value.altitudeMeters());
-        target.writeShort(value.speedKph().movePointRight(1).setScale(0, RoundingMode.UNNECESSARY).intValueExact());
+        target.writeInt((int) encoded.latitudeRaw());
+        target.writeInt((int) encoded.longitudeRaw());
+        target.writeShort(encoded.altitudeMeters());
+        target.writeShort(encoded.speedTenthsKph());
         target.writeShort(value.directionDegrees());
         writeTerminalTime(value.locatedAt(), target);
         value.additionalItems().forEach(item -> {
@@ -133,8 +134,43 @@ public final class LocationReportCodec implements Jt808MessageCodec<LocationRepo
         return status;
     }
 
-    private static int coordinateMagnitude(BigDecimal coordinate) {
-        return coordinate.abs().movePointRight(6).setScale(0, RoundingMode.UNNECESSARY).intValueExact();
+    private static EncodedLocation validateForWire(LocationReport value) {
+        try {
+            long latitude = coordinateMagnitude(value.latitude());
+            long longitude = coordinateMagnitude(value.longitude());
+            int altitude = unsignedShort(value.altitudeMeters(), "altitudeMeters");
+            int speedTenths = unsignedShort(
+                    value.speedKph().movePointRight(1).setScale(0, RoundingMode.UNNECESSARY).intValueExact(),
+                    "speedKph");
+            if (value.directionDegrees() < 0 || value.directionDegrees() > 359) {
+                throw new IllegalArgumentException("directionDegrees must be between 0 and 359");
+            }
+            if (value.locatedAt().getNano() != 0) {
+                throw new IllegalArgumentException("locatedAt must have second precision");
+            }
+            LocalDateTime local = LocalDateTime.ofInstant(value.locatedAt(), TERMINAL_TIME_OFFSET);
+            if (local.getYear() < 2000 || local.getYear() > 2099) {
+                throw new IllegalArgumentException("locatedAt must be within 2000 through 2099 at UTC+08:00");
+            }
+            return new EncodedLocation(latitude, longitude, altitude, speedTenths);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("location report is not representable on the wire", overflow);
+        }
+    }
+
+    private static long coordinateMagnitude(BigDecimal coordinate) {
+        long raw = coordinate.abs().movePointRight(6).setScale(0, RoundingMode.UNNECESSARY).longValueExact();
+        if (raw < 0 || raw > 0xffff_ffffL) {
+            throw new IllegalArgumentException("coordinate magnitude must fit an unsigned int");
+        }
+        return raw;
+    }
+
+    private static int unsignedShort(int value, String name) {
+        if (value < 0 || value > 0xffff) {
+            throw new IllegalArgumentException(name + " must fit an unsigned short");
+        }
+        return value;
     }
 
     private static void writeTerminalTime(Instant locatedAt, ByteBuf target) {
@@ -152,5 +188,8 @@ public final class LocationReportCodec implements Jt808MessageCodec<LocationRepo
             throw new IllegalArgumentException("BCD value must be between 0 and 99");
         }
         target.writeByte(((value / 10) << 4) | (value % 10));
+    }
+
+    private record EncodedLocation(long latitudeRaw, long longitudeRaw, int altitudeMeters, int speedTenthsKph) {
     }
 }

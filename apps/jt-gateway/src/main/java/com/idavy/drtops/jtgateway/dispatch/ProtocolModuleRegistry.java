@@ -4,14 +4,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.jt.protocol.codec.Jt808Frame;
 import com.idavy.drtops.jt.protocol.core.LocationReport;
-import com.idavy.drtops.jt.protocol.core.LocationReportCodec;
+import com.idavy.drtops.jt.protocol.core.Jt808CoreModule;
 import com.idavy.drtops.jtgateway.ingress.CanonicalPositionIngress;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope;
 import com.idavy.drtops.jtgateway.ingress.IngressKind;
 import com.idavy.drtops.jtgateway.ingress.PositionIngressBuffer;
 import com.idavy.drtops.jtgateway.session.TerminalSession;
-import com.idavy.drtops.jtgateway.session.TerminalSessionState;
+import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -26,42 +26,60 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Routes authenticated JT/T 808 frames without letting unknown messages enter the position domain. */
 public final class ProtocolModuleRegistry {
     private static final int LOCATION_REPORT_MESSAGE_ID = 0x0200;
-    private final LocationReportCodec locationCodec;
+    private static final java.util.Set<Integer> CONSUMED_MESSAGE_IDS = java.util.Set.of(0x0100, 0x0102, 0x0002);
+    private final Jt808CoreModule coreModule;
     private final PositionIngressBuffer positionBuffer;
+    private final TerminalSessionRegistry sessionRegistry;
     private final Clock clock;
     private final AtomicLong unknownMessageCount = new AtomicLong();
 
     public ProtocolModuleRegistry(
-            LocationReportCodec locationCodec, PositionIngressBuffer positionBuffer, Clock clock) {
-        this.locationCodec = Objects.requireNonNull(locationCodec, "locationCodec");
+            Jt808CoreModule coreModule,
+            PositionIngressBuffer positionBuffer,
+            TerminalSessionRegistry sessionRegistry,
+            Clock clock) {
+        this.coreModule = Objects.requireNonNull(coreModule, "coreModule");
         this.positionBuffer = Objects.requireNonNull(positionBuffer, "positionBuffer");
+        this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     public ProtocolModuleRegistry(
-            LocationReportCodec locationCodec,
+            Jt808CoreModule coreModule,
             GatewayIngressBuffer gatewayBuffer,
             ObjectMapper objectMapper,
+            TerminalSessionRegistry sessionRegistry,
             Clock clock) {
-        this(locationCodec, position -> appendToGatewayBuffer(position, gatewayBuffer, objectMapper), clock);
+        this(coreModule, position -> appendToGatewayBuffer(position, gatewayBuffer, objectMapper), sessionRegistry, clock);
     }
 
     public DispatchResult dispatch(TerminalSession session, Jt808Frame frame) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(frame, "frame");
         try {
-            if (frame.header().messageId() != LOCATION_REPORT_MESSAGE_ID) {
-                unknownMessageCount.incrementAndGet();
-                return DispatchResult.MAY_ACKNOWLEDGE_SUCCESS;
-            }
-            if (session.state() != TerminalSessionState.AUTHENTICATED
-                    || session.terminalId() == null
-                    || session.vehicleId() == null
-                    || session.sourceCoordinateSystem() == null
-                    || !session.matchesTerminalIdentity(frame.header().terminalIdentity())) {
-                return DispatchResult.REJECTED;
-            }
-            LocationReport report = locationCodec.decode(frame.header(), frame.body());
+            return sessionRegistry.executeIfCurrent(session, () -> dispatchCurrent(session, frame))
+                    .orElse(DispatchResult.REJECTED);
+        } finally {
+            frame.body().release();
+        }
+    }
+
+    private DispatchResult dispatchCurrent(TerminalSession session, Jt808Frame frame) {
+        if (session.vehicleId() == null
+                || session.sourceCoordinateSystem() == null
+                || !session.matchesTerminalIdentity(frame.header().terminalIdentity())
+                || frame.header().encryptionType() != 0) {
+            return DispatchResult.REJECTED;
+        }
+        int messageId = frame.header().messageId();
+        if (CONSUMED_MESSAGE_IDS.contains(messageId)) {
+            return DispatchResult.REJECTED;
+        }
+        if (messageId != LOCATION_REPORT_MESSAGE_ID) {
+            unknownMessageCount.incrementAndGet();
+            return DispatchResult.MAY_ACKNOWLEDGE_SUCCESS;
+        }
+            LocationReport report = coreModule.decodeLocation(frame.header(), frame.body());
             Instant gatewayReceivedAt = clock.instant();
             CanonicalPositionIngress ingress = new CanonicalPositionIngress(
                     session.terminalId(),
@@ -81,13 +99,10 @@ public final class ProtocolModuleRegistry {
                     report.satelliteCount(),
                     digest(frame));
             GatewayIngressBuffer.WriteResult result = positionBuffer.append(ingress);
-            return result == GatewayIngressBuffer.WriteResult.STORED
-                            || result == GatewayIngressBuffer.WriteResult.DUPLICATE
-                    ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS
-                    : DispatchResult.REJECTED;
-        } finally {
-            frame.body().release();
-        }
+        return result == GatewayIngressBuffer.WriteResult.STORED
+                        || result == GatewayIngressBuffer.WriteResult.DUPLICATE
+                ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS
+                : DispatchResult.REJECTED;
     }
 
     public long unknownMessageCount() {
