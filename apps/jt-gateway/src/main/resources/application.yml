@@ -1,0 +1,14 @@
+server:
+  port: ${JT_GATEWAY_MANAGEMENT_PORT:7612}
+
+jt:
+  gateway:
+    tcp:
+      enabled: ${JT_GATEWAY_TCP_ENABLED:false}
+      port: ${JT_GATEWAY_TCP_PORT:7611}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus

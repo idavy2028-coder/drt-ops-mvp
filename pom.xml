@@ -8,6 +8,8 @@
   <packaging>pom</packaging>
 
   <modules>
+    <module>libs/jt-protocol</module>
+    <module>apps/jt-gateway</module>
     <module>apps/api</module>
   </modules>
 </project>
