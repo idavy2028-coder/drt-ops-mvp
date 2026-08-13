@@ -447,3 +447,79 @@ export interface OperationsSummary {
   exceptionCloseRate: DecimalValue;
   vehicleUtilizationRate: DecimalValue;
 }
+
+export type DashboardMetricStatus = "NORMAL" | "HIGH" | "LOW" | "NO_BASELINE";
+
+export interface DashboardOrderVolume {
+  count: number;
+  baseline: DecimalValue | null;
+  changeRate: DecimalValue | null;
+  status: DashboardMetricStatus;
+}
+
+export interface DashboardTaskCompletion {
+  completed: number;
+  total: number;
+  rate: DecimalValue | null;
+  baselineRate: DecimalValue | null;
+  status: DashboardMetricStatus;
+}
+
+export interface DashboardAverageWait {
+  minutes: DecimalValue | null;
+  sampleCount: number;
+  baselineMinutes: DecimalValue | null;
+  changeRate: DecimalValue | null;
+  status: DashboardMetricStatus;
+}
+
+export interface DashboardVehicleUtilization {
+  utilized: number;
+  available: number;
+  rate: DecimalValue | null;
+  baselineRate: DecimalValue | null;
+  status: DashboardMetricStatus;
+}
+
+export interface DashboardCoreMetrics {
+  orderVolume: DashboardOrderVolume;
+  taskCompletion: DashboardTaskCompletion;
+  averageWait: DashboardAverageWait;
+  vehicleUtilization: DashboardVehicleUtilization;
+}
+
+export interface DashboardTrendPoint {
+  date: string;
+  orderCount: number;
+  completedTasks: number;
+  totalTasks: number;
+  taskCompletionRate: DecimalValue | null;
+  averageWaitMinutes: DecimalValue | null;
+  waitSampleCount: number;
+  utilizedVehicles: number;
+  availableVehicles: number;
+  vehicleUtilizationRate: DecimalValue | null;
+}
+
+export interface DashboardDistributionItem {
+  key: string;
+  label: string;
+  count: number;
+  rate: DecimalValue | null;
+}
+
+export interface DashboardDistributions {
+  orders: DashboardDistributionItem[];
+  tasks: DashboardDistributionItem[];
+  vehicles: DashboardDistributionItem[];
+}
+
+export interface OperationsDashboard {
+  operatingDate: string;
+  rangeStart: string;
+  rangeEnd: string;
+  coreMetrics: DashboardCoreMetrics;
+  trend: DashboardTrendPoint[];
+  distributions: DashboardDistributions;
+  generatedAt: IsoDateTime;
+}
