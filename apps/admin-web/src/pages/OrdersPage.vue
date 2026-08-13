@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import {
   cancelOrder,
   confirmCancellationReason,
@@ -11,12 +11,19 @@ import {
 } from "../api/orders";
 import type { RideOrder } from "../api/types";
 import OrderCreateDialog from "../components/OrderCreateDialog.vue";
+import OrderDetailDrawer from "../components/OrderDetailDrawer.vue";
 import NoShowConfirmDialog from "../components/NoShowConfirmDialog.vue";
+import RecordPagination from "../components/RecordPagination.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 import { authStore } from "../auth/authStore";
 import { userMessage } from "../api/errors";
+import { usePageScrollRetention } from "../composables/usePageScrollRetention";
+import { formatShanghaiDateTime, shanghaiDateKey } from "../presentation/dateTime";
 import { feedbackStore } from "../stores/feedbackStore";
 
+type OrderGroupKey = "today" | "history";
+
+const ORDER_PAGE_SIZE = 8;
 const orders = ref<RideOrder[]>([]);
 const showCreateDialog = ref(false);
 const status = ref("");
@@ -24,18 +31,12 @@ const loading = ref(false);
 const submitting = ref(false);
 const noShowOrder = ref<RideOrder | null>(null);
 const noShowSubmitting = ref(false);
-const expandedFailureOrderId = ref<string | null>(null);
+const selectedOrder = ref<RideOrder | null>(null);
+const detailTrigger = ref<HTMLElement | null>(null);
+const activeOrderGroup = ref<OrderGroupKey>("today");
+const orderPageByGroup = ref<Record<OrderGroupKey, number>>({ today: 1, history: 1 });
 
-function localDateKey(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
+usePageScrollRetention();
 
 function orderCreatedAtValue(order: RideOrder): number {
   const timestamp = order.createdAt ? Date.parse(order.createdAt) : Number.NEGATIVE_INFINITY;
@@ -43,13 +44,40 @@ function orderCreatedAtValue(order: RideOrder): number {
 }
 
 const orderGroups = computed(() => {
-  const todayKey = localDateKey(new Date().toISOString());
+  const todayKey = shanghaiDateKey(new Date().toISOString());
   const sorted = [...orders.value].sort((left, right) => orderCreatedAtValue(right) - orderCreatedAtValue(left));
-  return [
-    { key: "today", title: "今日新增订单", empty: "暂无今日新增订单", items: sorted.filter((order) => localDateKey(order.createdAt) === todayKey) },
-    { key: "history", title: "历史订单", empty: "暂无历史订单", items: sorted.filter((order) => localDateKey(order.createdAt) !== todayKey) }
-  ];
+  return {
+    today: {
+      title: "今日新增",
+      empty: "暂无今日新增订单",
+      items: sorted.filter((order) => shanghaiDateKey(order.createdAt) === todayKey)
+    },
+    history: {
+      title: "历史订单",
+      empty: "暂无历史订单",
+      items: sorted.filter((order) => shanghaiDateKey(order.createdAt) !== todayKey)
+    }
+  } satisfies Record<OrderGroupKey, { title: string; empty: string; items: RideOrder[] }>;
 });
+
+const activeGroup = computed(() => orderGroups.value[activeOrderGroup.value]);
+const activePage = computed({
+  get: () => orderPageByGroup.value[activeOrderGroup.value],
+  set: (page: number) => {
+    orderPageByGroup.value[activeOrderGroup.value] = page;
+  }
+});
+const pagedOrders = computed(() => {
+  const start = (activePage.value - 1) * ORDER_PAGE_SIZE;
+  return activeGroup.value.items.slice(start, start + ORDER_PAGE_SIZE);
+});
+
+function clampOrderPages(): void {
+  (["today", "history"] satisfies OrderGroupKey[]).forEach((key) => {
+    const pageCount = Math.max(1, Math.ceil(orderGroups.value[key].items.length / ORDER_PAGE_SIZE));
+    orderPageByGroup.value[key] = Math.min(orderPageByGroup.value[key], pageCount);
+  });
+}
 
 function canDispatch(order: RideOrder) {
   return order.status === "PENDING_DISPATCH";
@@ -63,20 +91,15 @@ function canConfirmPassengerCancellation(order: RideOrder) {
   return order.status === "CANCELLED";
 }
 
-function toggleFailureDetails(orderId: string): void {
-  expandedFailureOrderId.value = expandedFailureOrderId.value === orderId ? null : orderId;
+function openOrderDetails(order: RideOrder, event: MouseEvent): void {
+  detailTrigger.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  selectedOrder.value = order;
 }
 
-function formatDateTime(value?: string) {
-  if (!value) {
-    return "--";
-  }
-  return new Date(value).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+async function closeOrderDetails(): Promise<void> {
+  selectedOrder.value = null;
+  await nextTick();
+  detailTrigger.value?.focus();
 }
 
 async function loadOrders() {
@@ -84,6 +107,7 @@ async function loadOrders() {
   loading.value = true;
   try {
     orders.value = await listOrders();
+    clampOrderPages();
   } catch (error) {
     status.value = userMessage(error, "订单数据加载失败");
   } finally {
@@ -176,7 +200,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="page">
+  <section class="page orders-page">
     <header class="page-header">
       <div>
         <p class="page-kicker">ORDERS</p>
@@ -203,93 +227,179 @@ onMounted(() => {
       @close="noShowOrder = null"
       @confirm="closeNoShow"
     />
+    <OrderDetailDrawer
+      v-if="selectedOrder"
+      :order="selectedOrder"
+      @close="closeOrderDetails"
+    />
 
     <p v-if="loading" class="page-state">正在同步订单数据…</p>
     <p v-else-if="status" class="page-state">{{ status }}</p>
 
-    <section v-for="group in orderGroups" :key="group.key" class="table-panel record-group">
-      <div class="record-group-header">
-        <h3 class="section-title">{{ group.title }}</h3>
-        <span class="record-group-count">{{ group.items.length }} 条</span>
+    <section class="table-panel order-record-panel">
+      <div class="record-toolbar">
+        <div class="segmented-control" aria-label="订单分区">
+          <button
+            type="button"
+            :aria-pressed="activeOrderGroup === 'today'"
+            @click="activeOrderGroup = 'today'"
+          >
+            今日新增 {{ orderGroups.today.items.length }}
+          </button>
+          <button
+            type="button"
+            :aria-pressed="activeOrderGroup === 'history'"
+            @click="activeOrderGroup = 'history'"
+          >
+            历史订单 {{ orderGroups.history.items.length }}
+          </button>
+        </div>
+        <span class="page-size-hint">每页 {{ ORDER_PAGE_SIZE }} 条</span>
       </div>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>订单</th>
-            <th>乘客</th>
-            <th>订单状态</th>
-            <th>预计上车时间</th>
-            <th>预约时间</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="order in group.items" :key="order.id">
-            <td>{{ order.id.slice(0, 8) }}</td>
-            <td>{{ order.passengerName }} · {{ order.passengerCount }}人</td>
-            <td>
-              <StatusBadge :code="order.status" />
-              <div v-if="order.status === 'UNSERVICEABLE' && order.dispatchFailure" class="dispatch-failure-summary">
-                <span>{{ order.dispatchFailure.summary }}</span>
-                <button
-                  class="link-button"
-                  type="button"
-                  :aria-expanded="expandedFailureOrderId === order.id"
-                  aria-label="查看不可服务原因"
-                  @click="toggleFailureDetails(order.id)"
-                >
-                  {{ expandedFailureOrderId === order.id ? "收起原因" : "查看原因" }}
-                </button>
-                <div v-if="expandedFailureOrderId === order.id" class="dispatch-failure-details">
-                  <span>候选方案数：{{ order.dispatchFailure.candidateCount }}</span>
-                  <span v-if="order.dispatchFailure.maxWaitMinutes !== undefined">最大等候：{{ order.dispatchFailure.maxWaitMinutes }} 分钟</span>
-                  <span v-if="order.dispatchFailure.maxDetourMinutes !== undefined">最大绕行：{{ order.dispatchFailure.maxDetourMinutes }} 分钟</span>
-                  <span v-if="order.dispatchFailure.rejectedReasons.length">拒绝原因：{{ order.dispatchFailure.rejectedReasons.join("、") }}</span>
-                  <span v-if="order.dispatchFailure.mapProvider">路线服务：{{ order.dispatchFailure.mapProvider }}{{ order.dispatchFailure.mapDegraded ? "（降级）" : "（正常）" }}</span>
-                  <span v-if="order.dispatchFailure.pickupToDestinationDistanceMeters">起终点路线：{{ order.dispatchFailure.pickupToDestinationDistanceMeters }} 米 / {{ Math.ceil((order.dispatchFailure.pickupToDestinationDurationSeconds ?? 0) / 60) }} 分钟</span>
-                  <span class="dispatch-failure-code">诊断代码：{{ order.dispatchFailure.code }}</span>
+
+      <div class="table-scroll">
+        <table class="data-table orders-table">
+          <thead>
+            <tr>
+              <th>订单</th>
+              <th>乘客</th>
+              <th>联系电话</th>
+              <th>上车点 → 下车点</th>
+              <th>状态</th>
+              <th>时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="order in pagedOrders" :key="order.id">
+              <td>
+                <div class="stacked-cell order-cell">
+                  <strong>{{ order.id.slice(0, 8) }}</strong>
+                  <span>{{ formatShanghaiDateTime(order.createdAt, "time") }} 创建</span>
                 </div>
-              </div>
-            </td>
-            <td>{{ formatDateTime(order.estimatedBoardingAt) }}</td>
-            <td>{{ formatDateTime(order.requestedDepartureAt) }}</td>
-            <td>
-              <div class="toolbar">
-                <template v-if="authStore.has('DISPATCH_EXECUTE')">
-                  <button v-if="canDispatch(order)" class="secondary-button" type="button" @click="runDispatch(order)">调度</button>
-                   <button v-if="canCancel(order)" class="secondary-button" type="button" @click="cancel(order)">取消</button>
-                   <button v-if="canConfirmPassengerCancellation(order)" class="secondary-button" type="button" @click="confirmPassengerCancellation(order)">确认乘客取消</button>
-                  <button v-if="order.canMarkNoShow" class="danger-button" type="button" @click="openNoShow(order)">乘客未到</button>
-                  <span
-                    v-else-if="order.status === 'IN_PROGRESS' && order.noShowBlockReason"
-                    class="action-hint"
+              </td>
+              <td>
+                <div class="stacked-cell">
+                  <strong>{{ order.passengerName }}</strong>
+                  <span>{{ order.passengerCount }} 人</span>
+                </div>
+              </td>
+              <td>
+                <a
+                  v-if="order.passengerPhone"
+                  class="phone-link"
+                  :href="`tel:${order.passengerPhone}`"
+                  :aria-label="`拨打 ${order.passengerPhone}`"
+                >
+                  {{ order.passengerPhone }}
+                </a>
+                <span v-else>--</span>
+              </td>
+              <td>
+                <div class="stacked-cell route-cell" :title="`${order.originAddress || '上车点未填写'} → ${order.destinationAddress || '下车点未填写'}`">
+                  <strong>{{ order.originAddress || "上车点未填写" }}</strong>
+                  <span>↓ {{ order.destinationAddress || "下车点未填写" }}</span>
+                </div>
+              </td>
+              <td>
+                <StatusBadge :code="order.status" />
+              </td>
+              <td>
+                <div class="stacked-cell time-cell">
+                  <strong>预约 {{ formatShanghaiDateTime(order.requestedDepartureAt) }}</strong>
+                  <span>预计 {{ formatShanghaiDateTime(order.estimatedBoardingAt) }}</span>
+                </div>
+              </td>
+              <td>
+                <div class="toolbar row-actions">
+                  <button
+                    v-if="authStore.has('DISPATCH_EXECUTE') && canDispatch(order)"
+                    class="secondary-button"
+                    type="button"
+                    @click="runDispatch(order)"
                   >
-                    <span>{{ order.noShowBlockReason }}</span>
-                    <span v-if="order.noShowEligibleAt">{{ noShowRemaining(order) }}</span>
-                  </span>
-                   <span v-if="!canCancel(order) && !canConfirmPassengerCancellation(order)" class="action-hint">无需操作</span>
-                </template>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="group.items.length === 0">
-            <td colspan="6" class="record-group-empty">{{ group.empty }}</td>
-          </tr>
-        </tbody>
-      </table>
+                    调度
+                  </button>
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    @click="openOrderDetails(order, $event)"
+                  >
+                    查看详情
+                  </button>
+                  <template v-if="authStore.has('DISPATCH_EXECUTE')">
+                    <button v-if="order.canMarkNoShow" class="danger-button" type="button" @click="openNoShow(order)">乘客未到</button>
+                    <span
+                      v-else-if="order.status === 'IN_PROGRESS' && order.noShowBlockReason"
+                      class="action-hint"
+                    >
+                      <span>{{ order.noShowBlockReason }}</span>
+                      <span v-if="order.noShowEligibleAt">{{ noShowRemaining(order) }}</span>
+                    </span>
+                    <button
+                      class="secondary-button"
+                      type="button"
+                      :disabled="!canCancel(order)"
+                      :aria-describedby="!canCancel(order) ? `cancel-disabled-${order.id}` : undefined"
+                      @click="canCancel(order) && cancel(order)"
+                    >
+                      取消订单
+                    </button>
+                    <span v-if="!canCancel(order)" :id="`cancel-disabled-${order.id}`" class="sr-only">当前订单状态不可取消</span>
+                    <button v-if="canConfirmPassengerCancellation(order)" class="secondary-button" type="button" @click="confirmPassengerCancellation(order)">确认乘客取消</button>
+                  </template>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="pagedOrders.length === 0">
+              <td colspan="7" class="record-group-empty">{{ activeGroup.empty }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <RecordPagination
+        v-model:current-page="activePage"
+        class="order-pagination"
+        :total-items="activeGroup.items.length"
+        :page-size="ORDER_PAGE_SIZE"
+      />
     </section>
   </section>
 </template>
 
 <style scoped>
-.record-group { margin-top: 16px; }
-.record-group-header { align-items: center; display: flex; justify-content: space-between; margin-bottom: 10px; }
-.record-group-header .section-title { margin: 0; }
-.record-group-count { color: var(--ink-muted); font-size: 13px; font-weight: 800; }
+.orders-page { gap: 12px; }
+.order-record-panel { overflow: hidden; }
+.record-toolbar { align-items: center; background: #f7f9f7; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; min-height: 52px; padding: 8px 12px; }
+.segmented-control { background: #e9eeeb; border-radius: 8px; display: inline-flex; gap: 4px; padding: 3px; }
+.segmented-control button { background: transparent; border: 0; border-radius: 6px; color: #52615a; cursor: pointer; min-height: 32px; padding: 6px 12px; font-size: 13px; font-weight: 900; }
+.segmented-control button[aria-pressed="true"] { background: #ffffff; box-shadow: 0 1px 4px rgba(23, 36, 29, 0.12); color: var(--brand); }
+.page-size-hint { color: var(--ink-muted); font-size: 12px; font-weight: 800; }
+.table-scroll { max-width: 100%; overflow-x: auto; }
+.orders-table { min-width: 1080px; }
+.orders-table th,
+.orders-table td { height: 44px; padding: 6px 12px; vertical-align: middle; }
+.stacked-cell { display: grid; gap: 2px; line-height: 1.25; min-width: 0; }
+.stacked-cell strong { font-size: 13px; }
+.stacked-cell span { color: var(--ink-muted); font-size: 12px; }
+.order-cell { min-width: 82px; }
+.route-cell { max-width: 220px; }
+.route-cell strong,
+.route-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.time-cell { min-width: 142px; }
+.phone-link { color: #176b7d; font-size: 13px; font-weight: 800; text-decoration: underline; text-decoration-color: rgba(23, 107, 125, 0.35); text-underline-offset: 3px; }
+.row-actions { flex-wrap: nowrap; gap: 6px; min-width: 190px; }
+.row-actions .primary-button,
+.row-actions .secondary-button,
+.row-actions .danger-button { min-height: 32px; padding: 5px 9px; font-size: 12px; white-space: nowrap; }
+.order-pagination { border-top: 1px solid var(--line); padding: 0 12px; }
 .record-group-empty { color: var(--ink-muted); padding: 24px 12px; text-align: center; }
 .action-hint { color: var(--ink-muted); display: grid; font-size: 13px; font-weight: 700; gap: 2px; }
-.dispatch-failure-summary { color: #9b2c2c; display: grid; font-size: 12px; gap: 4px; margin-top: 6px; max-width: 280px; }
-.dispatch-failure-details { background: #fff7ed; border-left: 3px solid #f59e0b; color: var(--ink); display: grid; gap: 3px; padding: 8px 10px; }
-.dispatch-failure-code { color: var(--ink-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.link-button { background: none; border: 0; color: var(--accent-strong, #006b5b); cursor: pointer; font-size: 12px; font-weight: 800; padding: 0; text-align: left; }
+.sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+@media (max-width: 720px) {
+  .record-toolbar { align-items: flex-start; flex-direction: column; }
+  .segmented-control { width: 100%; }
+  .segmented-control button { flex: 1; }
+}
 </style>
