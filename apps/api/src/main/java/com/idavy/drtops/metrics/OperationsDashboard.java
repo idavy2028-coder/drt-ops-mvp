@@ -22,7 +22,8 @@ public record OperationsDashboard(
         NORMAL,
         HIGH,
         LOW,
-        NO_BASELINE
+        NO_BASELINE,
+        NO_DATA
     }
 
     public record OrderVolume(

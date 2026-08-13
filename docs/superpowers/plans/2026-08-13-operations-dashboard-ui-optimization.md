@@ -15,6 +15,7 @@
 - 核心指标固定为当日订单量、任务完成率、平均等待时间、车辆利用率。
 - 指标卡必须同时展示绝对值与比例或相对变化；无分母的比例使用 `null`，界面显示 `--`。
 - 基线固定使用所选运营日前的 7 个完整运营日，即 `[endDate-7, endDate-1]`；无有效基线时状态为 `NO_BASELINE`。
+- 当日无有效分母或样本时状态为 `NO_DATA`，优先于 `NO_BASELINE`；所有阈值使用高精度内部值判断，仅 API 输出时缩放。
 - 分类图图例必须同时显示数量和百分比；展示百分比保留一位小数并校正合计为 `100.0%`。
 - 页面、卡片和图表遵循已确认的深色运营导航、白色高密度面板、青绿色数据强调风格。
 - 页面间距以 12px 为基础，卡片内边距 16px；辅助字号不得低于 12px。
@@ -140,7 +141,7 @@ public record OperationsDashboard(
         List<TrendPoint> trend,
         Distributions distributions,
         OffsetDateTime generatedAt) {
-    public enum MetricStatus { NORMAL, HIGH, LOW, NO_BASELINE }
+    public enum MetricStatus { NORMAL, HIGH, LOW, NO_BASELINE, NO_DATA }
     public record OrderVolume(long count, BigDecimal baseline, BigDecimal changeRate, MetricStatus status) {}
     public record TaskCompletion(long completed, long total, BigDecimal rate,
                                  BigDecimal baselineRate, MetricStatus status) {}
@@ -170,9 +171,10 @@ private BigDecimal nullableRatio(long numerator, long denominator) {
 }
 
 private MetricStatus relativeStatus(BigDecimal current, BigDecimal baseline, BigDecimal tolerance) {
+    if (current == null) return MetricStatus.NO_DATA;
     if (baseline == null) return MetricStatus.NO_BASELINE;
     if (baseline.signum() == 0) return current.signum() == 0 ? MetricStatus.NORMAL : MetricStatus.HIGH;
-    BigDecimal change = current.subtract(baseline).divide(baseline, RATE_SCALE, RoundingMode.HALF_UP);
+    BigDecimal change = current.subtract(baseline).divide(baseline, CALCULATION_SCALE, RoundingMode.HALF_UP);
     if (change.compareTo(tolerance) > 0) return MetricStatus.HIGH;
     if (change.compareTo(tolerance.negate()) < 0) return MetricStatus.LOW;
     return MetricStatus.NORMAL;
@@ -192,7 +194,7 @@ void reportsNullRatesAndNoBaselineWhenThereAreNoValidDenominators() {
     assertThat(dashboard.coreMetrics().averageWait().minutes()).isNull();
     assertThat(dashboard.coreMetrics().vehicleUtilization().rate()).isNull();
     assertThat(dashboard.coreMetrics().averageWait().status())
-            .isEqualTo(OperationsDashboard.MetricStatus.NO_BASELINE);
+            .isEqualTo(OperationsDashboard.MetricStatus.NO_DATA);
 }
 ```
 
@@ -259,9 +261,9 @@ private OperationsDashboard dashboardFixture(LocalDate endDate) {
             .toList();
     OperationsDashboard.CoreMetrics core = new OperationsDashboard.CoreMetrics(
             new OperationsDashboard.OrderVolume(0, null, null, OperationsDashboard.MetricStatus.NO_BASELINE),
-            new OperationsDashboard.TaskCompletion(0, 0, null, null, OperationsDashboard.MetricStatus.NO_BASELINE),
-            new OperationsDashboard.AverageWait(null, 0, null, null, OperationsDashboard.MetricStatus.NO_BASELINE),
-            new OperationsDashboard.VehicleUtilization(0, 0, null, null, OperationsDashboard.MetricStatus.NO_BASELINE));
+            new OperationsDashboard.TaskCompletion(0, 0, null, null, OperationsDashboard.MetricStatus.NO_DATA),
+            new OperationsDashboard.AverageWait(null, 0, null, null, OperationsDashboard.MetricStatus.NO_DATA),
+            new OperationsDashboard.VehicleUtilization(0, 0, null, null, OperationsDashboard.MetricStatus.NO_DATA));
     OperationsDashboard.Distributions distributions = new OperationsDashboard.Distributions(
             List.of(), List.of(), List.of());
     return new OperationsDashboard(endDate, endDate.minusDays(6), endDate,
@@ -375,7 +377,7 @@ Expected: `getOperationsDashboard` 未导出或类型不存在。
 类型与 Java 字段一一对应；所有可能无分母或无基线的字段使用 `DecimalValue | null`：
 
 ```ts
-export type DashboardMetricStatus = "NORMAL" | "HIGH" | "LOW" | "NO_BASELINE";
+export type DashboardMetricStatus = "NORMAL" | "HIGH" | "LOW" | "NO_BASELINE" | "NO_DATA";
 export interface DashboardTrendPoint {
   date: string;
   orderCount: number;

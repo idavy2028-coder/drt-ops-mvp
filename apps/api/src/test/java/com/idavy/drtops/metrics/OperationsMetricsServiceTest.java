@@ -208,17 +208,72 @@ class OperationsMetricsServiceTest {
 
         assertThat(dashboard.coreMetrics().taskCompletion().rate()).isNull();
         assertThat(dashboard.coreMetrics().taskCompletion().baselineRate()).isNull();
+        assertThat(dashboard.coreMetrics().taskCompletion().status())
+                .isEqualTo(OperationsDashboard.MetricStatus.NO_DATA);
         assertThat(dashboard.coreMetrics().averageWait().minutes()).isNull();
         assertThat(dashboard.coreMetrics().averageWait().baselineMinutes()).isNull();
         assertThat(dashboard.coreMetrics().averageWait().status())
-                .isEqualTo(OperationsDashboard.MetricStatus.NO_BASELINE);
+                .isEqualTo(OperationsDashboard.MetricStatus.NO_DATA);
         assertThat(dashboard.coreMetrics().vehicleUtilization().rate()).isNull();
         assertThat(dashboard.coreMetrics().vehicleUtilization().baselineRate()).isNull();
+        assertThat(dashboard.coreMetrics().vehicleUtilization().status())
+                .isEqualTo(OperationsDashboard.MetricStatus.NO_DATA);
         assertThat(dashboard.trend()).allSatisfy(point -> {
             assertThat(point.taskCompletionRate()).isNull();
             assertThat(point.averageWaitMinutes()).isNull();
             assertThat(point.vehicleUtilizationRate()).isNull();
         });
+    }
+
+    @Test
+    void distinguishesMissingCurrentSamplesFromAMissingBaseline() {
+        OffsetDateTime baselineDay = OffsetDateTime.parse("2026-08-11T23:30:00Z");
+        RideOrder baselineOrder = saveCompletedOrderAt("13800009104", baselineDay);
+        dispatchDecisionRepository.save(dispatchDecision(
+                baselineOrder.getId(),
+                DispatchDecisionType.AUTO_DISPATCH,
+                VEHICLE_ID,
+                10,
+                3));
+        saveCompletedTask(VEHICLE_ID, baselineDay.plusMinutes(5));
+
+        OperationsDashboard dashboard = metricsService.calculateDashboard(LocalDate.parse("2026-08-13"), 7);
+
+        assertThat(dashboard.coreMetrics().taskCompletion().rate()).isNull();
+        assertThat(dashboard.coreMetrics().taskCompletion().baselineRate()).isEqualByComparingTo("1.0000");
+        assertThat(dashboard.coreMetrics().taskCompletion().status())
+                .isEqualTo(OperationsDashboard.MetricStatus.NO_DATA);
+        assertThat(dashboard.coreMetrics().averageWait().minutes()).isNull();
+        assertThat(dashboard.coreMetrics().averageWait().baselineMinutes()).isEqualByComparingTo("10.00");
+        assertThat(dashboard.coreMetrics().averageWait().status())
+                .isEqualTo(OperationsDashboard.MetricStatus.NO_DATA);
+    }
+
+    @Test
+    void classifiesThresholdsWithUnroundedSourceRatios() {
+        OffsetDateTime baselineDay = OffsetDateTime.parse("2026-08-11T23:30:00Z");
+        for (int index = 0; index < 37; index++) {
+            if (index < 3) {
+                saveCompletedTask(VEHICLE_ID, baselineDay.plusMinutes(index));
+            } else {
+                saveInProgressTask(VEHICLE_ID, baselineDay.plusMinutes(index));
+            }
+        }
+        OffsetDateTime currentDay = OffsetDateTime.parse("2026-08-12T23:30:00Z");
+        for (int index = 0; index < 9; index++) {
+            if (index == 0) {
+                saveCompletedTask(VEHICLE_ID, currentDay.plusMinutes(index));
+            } else {
+                saveInProgressTask(VEHICLE_ID, currentDay.plusMinutes(index));
+            }
+        }
+
+        OperationsDashboard dashboard = metricsService.calculateDashboard(LocalDate.parse("2026-08-13"), 7);
+
+        assertThat(dashboard.coreMetrics().taskCompletion().rate()).isEqualByComparingTo("0.1111");
+        assertThat(dashboard.coreMetrics().taskCompletion().baselineRate()).isEqualByComparingTo("0.0811");
+        assertThat(dashboard.coreMetrics().taskCompletion().status())
+                .isEqualTo(OperationsDashboard.MetricStatus.HIGH);
     }
 
     @Test

@@ -140,7 +140,8 @@ defineProps<{
   color: #2868bf;
 }
 
-.metric-state-no_baseline {
+.metric-state-no_baseline,
+.metric-state-no_data {
   background: #edf1f3;
   color: #60717c;
 }

@@ -6,7 +6,7 @@ import { distributionPercentages } from "../presentation/dashboardMetrics";
 const props = defineProps<{
   title: string;
   unit: string;
-  items: DashboardDistributionItem[];
+  items: readonly DashboardDistributionItem[];
 }>();
 
 const total = computed(() => props.items.reduce((sum, item) => sum + Math.max(0, item.count), 0));

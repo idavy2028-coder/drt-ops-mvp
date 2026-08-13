@@ -11,7 +11,7 @@ import {
 type TrendMode = "combined" | "wait" | "utilization";
 
 const props = defineProps<{
-  points: DashboardTrendPoint[];
+  points: readonly DashboardTrendPoint[];
   rangeStart: string;
   rangeEnd: string;
 }>();

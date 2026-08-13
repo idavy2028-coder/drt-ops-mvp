@@ -448,7 +448,7 @@ export interface OperationsSummary {
   vehicleUtilizationRate: DecimalValue;
 }
 
-export type DashboardMetricStatus = "NORMAL" | "HIGH" | "LOW" | "NO_BASELINE";
+export type DashboardMetricStatus = "NORMAL" | "HIGH" | "LOW" | "NO_BASELINE" | "NO_DATA";
 
 export interface DashboardOrderVolume {
   count: number;

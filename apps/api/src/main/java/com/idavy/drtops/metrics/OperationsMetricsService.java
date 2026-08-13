@@ -29,6 +29,7 @@ public class OperationsMetricsService {
 
     private static final int RATE_SCALE = 4;
     private static final int MINUTES_SCALE = 2;
+    private static final int CALCULATION_SCALE = 12;
     static final ZoneId OPERATING_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final RideOrderRepository rideOrderRepository;
@@ -125,27 +126,27 @@ public class OperationsMetricsService {
                 .filter(task -> isWithin(operatingDateOf(task.getPlannedStartAt()), baselineStart, baselineEnd))
                 .toList();
 
-        BigDecimal orderBaseline = averageCount(baselineOrders.size(), days);
-        BigDecimal completionBaseline = nullableRatio(countCompletedTasks(baselineTasks), baselineTasks.size());
+        BigDecimal orderBaseline = calculationRatio(baselineOrders.size(), days);
+        BigDecimal completionBaseline = calculationRatio(countCompletedTasks(baselineTasks), baselineTasks.size());
         List<Integer> baselineWaitSamples = baselineDecisions.stream()
                 .map(DispatchDecision::getEstimatedWaitMinutes)
                 .filter(Objects::nonNull)
                 .toList();
-        BigDecimal waitBaseline = nullableAverage(baselineWaitSamples);
+        BigDecimal waitBaseline = calculationAverage(baselineWaitSamples);
         long utilizedVehicleDays = IntStream.range(0, days)
                 .mapToLong(index -> countUtilizedVehicles(tasksForDate(
                         tasks,
                         baselineStart.plusDays(index))))
                 .sum();
-        BigDecimal utilizationBaseline = nullableRatio(
+        BigDecimal utilizationBaseline = calculationRatio(
                 utilizedVehicleDays,
                 availableVehicles * days);
 
         OperationsDashboard.CoreMetrics coreMetrics = new OperationsDashboard.CoreMetrics(
                 new OperationsDashboard.OrderVolume(
                         current.orderCount(),
-                        orderBaseline,
-                        relativeChange(BigDecimal.valueOf(current.orderCount()), orderBaseline),
+                        minutesForOutput(orderBaseline),
+                        rateForOutput(relativeChange(BigDecimal.valueOf(current.orderCount()), orderBaseline)),
                         relativeStatus(
                                 BigDecimal.valueOf(current.orderCount()),
                                 orderBaseline,
@@ -153,17 +154,17 @@ public class OperationsMetricsService {
                 new OperationsDashboard.TaskCompletion(
                         current.completedTasks(),
                         current.totalTasks(),
-                        current.taskCompletionRate(),
-                        completionBaseline,
+                        rateForOutput(current.taskCompletionRate()),
+                        rateForOutput(completionBaseline),
                         pointStatus(
                                 current.taskCompletionRate(),
                                 completionBaseline,
                                 new BigDecimal("0.03"))),
                 new OperationsDashboard.AverageWait(
-                        current.averageWaitMinutes(),
+                        minutesForOutput(current.averageWaitMinutes()),
                         current.waitSampleCount(),
-                        waitBaseline,
-                        relativeChange(current.averageWaitMinutes(), waitBaseline),
+                        minutesForOutput(waitBaseline),
+                        rateForOutput(relativeChange(current.averageWaitMinutes(), waitBaseline)),
                         relativeStatus(
                                 current.averageWaitMinutes(),
                                 waitBaseline,
@@ -171,8 +172,8 @@ public class OperationsMetricsService {
                 new OperationsDashboard.VehicleUtilization(
                         current.utilizedVehicles(),
                         current.availableVehicles(),
-                        current.vehicleUtilizationRate(),
-                        utilizationBaseline,
+                        rateForOutput(current.vehicleUtilizationRate()),
+                        rateForOutput(utilizationBaseline),
                         pointStatus(
                                 current.vehicleUtilizationRate(),
                                 utilizationBaseline,
@@ -218,12 +219,12 @@ public class OperationsMetricsService {
                 orders.size(),
                 completedTasks,
                 tasks.size(),
-                nullableRatio(completedTasks, tasks.size()),
-                nullableAverage(waitSamples),
+                calculationRatio(completedTasks, tasks.size()),
+                calculationAverage(waitSamples),
                 waitSamples.size(),
                 utilizedVehicles,
                 availableVehicles,
-                nullableRatio(utilizedVehicles, availableVehicles));
+                calculationRatio(utilizedVehicles, availableVehicles));
     }
 
     private List<RideOrder> ordersForDate(List<RideOrder> orders, LocalDate date) {
@@ -333,17 +334,24 @@ public class OperationsMetricsService {
         return new OperationsDashboard.DistributionItem(key, label, count, nullableRatio(count, total));
     }
 
-    private BigDecimal averageCount(long count, int days) {
-        return BigDecimal.valueOf(count)
-                .divide(BigDecimal.valueOf(days), MINUTES_SCALE, RoundingMode.HALF_UP);
-    }
-
     private BigDecimal nullableRatio(long numerator, long denominator) {
         return denominator == 0 ? null : ratio(numerator, denominator);
     }
 
-    private BigDecimal nullableAverage(List<Integer> values) {
-        return values.isEmpty() ? null : average(values);
+    private BigDecimal calculationRatio(long numerator, long denominator) {
+        return denominator == 0
+                ? null
+                : BigDecimal.valueOf(numerator)
+                        .divide(BigDecimal.valueOf(denominator), CALCULATION_SCALE, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal calculationAverage(List<Integer> values) {
+        if (values.isEmpty()) {
+            return null;
+        }
+        long sum = values.stream().mapToLong(Integer::longValue).sum();
+        return BigDecimal.valueOf(sum)
+                .divide(BigDecimal.valueOf(values.size()), CALCULATION_SCALE, RoundingMode.HALF_UP);
     }
 
     private BigDecimal relativeChange(BigDecimal current, BigDecimal baseline) {
@@ -351,14 +359,17 @@ public class OperationsMetricsService {
             return null;
         }
         return current.subtract(baseline)
-                .divide(baseline, RATE_SCALE, RoundingMode.HALF_UP);
+                .divide(baseline, CALCULATION_SCALE, RoundingMode.HALF_UP);
     }
 
     private OperationsDashboard.MetricStatus relativeStatus(
             BigDecimal current,
             BigDecimal baseline,
             BigDecimal tolerance) {
-        if (current == null || baseline == null) {
+        if (current == null) {
+            return OperationsDashboard.MetricStatus.NO_DATA;
+        }
+        if (baseline == null) {
             return OperationsDashboard.MetricStatus.NO_BASELINE;
         }
         if (baseline.signum() == 0) {
@@ -373,7 +384,10 @@ public class OperationsMetricsService {
             BigDecimal current,
             BigDecimal baseline,
             BigDecimal tolerance) {
-        if (current == null || baseline == null) {
+        if (current == null) {
+            return OperationsDashboard.MetricStatus.NO_DATA;
+        }
+        if (baseline == null) {
             return OperationsDashboard.MetricStatus.NO_BASELINE;
         }
         BigDecimal difference = current.subtract(baseline);
@@ -404,13 +418,21 @@ public class OperationsMetricsService {
                     orderCount,
                     completedTasks,
                     totalTasks,
-                    taskCompletionRate,
-                    averageWaitMinutes,
+                    rateForOutput(taskCompletionRate),
+                    minutesForOutput(averageWaitMinutes),
                     waitSampleCount,
                     utilizedVehicles,
                     availableVehicles,
-                    vehicleUtilizationRate);
+                    rateForOutput(vehicleUtilizationRate));
         }
+    }
+
+    private static BigDecimal rateForOutput(BigDecimal value) {
+        return value == null ? null : value.setScale(RATE_SCALE, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal minutesForOutput(BigDecimal value) {
+        return value == null ? null : value.setScale(MINUTES_SCALE, RoundingMode.HALF_UP);
     }
 
     private LocalDate operatingDateOf(OffsetDateTime timestamp) {

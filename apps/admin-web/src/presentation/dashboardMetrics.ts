@@ -8,7 +8,8 @@ const statusLabels: Record<DashboardMetricStatus, string> = {
   NORMAL: "正常",
   HIGH: "偏高",
   LOW: "偏低",
-  NO_BASELINE: "暂无基线"
+  NO_BASELINE: "暂无基线",
+  NO_DATA: "暂无当日数据"
 };
 
 export function formatNullablePercentage(value: DecimalValue | null): string {
@@ -28,23 +29,25 @@ export function metricStatusLabel(status: DashboardMetricStatus): string {
   return statusLabels[status];
 }
 
-export function distributionPercentages(items: DashboardDistributionItem[]): number[] {
-  const total = items.reduce((sum, item) => sum + Math.max(0, item.count), 0);
+export function distributionPercentages(items: readonly DashboardDistributionItem[]): number[] {
+  const counts = items.map((item) => Math.max(0, item.count));
+  const total = counts.reduce((sum, count) => sum + count, 0);
   if (total === 0) {
     return items.map(() => 0);
   }
 
-  const nonZeroIndexes = items
-    .map((item, index) => item.count > 0 ? index : -1)
-    .filter((index) => index >= 0);
-  const lastNonZeroIndex = nonZeroIndexes[nonZeroIndexes.length - 1];
-  const tenths = items.map((item, index) => {
-    if (item.count <= 0 || index === lastNonZeroIndex) {
-      return 0;
-    }
-    return Math.round((item.count / total) * 1000);
-  });
-  tenths[lastNonZeroIndex] = 1000 - tenths.reduce((sum, value) => sum + value, 0);
+  const exactTenths = counts.map((count) => (count / total) * 1000);
+  const tenths = exactTenths.map((value) => Math.floor(value));
+  const remainderCount = 1000 - tenths.reduce((sum, value) => sum + value, 0);
+  const remainderOrder = exactTenths
+    .map((value, index) => ({ index, remainder: value - tenths[index] }))
+    .filter(({ index }) => counts[index] > 0)
+    .sort((left, right) => right.remainder - left.remainder || right.index - left.index);
+
+  for (let offset = 0; offset < remainderCount; offset += 1) {
+    tenths[remainderOrder[offset].index] += 1;
+  }
+
   return tenths.map((value) => value / 10);
 }
 

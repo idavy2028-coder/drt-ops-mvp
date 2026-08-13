@@ -23,6 +23,7 @@ describe("dashboard metric presentation", () => {
     expect(metricStatusLabel("HIGH")).toBe("偏高");
     expect(metricStatusLabel("LOW")).toBe("偏低");
     expect(metricStatusLabel("NO_BASELINE")).toBe("暂无基线");
+    expect(metricStatusLabel("NO_DATA")).toBe("暂无当日数据");
   });
 
   it("corrects displayed distribution percentages to exactly one hundred percent", () => {
@@ -44,6 +45,18 @@ describe("dashboard metric presentation", () => {
       { key: "all", label: "全部", count: 4, rate: "1.0000" }
     ])).toEqual([0, 100]);
     expect(distributionPercentages([])).toEqual([]);
+  });
+
+  it("never makes the corrected final category negative when earlier categories round up", () => {
+    const percentages = distributionPercentages([
+      { key: "a", label: "A", count: 667, rate: "0.3335" },
+      { key: "b", label: "B", count: 667, rate: "0.3335" },
+      { key: "c", label: "C", count: 665, rate: "0.3325" },
+      { key: "d", label: "D", count: 1, rate: "0.0005" }
+    ]);
+
+    expect(percentages.every((value) => value >= 0)).toBe(true);
+    expect(percentages.reduce((sum, value) => sum + Math.round(value * 10), 0)).toBe(1000);
   });
 
   it("formats the chart range without shifting ISO dates through the browser timezone", () => {
