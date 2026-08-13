@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.fleet;
 
 import com.idavy.drtops.domain.location.LocationSource;
+import com.idavy.drtops.domain.location.LocationQualityStatus;
 import com.idavy.drtops.domain.location.GeographyPoint;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -54,6 +55,13 @@ public class Vehicle {
     private UUID currentLocationEventId;
 
     private UUID currentLocationTaskId;
+    private UUID currentLocationTerminalId;
+    @Enumerated(EnumType.STRING) @Column(length = 20) private LocationQualityStatus currentLocationQualityStatus;
+    @org.hibernate.annotations.JdbcTypeCode(SqlTypes.JSON) private String currentLocationQualityReasons;
+    private OffsetDateTime currentLocationGatewayReceivedAt;
+    private java.math.BigDecimal currentLocationSpeedKph;
+    private Integer currentLocationDirectionDegrees;
+    @Column(nullable = false) private boolean currentLocationStale;
 
     @Column(nullable = false, length = 100)
     private String fleetName;
@@ -215,6 +223,22 @@ public class Vehicle {
 
     public UUID getCurrentLocationTaskId() {
         return currentLocationTaskId;
+    }
+    public UUID getCurrentLocationTerminalId() { return currentLocationTerminalId; }
+    public LocationQualityStatus getCurrentLocationQualityStatus() { return currentLocationQualityStatus; }
+    public String getCurrentLocationQualityReasons() { return currentLocationQualityReasons; }
+    public OffsetDateTime getCurrentLocationGatewayReceivedAt() { return currentLocationGatewayReceivedAt; }
+    public java.math.BigDecimal getCurrentLocationSpeedKph() { return currentLocationSpeedKph; }
+    public Integer getCurrentLocationDirectionDegrees() { return currentLocationDirectionDegrees; }
+    public boolean isCurrentLocationStale() { return currentLocationStale; }
+
+    public void applyGpsLocationSnapshot(com.idavy.drtops.domain.location.VehicleLocationEvent event) {
+        applyLocationSnapshot(event.getLocation(), null, LocationSource.GPS_DEVICE, "GCJ02", event.getDriverReportedAt(),
+                event.getRecordedAt(), event.getId(), null);
+        currentLocationTerminalId = event.getTerminalId(); currentLocationQualityStatus = event.getQualityStatus();
+        currentLocationQualityReasons = event.getQualityReasons(); currentLocationGatewayReceivedAt = event.getGatewayReceivedAt();
+        currentLocationSpeedKph = event.getSpeedKph(); currentLocationDirectionDegrees = event.getDirectionDegrees();
+        currentLocationStale = false;
     }
 
     private void requireStatus(String expectedStatus) {

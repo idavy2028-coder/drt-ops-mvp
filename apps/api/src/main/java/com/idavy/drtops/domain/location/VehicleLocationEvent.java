@@ -50,7 +50,7 @@ public class VehicleLocationEvent {
     @Column(nullable = false, length = 20)
     private String coordinateSystem;
 
-    @Column(nullable = false, length = 300)
+    @Column(length = 300)
     private String standardizedAddress;
 
     @Column(nullable = false)
@@ -59,7 +59,6 @@ public class VehicleLocationEvent {
     @Column(nullable = false)
     private OffsetDateTime recordedAt;
 
-    @Column(nullable = false)
     private UUID recordedBy;
 
     @Column(length = 500)
@@ -81,6 +80,24 @@ public class VehicleLocationEvent {
 
     @Column(nullable = false)
     private boolean outsideServiceArea;
+
+    private UUID terminalId;
+    @Column(length = 40) private String protocolVersion;
+    private Integer messageSerialNo;
+    @Column(precision = 10, scale = 7) private BigDecimal rawLongitude;
+    @Column(precision = 10, scale = 7) private BigDecimal rawLatitude;
+    @Column(length = 20) private String rawCoordinateSystem;
+    private OffsetDateTime gatewayReceivedAt;
+    @Column(length = 64) private String payloadDigest;
+    @Column(precision = 6, scale = 2) private BigDecimal speedKph;
+    private Integer directionDegrees;
+    private BigDecimal altitudeMeters;
+    private Integer satelliteCount;
+    private Long alarmBits;
+    private Long statusBits;
+    @Column(length = 80) private String coordinateTransformVersion;
+    @Enumerated(EnumType.STRING) @Column(length = 20) private LocationQualityStatus qualityStatus;
+    @JdbcTypeCode(SqlTypes.JSON) private String qualityReasons;
 
     protected VehicleLocationEvent() {
     }
@@ -199,4 +216,38 @@ public class VehicleLocationEvent {
     public String getRequestFingerprint() { return requestFingerprint; }
     public boolean isSnapshotApplied() { return snapshotApplied; }
     public boolean isOutsideServiceArea() { return outsideServiceArea; }
+    public UUID getTerminalId() { return terminalId; }
+    public String getProtocolVersion() { return protocolVersion; }
+    public Integer getMessageSerialNo() { return messageSerialNo; }
+    public BigDecimal getRawLongitude() { return rawLongitude; }
+    public BigDecimal getRawLatitude() { return rawLatitude; }
+    public String getRawCoordinateSystem() { return rawCoordinateSystem; }
+    public OffsetDateTime getGatewayReceivedAt() { return gatewayReceivedAt; }
+    public String getPayloadDigest() { return payloadDigest; }
+    public BigDecimal getSpeedKph() { return speedKph; }
+    public Integer getDirectionDegrees() { return directionDegrees; }
+    public Integer getSatelliteCount() { return satelliteCount; }
+    public String getCoordinateTransformVersion() { return coordinateTransformVersion; }
+    public LocationQualityStatus getQualityStatus() { return qualityStatus; }
+    public String getQualityReasons() { return qualityReasons; }
+
+    public static VehicleLocationEvent recordGps(UUID vehicleId, UUID terminalId, CanonicalPositionIngress ingress,
+            CoordinateTransformer.StandardizedCoordinate coordinate, LocationQualityDecision decision,
+            UUID idempotencyKey, String fingerprint, OffsetDateTime recordedAt, java.time.Instant gatewayReceivedAt,
+            boolean outsideServiceArea) {
+        VehicleLocationEvent event = record(vehicleId, null, null, null, LocationEventType.GPS_REPORT, LocationSource.GPS_DEVICE,
+                "POINT(" + coordinate.longitude().toPlainString() + " " + coordinate.latitude().toPlainString() + ")",
+                coordinate.longitude(), coordinate.latitude(), "GCJ02", null,
+                ingress.terminalLocatedAt().atOffset(java.time.ZoneOffset.UTC), recordedAt, null, null, null, null,
+                idempotencyKey, fingerprint, decision.applySnapshot(), outsideServiceArea);
+        event.terminalId = terminalId; event.protocolVersion = ingress.protocolVersion(); event.messageSerialNo = ingress.messageSerialNo();
+        event.rawLongitude = ingress.rawLongitude(); event.rawLatitude = ingress.rawLatitude(); event.rawCoordinateSystem = ingress.rawCoordinateSystem();
+        event.gatewayReceivedAt = gatewayReceivedAt.atOffset(java.time.ZoneOffset.UTC); event.payloadDigest = ingress.payloadDigest();
+        event.speedKph = ingress.speedKph(); event.directionDegrees = ingress.directionDegrees();
+        event.altitudeMeters = ingress.altitudeMeters() == null ? null : BigDecimal.valueOf(ingress.altitudeMeters());
+        event.satelliteCount = ingress.satelliteCount(); event.alarmBits = ingress.alarmBits(); event.statusBits = ingress.statusBits();
+        event.coordinateTransformVersion = coordinate.transformVersion(); event.qualityStatus = decision.status();
+        event.qualityReasons = decision.reasons().stream().map(Enum::name).sorted().collect(java.util.stream.Collectors.joining("\",\"", "[\"", "\"]"));
+        return event;
+    }
 }

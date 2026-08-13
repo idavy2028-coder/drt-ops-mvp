@@ -20,7 +20,13 @@ public record VehicleLocationView(
         OffsetDateTime recordedAt,
         UUID recordedBy,
         UUID correctsEventId,
-        boolean snapshotApplied) {
+        boolean snapshotApplied,
+        UUID terminalId,
+        String coordinateTransformVersion,
+        LocationQualityStatus qualityStatus,
+        String qualityReasons,
+        BigDecimal speedKph,
+        OffsetDateTime gatewayReceivedAt) {
 
     public static VehicleLocationView from(VehicleLocationEvent event) {
         return new VehicleLocationView(
@@ -28,6 +34,8 @@ public record VehicleLocationView(
                 event.getVirtualStopId(), event.getEventType(),
                 event.getLongitude(), event.getLatitude(), event.getStandardizedAddress(), event.getSource(),
                 event.getCoordinateSystem(), event.getDriverReportedAt(), event.getRecordedAt(), event.getRecordedBy(),
-                event.getCorrectsEventId(), event.isSnapshotApplied());
+                event.getCorrectsEventId(), event.isSnapshotApplied(), event.getTerminalId(),
+                event.getCoordinateTransformVersion(), event.getQualityStatus(), event.getQualityReasons(),
+                event.getSpeedKph(), event.getGatewayReceivedAt());
     }
 }

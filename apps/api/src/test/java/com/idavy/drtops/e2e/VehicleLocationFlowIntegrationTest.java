@@ -249,6 +249,12 @@ class VehicleLocationFlowIntegrationTest {
                 LocationEventType.PASSENGER_ALIGHTED,
                 LocationEventType.TASK_COMPLETED);
         assertThat(taskEvents).filteredOn(VehicleLocationEvent::isOutsideServiceArea).hasSize(1);
+        assertThat(taskEvents).allSatisfy(event -> {
+            assertThat(event.getSource()).isEqualTo(LocationSource.MANUAL_DISPATCHER);
+            assertThat(event.getRecordedBy()).isNotNull();
+            assertThat(event.getTerminalId()).isNull();
+            assertThat(event.getQualityStatus()).isNull();
+        });
 
         VehicleLocationEvent latestTaskEvent = taskEvents.getLast();
         UUID oldEventId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(

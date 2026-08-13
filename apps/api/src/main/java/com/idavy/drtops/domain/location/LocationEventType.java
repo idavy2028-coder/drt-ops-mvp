@@ -8,5 +8,6 @@ public enum LocationEventType {
     PASSENGER_ALIGHTED,
     TASK_COMPLETED,
     MANUAL_REPORT,
+    GPS_REPORT,
     MANUAL_CORRECTION
 }
