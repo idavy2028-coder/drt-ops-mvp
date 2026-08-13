@@ -75,3 +75,12 @@ UPDATE vehicles
 SET current_location_quality_status = 'GOOD',
     current_location_quality_reasons = '[]'::jsonb
 WHERE current_location_source = 'MANUAL_DISPATCHER';
+
+CREATE TABLE jt_gateway_ingress_receipts (
+  idempotency_key UUID PRIMARY KEY,
+  final_status VARCHAR(20) NOT NULL
+    CHECK (final_status IN ('PROCESSING', 'ACCEPTED', 'REJECTED')),
+  reason_codes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);

@@ -12,7 +12,8 @@ public interface VehicleLocationEventRepository extends JpaRepository<VehicleLoc
 
     List<VehicleLocationEvent> findByVehicleIdOrderByDriverReportedAtDesc(UUID vehicleId);
 
-    List<VehicleLocationEvent> findTop3ByVehicleIdOrderByDriverReportedAtDesc(UUID vehicleId);
+    List<VehicleLocationEvent> findTop3ByVehicleIdAndGatewayReceivedAtIsNotNullOrderByGatewayReceivedAtDescIdDesc(
+            UUID vehicleId);
 
     List<VehicleLocationEvent> findByVehicleIdAndDriverReportedAtBetweenOrderByDriverReportedAtAsc(
             UUID vehicleId, OffsetDateTime from, OffsetDateTime to);

@@ -56,8 +56,8 @@ public class Vehicle {
 
     private UUID currentLocationTaskId;
     private UUID currentLocationTerminalId;
-    @Enumerated(EnumType.STRING) @Column(length = 20) private LocationQualityStatus currentLocationQualityStatus;
-    @org.hibernate.annotations.JdbcTypeCode(SqlTypes.JSON) private String currentLocationQualityReasons;
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) private LocationQualityStatus currentLocationQualityStatus;
+    @org.hibernate.annotations.JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false) private String currentLocationQualityReasons;
     private OffsetDateTime currentLocationGatewayReceivedAt;
     private java.math.BigDecimal currentLocationSpeedKph;
     private Integer currentLocationDirectionDegrees;
@@ -92,6 +92,8 @@ public class Vehicle {
         this.currentLocation = GeographyPoint.fromWkt(currentLocation);
         this.fleetName = fleetName;
         this.dispatchable = dispatchable;
+        this.currentLocationQualityStatus = LocationQualityStatus.GOOD;
+        this.currentLocationQualityReasons = "[]";
         this.createdAt = OffsetDateTime.now();
     }
 
@@ -194,6 +196,15 @@ public class Vehicle {
         this.currentLocationRecordedAt = recordedAt;
         this.currentLocationEventId = eventId;
         this.currentLocationTaskId = taskId;
+        if (source == LocationSource.MANUAL_DISPATCHER) {
+            this.currentLocationTerminalId = null;
+            this.currentLocationQualityStatus = LocationQualityStatus.GOOD;
+            this.currentLocationQualityReasons = "[]";
+            this.currentLocationGatewayReceivedAt = null;
+            this.currentLocationSpeedKph = null;
+            this.currentLocationDirectionDegrees = null;
+            this.currentLocationStale = false;
+        }
         return true;
     }
 

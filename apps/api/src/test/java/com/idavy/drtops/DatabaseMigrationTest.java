@@ -33,6 +33,7 @@ class DatabaseMigrationTest {
         String dispatchMapEstimates = readMigration("V10__add_dispatch_map_estimates.sql");
         String pilotVirtualStops = readMigration("V11__enhance_virtual_stops_for_pilot.sql");
         String deferredTaskStopSequence = readMigration("V12__defer_task_stop_sequence_constraint.sql");
+        String gpsLocationQuality = readMigration("V14__extend_gps_location_quality.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -94,6 +95,12 @@ class DatabaseMigrationTest {
                 "DROP CONSTRAINT task_stops_vehicle_task_id_sequence_number_key",
                 "UNIQUE (vehicle_task_id, sequence_number)",
                 "DEFERRABLE INITIALLY DEFERRED");
+
+        assertThat(gpsLocationQuality).contains(
+                "CREATE TABLE jt_gateway_ingress_receipts",
+                "idempotency_key UUID PRIMARY KEY",
+                "final_status VARCHAR(20) NOT NULL",
+                "reason_codes JSONB NOT NULL");
     }
 
     @Test

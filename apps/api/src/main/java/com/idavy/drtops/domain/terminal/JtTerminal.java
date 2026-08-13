@@ -51,7 +51,7 @@ public class JtTerminal {
     @Column(nullable = false, columnDefinition = "jsonb")
     private String activeSafetyModules;
 
-    @Column(nullable = false)
+    @Column(name = "jt1078_enabled", nullable = false)
     private boolean jt1078Enabled;
 
     @Column(length = 80)

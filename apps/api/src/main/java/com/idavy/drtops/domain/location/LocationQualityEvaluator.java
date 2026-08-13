@@ -12,12 +12,12 @@ public class LocationQualityEvaluator {
     public LocationQualityDecision evaluate(Input input) {
         Set<LocationQualityReason> reasons = EnumSet.noneOf(LocationQualityReason.class);
         if (invalidCoordinate(input.longitude(), input.latitude())) reasons.add(LocationQualityReason.INVALID_COORDINATE);
-        long receiveDelay = Duration.between(input.terminalLocatedAt(), input.gatewayReceivedAt()).getSeconds();
-        if (receiveDelay > 120) reasons.add(LocationQualityReason.RECEIVE_DELAY_EXCEEDED);
-        else if (receiveDelay > 30) reasons.add(LocationQualityReason.RECEIVE_DELAY);
-        long ahead = Duration.between(input.gatewayReceivedAt(), input.terminalLocatedAt()).getSeconds();
-        if (ahead > 120) reasons.add(LocationQualityReason.TERMINAL_TIME_AHEAD_EXCEEDED);
-        else if (ahead > 0) reasons.add(LocationQualityReason.TERMINAL_TIME_AHEAD);
+        Duration receiveDelay = Duration.between(input.terminalLocatedAt(), input.gatewayReceivedAt());
+        if (receiveDelay.compareTo(Duration.ofSeconds(120)) > 0) reasons.add(LocationQualityReason.RECEIVE_DELAY_EXCEEDED);
+        else if (receiveDelay.compareTo(Duration.ofSeconds(30)) > 0) reasons.add(LocationQualityReason.RECEIVE_DELAY);
+        Duration ahead = Duration.between(input.gatewayReceivedAt(), input.terminalLocatedAt());
+        if (ahead.compareTo(Duration.ofSeconds(120)) > 0) reasons.add(LocationQualityReason.TERMINAL_TIME_AHEAD_EXCEEDED);
+        else if (ahead.compareTo(Duration.ZERO) > 0) reasons.add(LocationQualityReason.TERMINAL_TIME_AHEAD);
         if (input.latestTrustedReportedAt() != null && input.terminalLocatedAt().isBefore(input.latestTrustedReportedAt())) reasons.add(LocationQualityReason.OUT_OF_ORDER);
         if ((input.statusBits() & 0x02) == 0) reasons.add(LocationQualityReason.POSITION_INVALID);
         if (input.speedKph() != null && input.speedKph().compareTo(new BigDecimal("140")) > 0) reasons.add(LocationQualityReason.SPEED_EXCEEDED);

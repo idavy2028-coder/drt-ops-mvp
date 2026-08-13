@@ -14,18 +14,26 @@ class LocationQualityEvaluatorTest {
     @Test
     void classifiesReceiveDelayBoundaries() {
         assertDecision(inputAt(NOW.minusSeconds(30)), LocationQualityStatus.GOOD, Set.of(), true);
+        assertDecision(inputAt(NOW.minusSeconds(30).minusMillis(1)), LocationQualityStatus.WARNING,
+                Set.of(LocationQualityReason.RECEIVE_DELAY), true);
         assertDecision(inputAt(NOW.minusSeconds(31)), LocationQualityStatus.WARNING,
                 Set.of(LocationQualityReason.RECEIVE_DELAY), true);
         assertDecision(inputAt(NOW.minusSeconds(120)), LocationQualityStatus.WARNING,
                 Set.of(LocationQualityReason.RECEIVE_DELAY), true);
+        assertDecision(inputAt(NOW.minusSeconds(120).minusMillis(1)), LocationQualityStatus.QUARANTINED,
+                Set.of(LocationQualityReason.RECEIVE_DELAY_EXCEEDED), false);
         assertDecision(inputAt(NOW.minusSeconds(121)), LocationQualityStatus.QUARANTINED,
                 Set.of(LocationQualityReason.RECEIVE_DELAY_EXCEEDED), false);
     }
 
     @Test
     void classifiesFutureTerminalClockBoundaries() {
+        assertDecision(input(NOW.plusMillis(1), NOW, null, null, null, 0x02, new BigDecimal("50"), true),
+                LocationQualityStatus.WARNING, Set.of(LocationQualityReason.TERMINAL_TIME_AHEAD), true);
         assertDecision(input(NOW.plusSeconds(120), NOW, null, null, null, 0x02, new BigDecimal("50"), true),
                 LocationQualityStatus.WARNING, Set.of(LocationQualityReason.TERMINAL_TIME_AHEAD), true);
+        assertDecision(input(NOW.plusSeconds(120).plusMillis(1), NOW, null, null, null, 0x02, new BigDecimal("50"), true),
+                LocationQualityStatus.QUARANTINED, Set.of(LocationQualityReason.TERMINAL_TIME_AHEAD_EXCEEDED), false);
         assertDecision(input(NOW.plusSeconds(121), NOW, null, null, null, 0x02, new BigDecimal("50"), true),
                 LocationQualityStatus.QUARANTINED, Set.of(LocationQualityReason.TERMINAL_TIME_AHEAD_EXCEEDED), false);
     }

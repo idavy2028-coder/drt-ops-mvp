@@ -63,6 +63,17 @@ class P6TerminalLocationMigrationTest {
         assertChar64Mapping(com.idavy.drtops.domain.terminal.JtGatewayAuditEvent.class, "payloadDigest");
     }
 
+    @Test
+    void mapsJt1078FlagToTheV13SnakeCaseColumn() throws Exception {
+        jakarta.persistence.Column column = com.idavy.drtops.domain.terminal.JtTerminal.class
+                .getDeclaredField("jt1078Enabled")
+                .getAnnotation(jakarta.persistence.Column.class);
+
+        assertThat(column).isNotNull();
+        assertThat(column.name()).isEqualTo("jt1078_enabled");
+        assertThat(column.nullable()).isFalse();
+    }
+
     private static void assertChar64Mapping(Class<?> entityType, String fieldName) throws Exception {
         jakarta.persistence.Column column = entityType.getDeclaredField(fieldName)
                 .getAnnotation(jakarta.persistence.Column.class);
@@ -288,10 +299,20 @@ class P6TerminalLocationMigrationTest {
                 "current_location_terminal_id", "current_location_quality_status", "current_location_quality_reasons",
                 "current_location_gateway_received_at", "current_location_speed_kph",
                 "current_location_direction_degrees", "current_location_stale");
+        assertColumns(connection, "jt_gateway_ingress_receipts",
+                "idempotency_key", "final_status", "reason_codes", "created_at", "completed_at");
         assertThat(queryString(connection, """
                 select udt_name from information_schema.columns
                 where table_schema = 'public' and table_name = 'vehicle_location_events' and column_name = 'quality_reasons'
                 """)).isEqualTo("jsonb");
+        assertThat(queryString(connection, """
+                select udt_name from information_schema.columns
+                where table_schema = 'public' and table_name = 'jt_gateway_ingress_receipts' and column_name = 'reason_codes'
+                """)).isEqualTo("jsonb");
+        assertThat(indexDefinition(connection, "jt_gateway_ingress_receipts_pkey"))
+                .isEqualTo(new IndexDefinition("btree", List.of("idempotency_key"), null));
+        assertThat(checkConstraintDefinition(connection, "jt_gateway_ingress_receipts_final_status_check"))
+                .contains("'PROCESSING'::character varying", "'ACCEPTED'::character varying", "'REJECTED'::character varying");
         assertThat(indexDefinition(connection, "idx_vehicle_location_events_terminal_time"))
                 .isEqualTo(new IndexDefinition("btree", List.of("terminal_id", "driver_reported_at"),
                         "(terminal_id IS NOT NULL)"));

@@ -17,6 +17,9 @@ import org.locationtech.jts.geom.Point;
 @Table(name = "vehicle_location_events")
 public class VehicleLocationEvent {
 
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
     @Id
     private UUID id;
 
@@ -95,9 +98,9 @@ public class VehicleLocationEvent {
     private Integer satelliteCount;
     private Long alarmBits;
     private Long statusBits;
-    @Column(length = 80) private String coordinateTransformVersion;
-    @Enumerated(EnumType.STRING) @Column(length = 20) private LocationQualityStatus qualityStatus;
-    @JdbcTypeCode(SqlTypes.JSON) private String qualityReasons;
+    @Column(nullable = false, length = 80) private String coordinateTransformVersion;
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) private LocationQualityStatus qualityStatus;
+    @JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false) private String qualityReasons;
 
     protected VehicleLocationEvent() {
     }
@@ -146,6 +149,9 @@ public class VehicleLocationEvent {
         this.requestFingerprint = requestFingerprint;
         this.snapshotApplied = snapshotApplied;
         this.outsideServiceArea = outsideServiceArea;
+        this.coordinateTransformVersion = "LEGACY_NONE";
+        this.qualityStatus = LocationQualityStatus.GOOD;
+        this.qualityReasons = "[]";
     }
 
     public static VehicleLocationEvent record(
@@ -247,7 +253,15 @@ public class VehicleLocationEvent {
         event.altitudeMeters = ingress.altitudeMeters() == null ? null : BigDecimal.valueOf(ingress.altitudeMeters());
         event.satelliteCount = ingress.satelliteCount(); event.alarmBits = ingress.alarmBits(); event.statusBits = ingress.statusBits();
         event.coordinateTransformVersion = coordinate.transformVersion(); event.qualityStatus = decision.status();
-        event.qualityReasons = decision.reasons().stream().map(Enum::name).sorted().collect(java.util.stream.Collectors.joining("\",\"", "[\"", "\"]"));
+        event.qualityReasons = serializeReasons(decision);
         return event;
+    }
+
+    private static String serializeReasons(LocationQualityDecision decision) {
+        try {
+            return JSON_MAPPER.writeValueAsString(decision.reasons().stream().map(Enum::name).sorted().toList());
+        } catch (com.fasterxml.jackson.core.JsonProcessingException impossible) {
+            throw new IllegalStateException("Unable to serialize location quality reasons", impossible);
+        }
     }
 }

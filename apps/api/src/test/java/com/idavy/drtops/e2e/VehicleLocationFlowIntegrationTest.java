@@ -25,6 +25,7 @@ import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
 import com.idavy.drtops.domain.location.LocationEventType;
+import com.idavy.drtops.domain.location.LocationQualityStatus;
 import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.location.VehicleLocationEvent;
@@ -253,7 +254,9 @@ class VehicleLocationFlowIntegrationTest {
             assertThat(event.getSource()).isEqualTo(LocationSource.MANUAL_DISPATCHER);
             assertThat(event.getRecordedBy()).isNotNull();
             assertThat(event.getTerminalId()).isNull();
-            assertThat(event.getQualityStatus()).isNull();
+            assertThat(event.getCoordinateTransformVersion()).isEqualTo("LEGACY_NONE");
+            assertThat(event.getQualityStatus()).isEqualTo(LocationQualityStatus.GOOD);
+            assertThat(event.getQualityReasons()).isEqualTo("[]");
         });
 
         VehicleLocationEvent latestTaskEvent = taskEvents.getLast();
