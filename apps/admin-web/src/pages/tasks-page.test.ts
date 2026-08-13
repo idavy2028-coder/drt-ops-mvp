@@ -91,7 +91,7 @@ describe("TasksPage", () => {
     expect(completedTaskRow).not.toHaveClass("is-selected");
     expect(within(dispatchedTaskRow!).getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "true");
     expect(within(completedTaskRow!).getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText("计划到站 2026-07-13T02:01:00Z")).toBeInTheDocument();
+    expect(screen.getByText("计划到站 10:01")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发车" })).toBeEnabled();
     for (const name of ["到站", "上车", "下车", "完成"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
@@ -255,7 +255,7 @@ describe("TasksPage", () => {
     const completedTaskRow = screen.getByText("已完成").closest("tr");
     expect(dispatchedTaskRow).toHaveClass("is-selected");
     expect(completedTaskRow).not.toHaveClass("is-selected");
-    expect(screen.getByText("计划到站 2026-07-13T02:01:00Z")).toBeInTheDocument();
+    expect(screen.getByText("计划到站 10:01")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发车" })).toBeEnabled();
   });
 

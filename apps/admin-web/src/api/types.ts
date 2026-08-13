@@ -391,6 +391,7 @@ export interface VehicleTask {
   id: UUID;
   vehicleId: UUID;
   vehiclePlateNumber?: string;
+  vehicleStatus?: string;
   driverId: UUID;
   status: string;
   plannedStartAt: IsoDateTime;

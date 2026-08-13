@@ -30,6 +30,9 @@ const loading = ref(false);
 const submittingLocation = ref(false);
 const virtualStops = ref<VirtualStop[]>([]);
 const latestLocationItems = ref<VehicleLocationSnapshotItem[]>([]);
+const stopNameById = computed<Record<string, string>>(() =>
+  Object.fromEntries(virtualStops.value.map((stop) => [stop.id, stop.name]))
+);
 
 function localDateKey(value: string | undefined): string | null {
   if (!value) {
@@ -498,7 +501,7 @@ onMounted(() => {
 
       <section class="work-panel">
         <h3 class="section-title">站点时间线</h3>
-        <TaskStopTimeline :stops="selectedStops" />
+        <TaskStopTimeline :stops="selectedStops" :stop-name-by-id="stopNameById" />
       </section>
     </div>
   </section>
