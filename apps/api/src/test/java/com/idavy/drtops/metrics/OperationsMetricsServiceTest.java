@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.idavy.drtops.domain.dispatch.DispatchDecision;
 import com.idavy.drtops.domain.dispatch.DispatchDecisionRepository;
 import com.idavy.drtops.domain.dispatch.DispatchDecisionType;
+import com.idavy.drtops.domain.fleet.Vehicle;
+import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.VehicleTask;
@@ -49,11 +51,15 @@ class OperationsMetricsServiceTest {
     @Autowired
     VehicleTaskRepository vehicleTaskRepository;
 
+    @Autowired
+    VehicleRepository vehicleRepository;
+
     @BeforeEach
     void setUp() {
         dispatchDecisionRepository.deleteAll();
         vehicleTaskRepository.deleteAll();
         rideOrderRepository.deleteAll();
+        vehicleRepository.deleteAll();
     }
 
     @Test
@@ -115,6 +121,116 @@ class OperationsMetricsServiceTest {
         assertThat(utcDay.taskCompletionRate()).isEqualByComparingTo("0.0000");
     }
 
+    @Test
+    void buildsSevenDayDashboardWithAbsoluteCountsRatesBaselinesAndDistributions() {
+        saveDispatchableVehicle(VEHICLE_ID, "甘J·16396");
+        saveDispatchableVehicle(OTHER_VEHICLE_ID, "甘J·85211");
+
+        OffsetDateTime baselineDay = OffsetDateTime.parse("2026-08-11T23:30:00Z");
+        RideOrder baselineOrder = saveCompletedOrderAt("13800009101", baselineDay);
+        dispatchDecisionRepository.save(dispatchDecision(
+                baselineOrder.getId(),
+                DispatchDecisionType.AUTO_DISPATCH,
+                VEHICLE_ID,
+                10,
+                3));
+        saveCompletedTask(VEHICLE_ID, baselineDay.plusMinutes(5));
+
+        OffsetDateTime currentDay = OffsetDateTime.parse("2026-08-12T23:30:00Z");
+        RideOrder completedOrder = saveCompletedOrderAt("13800009102", currentDay);
+        dispatchDecisionRepository.save(dispatchDecision(
+                completedOrder.getId(),
+                DispatchDecisionType.AUTO_DISPATCH,
+                VEHICLE_ID,
+                8,
+                3));
+        RideOrder exceptionOrder = newOrder("13800009103", currentDay.plusMinutes(1));
+        exceptionOrder.closeException("NO_SHOW");
+        rideOrderRepository.save(exceptionOrder);
+        saveCompletedTask(VEHICLE_ID, currentDay.plusMinutes(5));
+        saveInProgressTask(OTHER_VEHICLE_ID, currentDay.plusMinutes(10));
+
+        OperationsDashboard dashboard = metricsService.calculateDashboard(LocalDate.parse("2026-08-13"), 7);
+
+        assertThat(dashboard.operatingDate()).isEqualTo(LocalDate.parse("2026-08-13"));
+        assertThat(dashboard.rangeStart()).isEqualTo(LocalDate.parse("2026-08-07"));
+        assertThat(dashboard.rangeEnd()).isEqualTo(LocalDate.parse("2026-08-13"));
+        assertThat(dashboard.trend()).extracting(OperationsDashboard.TrendPoint::date)
+                .containsExactly(
+                        LocalDate.parse("2026-08-07"),
+                        LocalDate.parse("2026-08-08"),
+                        LocalDate.parse("2026-08-09"),
+                        LocalDate.parse("2026-08-10"),
+                        LocalDate.parse("2026-08-11"),
+                        LocalDate.parse("2026-08-12"),
+                        LocalDate.parse("2026-08-13"));
+
+        OperationsDashboard.CoreMetrics metrics = dashboard.coreMetrics();
+        assertThat(metrics.orderVolume().count()).isEqualTo(2);
+        assertThat(metrics.orderVolume().baseline()).isEqualByComparingTo("0.14");
+        assertThat(metrics.orderVolume().status()).isEqualTo(OperationsDashboard.MetricStatus.HIGH);
+        assertThat(metrics.taskCompletion().completed()).isEqualTo(1);
+        assertThat(metrics.taskCompletion().total()).isEqualTo(2);
+        assertThat(metrics.taskCompletion().rate()).isEqualByComparingTo("0.5000");
+        assertThat(metrics.taskCompletion().baselineRate()).isEqualByComparingTo("1.0000");
+        assertThat(metrics.taskCompletion().status()).isEqualTo(OperationsDashboard.MetricStatus.LOW);
+        assertThat(metrics.averageWait().minutes()).isEqualByComparingTo("8.00");
+        assertThat(metrics.averageWait().sampleCount()).isEqualTo(1);
+        assertThat(metrics.averageWait().baselineMinutes()).isEqualByComparingTo("10.00");
+        assertThat(metrics.averageWait().status()).isEqualTo(OperationsDashboard.MetricStatus.LOW);
+        assertThat(metrics.vehicleUtilization().utilized()).isEqualTo(2);
+        assertThat(metrics.vehicleUtilization().available()).isEqualTo(2);
+        assertThat(metrics.vehicleUtilization().rate()).isEqualByComparingTo("1.0000");
+        assertThat(metrics.vehicleUtilization().baselineRate()).isEqualByComparingTo("0.0714");
+        assertThat(metrics.vehicleUtilization().status()).isEqualTo(OperationsDashboard.MetricStatus.HIGH);
+
+        OperationsDashboard.TrendPoint currentPoint = dashboard.trend().get(6);
+        assertThat(currentPoint.orderCount()).isEqualTo(2);
+        assertThat(currentPoint.completedTasks()).isEqualTo(1);
+        assertThat(currentPoint.totalTasks()).isEqualTo(2);
+        assertThat(currentPoint.taskCompletionRate()).isEqualByComparingTo("0.5000");
+        assertThat(currentPoint.averageWaitMinutes()).isEqualByComparingTo("8.00");
+        assertThat(currentPoint.waitSampleCount()).isEqualTo(1);
+        assertThat(currentPoint.utilizedVehicles()).isEqualTo(2);
+        assertThat(currentPoint.availableVehicles()).isEqualTo(2);
+        assertThat(currentPoint.vehicleUtilizationRate()).isEqualByComparingTo("1.0000");
+
+        assertThat(distributionCount(dashboard.distributions().orders(), "COMPLETED")).isEqualTo(1);
+        assertThat(distributionCount(dashboard.distributions().orders(), "EXCEPTION_CANCELLED")).isEqualTo(1);
+        assertThat(distributionTotal(dashboard.distributions().orders())).isEqualTo(2);
+        assertThat(distributionTotal(dashboard.distributions().tasks())).isEqualTo(2);
+        assertThat(distributionTotal(dashboard.distributions().vehicles())).isEqualTo(2);
+    }
+
+    @Test
+    void reportsNullRatesWhenDashboardDenominatorsAreEmpty() {
+        OperationsDashboard dashboard = metricsService.calculateDashboard(LocalDate.parse("2026-08-13"), 7);
+
+        assertThat(dashboard.coreMetrics().taskCompletion().rate()).isNull();
+        assertThat(dashboard.coreMetrics().taskCompletion().baselineRate()).isNull();
+        assertThat(dashboard.coreMetrics().averageWait().minutes()).isNull();
+        assertThat(dashboard.coreMetrics().averageWait().baselineMinutes()).isNull();
+        assertThat(dashboard.coreMetrics().averageWait().status())
+                .isEqualTo(OperationsDashboard.MetricStatus.NO_BASELINE);
+        assertThat(dashboard.coreMetrics().vehicleUtilization().rate()).isNull();
+        assertThat(dashboard.coreMetrics().vehicleUtilization().baselineRate()).isNull();
+        assertThat(dashboard.trend()).allSatisfy(point -> {
+            assertThat(point.taskCompletionRate()).isNull();
+            assertThat(point.averageWaitMinutes()).isNull();
+            assertThat(point.vehicleUtilizationRate()).isNull();
+        });
+    }
+
+    @Test
+    void classifiesNonDispatchableVehiclesAsUnavailableEvenWhenStatusIsInService() {
+        saveVehicle(VEHICLE_ID, "甘J·16396", "IN_SERVICE", false);
+
+        OperationsDashboard dashboard = metricsService.calculateDashboard(LocalDate.parse("2026-08-13"), 7);
+
+        assertThat(distributionCount(dashboard.distributions().vehicles(), "IN_SERVICE")).isZero();
+        assertThat(distributionCount(dashboard.distributions().vehicles(), "UNAVAILABLE")).isEqualTo(1);
+    }
+
     private RideOrder saveCompletedAutoDispatchOrder() {
         RideOrder order = newOrder("13800009001");
         order.confirm(new RideOrder.OrderPromise(
@@ -142,6 +258,16 @@ class OperationsMetricsServiceTest {
         order.confirm(new RideOrder.OrderPromise(
                 OffsetDateTime.parse("2026-07-09T02:33:00Z"),
                 OffsetDateTime.parse("2026-07-09T02:45:00Z")));
+        order.startExecution();
+        order.complete();
+        return rideOrderRepository.save(order);
+    }
+
+    private RideOrder saveCompletedOrderAt(String phone, OffsetDateTime requestedDepartureAt) {
+        RideOrder order = newOrder(phone, requestedDepartureAt);
+        order.confirm(new RideOrder.OrderPromise(
+                requestedDepartureAt.plusMinutes(8),
+                requestedDepartureAt.plusMinutes(25)));
         order.startExecution();
         order.complete();
         return rideOrderRepository.save(order);
@@ -216,5 +342,33 @@ class OperationsMetricsServiceTest {
                 "MANUAL_REVIEW");
         task.startExecution();
         vehicleTaskRepository.save(task);
+    }
+
+    private void saveDispatchableVehicle(UUID id, String plateNumber) {
+        saveVehicle(id, plateNumber, "IDLE", true);
+    }
+
+    private void saveVehicle(UUID id, String plateNumber, String status, boolean dispatchable) {
+        vehicleRepository.save(Vehicle.create(
+                id,
+                plateNumber,
+                "微型公交",
+                8,
+                status,
+                "POINT (120.1550000 30.2741000)",
+                "通渭示范车队",
+                dispatchable));
+    }
+
+    private long distributionCount(List<OperationsDashboard.DistributionItem> items, String key) {
+        return items.stream()
+                .filter(item -> item.key().equals(key))
+                .findFirst()
+                .orElseThrow()
+                .count();
+    }
+
+    private long distributionTotal(List<OperationsDashboard.DistributionItem> items) {
+        return items.stream().mapToLong(OperationsDashboard.DistributionItem::count).sum();
     }
 }
