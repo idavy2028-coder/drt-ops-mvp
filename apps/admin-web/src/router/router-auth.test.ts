@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createMemoryHistory } from "vue-router";
 import { authStore } from "../auth/authStore";
-import { createAppRouter } from "./index";
+import { createAppRouter, routes } from "./index";
 
 describe("router authentication", () => {
   afterEach(() => {
@@ -56,5 +56,13 @@ describe("router authentication", () => {
     await router.isReady();
 
     expect(router.currentRoute.value.name).toBe("changePassword");
+  });
+
+  it("只为订单中心和车辆任务声明页面缓存", () => {
+    const cachedRouteNames = routes
+      .filter((route) => route.meta?.keepAlive === true)
+      .map((route) => route.name);
+
+    expect(cachedRouteNames).toEqual(["orders", "tasks"]);
   });
 });

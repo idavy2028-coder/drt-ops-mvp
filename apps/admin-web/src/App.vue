@@ -98,7 +98,7 @@ a {
 .split-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.7fr);
-  gap: 14px;
+  gap: 12px;
 }
 
 .toolbar {
@@ -118,7 +118,7 @@ a {
 }
 
 .metric-panel {
-  padding: 18px;
+  padding: 16px;
 }
 
 .metric-label {
@@ -136,7 +136,7 @@ a {
 }
 
 .work-panel {
-  padding: 22px;
+  padding: 16px;
 }
 
 .section-title {
@@ -162,7 +162,8 @@ a {
 .data-table th,
 .data-table td {
   border-bottom: 1px solid #e5ebe7;
-  padding: 13px 16px;
+  height: 44px;
+  padding: 6px 12px;
   text-align: left;
   white-space: nowrap;
 }

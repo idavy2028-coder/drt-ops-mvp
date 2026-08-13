@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.task;
 
 import com.idavy.drtops.common.ApiResponse;
+import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -96,10 +97,11 @@ public class VehicleTaskController {
     }
 
     private VehicleTaskView toView(VehicleTask task) {
-        String plateNumber = vehicleRepository.findById(task.getVehicleId())
-                .map(vehicle -> vehicle.getPlateNumber())
-                .orElse(null);
-        return VehicleTaskView.from(task, plateNumber);
+        Vehicle vehicle = vehicleRepository.findById(task.getVehicleId()).orElse(null);
+        return VehicleTaskView.from(
+                task,
+                vehicle == null ? null : vehicle.getPlateNumber(),
+                vehicle == null ? null : vehicle.getCurrentStatus());
     }
 
     private UUID actorId(Authentication authentication) {

@@ -30,6 +30,159 @@ describe("TasksPage", () => {
     expect(screen.getByText("站点时间线")).toBeInTheDocument();
   });
 
+  it("用绝对值和占比展示执行中、待发车、异常与已完成任务", async () => {
+    const createdAt = new Date().toISOString();
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", taskPageFetchMock({
+      taskResponse: taskListResponse([
+        taskFixture("running-task", "IN_PROGRESS", createdAt),
+        taskFixture("pending-task", "DISPATCHED", createdAt),
+        taskFixture("exception-task", "EXCEPTION", createdAt),
+        taskFixture("completed-task", "COMPLETED", createdAt)
+      ])
+    }));
+
+    render(TasksPage);
+
+    await waitFor(() => {
+      expect(screen.getByRole("article", { name: "执行中任务" })).toHaveTextContent("1 项 · 25.0%");
+      expect(screen.getByRole("article", { name: "待发车任务" })).toHaveTextContent("1 项 · 25.0%");
+      expect(screen.getByRole("article", { name: "异常任务" })).toHaveTextContent("1 项 · 25.0%");
+      expect(screen.getByRole("article", { name: "已完成任务" })).toHaveTextContent("1 项 · 25.0%");
+    });
+  });
+
+  it("每页显示六条任务，并分别保留今日与历史页码和车辆状态", async () => {
+    const now = Date.now();
+    const todayTasks = Array.from({ length: 7 }, (_, index) => taskFixture(
+      `today-task-${index + 1}`,
+      index === 0 ? "DISPATCHED" : "COMPLETED",
+      new Date(now - index * 60_000).toISOString(),
+      {
+        vehiclePlateNumber: `甘J-T00${index + 1}`,
+        vehicleStatus: index === 0 ? "DISPATCHED" : "IDLE"
+      }
+    ));
+    const historyTasks = Array.from({ length: 7 }, (_, index) => taskFixture(
+      `history-task-${index + 1}`,
+      "COMPLETED",
+      new Date(now - 24 * 60 * 60_000 - index * 60_000).toISOString(),
+      { vehiclePlateNumber: `甘J-H00${index + 1}`, vehicleStatus: "IDLE" }
+    ));
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", taskPageFetchMock({ taskResponse: taskListResponse([...todayTasks, ...historyTasks]) }));
+
+    render(TasksPage);
+
+    const todayTable = await screen.findByRole("table", { name: "今日新增任务列表" });
+    await waitFor(() => expect(within(todayTable).getAllByRole("row")).toHaveLength(7));
+    expect(screen.getByText("第 1 / 2 页 · 共 7 条")).toBeInTheDocument();
+    const dispatchedRow = screen.getByText("甘J-T001").closest("tr");
+    expect(dispatchedRow).not.toBeNull();
+    expect(within(dispatchedRow!).getByText("已派单")).toBeInTheDocument();
+    expect(within(dispatchedRow!).getByText("待发车")).toBeInTheDocument();
+    expect(within(dispatchedRow!).getByText("暂无位置上报")).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("甘J-T007")).toBeInTheDocument();
+    expect(screen.getByText("第 2 / 2 页 · 共 7 条")).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: "历史任务 7" }));
+    expect(await screen.findByRole("table", { name: "历史任务列表" })).toBeInTheDocument();
+    expect(screen.getByText("第 1 / 2 页 · 共 7 条")).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("甘J-H007")).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: "今日新增 7" }));
+    expect(await screen.findByText("甘J-T007")).toBeInTheDocument();
+    expect(screen.getByText("第 2 / 2 页 · 共 7 条")).toBeInTheDocument();
+  });
+
+  it("根据 taskId 深链自动切换到目标历史分页并选中任务", async () => {
+    const now = Date.now();
+    const historyTasks = Array.from({ length: 7 }, (_, index) => taskFixture(
+      `history-task-${index + 1}`,
+      index === 6 ? "DISPATCHED" : "COMPLETED",
+      new Date(now - 24 * 60 * 60_000 - index * 60_000).toISOString(),
+      { vehiclePlateNumber: `甘J-H00${index + 1}`, vehicleStatus: index === 6 ? "DISPATCHED" : "IDLE" }
+    ));
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    routeQuery.taskId = "history-task-7";
+    vi.stubGlobal("fetch", taskPageFetchMock({ taskResponse: taskListResponse(historyTasks) }));
+
+    render(TasksPage);
+
+    expect(await screen.findByRole("button", { name: "历史任务 7" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("第 2 / 2 页 · 共 7 条")).toBeInTheDocument();
+    expect(screen.getByText("甘J-H007").closest("tr")).toHaveClass("is-selected");
+  });
+
+  it("任务列表加载失败时显示重试入口且不展示零值统计", async () => {
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", taskPageFetchMock({ taskFailure: true }));
+
+    render(TasksPage);
+
+    expect(await screen.findByRole("button", { name: "重试任务列表" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "执行中任务" })).not.toBeInTheDocument();
+  });
+
+  it("站点加载失败时保留任务和最新位置，并逐站降级为未知站点", async () => {
+    const createdAt = new Date().toISOString();
+    const task = taskFixture("reference-task", "DISPATCHED", createdAt, {
+      vehiclePlateNumber: "甘J-R001",
+      vehicleStatus: "DISPATCHED",
+      stops: [{
+        id: "reference-stop",
+        virtualStopId: "missing-stop",
+        sequenceNumber: 1,
+        stopType: "BOARDING",
+        plannedArrivalAt: createdAt,
+        status: "PLANNED"
+      }]
+    });
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", taskPageFetchMock({
+      taskResponse: taskListResponse([task]),
+      virtualStopsFailure: true,
+      latestLocations: [latestLocationItem(task.vehicleId, false)]
+    }));
+
+    render(TasksPage);
+
+    expect(await screen.findByText("甘J-R001")).toBeInTheDocument();
+    expect(screen.getByText("人工上报")).toBeInTheDocument();
+    expect(screen.getByText("未知站点 · missing-")).toBeInTheDocument();
+  });
+
+  it("最新位置加载失败时保留站名和执行控制并显示位置空状态", async () => {
+    const createdAt = new Date().toISOString();
+    const task = taskFixture("location-failure-task", "DISPATCHED", createdAt, {
+      vehiclePlateNumber: "甘J-L001",
+      vehicleStatus: "DISPATCHED",
+      stops: [{
+        id: "location-failure-stop",
+        virtualStopId: "known-stop",
+        sequenceNumber: 1,
+        stopType: "BOARDING",
+        plannedArrivalAt: createdAt,
+        status: "PLANNED"
+      }]
+    });
+    authStore.setSessionForTest({ accessToken: "dispatcher-token", user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false } });
+    vi.stubGlobal("fetch", taskPageFetchMock({
+      taskResponse: taskListResponse([task]),
+      virtualStops: [virtualStopFixture("known-stop", "通渭县汽车站", "POINT(104.6378 35.2109)")],
+      latestLocationsFailure: true
+    }));
+
+    render(TasksPage);
+
+    expect(await screen.findByText("通渭县汽车站")).toBeInTheDocument();
+    expect(screen.getByText("暂无位置上报")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发车" })).toBeEnabled();
+  });
+
   it("separates today's tasks from history by createdAt instead of planned start", async () => {
     const today = new Date();
     const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
@@ -43,14 +196,15 @@ describe("TasksPage", () => {
     }));
     render(TasksPage);
 
-    const todaySection = await screen.findByRole("heading", { name: "今日新增任务" });
-    const historySection = screen.getByRole("heading", { name: "历史任务" });
-    await waitFor(() => expect(todaySection.parentElement).toHaveTextContent("1 条"));
-    expect(historySection.parentElement).toHaveTextContent("1 条");
-    expect(todaySection.closest("section")).toHaveTextContent("甘J00001D");
-    expect(todaySection.closest("section")).not.toHaveTextContent("甘J00002D");
-    expect(historySection.closest("section")).toHaveTextContent("甘J00002D");
-    expect(historySection.closest("section")).not.toHaveTextContent("甘J00001D");
+    expect(await screen.findByRole("button", { name: "今日新增 1" })).toHaveAttribute("aria-pressed", "true");
+    const todayTable = screen.getByRole("table", { name: "今日新增任务列表" });
+    expect(todayTable).toHaveTextContent("甘J00001D");
+    expect(todayTable).not.toHaveTextContent("甘J00002D");
+
+    await fireEvent.click(screen.getByRole("button", { name: "历史任务 1" }));
+    const historyTable = screen.getByRole("table", { name: "历史任务列表" });
+    expect(historyTable).toHaveTextContent("甘J00002D");
+    expect(historyTable).not.toHaveTextContent("甘J00001D");
   });
 
   it("hides task execution controls from an auditor", async () => {
@@ -66,10 +220,10 @@ describe("TasksPage", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(completedTaskResponse()));
     render(TasksPage);
 
-    await screen.findByText("已完成");
-    const selectedRow = screen.getByText("已完成").closest("tr");
+    const taskTable = await screen.findByRole("table", { name: "历史任务列表" });
+    const selectedRow = within(taskTable).getByText("已完成").closest("tr");
     expect(selectedRow).toHaveClass("is-selected");
-    expect(screen.getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(selectedRow!).getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "true");
     for (const name of ["发车", "到站", "上车", "下车", "完成", "车辆故障", "严重延误"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
     }
@@ -80,8 +234,9 @@ describe("TasksPage", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(multipleTaskResponse()));
     render(TasksPage);
 
-    const dispatchedTaskRow = (await screen.findByText("待发车")).closest("tr");
-    const completedTaskRow = screen.getByText("已完成").closest("tr");
+    const taskTable = await screen.findByRole("table", { name: "历史任务列表" });
+    const dispatchedTaskRow = within(taskTable).getByText("待发车").closest("tr");
+    const completedTaskRow = within(taskTable).getByText("已完成").closest("tr");
     expect(dispatchedTaskRow).not.toBeNull();
     expect(completedTaskRow).not.toBeNull();
 
@@ -91,7 +246,7 @@ describe("TasksPage", () => {
     expect(completedTaskRow).not.toHaveClass("is-selected");
     expect(within(dispatchedTaskRow!).getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "true");
     expect(within(completedTaskRow!).getByRole("button", { name: "选择" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText("计划到站 2026-07-13T02:01:00Z")).toBeInTheDocument();
+    expect(screen.getByText("计划到站 10:01")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发车" })).toBeEnabled();
     for (const name of ["到站", "上车", "下车", "完成"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
@@ -158,7 +313,7 @@ describe("TasksPage", () => {
     });
     const requestHeaders = startOptions.headers as Headers;
     expect(requestHeaders.get("Authorization")).toBe("Bearer dispatcher-token");
-    expect(await screen.findByText("执行中")).toBeInTheDocument();
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "历史任务列表" })).getByText("执行中")).toBeInTheDocument());
   });
 
   it("accepts a legacy plain task action response without warnings", async () => {
@@ -179,8 +334,8 @@ describe("TasksPage", () => {
     await fireEvent.update(screen.getByLabelText("驾驶员反馈时间"), "2026-07-13T02:00");
     await fireEvent.click(screen.getByRole("button", { name: "确认发车" }));
 
-    expect(await screen.findByText("执行中")).toBeInTheDocument();
-    expect(screen.queryByText("确认发车位置")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("确认发车位置")).not.toBeInTheDocument());
+    expect(within(screen.getByRole("table", { name: "历史任务列表" })).getByText("执行中")).toBeInTheDocument();
   });
 
   it("passes outside-service-area candidates to the confirmation panel", async () => {
@@ -210,9 +365,9 @@ describe("TasksPage", () => {
     render(TasksPage);
 
     expect(await screen.findByText("人工上报")).toBeInTheDocument();
-    expect(screen.getByText("07/13 10:05")).toBeInTheDocument();
+    expect(screen.getByText("07-13 10:05")).toBeInTheDocument();
     expect(screen.getByText("通渭县客运中心")).toBeInTheDocument();
-    expect(screen.getByText("无位置上报")).toBeInTheDocument();
+    expect(screen.getByText("暂无位置上报")).toBeInTheDocument();
   });
 
   it("does not prefill zero coordinates when virtual stop coordinates cannot be parsed", async () => {
@@ -223,7 +378,7 @@ describe("TasksPage", () => {
     }));
     render(TasksPage);
 
-    expect(await screen.findByText("执行中")).toBeInTheDocument();
+    expect(within(await screen.findByRole("table", { name: "历史任务列表" })).getByText("执行中")).toBeInTheDocument();
     await fireEvent.click(screen.getByRole("button", { name: "到站" }));
 
     expect(await screen.findByText("确认到站位置")).toBeInTheDocument();
@@ -251,11 +406,12 @@ describe("TasksPage", () => {
 
     render(TasksPage);
 
-    const dispatchedTaskRow = (await screen.findByText("待发车")).closest("tr");
-    const completedTaskRow = screen.getByText("已完成").closest("tr");
+    const taskTable = await screen.findByRole("table", { name: "历史任务列表" });
+    const dispatchedTaskRow = within(taskTable).getByText("待发车").closest("tr");
+    const completedTaskRow = within(taskTable).getByText("已完成").closest("tr");
     expect(dispatchedTaskRow).toHaveClass("is-selected");
     expect(completedTaskRow).not.toHaveClass("is-selected");
-    expect(screen.getByText("计划到站 2026-07-13T02:01:00Z")).toBeInTheDocument();
+    expect(screen.getByText("计划到站 10:01")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发车" })).toBeEnabled();
   });
 
@@ -268,7 +424,7 @@ describe("TasksPage", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(TasksPage);
 
-    await screen.findByText("执行中");
+    expect(within(await screen.findByRole("table", { name: "历史任务列表" })).getByText("执行中")).toBeInTheDocument();
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));
     await fireEvent.update(await screen.findByLabelText("驾驶员反馈时间"), "2026-07-13T03:20");
     await fireEvent.click(screen.getByRole("button", { name: "确认完成" }));
@@ -297,6 +453,37 @@ function completedTaskResponse(): Response {
       { id: "stop-2", virtualStopId: "virtual-stop-2", sequenceNumber: 2, stopType: "ALIGHTING", plannedArrivalAt: "2026-07-13T01:11:00Z", status: "ALIGHTED" }
     ]
   }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function taskFixture(
+  id: string,
+  status: string,
+  createdAt: string,
+  overrides: Partial<{
+    vehiclePlateNumber: string;
+    vehicleStatus: string;
+    stops: unknown[];
+  }> = {}
+) {
+  return {
+    id,
+    vehicleId: `vehicle-${id}`,
+    vehiclePlateNumber: `甘J-${id}`,
+    vehicleStatus: status === "IN_PROGRESS" ? "IN_SERVICE" : "IDLE",
+    driverId: `driver-${id}`,
+    status,
+    plannedStartAt: createdAt,
+    createdAt,
+    stops: [],
+    ...overrides
+  };
+}
+
+function taskListResponse(tasks: ReturnType<typeof taskFixture>[]): Response {
+  return new Response(JSON.stringify({ data: tasks }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
 }
 
 function multipleTaskResponse(): Response {
@@ -363,21 +550,40 @@ function taskPageFetchMock(options: {
   actionResponse?: Response;
   latestLocations?: Array<ReturnType<typeof latestLocationItem>>;
   virtualStops?: Array<ReturnType<typeof virtualStopFixture>>;
+  taskFailure?: boolean;
+  virtualStopsFailure?: boolean;
+  latestLocationsFailure?: boolean;
 } = {}) {
   return vi.fn((url: string, _options?: RequestInit) => {
     if (url === "/api/vehicle-tasks") {
+      if (options.taskFailure) {
+        return Promise.resolve(errorResponse("任务服务暂不可用"));
+      }
       return Promise.resolve(options.taskResponse ?? multipleTaskResponse());
     }
     if (url === "/api/virtual-stops") {
+      if (options.virtualStopsFailure) {
+        return Promise.resolve(errorResponse("站点服务暂不可用"));
+      }
       return Promise.resolve(new Response(JSON.stringify({ data: options.virtualStops ?? [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     if (url === "/api/vehicles/locations/latest") {
+      if (options.latestLocationsFailure) {
+        return Promise.resolve(errorResponse("位置服务暂不可用"));
+      }
       return Promise.resolve(new Response(JSON.stringify({ data: options.latestLocations ?? [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     if (url === "/api/vehicle-tasks/task-dispatched/start") {
       return Promise.resolve(options.actionResponse ?? dispatchedTaskStartedActionResponse());
     }
     return Promise.resolve(emptyListResponse());
+  });
+}
+
+function errorResponse(message: string): Response {
+  return new Response(JSON.stringify({ message }), {
+    status: 503,
+    headers: { "Content-Type": "application/json" }
   });
 }
 
