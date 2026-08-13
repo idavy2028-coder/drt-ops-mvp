@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
+import { defineComponent } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RideOrder } from "../api/types";
 import { authStore } from "../auth/authStore";
+import AppFeedback from "../components/AppFeedback.vue";
+import { feedbackStore } from "../stores/feedbackStore";
 import OrdersPage from "./OrdersPage.vue";
 
 function orderFixture(overrides: Partial<RideOrder> = {}): RideOrder {
@@ -46,6 +49,18 @@ function renderOrdersPage(): void {
   render(OrdersPage);
 }
 
+function renderOrdersPageWithFeedback(): void {
+  authStore.setSessionForTest({
+    accessToken: "dispatcher-token",
+    user: { id: "dispatcher-1", username: "dispatcher01", roles: ["DISPATCHER"], mustChangePassword: false }
+  });
+  const PageWithFeedback = defineComponent({
+    components: { AppFeedback, OrdersPage },
+    template: "<OrdersPage /><AppFeedback />"
+  });
+  render(PageWithFeedback);
+}
+
 function orderPaginationFixture(): RideOrder[] {
   return [
     orderFixture({ id: "today-09", passengerName: "今日乘客 09", createdAt: "2026-08-13T09:00:00.000Z" }),
@@ -65,6 +80,9 @@ describe("OrdersPage", () => {
   afterEach(() => {
     cleanup();
     authStore.clearSessionForTest();
+    for (const item of [...feedbackStore.items]) {
+      feedbackStore.dismiss(item.id);
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -129,6 +147,74 @@ describe("OrdersPage", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "关闭订单详情" }));
     await waitFor(() => expect(detailButton).toHaveFocus());
+  });
+
+  it("确认前不取消订单，并提交填写的原因后显示成功 Toast", async () => {
+    const order = orderFixture({ createdAt: new Date().toISOString() });
+    const postedRequests: Array<{ url: string; body: string }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const url = String(input);
+      if (url.endsWith(`/api/orders/${order.id}/cancel`) && options?.method === "POST") {
+        postedRequests.push({ url, body: String(options.body) });
+        return new Response(JSON.stringify({ data: { ...order, status: "CANCELLED" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({ data: [order] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    renderOrdersPageWithFeedback();
+
+    await fireEvent.click(await screen.findByRole("button", { name: "取消订单" }));
+    expect(screen.getByRole("dialog", { name: "取消订单" })).toBeInTheDocument();
+    expect(postedRequests).toHaveLength(0);
+
+    await fireEvent.update(screen.getByRole("textbox", { name: "取消原因" }), "乘客临时调整行程");
+    await fireEvent.click(screen.getByRole("button", { name: "确认取消" }));
+
+    await waitFor(() => expect(postedRequests).toHaveLength(1));
+    expect(JSON.parse(postedRequests[0]!.body)).toEqual({ reason: "乘客临时调整行程" });
+    expect(await screen.findByText("订单已取消")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "取消订单" })).not.toBeInTheDocument();
+  });
+
+  it("取消失败时保留对话框、输入内容并显示失败 Toast", async () => {
+    const order = orderFixture({ createdAt: new Date().toISOString() });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      const url = String(input);
+      if (url.endsWith(`/api/orders/${order.id}/cancel`) && options?.method === "POST") {
+        return new Response(JSON.stringify({ data: { message: "订单状态已变化，请刷新" } }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({ data: [order] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    renderOrdersPageWithFeedback();
+
+    await fireEvent.click(await screen.findByRole("button", { name: "取消订单" }));
+    const reason = screen.getByRole("textbox", { name: "取消原因" });
+    await fireEvent.update(reason, "道路临时封闭");
+    await fireEvent.click(screen.getByRole("button", { name: "确认取消" }));
+
+    await waitFor(() => expect(screen.getAllByText("订单状态已变化，请刷新").length).toBeGreaterThanOrEqual(2));
+    expect(screen.getByRole("dialog", { name: "取消订单" })).toBeInTheDocument();
+    expect(reason).toHaveValue("道路临时封闭");
+  });
+
+  it("终态订单保留禁用的取消按钮", async () => {
+    const completed = orderFixture({ status: "COMPLETED", createdAt: new Date().toISOString() });
+    installOrdersFetch([completed]);
+    renderOrdersPageWithFeedback();
+
+    expect(await screen.findByRole("button", { name: "取消订单" })).toBeDisabled();
+    expect(screen.getByText("当前订单状态不可取消")).toBeInTheDocument();
   });
 
   it("shows create order action and order status columns", async () => {

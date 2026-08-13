@@ -10,6 +10,7 @@ import {
   type CreateRideOrderInput
 } from "../api/orders";
 import type { RideOrder } from "../api/types";
+import OrderCancelDialog from "../components/OrderCancelDialog.vue";
 import OrderCreateDialog from "../components/OrderCreateDialog.vue";
 import OrderDetailDrawer from "../components/OrderDetailDrawer.vue";
 import NoShowConfirmDialog from "../components/NoShowConfirmDialog.vue";
@@ -33,6 +34,9 @@ const noShowOrder = ref<RideOrder | null>(null);
 const noShowSubmitting = ref(false);
 const selectedOrder = ref<RideOrder | null>(null);
 const detailTrigger = ref<HTMLElement | null>(null);
+const cancelOrderTarget = ref<RideOrder | null>(null);
+const cancelSubmitting = ref(false);
+const cancelSubmitError = ref("");
 const activeOrderGroup = ref<OrderGroupKey>("today");
 const orderPageByGroup = ref<Record<OrderGroupKey, number>>({ today: 1, history: 1 });
 
@@ -143,15 +147,36 @@ async function runDispatch(order: RideOrder) {
   }
 }
 
-async function cancel(order: RideOrder) {
+function openCancelOrder(order: RideOrder): void {
+  cancelSubmitError.value = "";
+  cancelOrderTarget.value = order;
+}
+
+function closeCancelOrder(): void {
+  if (!cancelSubmitting.value) {
+    cancelOrderTarget.value = null;
+    cancelSubmitError.value = "";
+  }
+}
+
+async function confirmCancelOrder(value: { reason: string }): Promise<void> {
+  if (!cancelOrderTarget.value) {
+    return;
+  }
+
+  cancelSubmitting.value = true;
+  cancelSubmitError.value = "";
   try {
-    await cancelOrder(order.id, "运营后台取消");
+    await cancelOrder(cancelOrderTarget.value.id, value.reason);
+    cancelOrderTarget.value = null;
     feedbackStore.success("订单已取消");
     await loadOrders();
   } catch (error) {
     const message = userMessage(error, "订单取消失败");
-    status.value = message;
+    cancelSubmitError.value = message;
     feedbackStore.error(message);
+  } finally {
+    cancelSubmitting.value = false;
   }
 }
 
@@ -231,6 +256,14 @@ onMounted(() => {
       v-if="selectedOrder"
       :order="selectedOrder"
       @close="closeOrderDetails"
+    />
+    <OrderCancelDialog
+      v-if="cancelOrderTarget"
+      :order="cancelOrderTarget"
+      :submitting="cancelSubmitting"
+      :submit-error="cancelSubmitError"
+      @close="closeCancelOrder"
+      @confirm="confirmCancelOrder"
     />
 
     <p v-if="loading" class="page-state">正在同步订单数据…</p>
@@ -341,7 +374,7 @@ onMounted(() => {
                       type="button"
                       :disabled="!canCancel(order)"
                       :aria-describedby="!canCancel(order) ? `cancel-disabled-${order.id}` : undefined"
-                      @click="canCancel(order) && cancel(order)"
+                      @click="canCancel(order) && openCancelOrder(order)"
                     >
                       取消订单
                     </button>
