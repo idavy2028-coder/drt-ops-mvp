@@ -11,17 +11,19 @@ public record VehicleTaskView(
         UUID id,
         UUID vehicleId,
         String vehiclePlateNumber,
+        String vehicleStatus,
         UUID driverId,
         TaskStatus status,
         OffsetDateTime plannedStartAt,
         OffsetDateTime createdAt,
         List<TaskStop> stops) {
 
-    static VehicleTaskView from(VehicleTask task, String vehiclePlateNumber) {
+    static VehicleTaskView from(VehicleTask task, String vehiclePlateNumber, String vehicleStatus) {
         return new VehicleTaskView(
                 task.getId(),
                 task.getVehicleId(),
                 vehiclePlateNumber,
+                vehicleStatus,
                 task.getDriverId(),
                 task.getStatus(),
                 task.getPlannedStartAt(),

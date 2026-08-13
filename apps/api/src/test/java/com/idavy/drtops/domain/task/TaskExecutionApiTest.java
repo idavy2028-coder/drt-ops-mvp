@@ -132,6 +132,7 @@ class TaskExecutionApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].vehicleId").value(VEHICLE_ID.toString()))
                 .andExpect(jsonPath("$.data[0].vehiclePlateNumber").value("浙A00001"))
+                .andExpect(jsonPath("$.data[0].vehicleStatus").value("IDLE"))
                 .andExpect(jsonPath("$.data[0].createdAt").isNotEmpty());
     }
 
@@ -147,6 +148,7 @@ class TaskExecutionApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.task.status").value("IN_PROGRESS"))
                 .andExpect(jsonPath("$.data.task.vehiclePlateNumber").value("浙A00001"))
+                .andExpect(jsonPath("$.data.task.vehicleStatus").value("IN_SERVICE"))
                 .andExpect(jsonPath("$.data.locationEvent.eventType").value("TASK_STARTED"))
                 .andExpect(jsonPath("$.data.replayed").value(false));
         assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
@@ -198,6 +200,7 @@ class TaskExecutionApiTest {
                         .content(actionRequest(UUID.randomUUID(), null, 5)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.task.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.task.vehicleStatus").value("IDLE"))
                 .andExpect(jsonPath("$.data.locationEvent.eventType").value("TASK_COMPLETED"));
 
         VehicleTask task = vehicleTaskRepository.findById(taskId).orElseThrow();
