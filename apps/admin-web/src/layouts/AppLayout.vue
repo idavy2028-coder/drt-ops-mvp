@@ -60,7 +60,20 @@ const today = new Intl.DateTimeFormat("zh-CN", {
       </header>
 
       <main class="content-surface">
-        <RouterView />
+        <RouterView v-slot="{ Component, route }">
+          <KeepAlive>
+            <component
+              :is="Component"
+              v-if="route.meta.keepAlive"
+              :key="String(route.name)"
+            />
+          </KeepAlive>
+          <component
+            :is="Component"
+            v-if="!route.meta.keepAlive"
+            :key="route.fullPath"
+          />
+        </RouterView>
       </main>
     </div>
   </div>
