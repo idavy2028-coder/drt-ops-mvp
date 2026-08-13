@@ -557,4 +557,4 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 下一入口：从 Codex 插件界面重新安装 Browser/Chrome 插件，恢复调试通道后，在现有 5177 服务依次验收运营看板、订单中心和车辆任务页的 1366×768 首屏、横向溢出、分区分页、状态标签、详情抽屉和控制台错误；只做只读操作。
 - [PR #18](https://github.com/idavy2028-coder/drt-ops-mvp/pull/18) 已在看板旧 head `60c4487` 处合并到 `codex/p6-2-jt-active-safety-spec`；目标分支最新提交为 `a3fb661`。本轮 9 个订单/任务优化提交未包含在 #18 中。
 - 已用三点差异核对新 PR 范围：相对 `origin/codex/p6-2-jt-active-safety-spec` 仅包含本轮 9 个实现提交及本进度记录，不重复夹带已合并的看板代码。Chrome 门禁完成前，新 PR 应保持草稿且不标记为 Ready。
-- 功能分支已推送到远端 HEAD `4208980`。新草稿 PR 尚未创建：GitHub 应用写入返回 403；沙箱外 `gh pr create` 在权限审批阶段超时且未启动；沙箱内 `gh` 无法读取 Windows 凭据并返回 401。下一步需重新授权执行已认证环境中的 `gh pr create`，或由维护者从 GitHub compare 页面创建草稿 PR。
+- 功能分支已推送到远端，实现 HEAD 为 `0f36fe2`，其后包含阶段验证与 PR 交接记录提交。最终只读核验确认该 head 当前无开放 PR。新草稿 PR 尚未创建：GitHub 应用写入返回 403；已认证环境中的 `gh pr create` 多次在权限审批阶段超时且未启动；沙箱内 `gh` 无法读取 Windows 凭据并返回 401。下一步需重新授权执行已认证环境中的 `gh pr create`，或由维护者从 GitHub compare 页面创建草稿 PR。
