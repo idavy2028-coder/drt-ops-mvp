@@ -518,11 +518,12 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 
 - 首版聚合按已批准方案使用仓储全量读取后再按日期归集，只适用于当前试点数据规模；数据量增长前必须改为数据库分组聚合、索引和查询上限。
 - `npm audit` 仍报告 19 个既有依赖漏洞（9 个 moderate、10 个 high）；本次未改依赖，未把依赖升级风险混入看板交付。
-- 本地 `gh` 的 GitHub 令牌仍失效，但 Git Credential Manager 已恢复推送，GitHub 应用连接也可访问仓库并有写权限。远端分支列表确认尚无 `codex/p6-2-jt-active-safety-spec`，因此不能在不发布他人 P6-2 分支、也不把两项任务混入 `master` PR 的前提下创建本看板 PR。
-- 当前发布状态：本地实现已提交并验证，`codex/admin-ui-optimization` 已推送到远端；PR 因缺少远端 P6-2 base 分支尚未创建。
+- 本地 `gh` 的 GitHub 令牌仍失效；Git Credential Manager 可正常推送，GitHub 应用可用于只读核验。创建 PR 时应用写入权限返回 403，最终通过已登录的 Chrome 会话创建，未读取或复制令牌。
+- P6-2 已提交分支 `codex/p6-2-jt-active-safety-spec` 已推送到远端，base SHA 为 `7d1fd2c`。P6-2 工作树中的 3 个未提交文件保持原状，未暂存、未提交、未推送。
+- 运营看板草稿 PR 已创建：[PR #18](https://github.com/idavy2028-coder/drt-ops-mvp/pull/18)。只读核验结果为 `open`、`draft=true`、`mergeable=true`；base 为 `codex/p6-2-jt-active-safety-spec`，head 为 `codex/admin-ui-optimization`，创建时包含 9 条提交和 23 个变更文件。
 
 ### 下一步计划
 
-- 由 P6-2 任务负责人先将 `codex/p6-2-jt-active-safety-spec` 推送到远端；如需继续使用 GitHub CLI，再执行 `gh auth login -h github.com` 恢复 `gh` 凭据。
-- 基线分支可见后，以 `codex/p6-2-jt-active-safety-spec` 为 base、`codex/admin-ui-optimization` 为 head 创建草稿 PR，并在 PR 中保留指标口径、验证结果、性能边界和依赖风险。
+- 审阅 PR #18，重点复核指标统计口径、首版全量读取性能边界、当前可调度车辆分母和依赖安全告警；P6-2 未提交改动继续由原任务独立处理。
+- 如需继续使用 GitHub CLI，再执行 `gh auth login -h github.com` 恢复 `gh` 凭据；不影响当前 PR 的网页审阅。
 - 本看板 PR 独立审阅后，再按原界面优化清单逐页实施其余管理端优化，不扩大当前提交范围。
