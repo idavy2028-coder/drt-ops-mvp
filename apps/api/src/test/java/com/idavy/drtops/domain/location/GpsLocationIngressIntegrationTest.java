@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
@@ -49,6 +50,8 @@ class GpsLocationIngressIntegrationTest {
     private static final UUID VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000001");
     private static final UUID OTHER_VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000002");
     private static final UUID TERMINAL_ID = UUID.fromString("bb000000-0000-0000-0000-000000000001");
+    private static final Instant POSTGRES_TIMESTAMPTZ_MIN = Instant.ofEpochSecond(-210_866_803_200L);
+    private static final Instant POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE = Instant.ofEpochSecond(9_224_318_016_000L);
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @Autowired VehicleRepository vehicleRepository;
@@ -320,6 +323,34 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
+    void rejectsLiteralNullPayloadAndContinuesWithItsValidBatchNeighbor() throws Exception {
+        UUID nullPayloadKey = UUID.randomUUID();
+        UUID validKey = UUID.randomUUID();
+        GatewayIngressEnvelope literalNull = new GatewayIngressEnvelope(
+                1, nullPayloadKey, "POSITION", Instant.parse("2026-08-12T09:00:00Z"), "null");
+        GatewayIngressEnvelope valid = envelope(
+                validKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+
+        postIngress(List.of(literalNull, valid)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+
+        assertThat(receiptRepository.findById(nullPayloadKey).orElseThrow()).satisfies(receipt -> {
+            assertThat(receipt.getFinalStatus()).isEqualTo("REJECTED");
+            assertThat(receipt.getReasonCodes()).containsExactly("INVALID_PAYLOAD");
+        });
+        assertThat(eventRepository.findByIdempotencyKey(nullPayloadKey)).isEmpty();
+        assertThat(eventRepository.findByIdempotencyKey(validKey)).isPresent();
+        assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(audit -> {
+            assertThat(audit.getReasonCode()).isEqualTo("INVALID_PAYLOAD");
+            assertThat(audit.getTerminalId()).isNull();
+            assertThat(audit.getVehicleId()).isNull();
+        });
+    }
+
+    @Test
     void countsConsecutiveQuarantinesByTrustedGatewayOrderAndLetsANormalPointBreakTheRun() throws Exception {
         UUID earlyDelay = UUID.randomUUID();
         UUID secondEarlyDelay = UUID.randomUUID();
@@ -395,6 +426,194 @@ class GpsLocationIngressIntegrationTest {
         assertThat(gatewayAuditRepository.findAll()).hasSize(8);
     }
 
+    @Test
+    void rejectsDatabaseBoundInputViolationsAndContinuesWithEveryLaterValidItem() throws Exception {
+        CanonicalPositionIngress base = payload(VEHICLE_ID, Instant.parse("2026-08-12T08:59:50Z"));
+        UUID speedOverflowKey = UUID.randomUUID();
+        UUID speedScaleKey = UUID.randomUUID();
+        UUID speedScientificOverflowKey = UUID.randomUUID();
+        UUID longitudeScaleKey = UUID.randomUUID();
+        UUID latitudeScaleKey = UUID.randomUUID();
+        UUID altitudeOverflowKey = UUID.randomUUID();
+        UUID altitudeUnderflowKey = UUID.randomUUID();
+        UUID protocolLengthKey = UUID.randomUUID();
+        UUID coordinateSystemKey = UUID.randomUUID();
+        UUID digestKey = UUID.randomUUID();
+        UUID directionKey = UUID.randomUUID();
+        UUID satelliteKey = UUID.randomUUID();
+        UUID alarmKey = UUID.randomUUID();
+        UUID statusKey = UUID.randomUUID();
+        List<UUID> rejectedKeys = List.of(
+                speedOverflowKey, speedScaleKey, speedScientificOverflowKey, longitudeScaleKey, latitudeScaleKey,
+                altitudeOverflowKey, altitudeUnderflowKey, protocolLengthKey, coordinateSystemKey,
+                digestKey, directionKey, satelliteKey, alarmKey, statusKey);
+
+        List<GatewayIngressEnvelope> batch = new ArrayList<>();
+        batch.add(envelope(speedOverflowKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), new BigDecimal("10000"), 90, 10, 8, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(speedScaleKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), new BigDecimal("50.001"), 90, 10, 8, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(speedScientificOverflowKey, databaseBoundPayload(base, base.protocolVersion(),
+                base.rawLongitude(), base.rawLatitude(), base.rawCoordinateSystem(),
+                new BigDecimal("1E+2147483647"), 90, 10, 8, 0L, 0x02L, base.payloadDigest())));
+        batch.add(envelope(longitudeScaleKey, databaseBoundPayload(base, base.protocolVersion(),
+                new BigDecimal("105.23849881"), base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90,
+                10, 8, 0L, 0x02L, base.payloadDigest())));
+        batch.add(envelope(latitudeScaleKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                new BigDecimal("35.21096571"), base.rawCoordinateSystem(), base.speedKph(), 90, 10, 8, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(altitudeOverflowKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90, 1_000_000, 8, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(altitudeUnderflowKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90, -1_000_000, 8, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(protocolLengthKey, databaseBoundPayload(base, "P".repeat(41), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90, 10, 8, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(coordinateSystemKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), "BD09", base.speedKph(), 90, 10, 8, 0L, 0x02L, base.payloadDigest())));
+        batch.add(envelope(digestKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90, 10, 8, 0L, 0x02L,
+                "A".repeat(64))));
+        batch.add(envelope(directionKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 360, 10, 8, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(satelliteKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90, 10, -1, 0L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(alarmKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90, 10, 8, -1L, 0x02L,
+                base.payloadDigest())));
+        batch.add(envelope(statusKey, databaseBoundPayload(base, base.protocolVersion(), base.rawLongitude(),
+                base.rawLatitude(), base.rawCoordinateSystem(), base.speedKph(), 90, 10, 8, 0L, -1L,
+                base.payloadDigest())));
+
+        UUID upperBoundaryKey = UUID.randomUUID();
+        CanonicalPositionIngress upperBoundary = databaseBoundPayload(base, "P".repeat(40),
+                new BigDecimal("180.0000000"), new BigDecimal("90.0000000"), "GCJ02",
+                new BigDecimal("9999.99"), 359, 999_999, Integer.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE,
+                "f".repeat(64));
+        batch.add(envelope(upperBoundaryKey, upperBoundary));
+
+        UUID lowerBoundaryKey = UUID.randomUUID();
+        CanonicalPositionIngress lowerBoundary = databaseBoundPayload(base, "J", new BigDecimal("-180.0000000"),
+                new BigDecimal("-90.0000000"), "GCJ02", new BigDecimal("0.00"), 0, -999_999, 0, 0L, 0x02L,
+                "0".repeat(64));
+        batch.add(envelope(lowerBoundaryKey, lowerBoundary));
+
+        UUID laterValidKey = UUID.randomUUID();
+        batch.add(envelope(laterValidKey, base));
+
+        var response = postIngress(batch).andExpect(status().isOk()).andReturn();
+        var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(data.size()).isEqualTo(batch.size());
+        for (int index = 0; index < rejectedKeys.size(); index++) {
+            assertThat(data.get(index).path("status").asText()).isEqualTo("REJECTED");
+            assertThat(data.get(index).path("reasonCodes").get(0).asText()).isEqualTo("INVALID_PAYLOAD");
+        }
+        assertThat(data.get(rejectedKeys.size()).path("status").asText()).isEqualTo("ACCEPTED");
+        assertThat(data.get(rejectedKeys.size() + 1).path("status").asText()).isEqualTo("ACCEPTED");
+        assertThat(data.get(rejectedKeys.size() + 2).path("status").asText()).isEqualTo("ACCEPTED");
+
+        rejectedKeys.forEach(key -> {
+            assertThat(eventRepository.findByIdempotencyKey(key)).isEmpty();
+            assertThat(receiptRepository.findById(key).orElseThrow().getFinalStatus()).isEqualTo("REJECTED");
+            assertThat(receiptRepository.findById(key).orElseThrow().getReasonCodes())
+                    .containsExactly("INVALID_PAYLOAD");
+        });
+        assertThat(gatewayAuditRepository.findAll()).hasSize(rejectedKeys.size()).allSatisfy(audit ->
+                assertThat(audit.getReasonCode()).isEqualTo("INVALID_PAYLOAD"));
+        assertThat(receiptRepository.findAll()).hasSize(batch.size()).noneSatisfy(receipt ->
+                assertThat(receipt.getFinalStatus()).isEqualTo("PROCESSING"));
+        assertThat(eventRepository.findAll()).hasSize(3);
+
+        VehicleLocationEvent upperEvent = eventRepository.findByIdempotencyKey(upperBoundaryKey).orElseThrow();
+        assertThat(upperEvent.getProtocolVersion()).hasSize(40);
+        assertThat(upperEvent.getRawLongitude()).isEqualByComparingTo("180.0000000");
+        assertThat(upperEvent.getRawLatitude()).isEqualByComparingTo("90.0000000");
+        assertThat(upperEvent.getSpeedKph()).isEqualByComparingTo("9999.99");
+        assertThat(upperEvent.getDirectionDegrees()).isEqualTo(359);
+        assertThat(upperEvent.getSatelliteCount()).isEqualTo(Integer.MAX_VALUE);
+        assertThat(eventRepository.findByIdempotencyKey(lowerBoundaryKey)).isPresent();
+        assertThat(eventRepository.findByIdempotencyKey(laterValidKey)).isPresent();
+    }
+
+    @Test
+    void rejectsUntrustedForeignKeysAndOutOfRangePostgresTimestampsWithoutStoppingBatch() throws Exception {
+        CanonicalPositionIngress base = payload(VEHICLE_ID, Instant.parse("2026-08-12T08:59:50Z"));
+        UUID unknownTerminalId = UUID.fromString("bb000000-0000-0000-0000-000000000099");
+        UUID nonexistentVehicleId = UUID.fromString("aa000000-0000-0000-0000-000000000099");
+
+        List<UUID> rejectedKeys = new ArrayList<>();
+        List<GatewayIngressEnvelope> batch = new ArrayList<>();
+        batch.add(envelope(rejectedKeys, identityAndTimes(base, unknownTerminalId, VEHICLE_ID,
+                base.terminalLocatedAt(), base.gatewayReceivedAt()), base.gatewayReceivedAt()));
+        batch.add(envelope(rejectedKeys, identityAndTimes(base, TERMINAL_ID, nonexistentVehicleId,
+                base.terminalLocatedAt(), base.gatewayReceivedAt()), base.gatewayReceivedAt()));
+        batch.add(envelope(rejectedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                POSTGRES_TIMESTAMPTZ_MIN.minusSeconds(1), base.gatewayReceivedAt()), base.gatewayReceivedAt()));
+        batch.add(envelope(rejectedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE, base.gatewayReceivedAt()), base.gatewayReceivedAt()));
+        batch.add(envelope(rejectedKeys, base, POSTGRES_TIMESTAMPTZ_MIN.minusSeconds(1)));
+        batch.add(envelope(rejectedKeys, base, POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE));
+        batch.add(envelope(rejectedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                base.terminalLocatedAt(), POSTGRES_TIMESTAMPTZ_MIN.minusSeconds(1)), base.gatewayReceivedAt()));
+        batch.add(envelope(rejectedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                base.terminalLocatedAt(), POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE), base.gatewayReceivedAt()));
+
+        Instant postgresLastMicrosecond = POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE.minusNanos(1_000);
+        List<UUID> acceptedKeys = new ArrayList<>();
+        batch.add(envelope(acceptedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                POSTGRES_TIMESTAMPTZ_MIN, base.gatewayReceivedAt()), base.gatewayReceivedAt()));
+        batch.add(envelope(acceptedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                postgresLastMicrosecond, base.gatewayReceivedAt()), base.gatewayReceivedAt()));
+        batch.add(envelope(acceptedKeys, base, POSTGRES_TIMESTAMPTZ_MIN));
+        batch.add(envelope(acceptedKeys, base, postgresLastMicrosecond));
+        batch.add(envelope(acceptedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                base.terminalLocatedAt(), POSTGRES_TIMESTAMPTZ_MIN), base.gatewayReceivedAt()));
+        batch.add(envelope(acceptedKeys, identityAndTimes(base, TERMINAL_ID, VEHICLE_ID,
+                base.terminalLocatedAt(), postgresLastMicrosecond), base.gatewayReceivedAt()));
+        batch.add(envelope(acceptedKeys, base, base.gatewayReceivedAt()));
+
+        var response = postIngress(batch).andExpect(status().isOk()).andReturn();
+        var audits = gatewayAuditRepository.findAll();
+        assertThat(audits).allSatisfy(audit -> {
+            assertThat(audit.getTerminalId()).isNull();
+            assertThat(audit.getVehicleId()).isNull();
+        });
+
+        var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(data).hasSize(batch.size());
+        assertThat(data.get(0).path("reasonCodes").get(0).asText()).isEqualTo("TERMINAL_BINDING_MISMATCH");
+        assertThat(data.get(1).path("reasonCodes").get(0).asText()).isEqualTo("TERMINAL_BINDING_MISMATCH");
+        for (int index = 2; index < rejectedKeys.size(); index++) {
+            assertThat(data.get(index).path("reasonCodes").get(0).asText()).isEqualTo("INVALID_PAYLOAD");
+        }
+        for (int index = 0; index < rejectedKeys.size(); index++) {
+            assertThat(data.get(index).path("status").asText()).isEqualTo("REJECTED");
+        }
+        for (int index = rejectedKeys.size(); index < batch.size(); index++) {
+            assertThat(data.get(index).path("status").asText()).isEqualTo("ACCEPTED");
+        }
+
+        rejectedKeys.forEach(key -> {
+            assertThat(eventRepository.findByIdempotencyKey(key)).isEmpty();
+            assertThat(receiptRepository.findById(key).orElseThrow().getFinalStatus()).isEqualTo("REJECTED");
+            assertThat(receiptRepository.findById(key).orElseThrow().getReasonCodes()).isNotEmpty();
+        });
+        acceptedKeys.forEach(key -> {
+            assertThat(eventRepository.findByIdempotencyKey(key)).isPresent();
+            assertThat(receiptRepository.findById(key).orElseThrow().getFinalStatus()).isEqualTo("ACCEPTED");
+        });
+        assertThat(audits).hasSize(rejectedKeys.size());
+        assertThat(receiptRepository.findAll()).hasSize(batch.size()).noneSatisfy(receipt ->
+                assertThat(receipt.getFinalStatus()).isEqualTo("PROCESSING"));
+        assertThat(eventRepository.findAll()).hasSize(acceptedKeys.size());
+    }
+
     private org.springframework.test.web.servlet.ResultActions postIngress(List<GatewayIngressEnvelope> batch) throws Exception { return internalPost(objectMapper.writeValueAsString(batch)); }
     private org.springframework.test.web.servlet.ResultActions internalPost(String body) throws Exception {
         return mockMvc.perform(post("/internal/jt-gateway/ingress").header("Authorization", "Bearer " + CREDENTIAL)
@@ -413,6 +632,13 @@ class GpsLocationIngressIntegrationTest {
     private GatewayIngressEnvelope envelope(UUID idempotencyKey, CanonicalPositionIngress payload) throws Exception {
         return new GatewayIngressEnvelope(1, idempotencyKey, "POSITION", payload.gatewayReceivedAt(), objectMapper.writeValueAsString(payload));
     }
+    private GatewayIngressEnvelope envelope(List<UUID> keys, CanonicalPositionIngress payload,
+            Instant envelopeGatewayReceivedAt) throws Exception {
+        UUID key = UUID.randomUUID();
+        keys.add(key);
+        return new GatewayIngressEnvelope(
+                1, key, "POSITION", envelopeGatewayReceivedAt, objectMapper.writeValueAsString(payload));
+    }
     private CanonicalPositionIngress payload(UUID vehicleId, Instant locatedAt) {
         return payload(vehicleId, locatedAt, 0x02, new BigDecimal("105.2384988"), new BigDecimal("35.2109657"));
     }
@@ -426,6 +652,22 @@ class GpsLocationIngressIntegrationTest {
                 source.rawLongitude(), source.rawLatitude(), source.rawCoordinateSystem(), terminalLocatedAt,
                 source.gatewayReceivedAt(), source.alarmBits(), source.statusBits(), speedKph, directionDegrees,
                 source.altitudeMeters(), source.satelliteCount(), payloadDigest);
+    }
+    private CanonicalPositionIngress databaseBoundPayload(CanonicalPositionIngress source, String protocolVersion,
+            BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem, BigDecimal speedKph,
+            int directionDegrees, int altitudeMeters, int satelliteCount, long alarmBits, long statusBits,
+            String payloadDigest) {
+        return new CanonicalPositionIngress(source.terminalId(), source.vehicleId(), protocolVersion,
+                source.messageSerialNo(), rawLongitude, rawLatitude, rawCoordinateSystem, source.terminalLocatedAt(),
+                source.gatewayReceivedAt(), alarmBits, statusBits, speedKph, directionDegrees, altitudeMeters,
+                satelliteCount, payloadDigest);
+    }
+    private CanonicalPositionIngress identityAndTimes(CanonicalPositionIngress source, UUID terminalId,
+            UUID vehicleId, Instant terminalLocatedAt, Instant gatewayReceivedAt) {
+        return new CanonicalPositionIngress(terminalId, vehicleId, source.protocolVersion(), source.messageSerialNo(),
+                source.rawLongitude(), source.rawLatitude(), source.rawCoordinateSystem(), terminalLocatedAt,
+                gatewayReceivedAt, source.alarmBits(), source.statusBits(), source.speedKph(),
+                source.directionDegrees(), source.altitudeMeters(), source.satelliteCount(), source.payloadDigest());
     }
     private static String sha256(String text) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8))); } catch (Exception exception) { throw new IllegalStateException(exception); } }
 

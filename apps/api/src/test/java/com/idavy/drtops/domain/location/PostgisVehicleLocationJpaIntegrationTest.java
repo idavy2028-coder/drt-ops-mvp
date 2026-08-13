@@ -44,8 +44,11 @@ class PostgisVehicleLocationJpaIntegrationTest {
     private static PostgreSQLContainer<?> postgres;
 
     private static final UUID VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333331");
+    private static final UUID BOUNDARY_VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333332");
     private static final String EVENT_LOCATION = "POINT(121.4737 31.2304)";
     private static final String SNAPSHOT_LOCATION = "POINT(121.4740 31.2307)";
+    private static final Instant POSTGRES_TIMESTAMPTZ_MIN = Instant.ofEpochSecond(-210_866_803_200L);
+    private static final Instant POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE = Instant.ofEpochSecond(9_224_318_016_000L);
 
     @Autowired
     private VehicleLocationEventRepository eventRepository;
@@ -170,7 +173,7 @@ class PostgisVehicleLocationJpaIntegrationTest {
     void atomicallyReplaysConcurrentGpsIngressWithOneReceiptAndOneEvent() throws Exception {
         UUID terminalId = UUID.randomUUID();
         UUID idempotencyKey = UUID.randomUUID();
-        commitTerminalBinding(terminalId);
+        commitTerminalBinding(terminalId, VEHICLE_ID);
         CanonicalPositionIngress payload = new CanonicalPositionIngress(
                 terminalId, VEHICLE_ID, "JT808_2019", 7,
                 new BigDecimal("105.2384988"), new BigDecimal("35.2109657"), "WGS84",
@@ -208,6 +211,121 @@ class PostgisVehicleLocationJpaIntegrationTest {
                 idempotencyKey)).isEqualTo("array");
     }
 
+    @Test
+    void rejectsUnsafeAuditIdentitiesAndOutOfRangeTimestampsBeforePersistingExactPostgresBoundaries()
+            throws Exception {
+        UUID terminalId = UUID.randomUUID();
+        UUID unknownTerminalId = UUID.randomUUID();
+        UUID nonexistentVehicleId = UUID.randomUUID();
+        commitTerminalBinding(terminalId, BOUNDARY_VEHICLE_ID);
+
+        Instant normalLocatedAt = Instant.parse("2026-08-12T08:59:50Z");
+        Instant normalGatewayAt = Instant.parse("2026-08-12T09:00:00Z");
+        Instant postgresLastMicrosecond = POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE.minusNanos(1_000);
+
+        UUID unknownTerminalKey = UUID.randomUUID();
+        UUID nonexistentVehicleKey = UUID.randomUUID();
+        UUID belowRangeKey = UUID.randomUUID();
+        UUID aboveRangeKey = UUID.randomUUID();
+        UUID minimumBoundaryKey = UUID.randomUUID();
+        UUID maximumBoundaryKey = UUID.randomUUID();
+        UUID laterValidKey = UUID.randomUUID();
+        List<UUID> rejectedKeys = List.of(
+                unknownTerminalKey, nonexistentVehicleKey, belowRangeKey, aboveRangeKey);
+        List<UUID> acceptedKeys = List.of(minimumBoundaryKey, maximumBoundaryKey, laterValidKey);
+
+        int auditCountBefore = jdbcTemplate.queryForObject(
+                "select count(*) from jt_gateway_audit_events", Integer.class);
+        List<GpsLocationIngressService.Result> results = ingressService.ingest(List.of(
+                gpsEnvelope(unknownTerminalKey,
+                        gpsPayload(unknownTerminalId, BOUNDARY_VEHICLE_ID, normalLocatedAt, normalGatewayAt),
+                        normalGatewayAt),
+                gpsEnvelope(nonexistentVehicleKey,
+                        gpsPayload(terminalId, nonexistentVehicleId, normalLocatedAt, normalGatewayAt),
+                        normalGatewayAt),
+                gpsEnvelope(belowRangeKey,
+                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID,
+                                POSTGRES_TIMESTAMPTZ_MIN.minusSeconds(1), normalGatewayAt),
+                        normalGatewayAt),
+                gpsEnvelope(aboveRangeKey,
+                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID, normalLocatedAt, normalGatewayAt),
+                        POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE),
+                gpsEnvelope(minimumBoundaryKey,
+                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID,
+                                POSTGRES_TIMESTAMPTZ_MIN, POSTGRES_TIMESTAMPTZ_MIN),
+                        POSTGRES_TIMESTAMPTZ_MIN),
+                gpsEnvelope(maximumBoundaryKey,
+                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID,
+                                postgresLastMicrosecond, postgresLastMicrosecond),
+                        postgresLastMicrosecond),
+                gpsEnvelope(laterValidKey,
+                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID, normalLocatedAt, normalGatewayAt),
+                        normalGatewayAt)));
+
+        assertThat(results).hasSize(7);
+        assertThat(results.subList(0, 2)).allSatisfy(result -> {
+            assertThat(result.status()).isEqualTo("REJECTED");
+            assertThat(result.reasonCodes()).containsExactly("TERMINAL_BINDING_MISMATCH");
+        });
+        assertThat(results.subList(2, 4)).allSatisfy(result -> {
+            assertThat(result.status()).isEqualTo("REJECTED");
+            assertThat(result.reasonCodes()).containsExactly("INVALID_PAYLOAD");
+        });
+        assertThat(results.subList(4, 7)).allSatisfy(result ->
+                assertThat(result.status()).isEqualTo("ACCEPTED"));
+
+        for (UUID key : rejectedKeys) {
+            assertThat(jdbcTemplate.queryForObject(
+                    "select final_status from jt_gateway_ingress_receipts where idempotency_key = ?",
+                    String.class, key)).isEqualTo("REJECTED");
+            assertThat(jdbcTemplate.queryForObject(
+                    "select count(*) from vehicle_location_events where idempotency_key = ?",
+                    Integer.class, key)).isZero();
+        }
+        for (UUID key : acceptedKeys) {
+            assertThat(jdbcTemplate.queryForObject(
+                    "select final_status from jt_gateway_ingress_receipts where idempotency_key = ?",
+                    String.class, key)).isEqualTo("ACCEPTED");
+            assertThat(jdbcTemplate.queryForObject(
+                    "select count(*) from vehicle_location_events where idempotency_key = ?",
+                    Integer.class, key)).isOne();
+        }
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from jt_gateway_ingress_receipts where final_status = 'PROCESSING' "
+                        + "and idempotency_key in (?, ?, ?, ?, ?, ?, ?)",
+                Integer.class, unknownTerminalKey, nonexistentVehicleKey, belowRangeKey, aboveRangeKey,
+                minimumBoundaryKey, maximumBoundaryKey, laterValidKey)).isZero();
+
+        int auditCountAfter = jdbcTemplate.queryForObject(
+                "select count(*) from jt_gateway_audit_events", Integer.class);
+        assertThat(auditCountAfter - auditCountBefore).isEqualTo(4);
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from jt_gateway_audit_events where terminal_id is not null or vehicle_id is not null",
+                Integer.class)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from jt_gateway_audit_events where terminal_id = ?",
+                Integer.class, unknownTerminalId)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from jt_gateway_audit_events where vehicle_id = ?",
+                Integer.class, nonexistentVehicleId)).isZero();
+        assertThat(jdbcTemplate.queryForObject("""
+                select count(*)
+                from jt_gateway_audit_events audit
+                left join jt_terminals terminal on terminal.id = audit.terminal_id
+                left join vehicles vehicle on vehicle.id = audit.vehicle_id
+                where (audit.terminal_id is not null and terminal.id is null)
+                   or (audit.vehicle_id is not null and vehicle.id is null)
+                """, Integer.class)).isZero();
+
+        entityManager.clear();
+        VehicleLocationEvent minimumEvent = eventRepository.findByIdempotencyKey(minimumBoundaryKey).orElseThrow();
+        VehicleLocationEvent maximumEvent = eventRepository.findByIdempotencyKey(maximumBoundaryKey).orElseThrow();
+        assertThat(minimumEvent.getDriverReportedAt().toInstant()).isEqualTo(POSTGRES_TIMESTAMPTZ_MIN);
+        assertThat(minimumEvent.getGatewayReceivedAt().toInstant()).isEqualTo(POSTGRES_TIMESTAMPTZ_MIN);
+        assertThat(maximumEvent.getDriverReportedAt().toInstant()).isEqualTo(postgresLastMicrosecond);
+        assertThat(maximumEvent.getGatewayReceivedAt().toInstant()).isEqualTo(postgresLastMicrosecond);
+    }
+
     @AfterTransaction
     void rollsBackPostgisWrites() {
         if (eventId == null) {
@@ -232,7 +350,22 @@ class PostgisVehicleLocationJpaIntegrationTest {
         return ingressService.ingest(List.of(envelope)).getFirst();
     }
 
-    private void commitTerminalBinding(UUID terminalId) {
+    private CanonicalPositionIngress gpsPayload(UUID terminalId, UUID vehicleId, Instant terminalLocatedAt,
+            Instant gatewayReceivedAt) {
+        return new CanonicalPositionIngress(
+                terminalId, vehicleId, "JT808_2019", 7,
+                new BigDecimal("105.2384988"), new BigDecimal("35.2109657"), "WGS84",
+                terminalLocatedAt, gatewayReceivedAt, 0L, 0L, new BigDecimal("50"), 90, 10, 8,
+                "a".repeat(64));
+    }
+
+    private GatewayIngressEnvelope gpsEnvelope(UUID idempotencyKey, CanonicalPositionIngress payload,
+            Instant gatewayReceivedAt) throws Exception {
+        return new GatewayIngressEnvelope(
+                1, idempotencyKey, "POSITION", gatewayReceivedAt, objectMapper.writeValueAsString(payload));
+    }
+
+    private void commitTerminalBinding(UUID terminalId, UUID vehicleId) {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         transaction.executeWithoutResult(status -> {
@@ -248,7 +381,7 @@ class PostgisVehicleLocationJpaIntegrationTest {
                     insert into jt_terminal_vehicle_bindings (
                       id, terminal_id, vehicle_id, valid_from, status, binding_reason, created_at, updated_at
                     ) values (?, ?, ?, now(), 'ACTIVE', 'GPS concurrency test', now(), now())
-                    """, UUID.randomUUID(), terminalId, VEHICLE_ID);
+                    """, UUID.randomUUID(), terminalId, vehicleId);
         });
     }
 

@@ -7,6 +7,8 @@ import com.idavy.drtops.domain.terminal.JtGatewayAuditEvent;
 import com.idavy.drtops.domain.terminal.JtGatewayAuditEventRepository;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBinding;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBindingRepository;
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -19,6 +21,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class GpsLocationIngressService {
+    // PostgreSQL timestamp.h stores microseconds from 2000-01-01 and accepts MIN_TIMESTAMP <= t < END_TIMESTAMP.
+    private static final Instant POSTGRES_TIMESTAMPTZ_MIN = Instant.ofEpochSecond(-210_866_803_200L);
+    private static final Instant POSTGRES_TIMESTAMPTZ_MAX = Instant.ofEpochSecond(9_224_318_016_000L)
+            .minusNanos(1_000);
     private final ObjectMapper mapper; private final CoordinateTransformer transformer; private final LocationQualityEvaluator evaluator;
     private final JtTerminalVehicleBindingRepository bindingRepository; private final VehicleRepository vehicleRepository;
     private final VehicleLocationEventRepository eventRepository; private final ServiceAreaLocationChecker areaChecker;
@@ -66,6 +72,7 @@ public class GpsLocationIngressService {
         final CanonicalPositionIngress ingress;
         try { ingress = mapper.readValue(envelope.payloadJson(), CanonicalPositionIngress.class); }
         catch (Exception malformed) { return rejectAudit(envelope, null, "INVALID_PAYLOAD"); }
+        if (ingress == null) return rejectAudit(envelope, null, "INVALID_PAYLOAD");
         try {
             if (!valid(ingress, envelope)) return rejectAudit(envelope, ingress, "INVALID_PAYLOAD");
             JtTerminalVehicleBinding binding = bindingRepository.findByTerminalIdAndStatus(ingress.terminalId(), JtTerminalVehicleBinding.Status.ACTIVE).orElse(null);
@@ -99,34 +106,54 @@ public class GpsLocationIngressService {
         } catch (Exception exception) { throw exception; }
     }
     private Result rejectAudit(GatewayIngressEnvelope envelope, CanonicalPositionIngress ingress, String reason) {
-        auditRepository.save(JtGatewayAuditEvent.record(ingress == null ? null : ingress.terminalId(), ingress == null ? null : ingress.vehicleId(), JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
-                JtGatewayAuditEvent.Result.REJECTED, reason, ingress == null ? null : ingress.protocolVersion(), null, validDigest(ingress == null ? null : ingress.payloadDigest()), null,
+        auditRepository.save(JtGatewayAuditEvent.record(null, null, JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
+                JtGatewayAuditEvent.Result.REJECTED, reason, validProtocolVersion(ingress == null ? null : ingress.protocolVersion()), null, validDigest(ingress == null ? null : ingress.payloadDigest()), null,
                 OffsetDateTime.now(ZoneOffset.UTC), "JT_GATEWAY_SERVICE"));
         return Result.rejected(envelope == null ? null : envelope.idempotencyKey(), reason);
     }
     private Result rejectAudit(GatewayIngressEnvelope envelope, CanonicalPositionIngress ingress, Set<LocationQualityReason> reasons) {
         List<String> reasonCodes = reasons.stream().map(Enum::name).sorted().toList();
-        auditRepository.save(JtGatewayAuditEvent.record(ingress.terminalId(), ingress.vehicleId(), JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
-                JtGatewayAuditEvent.Result.REJECTED, reasonCodes.getFirst(), ingress.protocolVersion(), null, validDigest(ingress.payloadDigest()), null,
+        auditRepository.save(JtGatewayAuditEvent.record(null, null, JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
+                JtGatewayAuditEvent.Result.REJECTED, reasonCodes.getFirst(), validProtocolVersion(ingress.protocolVersion()), null, validDigest(ingress.payloadDigest()), null,
                 OffsetDateTime.now(ZoneOffset.UTC), "JT_GATEWAY_SERVICE"));
         return new Result(envelope.idempotencyKey(), "REJECTED", reasonCodes);
     }
     private static boolean valid(CanonicalPositionIngress ingress, GatewayIngressEnvelope envelope) {
-        return envelope.gatewayReceivedAt() != null
-                && ingress.protocolVersion() != null && !ingress.protocolVersion().isBlank()
+        return validPostgresTimestamp(envelope.gatewayReceivedAt())
+                && validProtocolVersion(ingress.protocolVersion()) != null
+                && fitsNumeric(ingress.rawLongitude(), 10, 7)
+                && fitsNumeric(ingress.rawLatitude(), 10, 7)
                 && ingress.rawCoordinateSystem() != null
                 && ("WGS84".equals(ingress.rawCoordinateSystem()) || "GCJ02".equals(ingress.rawCoordinateSystem()))
-                && ingress.terminalLocatedAt() != null && ingress.gatewayReceivedAt() != null
+                && validPostgresTimestamp(ingress.terminalLocatedAt())
+                && validPostgresTimestamp(ingress.gatewayReceivedAt())
                 && ingress.alarmBits() != null && ingress.alarmBits() >= 0
                 && ingress.statusBits() != null && ingress.statusBits() >= 0
-                && ingress.speedKph() != null && ingress.speedKph().signum() >= 0
+                && fitsNumeric(ingress.speedKph(), 6, 2) && ingress.speedKph().signum() >= 0
                 && ingress.directionDegrees() != null && ingress.directionDegrees() >= 0 && ingress.directionDegrees() <= 359
                 && ingress.altitudeMeters() != null
+                && fitsNumeric(BigDecimal.valueOf(ingress.altitudeMeters()), 8, 2)
                 && (ingress.satelliteCount() == null || ingress.satelliteCount() >= 0)
                 && validDigest(ingress.payloadDigest()) != null;
     }
+    private static boolean validPostgresTimestamp(Instant timestamp) {
+        return timestamp != null
+                && !timestamp.isBefore(POSTGRES_TIMESTAMPTZ_MIN)
+                && !timestamp.isAfter(POSTGRES_TIMESTAMPTZ_MAX);
+    }
+    private static String validProtocolVersion(String protocolVersion) {
+        return protocolVersion != null && !protocolVersion.isBlank() && protocolVersion.length() <= 40
+                ? protocolVersion : null;
+    }
     private static String validDigest(String payloadDigest) {
         return payloadDigest != null && payloadDigest.matches("[0-9a-f]{64}") ? payloadDigest : null;
+    }
+    private static boolean fitsNumeric(BigDecimal value, int precision, int scale) {
+        if (value == null) return false;
+        BigDecimal normalized = value.stripTrailingZeros();
+        long fractionalDigits = Math.max((long) normalized.scale(), 0L);
+        long integerDigits = Math.max((long) normalized.precision() - normalized.scale(), 0L);
+        return fractionalDigits <= scale && integerDigits <= precision - scale;
     }
     private LocationQualityDecision evaluate(CanonicalPositionIngress ingress, GatewayIngressEnvelope envelope,
             Vehicle vehicle, java.math.BigDecimal longitude, java.math.BigDecimal latitude,
