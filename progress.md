@@ -518,11 +518,11 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 
 - 首版聚合按已批准方案使用仓储全量读取后再按日期归集，只适用于当前试点数据规模；数据量增长前必须改为数据库分组聚合、索引和查询上限。
 - `npm audit` 仍报告 19 个既有依赖漏洞（9 个 moderate、10 个 high）；本次未改依赖，未把依赖升级风险混入看板交付。
-- 本地 `gh` 的 GitHub 令牌失效；GitHub 应用连接可访问仓库且有写权限，但远端分支列表确认尚无 `codex/p6-2-jt-active-safety-spec`，因此不能在不发布他人 P6-2 分支、也不把两项任务混入 `master` PR 的前提下创建本看板 PR。
-- 当前发布状态：本地实现已提交并验证，功能分支尚未推送，PR 尚未创建。
+- 本地 `gh` 的 GitHub 令牌仍失效，但 Git Credential Manager 已恢复推送，GitHub 应用连接也可访问仓库并有写权限。远端分支列表确认尚无 `codex/p6-2-jt-active-safety-spec`，因此不能在不发布他人 P6-2 分支、也不把两项任务混入 `master` PR 的前提下创建本看板 PR。
+- 当前发布状态：本地实现已提交并验证，`codex/admin-ui-optimization` 已推送到远端；PR 因缺少远端 P6-2 base 分支尚未创建。
 
 ### 下一步计划
 
-- 由 P6-2 任务负责人先将 `codex/p6-2-jt-active-safety-spec` 推送到远端；同时重新执行 `gh auth login -h github.com` 恢复本机 GitHub 凭据。
-- 基线分支可见后，推送 `codex/admin-ui-optimization`，以 `codex/p6-2-jt-active-safety-spec` 为 base 创建草稿 PR，并在 PR 中保留指标口径、验证结果、性能边界和依赖风险。
+- 由 P6-2 任务负责人先将 `codex/p6-2-jt-active-safety-spec` 推送到远端；如需继续使用 GitHub CLI，再执行 `gh auth login -h github.com` 恢复 `gh` 凭据。
+- 基线分支可见后，以 `codex/p6-2-jt-active-safety-spec` 为 base、`codex/admin-ui-optimization` 为 head 创建草稿 PR，并在 PR 中保留指标口径、验证结果、性能边界和依赖风险。
 - 本看板 PR 独立审阅后，再按原界面优化清单逐页实施其余管理端优化，不扩大当前提交范围。
