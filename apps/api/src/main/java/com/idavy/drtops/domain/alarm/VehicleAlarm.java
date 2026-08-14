@@ -2,8 +2,11 @@ package com.idavy.drtops.domain.alarm;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -33,10 +36,12 @@ public class VehicleAlarm {
     private BigDecimal speedKph;
     @Column(nullable = false) private String locationQualityStatus;
     @JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false) private String locationQualityReasons;
-    @Column(nullable = false) private String processingStatus;
+    @Enumerated(EnumType.STRING) @Column(nullable = false) private ProcessingStatus processingStatus;
     @Column(nullable = false, length = 64, columnDefinition = "char(64)") private String payloadDigest;
     @Column(nullable = false, length = 64, columnDefinition = "char(64)") private String deduplicationKey;
-    @Column(nullable = false) private long version;
+    @Column(name = "handled_by") private UUID handledBy;
+    @Column(name = "handled_at") private Instant handledAt;
+    @Version @Column(nullable = false) private long version;
     @Column(nullable = false) private Instant createdAt;
 
     protected VehicleAlarm() { }
@@ -49,12 +54,18 @@ public class VehicleAlarm {
         occurredAt = fact.occurredAt(); gatewayReceivedAt = fact.gatewayReceivedAt(); longitude = fact.longitude();
         latitude = fact.latitude(); speedKph = fact.speedKph(); locationQualityStatus = location.qualityStatus();
         locationQualityReasons = location.qualityReasons();
-        processingStatus = "NEW"; payloadDigest = fact.payloadDigest(); deduplicationKey = key; version = 0; createdAt = Instant.now();
+        processingStatus = ProcessingStatus.NEW; payloadDigest = fact.payloadDigest(); deduplicationKey = key;
+        version = 0; createdAt = Instant.now();
     }
     static VehicleAlarm start(VehicleAlarmIngressService.AlarmFact fact, String key, AlarmStore.LocationReference location) {
         return new VehicleAlarm(fact, key, location);
     }
     void endAt(Instant at) { if (endedAt == null) endedAt = at; }
+    void transitionTo(ProcessingStatus status, UUID actorId, Instant handledAt) {
+        processingStatus = status;
+        handledBy = actorId;
+        this.handledAt = handledAt;
+    }
     public UUID getId() { return id; }
     public String getDeduplicationKey() { return deduplicationKey; }
     public Instant getEndedAt() { return endedAt; }
@@ -68,4 +79,16 @@ public class VehicleAlarm {
     public String getModule() { return module; }
     public long getTerminalAlarmId() { return terminalAlarmId; }
     public int getAlarmTypeCode() { return alarmTypeCode; }
+    public ProcessingStatus getProcessingStatus() { return processingStatus; }
+    public UUID getHandledBy() { return handledBy; }
+    public Instant getHandledAt() { return handledAt; }
+    public long getVersion() { return version; }
+
+    public enum ProcessingStatus {
+        NEW,
+        ACKNOWLEDGED,
+        PROCESSING,
+        RESOLVED,
+        FALSE_POSITIVE
+    }
 }

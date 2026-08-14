@@ -24,4 +24,7 @@ public class VehicleAlarmOutboxEvent {
         event.id = UUID.randomUUID(); event.vehicleAlarmId = alarmId; event.eventType = eventType;
         event.payload = "{}"; event.status = "PENDING"; event.createdAt = Instant.now(); return event;
     }
+    public UUID getVehicleAlarmId() { return vehicleAlarmId; }
+    public String getEventType() { return eventType; }
+    public String getStatus() { return status; }
 }
