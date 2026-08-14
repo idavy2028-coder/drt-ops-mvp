@@ -12,11 +12,11 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 @RequestMapping("/internal/jt-gateway")
 public class GpsLocationIngressController {
-    private final GpsLocationIngressService service;
-    public GpsLocationIngressController(GpsLocationIngressService service) { this.service = service; }
+    private final GatewayIngressRouter router;
+    public GpsLocationIngressController(GatewayIngressRouter router) { this.router = router; }
     @PostMapping("/ingress")
     public ApiResponse<List<GpsLocationIngressService.Result>> ingress(@RequestBody List<GatewayIngressEnvelope> batch) {
         if (batch == null || batch.isEmpty() || batch.size() > 50) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid ingress batch");
-        return ApiResponse.ok(service.ingest(batch));
+        return ApiResponse.ok(router.ingest(batch));
     }
 }

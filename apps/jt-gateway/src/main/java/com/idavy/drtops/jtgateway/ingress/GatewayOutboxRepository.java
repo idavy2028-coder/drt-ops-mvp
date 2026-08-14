@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class GatewayOutboxRepository {
+    private static final String DEPENDENCY_DEAD_LETTER = "DEPENDENCY_DEAD_LETTER";
     private static final Duration DEAD_LETTER_RETENTION = Duration.ofDays(7);
     private static final Duration DELIVERY_LEASE = Duration.ofMinutes(1);
     private static final Duration LOCATION_BATCH_INTERVAL = Duration.ofSeconds(1);
@@ -36,19 +37,25 @@ public final class GatewayOutboxRepository {
     }
 
     public boolean insert(GatewayIngressEnvelope envelope, Instant availableAt) {
+        return insert(envelope, availableAt, null);
+    }
+
+    public boolean insert(
+            GatewayIngressEnvelope envelope, Instant availableAt, UUID dependencyIdempotencyKey) {
         try {
             jdbc.update("""
                     INSERT INTO gateway_outbox (
                         idempotency_key, kind, schema_version, payload_json, status,
-                        attempt_count, next_attempt_at, created_at)
-                    VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?)
+                        attempt_count, next_attempt_at, created_at, dependency_idempotency_key)
+                    VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
                     """,
                     envelope.idempotencyKey(),
                     envelope.kind().name(),
                     envelope.schemaVersion(),
                     envelope.payloadJson(),
                     atOffset(availableAt),
-                    atOffset(envelope.gatewayReceivedAt()));
+                    atOffset(envelope.gatewayReceivedAt()),
+                    dependencyIdempotencyKey);
             return true;
         } catch (DuplicateKeyException duplicate) {
             return false;
@@ -73,11 +80,14 @@ public final class GatewayOutboxRepository {
                 return List.of();
             }
             String kindPredicate = priority == Priority.HIGH
-                    ? "kind IN ('ALARM', 'ATTACHMENT_CONTROL')"
+                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_CONTROL') "
+                            + "AND (dependency_idempotency_key IS NULL OR dependency_idempotency_key IN "
+                            + "(SELECT idempotency_key FROM gateway_outbox dependency WHERE dependency.status = 'DELIVERED'))"
                     : "kind = 'LOCATION'";
             List<OutboxEntry> selected = jdbc.query("""
                     SELECT idempotency_key, kind, schema_version, payload_json, status,
-                           attempt_count, next_attempt_at, created_at, delivered_at, last_error_code
+                           attempt_count, next_attempt_at, created_at, delivered_at, last_error_code,
+                           dependency_idempotency_key
                     FROM gateway_outbox
                     WHERE status = 'PENDING' AND next_attempt_at <= ? AND %s
                     ORDER BY created_at, idempotency_key
@@ -98,6 +108,48 @@ public final class GatewayOutboxRepository {
                         UPDATE gateway_dispatch_state SET next_batch_at = ?
                         WHERE lane = 'LOCATION'
                         """, atOffset(now.plus(LOCATION_BATCH_INTERVAL)));
+            }
+            return List.copyOf(claimed);
+        });
+    }
+
+    public List<OutboxEntry> claimHighPriorityDependencies(Instant now, int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        return transactions.execute(status -> {
+            recoverExpiredClaims(now);
+            List<UUID> candidates = jdbc.queryForList("""
+                    SELECT urgent.dependency_idempotency_key
+                    FROM gateway_outbox urgent
+                    JOIN gateway_outbox dependency
+                      ON dependency.idempotency_key = urgent.dependency_idempotency_key
+                    WHERE urgent.status = 'PENDING' AND urgent.next_attempt_at <= ?
+                      AND urgent.kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_CONTROL')
+                      AND dependency.status = 'PENDING' AND dependency.next_attempt_at <= ?
+                    GROUP BY urgent.dependency_idempotency_key
+                    ORDER BY MIN(urgent.created_at), urgent.dependency_idempotency_key
+                    LIMIT %d
+                    """.formatted(limit), UUID.class, atOffset(now), atOffset(now));
+            List<OutboxEntry> claimed = new ArrayList<>();
+            for (UUID dependencyId : candidates) {
+                Optional<OutboxEntry> dependency = jdbc.query("""
+                        SELECT idempotency_key, kind, schema_version, payload_json, status,
+                               attempt_count, next_attempt_at, created_at, delivered_at, last_error_code,
+                               dependency_idempotency_key
+                        FROM gateway_outbox
+                        WHERE idempotency_key = ? AND status = 'PENDING' AND next_attempt_at <= ?
+                        FOR UPDATE
+                        """, ENTRY_MAPPER, dependencyId, atOffset(now)).stream().findFirst();
+                if (dependency.isEmpty()) {
+                    continue;
+                }
+                int updated = jdbc.update("""
+                        UPDATE gateway_outbox SET status = 'DELIVERING', next_attempt_at = ?
+                        WHERE idempotency_key = ? AND status = 'PENDING'
+                        """, atOffset(now.plus(DELIVERY_LEASE)), dependencyId);
+                requireSingleStateTransition(updated);
+                claimed.add(dependency.get().claimedUntil(now.plus(DELIVERY_LEASE)));
             }
             return List.copyOf(claimed);
         });
@@ -156,6 +208,17 @@ public final class GatewayOutboxRepository {
                         update.entry().idempotencyKey(),
                         atOffset(update.entry().nextAttemptAt()));
                 requireSingleStateTransition(changed);
+                if (update.deadLetter()) {
+                    jdbc.update("""
+                            UPDATE gateway_outbox
+                            SET status = 'DEAD_LETTER', next_attempt_at = ?, last_error_code = ?
+                            WHERE dependency_idempotency_key = ?
+                              AND status IN ('PENDING', 'DELIVERING')
+                            """,
+                            atOffset(update.nextAttemptAt()),
+                            DEPENDENCY_DEAD_LETTER,
+                            update.entry().idempotencyKey());
+                }
             }
         });
     }
@@ -168,16 +231,34 @@ public final class GatewayOutboxRepository {
     }
 
     public int purgeExpiredDeadLetters(Instant now) {
-        return jdbc.update("""
-                DELETE FROM gateway_outbox
-                WHERE status = 'DEAD_LETTER' AND next_attempt_at < ?
-                """, atOffset(now.minus(DEAD_LETTER_RETENTION)));
+        return transactions.execute(status -> {
+            int totalDeleted = 0;
+            int deleted;
+            do {
+                deleted = jdbc.update("""
+                        DELETE FROM gateway_outbox
+                        WHERE idempotency_key IN (
+                            SELECT candidate.idempotency_key
+                            FROM gateway_outbox candidate
+                            LEFT JOIN gateway_outbox dependent
+                              ON dependent.dependency_idempotency_key = candidate.idempotency_key
+                            WHERE candidate.status = 'DEAD_LETTER'
+                              AND candidate.next_attempt_at < ?
+                            GROUP BY candidate.idempotency_key
+                            HAVING COUNT(dependent.idempotency_key) = 0
+                        )
+                        """, atOffset(now.minus(DEAD_LETTER_RETENTION)));
+                totalDeleted += deleted;
+            } while (deleted > 0);
+            return totalDeleted;
+        });
     }
 
     public Optional<OutboxEntry> find(UUID idempotencyKey) {
         return jdbc.query("""
                 SELECT idempotency_key, kind, schema_version, payload_json, status,
-                       attempt_count, next_attempt_at, created_at, delivered_at, last_error_code
+                       attempt_count, next_attempt_at, created_at, delivered_at, last_error_code,
+                       dependency_idempotency_key
                 FROM gateway_outbox WHERE idempotency_key = ?
                 """, ENTRY_MAPPER, idempotencyKey).stream().findFirst();
     }
@@ -211,7 +292,8 @@ public final class GatewayOutboxRepository {
                 result.getObject("next_attempt_at", OffsetDateTime.class).toInstant(),
                 result.getObject("created_at", OffsetDateTime.class).toInstant(),
                 delivered == null ? null : delivered.toInstant(),
-                result.getString("last_error_code"));
+                result.getString("last_error_code"),
+                result.getObject("dependency_idempotency_key", UUID.class));
     }
 
     private static OffsetDateTime atOffset(Instant instant) {
@@ -258,11 +340,12 @@ public final class GatewayOutboxRepository {
             Instant nextAttemptAt,
             Instant createdAt,
             Instant deliveredAt,
-            String lastErrorCode) {
+            String lastErrorCode,
+            UUID dependencyIdempotencyKey) {
         private OutboxEntry claimedUntil(Instant leaseExpiresAt) {
             return new OutboxEntry(
                     idempotencyKey, kind, schemaVersion, payloadJson, DeliveryStatus.DELIVERING,
-                    attemptCount, leaseExpiresAt, createdAt, deliveredAt, lastErrorCode);
+                    attemptCount, leaseExpiresAt, createdAt, deliveredAt, lastErrorCode, dependencyIdempotencyKey);
         }
 
         public GatewayIngressEnvelope toEnvelope() {

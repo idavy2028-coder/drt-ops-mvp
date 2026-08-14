@@ -85,6 +85,8 @@ class RegistrationAuthenticationHandlerTest {
         assertTrue(registrationReply.body().toString(StandardCharsets.US_ASCII).contains(AUTHENTICATION_TOKEN));
         release(registrationReply);
         assertEquals(TerminalSessionState.CONNECTED_UNAUTHENTICATED, handler.session().state());
+        assertEquals("T/JSATL12-2017", handler.session().activeSafetyStandard());
+        assertEquals(List.of("ADAS", "DMS"), handler.session().activeSafetyModules());
 
         assertFalse(channel.writeInbound(authenticationFrame(AUTHENTICATION_TOKEN)));
         release(channel.readOutbound());
@@ -102,6 +104,22 @@ class RegistrationAuthenticationHandlerTest {
         Jt808Frame forwarded = channel.readInbound();
         assertSame(location, forwarded);
         release(forwarded);
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void preservesAKnownUnimplementedGuangdongProfileOnTheTerminalSession() {
+        RegistrationAuthenticationHandler handler = handler(
+                FakeTerminalRegistry.approvedWithProfile("T/GD-ACTIVE-SAFETY", List.of("ADAS")),
+                new TerminalSessionRegistry(),
+                new MutableClock());
+        EmbeddedChannel channel = channel(handler);
+
+        assertFalse(channel.writeInbound(registrationFrame()));
+        release(channel.readOutbound());
+
+        assertEquals("T/GD-ACTIVE-SAFETY", handler.session().activeSafetyStandard());
+        assertEquals(List.of("ADAS"), handler.session().activeSafetyModules());
         channel.finishAndReleaseAll();
     }
 
@@ -337,18 +355,29 @@ class RegistrationAuthenticationHandlerTest {
 
     private static final class FakeTerminalRegistry implements TerminalRegistryPort {
         private final RegistrationRejection registrationRejection;
+        private final String activeSafetyStandard;
+        private final List<String> activeSafetyModules;
         private final List<SessionAuditIngress> audits = new ArrayList<>();
 
-        private FakeTerminalRegistry(RegistrationRejection registrationRejection) {
+        private FakeTerminalRegistry(
+                RegistrationRejection registrationRejection,
+                String activeSafetyStandard,
+                List<String> activeSafetyModules) {
             this.registrationRejection = registrationRejection;
+            this.activeSafetyStandard = activeSafetyStandard;
+            this.activeSafetyModules = List.copyOf(activeSafetyModules);
         }
 
         static FakeTerminalRegistry approved() {
-            return new FakeTerminalRegistry(null);
+            return approvedWithProfile("T/JSATL12-2017", List.of("ADAS", "DMS"));
+        }
+
+        static FakeTerminalRegistry approvedWithProfile(String standard, List<String> modules) {
+            return new FakeTerminalRegistry(null, standard, modules);
         }
 
         static FakeTerminalRegistry rejected(RegistrationRejection rejection) {
-            return new FakeTerminalRegistry(rejection);
+            return new FakeTerminalRegistry(rejection, null, List.of());
         }
 
         @Override
@@ -365,6 +394,8 @@ class RegistrationAuthenticationHandlerTest {
                     TERMINAL_ID,
                     VEHICLE_ID,
                     "WGS84",
+                    activeSafetyStandard,
+                    activeSafetyModules,
                     5,
                     AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII),
                     uncheckedSha256(AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII)));

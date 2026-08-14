@@ -69,6 +69,57 @@ class GatewayOutboxDispatcherTest {
     }
 
     @Test
+    void settlesAnAlarmPositionDependencyBeforeDeliveringTheAlarmWithOneAllowedAttempt() {
+        DependencyAwareDeliveryClient client = new DependencyAwareDeliveryClient();
+        var fixture = fixture(1, client);
+        GatewayIngressEnvelope position = envelope(10_000, IngressKind.LOCATION);
+        GatewayIngressEnvelope alarm = envelope(10_001, IngressKind.ALARM);
+        fixture.buffer.append(position);
+        fixture.buffer.append(alarm, position.idempotencyKey());
+
+        GatewayOutboxDispatcher.DispatchReport report = fixture.dispatcher.dispatchOnce();
+
+        assertEquals(2, client.batches.size());
+        assertEquals(List.of(IngressKind.LOCATION),
+                client.batches.get(0).stream().map(GatewayIngressEnvelope::kind).toList());
+        assertEquals(List.of(IngressKind.ALARM),
+                client.batches.get(1).stream().map(GatewayIngressEnvelope::kind).toList());
+        assertEquals(2, report.delivered());
+        assertEquals(0, report.deadLettered());
+        assertEquals(GatewayOutboxRepository.DeliveryStatus.DELIVERED,
+                fixture.repository.find(position.idempotencyKey()).orElseThrow().status());
+        assertEquals(GatewayOutboxRepository.DeliveryStatus.DELIVERED,
+                fixture.repository.find(alarm.idempotencyKey()).orElseThrow().status());
+    }
+
+    @Test
+    void deadLettersAndPurgesAnAlarmWhenItsPositionDependencyExhaustsDelivery() {
+        var fixture = fixture(1);
+        GatewayIngressEnvelope position = envelope(10_010, IngressKind.LOCATION);
+        GatewayIngressEnvelope alarm = envelope(10_011, IngressKind.ALARM);
+        fixture.buffer.append(position);
+        fixture.buffer.append(alarm, position.idempotencyKey());
+        fixture.client.results.add(GatewayOutboxDispatcher.DeliveryResult.retryable("HTTP_503"));
+
+        GatewayOutboxDispatcher.DispatchReport report = fixture.dispatcher.dispatchOnce();
+
+        assertEquals(1, report.attempted());
+        assertEquals(1, report.deadLettered());
+        GatewayOutboxRepository.OutboxEntry deadPosition =
+                fixture.repository.find(position.idempotencyKey()).orElseThrow();
+        GatewayOutboxRepository.OutboxEntry deadAlarm =
+                fixture.repository.find(alarm.idempotencyKey()).orElseThrow();
+        assertEquals(GatewayOutboxRepository.DeliveryStatus.DEAD_LETTER, deadPosition.status());
+        assertEquals(GatewayOutboxRepository.DeliveryStatus.DEAD_LETTER, deadAlarm.status());
+        assertEquals("DEPENDENCY_DEAD_LETTER", deadAlarm.lastErrorCode());
+
+        fixture.clock.advance(Duration.ofDays(7).plusNanos(1));
+        assertEquals(2, fixture.repository.purgeExpiredDeadLetters(fixture.clock.instant()));
+        assertTrue(fixture.repository.find(position.idempotencyKey()).isEmpty());
+        assertTrue(fixture.repository.find(alarm.idempotencyKey()).isEmpty());
+    }
+
+    @Test
     void doesNotStarveAttachmentControlWhileAlarmAndLocationTrafficRemainSaturated() {
         var fixture = fixture(8);
         for (int index = 0; index < 60; index++) {
@@ -491,6 +542,25 @@ class GatewayOutboxDispatcherTest {
             return results.isEmpty()
                     ? GatewayOutboxDispatcher.DeliveryResult.success()
                     : results.removeFirst();
+        }
+    }
+
+    private static final class DependencyAwareDeliveryClient
+            implements GatewayOutboxDispatcher.DeliveryClient {
+        private final List<List<GatewayIngressEnvelope>> batches = new ArrayList<>();
+        private boolean positionSettled;
+
+        @Override
+        public GatewayOutboxDispatcher.DeliveryResult deliver(List<GatewayIngressEnvelope> batch) {
+            batches.add(List.copyOf(batch));
+            if (batch.stream().anyMatch(envelope -> envelope.kind() == IngressKind.ALARM)
+                    && !positionSettled) {
+                return GatewayOutboxDispatcher.DeliveryResult.retryable("POSITION_NOT_SETTLED");
+            }
+            if (batch.stream().anyMatch(envelope -> envelope.kind() == IngressKind.LOCATION)) {
+                positionSettled = true;
+            }
+            return GatewayOutboxDispatcher.DeliveryResult.success();
         }
     }
 

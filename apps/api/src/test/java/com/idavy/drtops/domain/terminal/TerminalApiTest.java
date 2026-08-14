@@ -145,6 +145,120 @@ class TerminalApiTest {
     }
 
     @Test
+    void configuresAValidatedCapabilityProfileAndCarriesItFromPersistenceIntoRegistration() throws Exception {
+        String createResponse = mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-CAP-001", "PHONE-CAP-001")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        long version = ((Number) JsonPath.read(createResponse, "$.data.version")).longValue();
+
+        String configuredResponse = mockMvc.perform(post("/api/terminals/T-CAP-001/capabilities")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expectedVersion":%d,"activeSafetyStandard":"T/JSATL12-2017",
+                                 "activeSafetyModules":["ADAS","DMS"],"jt1078Enabled":true,
+                                 "reason":"配置苏标主动安全能力"}
+                                """.formatted(version)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSafetyStandard").value("T/JSATL12-2017"))
+                .andExpect(jsonPath("$.data.activeSafetyModules[0]").value("ADAS"))
+                .andExpect(jsonPath("$.data.activeSafetyModules[1]").value("DMS"))
+                .andExpect(jsonPath("$.data.jt1078Enabled").value(true))
+                .andReturn().getResponse().getContentAsString();
+        long configuredVersion = ((Number) JsonPath.read(configuredResponse, "$.data.version")).longValue();
+
+        mockMvc.perform(post("/api/terminals/T-CAP-001/bind")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"vehicleId":"%s","expectedVersion":%d,"reason":"能力终端绑定车辆"}
+                                """.formatted(VEHICLE_ID, configuredVersion)))
+                .andExpect(status().isOk());
+
+        TerminalManagementService.RegistrationDecision decision = service.verifyRegistration(
+                "PHONE-CAP-001", "T-CAP-001", "MFG01", "MODEL-X",
+                vehicleRepository.findById(VEHICLE_ID).orElseThrow().getPlateNumber(), "JT808_2019");
+        assertThat(decision.approved()).isTrue();
+        assertThat(decision.activeSafetyStandard()).isEqualTo("T/JSATL12-2017");
+        assertThat(decision.activeSafetyModules()).containsExactly("ADAS", "DMS");
+        JtTerminal terminal = terminalRepository.findByTerminalCode("T-CAP-001").orElseThrow();
+        assertThat(auditLogRepository.findByEntityId(terminal.getId()))
+                .anySatisfy(audit -> assertThat(audit.getAction())
+                        .isEqualTo("JT_TERMINAL_CAPABILITY_PROFILE_CONFIGURED"));
+    }
+
+    @Test
+    void registersAKnownUnimplementedGuangdongProfileWithoutEnablingJsatl12Decoding() throws Exception {
+        String createResponse = mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-CAP-GD-001", "PHONE-CAP-GD-001")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        long version = ((Number) JsonPath.read(createResponse, "$.data.version")).longValue();
+
+        String configuredResponse = mockMvc.perform(post("/api/terminals/T-CAP-GD-001/capabilities")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expectedVersion":%d,"activeSafetyStandard":"T/GD-ACTIVE-SAFETY",
+                                 "activeSafetyModules":["ADAS"],"jt1078Enabled":false,
+                                 "reason":"登记粤标扩展能力但不启用解析"}
+                                """.formatted(version)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSafetyStandard").value("T/GD-ACTIVE-SAFETY"))
+                .andExpect(jsonPath("$.data.activeSafetyModules[0]").value("ADAS"))
+                .andReturn().getResponse().getContentAsString();
+        long configuredVersion = ((Number) JsonPath.read(configuredResponse, "$.data.version")).longValue();
+
+        mockMvc.perform(post("/api/terminals/T-CAP-GD-001/bind")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"vehicleId":"%s","expectedVersion":%d,"reason":"粤标能力终端绑定车辆"}
+                                """.formatted(VEHICLE_ID, configuredVersion)))
+                .andExpect(status().isOk());
+
+        internalPost("/internal/jt-gateway/registrations/verify", """
+                {"terminalPhone":"PHONE-CAP-GD-001","terminalCode":"T-CAP-GD-001",
+                 "manufacturerId":"MFG01","model":"MODEL-X","vehicleIdentifier":"浙A20001",
+                 "protocolVersion":"JT808_2019"}
+                """)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.activeSafetyStandard").value("T/GD-ACTIVE-SAFETY"))
+                .andExpect(jsonPath("$.data.activeSafetyModules[0]").value("ADAS"));
+    }
+
+    @Test
+    void rejectsInvalidOrStaleCapabilityProfileChanges() throws Exception {
+        String createResponse = mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest("T-CAP-INVALID", "PHONE-CAP-002")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        long version = ((Number) JsonPath.read(createResponse, "$.data.version")).longValue();
+
+        mockMvc.perform(post("/api/terminals/T-CAP-INVALID/capabilities")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expectedVersion":%d,"activeSafetyStandard":"T/JSATL12-2017",
+                                 "activeSafetyModules":["ADAS","UNKNOWN"],"jt1078Enabled":false,
+                                 "reason":"非法能力组合"}
+                                """.formatted(version)))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/terminals/T-CAP-INVALID/capabilities")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expectedVersion":%d,"activeSafetyStandard":"T/JSATL12-2017",
+                                 "activeSafetyModules":["ADAS"],"jt1078Enabled":false,
+                                 "reason":"过期版本修改"}
+                                """.formatted(version + 1)))
+                .andExpect(status().isConflict());
+        JtTerminal terminal = terminalRepository.findByTerminalCode("T-CAP-INVALID").orElseThrow();
+        assertThat(terminal.getActiveSafetyStandard()).isNull();
+        assertThat(terminal.getActiveSafetyModules()).isEqualTo("[]");
+    }
+
+    @Test
     void returnsAReadOnlyTerminalDetailWithoutSensitiveGatewayFields() throws Exception {
         JtTerminal terminal = presetAndBind("T-API-DETAIL", "PHONE-9012");
         JtGatewayAuditEvent event = JtGatewayAuditEvent.record(
@@ -433,6 +547,20 @@ class TerminalApiTest {
             mockMvc.perform(get("/api/terminals/anything").with(user(role.name()).authorities(authorities))).andExpect(status().isForbidden());
             mockMvc.perform(post("/api/terminals/anything/suspend").contentType(MediaType.APPLICATION_JSON)
                     .content(action(1, "未授权")).with(user(role.name()).authorities(authorities))).andExpect(status().isForbidden());
+        }
+    }
+
+    @Test
+    void deniesCapabilityManagementToEveryNonAdminRole() throws Exception {
+        for (RoleCode role : java.util.List.of(RoleCode.DISPATCHER, RoleCode.OPERATOR, RoleCode.AUDITOR)) {
+            SimpleGrantedAuthority[] authorities = Permission.permissionsFor(java.util.Set.of(role)).stream()
+                    .map(Permission::name).map(SimpleGrantedAuthority::new).toArray(SimpleGrantedAuthority[]::new);
+            mockMvc.perform(post("/api/terminals/anything/capabilities").contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                            {"expectedVersion":1,"activeSafetyStandard":"T/JSATL12-2017",
+                             "activeSafetyModules":["ADAS"],"jt1078Enabled":false,"reason":"权限校验"}
+                            """)
+                    .with(user(role.name()).authorities(authorities))).andExpect(status().isForbidden());
         }
     }
 

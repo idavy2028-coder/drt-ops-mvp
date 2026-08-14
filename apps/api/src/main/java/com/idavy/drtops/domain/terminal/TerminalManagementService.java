@@ -25,6 +25,9 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 @Service
 public class TerminalManagementService {
 
+    private static final java.util.Set<String> KNOWN_ACTIVE_SAFETY_STANDARDS =
+            java.util.Set.of("T/JSATL12-2017", "T/GD-ACTIVE-SAFETY");
+
     private final JtTerminalRepository terminalRepository;
     private final JtTerminalVehicleBindingRepository bindingRepository;
     private final VehicleRepository vehicleRepository;
@@ -107,6 +110,32 @@ public class TerminalManagementService {
     }
 
     @Transactional
+    public JtTerminal configureCapabilities(
+            String terminalCode,
+            long expectedVersion,
+            String activeSafetyStandard,
+            List<String> activeSafetyModules,
+            boolean jt1078Enabled,
+            String reason,
+            UUID actorId) {
+        JtTerminal terminal = requireVersion(terminalCode, expectedVersion);
+        requireReason(reason);
+        CapabilityProfile profile = validateCapabilityProfile(activeSafetyStandard, activeSafetyModules, jt1078Enabled);
+        String serializedModules;
+        try {
+            serializedModules = objectMapper.writeValueAsString(profile.activeSafetyModules());
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to encode terminal capability profile", exception);
+        }
+        asConflict(() -> terminal.configureCapabilities(
+                profile.activeSafetyStandard(), serializedModules, profile.jt1078Enabled()));
+        terminalRepository.saveAndFlush(terminal);
+        audit(terminal, "JT_TERMINAL_CAPABILITY_PROFILE_CONFIGURED", actorId, reason,
+                capabilityMetadata(profile));
+        return terminal;
+    }
+
+    @Transactional
     public JtTerminal completeRegistration(
             UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
         if (gatewayInstance == null || gatewayInstance.isBlank()) {
@@ -154,7 +183,9 @@ public class TerminalManagementService {
                 .map(vehicle -> secureEquals(vehicle.getPlateNumber(), vehicleIdentifier))
                 .orElse(false);
         return vehicleMatches
-                ? new RegistrationDecision(true, terminal.getId(), terminal.getAuthTokenVersion(), null)
+                ? new RegistrationDecision(true, terminal.getId(), binding.getVehicleId(),
+                        terminal.getSourceCoordinateSystem(), terminal.getActiveSafetyStandard(),
+                        parseActiveSafetyModules(terminal.getActiveSafetyModules()), terminal.getAuthTokenVersion(), null)
                 : RegistrationDecision.rejected();
     }
 
@@ -367,6 +398,38 @@ public class TerminalManagementService {
         }
     }
 
+    private static CapabilityProfile validateCapabilityProfile(
+            String standard, List<String> modules, boolean jt1078Enabled) {
+        List<String> requestedModules = modules == null ? List.of() : List.copyOf(modules);
+        if (standard == null || standard.isBlank()) {
+            if (!requestedModules.isEmpty()) {
+                throw new IllegalArgumentException("active safety modules require a standard");
+            }
+            return new CapabilityProfile(null, List.of(), jt1078Enabled);
+        }
+        if (!KNOWN_ACTIVE_SAFETY_STANDARDS.contains(standard)) {
+            throw new IllegalArgumentException("unsupported active safety standard");
+        }
+        if (requestedModules.isEmpty()
+                || requestedModules.stream().anyMatch(module -> !("ADAS".equals(module) || "DMS".equals(module)))
+                || requestedModules.stream().distinct().count() != requestedModules.size()) {
+            throw new IllegalArgumentException("invalid active safety modules");
+        }
+        return new CapabilityProfile(standard, requestedModules, jt1078Enabled);
+    }
+
+    private String capabilityMetadata(CapabilityProfile profile) {
+        try {
+            java.util.Map<String, Object> metadata = new java.util.LinkedHashMap<>();
+            metadata.put("activeSafetyStandard", profile.activeSafetyStandard());
+            metadata.put("activeSafetyModules", profile.activeSafetyModules());
+            metadata.put("jt1078Enabled", profile.jt1078Enabled());
+            return objectMapper.writeValueAsString(metadata);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to encode terminal capability audit", exception);
+        }
+    }
+
     private static void requireReason(String reason) {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("reason must not be blank");
@@ -407,6 +470,10 @@ public class TerminalManagementService {
             String reason) {
     }
 
+    private record CapabilityProfile(
+            String activeSafetyStandard, List<String> activeSafetyModules, boolean jt1078Enabled) {
+    }
+
     public record ActionResult(JtTerminal terminal, String disconnectStatus) {
     }
 
@@ -439,9 +506,33 @@ public class TerminalManagementService {
     private record ReplacementPending(JtTerminal replacement, UUID oldTerminalId) {
     }
 
-    public record RegistrationDecision(boolean approved, UUID terminalId, int tokenVersion, String reasonCode) {
+    private List<String> parseActiveSafetyModules(String serialized) {
+        if (serialized == null || serialized.isBlank()) {
+            return List.of();
+        }
+        try {
+            return List.copyOf(objectMapper.readValue(serialized,
+                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() { }));
+        } catch (JsonProcessingException malformedProfile) {
+            return List.of();
+        }
+    }
+
+    public record RegistrationDecision(
+            boolean approved,
+            UUID terminalId,
+            UUID vehicleId,
+            String sourceCoordinateSystem,
+            String activeSafetyStandard,
+            List<String> activeSafetyModules,
+            int tokenVersion,
+            String reasonCode) {
+        public RegistrationDecision {
+            activeSafetyModules = activeSafetyModules == null ? List.of() : List.copyOf(activeSafetyModules);
+        }
+
         static RegistrationDecision rejected() {
-            return new RegistrationDecision(false, null, 0, "REGISTRATION_REJECTED");
+            return new RegistrationDecision(false, null, null, null, null, List.of(), 0, "REGISTRATION_REJECTED");
         }
     }
 

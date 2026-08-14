@@ -40,10 +40,14 @@ public final class GatewayIngressBuffer {
     }
 
     public WriteResult append(GatewayIngressEnvelope envelope) {
+        return append(envelope, null);
+    }
+
+    public WriteResult append(GatewayIngressEnvelope envelope, java.util.UUID dependencyIdempotencyKey) {
         Objects.requireNonNull(envelope, "envelope");
         validatePayload(envelope.payloadJson());
         try {
-            boolean inserted = repository.insert(envelope, clock.instant());
+            boolean inserted = repository.insert(envelope, clock.instant(), dependencyIdempotencyKey);
             bufferWritable.set(true);
             return inserted ? WriteResult.STORED : WriteResult.DUPLICATE;
         } catch (DataAccessException unavailable) {

@@ -148,7 +148,7 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
 
         session.registrationAccepted(
                 decision.terminalId(), decision.vehicleId(), decision.sourceCoordinateSystem(), decision.tokenVersion(),
-                frame.header().terminalIdentity());
+                frame.header().terminalIdentity(), decision.activeSafetyStandard(), decision.activeSafetyModules());
         writeRegistrationReply(context, frame.header(), 0, decision.authenticationToken());
         release(frame);
         audit(context, SessionAuditType.REGISTRATION_ACCEPTED, "APPROVED");

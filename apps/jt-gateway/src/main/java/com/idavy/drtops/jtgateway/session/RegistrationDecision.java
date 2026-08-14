@@ -7,6 +7,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Objects;
+import java.util.List;
 import java.util.UUID;
 
 public final class RegistrationDecision {
@@ -14,6 +15,8 @@ public final class RegistrationDecision {
     private final UUID terminalId;
     private final UUID vehicleId;
     private final String sourceCoordinateSystem;
+    private final String activeSafetyStandard;
+    private final List<String> activeSafetyModules;
     private final int tokenVersion;
     private final byte[] authenticationToken;
     private final String authenticationTokenSha256;
@@ -24,6 +27,8 @@ public final class RegistrationDecision {
             UUID terminalId,
             UUID vehicleId,
             String sourceCoordinateSystem,
+            String activeSafetyStandard,
+            List<String> activeSafetyModules,
             int tokenVersion,
             byte[] authenticationToken,
             String authenticationTokenSha256,
@@ -32,6 +37,8 @@ public final class RegistrationDecision {
         this.terminalId = terminalId;
         this.vehicleId = vehicleId;
         this.sourceCoordinateSystem = sourceCoordinateSystem;
+        this.activeSafetyStandard = activeSafetyStandard;
+        this.activeSafetyModules = activeSafetyModules == null ? List.of() : List.copyOf(activeSafetyModules);
         this.tokenVersion = tokenVersion;
         this.authenticationToken = authenticationToken == null ? null : authenticationToken.clone();
         this.authenticationTokenSha256 = authenticationTokenSha256;
@@ -49,13 +56,26 @@ public final class RegistrationDecision {
         random.nextBytes(entropy);
         byte[] token = Base64.getUrlEncoder().withoutPadding().encode(entropy);
         java.util.Arrays.fill(entropy, (byte) 0);
-        return approved(terminalId, vehicleId, sourceCoordinateSystem, tokenVersion, token, sha256(token));
+        return approved(terminalId, vehicleId, sourceCoordinateSystem, null, List.of(), tokenVersion, token, sha256(token));
     }
 
     public static RegistrationDecision approved(
             UUID terminalId,
             UUID vehicleId,
             String sourceCoordinateSystem,
+            int tokenVersion,
+            byte[] authenticationToken,
+            String tokenSha256) {
+        return approved(terminalId, vehicleId, sourceCoordinateSystem, null, List.of(), tokenVersion,
+                authenticationToken, tokenSha256);
+    }
+
+    public static RegistrationDecision approved(
+            UUID terminalId,
+            UUID vehicleId,
+            String sourceCoordinateSystem,
+            String activeSafetyStandard,
+            List<String> activeSafetyModules,
             int tokenVersion,
             byte[] authenticationToken,
             String tokenSha256) {
@@ -76,11 +96,11 @@ public final class RegistrationDecision {
         }
         return new RegistrationDecision(
                 true, terminalId, vehicleId, sourceCoordinateSystem,
-                tokenVersion, authenticationToken, tokenSha256, null);
+                activeSafetyStandard, activeSafetyModules, tokenVersion, authenticationToken, tokenSha256, null);
     }
 
     public static RegistrationDecision rejected(RegistrationRejection rejection) {
-        return new RegistrationDecision(false, null, null, null, 0, null, null,
+        return new RegistrationDecision(false, null, null, null, null, List.of(), 0, null, null,
                 Objects.requireNonNull(rejection, "rejection"));
     }
 
@@ -98,6 +118,14 @@ public final class RegistrationDecision {
 
     public String sourceCoordinateSystem() {
         return sourceCoordinateSystem;
+    }
+
+    public String activeSafetyStandard() {
+        return activeSafetyStandard;
+    }
+
+    public List<String> activeSafetyModules() {
+        return activeSafetyModules;
     }
 
     public int tokenVersion() {

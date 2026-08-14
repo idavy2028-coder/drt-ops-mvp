@@ -136,6 +136,18 @@ public class JtTerminal {
         touch();
     }
 
+    public void configureCapabilities(
+            String activeSafetyStandard, String activeSafetyModules, boolean jt1078Enabled) {
+        requireMutable();
+        if ((status != Status.PENDING && status != Status.SUSPENDED) || lastRegisteredAt != null) {
+            throw new IllegalStateException("terminal capability profile requires pending registration");
+        }
+        this.activeSafetyStandard = activeSafetyStandard;
+        this.activeSafetyModules = Objects.requireNonNull(activeSafetyModules, "activeSafetyModules");
+        this.jt1078Enabled = jt1078Enabled;
+        touch();
+    }
+
     public void beginAuthenticationRotation() {
         requireMutable();
         if (status != Status.ACTIVE && status != Status.SUSPENDED) {

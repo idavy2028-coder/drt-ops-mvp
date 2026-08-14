@@ -6,6 +6,9 @@ import com.idavy.drtops.jt.protocol.codec.Jt808Frame;
 import com.idavy.drtops.jt.protocol.core.LocationReport;
 import com.idavy.drtops.jt.protocol.core.Jt808CoreModule;
 import com.idavy.drtops.jtgateway.ingress.CanonicalPositionIngress;
+import com.idavy.drtops.jtgateway.ingress.CanonicalVehicleAlarm;
+import com.idavy.drtops.jtgateway.ingress.CanonicalProtocolAudit;
+import com.idavy.drtops.jtgateway.ingress.ActiveSafetyAlarmRouter;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope;
 import com.idavy.drtops.jtgateway.ingress.IngressKind;
@@ -31,6 +34,9 @@ public final class ProtocolModuleRegistry {
     private final PositionIngressBuffer positionBuffer;
     private final TerminalSessionRegistry sessionRegistry;
     private final Clock clock;
+    private final GatewayIngressBuffer gatewayBuffer;
+    private final ObjectMapper objectMapper;
+    private final ActiveSafetyAlarmRouter activeSafetyAlarmRouter = new ActiveSafetyAlarmRouter();
     private final AtomicLong unknownMessageCount = new AtomicLong();
 
     public ProtocolModuleRegistry(
@@ -42,6 +48,8 @@ public final class ProtocolModuleRegistry {
         this.positionBuffer = Objects.requireNonNull(positionBuffer, "positionBuffer");
         this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.gatewayBuffer = null;
+        this.objectMapper = null;
     }
 
     public ProtocolModuleRegistry(
@@ -50,7 +58,12 @@ public final class ProtocolModuleRegistry {
             ObjectMapper objectMapper,
             TerminalSessionRegistry sessionRegistry,
             Clock clock) {
-        this(coreModule, position -> appendToGatewayBuffer(position, gatewayBuffer, objectMapper), sessionRegistry, clock);
+        this.coreModule = Objects.requireNonNull(coreModule, "coreModule");
+        this.gatewayBuffer = Objects.requireNonNull(gatewayBuffer, "gatewayBuffer");
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.positionBuffer = position -> appendToGatewayBuffer(position, this.gatewayBuffer, this.objectMapper);
+        this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     public DispatchResult dispatch(TerminalSession session, Jt808Frame frame) {
@@ -99,14 +112,54 @@ public final class ProtocolModuleRegistry {
                     report.satelliteCount(),
                     digest(frame));
             GatewayIngressBuffer.WriteResult result = positionBuffer.append(ingress);
-        return result == GatewayIngressBuffer.WriteResult.STORED
-                        || result == GatewayIngressBuffer.WriteResult.DUPLICATE
-                ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS
-                : DispatchResult.REJECTED;
+        if (result != GatewayIngressBuffer.WriteResult.STORED && result != GatewayIngressBuffer.WriteResult.DUPLICATE) {
+            return DispatchResult.REJECTED;
+        }
+        return appendActiveSafetyAlarms(session, report, ingress, gatewayReceivedAt)
+                ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS : DispatchResult.REJECTED;
     }
 
     public long unknownMessageCount() {
         return unknownMessageCount.get();
+    }
+
+    private boolean appendActiveSafetyAlarms(
+            TerminalSession session, LocationReport report, CanonicalPositionIngress position, Instant gatewayReceivedAt) {
+        if (gatewayBuffer == null) {
+            return true;
+        }
+        ActiveSafetyAlarmRouter.Result decoded = activeSafetyAlarmRouter.route(
+                session, report, gatewayReceivedAt, idempotencyKeyFor(position));
+        for (int index = 0; index < decoded.rejections().size(); index++) {
+            ActiveSafetyAlarmRouter.Rejection rejection = decoded.rejections().get(index);
+            CanonicalProtocolAudit audit = new CanonicalProtocolAudit(
+                    session.terminalId(), session.vehicleId(), rejection.reasonCode(),
+                    position.protocolVersion(), LOCATION_REPORT_MESSAGE_ID, position.payloadDigest());
+            try {
+                GatewayIngressBuffer.WriteResult result = gatewayBuffer.append(new GatewayIngressEnvelope(
+                        1, idempotencyKeyFor(audit, position, index), IngressKind.PROTOCOL_AUDIT,
+                        gatewayReceivedAt, objectMapper.writeValueAsString(audit)));
+                if (result != GatewayIngressBuffer.WriteResult.STORED
+                        && result != GatewayIngressBuffer.WriteResult.DUPLICATE) {
+                    return false;
+                }
+            } catch (JsonProcessingException serializationFailure) {
+                return false;
+            }
+        }
+        for (CanonicalVehicleAlarm alarm : decoded.alarms()) {
+            try {
+                GatewayIngressBuffer.WriteResult result = gatewayBuffer.append(new GatewayIngressEnvelope(
+                        1, idempotencyKeyFor(alarm, position), IngressKind.ALARM, gatewayReceivedAt,
+                        objectMapper.writeValueAsString(alarm)), idempotencyKeyFor(position));
+                if (result != GatewayIngressBuffer.WriteResult.STORED && result != GatewayIngressBuffer.WriteResult.DUPLICATE) {
+                    return false;
+                }
+            } catch (JsonProcessingException serializationFailure) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static GatewayIngressBuffer.WriteResult appendToGatewayBuffer(
@@ -140,6 +193,20 @@ public final class ProtocolModuleRegistry {
                 Integer.toString(position.messageSerialNo()),
                 position.terminalLocatedAt().toString(),
                 position.payloadDigest());
+        return UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8));
+    }
+
+    public static UUID idempotencyKeyFor(CanonicalVehicleAlarm alarm, CanonicalPositionIngress position) {
+        String material = String.join("|", alarm.terminalId().toString(), alarm.standard(), alarm.module(),
+                Long.toUnsignedString(alarm.terminalAlarmId()), Integer.toString(alarm.typeCode()),
+                alarm.terminalAlarmIdentifier(),
+                alarm.occurredAt().toString(), alarm.extensionPayloadDigest());
+        return UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static UUID idempotencyKeyFor(CanonicalProtocolAudit audit, CanonicalPositionIngress position, int ordinal) {
+        String material = String.join("|", idempotencyKeyFor(position).toString(), audit.reasonCode(),
+                Integer.toString(audit.messageId()), Integer.toString(ordinal));
         return UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8));
     }
 

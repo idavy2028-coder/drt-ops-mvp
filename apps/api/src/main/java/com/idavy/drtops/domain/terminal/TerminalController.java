@@ -55,6 +55,17 @@ public class TerminalController {
                 terminalCode, request.vehicleId(), request.expectedVersion(), request.reason(), actorId(authentication))));
     }
 
+    @PostMapping("/{terminalCode}/capabilities")
+    ApiResponse<CapabilityProfileView> configureCapabilities(
+            @PathVariable String terminalCode,
+            Authentication authentication,
+            @Valid @RequestBody CapabilityProfileRequest request) {
+        JtTerminal terminal = service.configureCapabilities(
+                terminalCode, request.expectedVersion(), request.activeSafetyStandard(),
+                request.activeSafetyModules(), request.jt1078Enabled(), request.reason(), actorId(authentication));
+        return ApiResponse.ok(CapabilityProfileView.from(terminal));
+    }
+
     @PostMapping("/{terminalCode}/activate")
     ApiResponse<TerminalView> activate(
             @PathVariable String terminalCode,
@@ -141,6 +152,27 @@ public class TerminalController {
 
     public record BindRequest(
             @NotNull UUID vehicleId, @NotNull Long expectedVersion, @NotBlank @Size(max = 300) String reason) {
+    }
+
+    public record CapabilityProfileRequest(
+            @NotNull Long expectedVersion,
+            @Size(max = 40) String activeSafetyStandard,
+            @Size(max = 2) List<@NotBlank @Size(max = 20) String> activeSafetyModules,
+            boolean jt1078Enabled,
+            @NotBlank @Size(max = 300) String reason) {
+    }
+
+    public record CapabilityProfileView(
+            String activeSafetyStandard,
+            List<String> activeSafetyModules,
+            boolean jt1078Enabled,
+            long version) {
+        static CapabilityProfileView from(JtTerminal terminal) {
+            return new CapabilityProfileView(
+                    terminal.getActiveSafetyStandard(),
+                    TerminalDetailView.parseModules(terminal.getActiveSafetyModules()),
+                    terminal.isJt1078Enabled(), terminal.getVersion());
+        }
     }
 
     public record ReplaceRequest(

@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -18,6 +19,8 @@ public final class TerminalSession {
     private UUID vehicleId;
     private String sourceCoordinateSystem;
     private int tokenVersion;
+    private String activeSafetyStandard;
+    private List<String> activeSafetyModules = List.of();
     private String terminalAlias = "unknown";
     private byte[] terminalIdentityDigest;
     private int authenticationFailures;
@@ -48,6 +51,16 @@ public final class TerminalSession {
         int visible = Math.min(4, identity.length());
         this.terminalAlias = "****" + identity.substring(identity.length() - visible);
     }
+
+    /** Compatibility overload: capability facts are frozen with the accepted vehicle binding. */
+    public void registrationAccepted(
+            UUID terminalId, UUID vehicleId, String sourceCoordinateSystem, int tokenVersion, String terminalIdentity,
+            String activeSafetyStandard, List<String> activeSafetyModules) {
+        registrationAccepted(terminalId, vehicleId, sourceCoordinateSystem, tokenVersion, terminalIdentity);
+        this.activeSafetyStandard = activeSafetyStandard;
+        this.activeSafetyModules = activeSafetyModules == null ? List.of() : List.copyOf(activeSafetyModules);
+    }
+
 
     public void authenticated(Instant at) {
         requireState(TerminalSessionState.CONNECTED_UNAUTHENTICATED);
@@ -109,6 +122,11 @@ public final class TerminalSession {
     public int tokenVersion() {
         return tokenVersion;
     }
+
+    public String activeSafetyStandard() { return activeSafetyStandard; }
+
+    public List<String> activeSafetyModules() { return activeSafetyModules; }
+
 
     public String terminalAlias() {
         return terminalAlias;

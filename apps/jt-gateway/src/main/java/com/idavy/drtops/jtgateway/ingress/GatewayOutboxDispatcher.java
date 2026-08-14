@@ -41,9 +41,15 @@ public final class GatewayOutboxDispatcher {
     }
 
     public synchronized DispatchReport dispatchOnce() {
+        Instant dependencyClaimAt = clock.instant();
+        DispatchReport report = deliver(repository.claimHighPriorityDependencies(
+                dependencyClaimAt, MAX_URGENT_BATCH));
+        if (report.attempted() != report.delivered()) {
+            return report;
+        }
         Instant urgentClaimAt = clock.instant();
-        DispatchReport report = deliver(repository.claimEligible(
-                urgentClaimAt, GatewayOutboxRepository.Priority.HIGH, MAX_URGENT_BATCH));
+        report = report.plus(deliver(repository.claimEligible(
+                urgentClaimAt, GatewayOutboxRepository.Priority.HIGH, MAX_URGENT_BATCH)));
         Instant locationClaimAt = clock.instant();
         List<GatewayOutboxRepository.OutboxEntry> locations = repository.claimEligible(
                 locationClaimAt, GatewayOutboxRepository.Priority.LOCATION, MAX_LOCATION_BATCH);
