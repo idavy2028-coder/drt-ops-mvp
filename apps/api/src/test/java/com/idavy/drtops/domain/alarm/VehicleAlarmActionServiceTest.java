@@ -207,6 +207,14 @@ class VehicleAlarmActionServiceTest {
     }
 
     @Test
+    void reportsMissingAlarmsWithAStableDomainException() {
+        assertThatThrownBy(() -> service.transition(
+                UUID.randomUUID(), 0, ACTOR_ID, VehicleAlarm.ProcessingStatus.ACKNOWLEDGED, "未找到报警"))
+                .isInstanceOf(VehicleAlarmNotFoundException.class)
+                .hasMessage("vehicle alarm not found");
+    }
+
+    @Test
     void mapsAFlushTimeOptimisticLockRaceToAStableVersionConflictAndRollsBackLosingSideEffects() throws Exception {
         VehicleAlarm resolved = assertTransition(
                 assertTransition(saveNewAlarm(), ACTOR_ID, VehicleAlarm.ProcessingStatus.ACKNOWLEDGED),

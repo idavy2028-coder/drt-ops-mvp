@@ -8,11 +8,9 @@ import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import org.springframework.http.HttpStatus;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class VehicleAlarmActionService {
@@ -47,7 +45,7 @@ public class VehicleAlarmActionService {
             throw new VehicleAlarmAuthorizationException("vehicle alarm handling is forbidden");
         }
         VehicleAlarm alarm = alarms.findById(alarmId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "vehicle alarm not found"));
+                .orElseThrow(() -> new VehicleAlarmNotFoundException("vehicle alarm not found"));
         if (alarm.getVersion() != expectedVersion) {
             throw new VehicleAlarmVersionConflictException("vehicle alarm version conflict");
         }

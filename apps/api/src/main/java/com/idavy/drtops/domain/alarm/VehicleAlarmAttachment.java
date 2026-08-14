@@ -12,17 +12,19 @@ import java.util.UUID;
 @Entity
 @Table(name = "vehicle_alarm_attachments")
 public class VehicleAlarmAttachment {
-    @Id private UUID id;
+    @Id @Column(name = "id", nullable = false) private UUID id;
     @Column(name = "vehicle_alarm_id", nullable = false) private UUID vehicleAlarmId;
-    @Column(nullable = false) private String attachmentType;
-    @Column(nullable = false) private String channel;
-    @Column(nullable = false) private String mediaFormat;
-    private String sanitizedFilename;
-    private Long sizeBytes;
-    @Column(length = 64, columnDefinition = "char(64)") private String payloadDigest;
+    @Column(name = "attachment_type", nullable = false, length = 40) private String attachmentType;
+    @Column(name = "channel", nullable = false, length = 40) private String channel;
+    @Column(name = "media_format", nullable = false, length = 40) private String mediaFormat;
+    @Column(name = "sanitized_filename", nullable = true, length = 255) private String sanitizedFilename;
+    @Column(name = "size_bytes", nullable = true) private Long sizeBytes;
+    @Column(name = "payload_digest", nullable = true, length = 64, columnDefinition = "char(64)")
+    private String payloadDigest;
+    @Column(name = "external_media_reference", nullable = true, length = 255)
     private String externalMediaReference;
-    @Enumerated(EnumType.STRING) @Column(nullable = false) private Status status;
-    @Column(nullable = false) private Instant createdAt;
+    @Enumerated(EnumType.STRING) @Column(name = "status", nullable = false, length = 30) private Status status;
+    @Column(name = "created_at", nullable = false) private Instant createdAt;
 
     protected VehicleAlarmAttachment() { }
 

@@ -10,15 +10,15 @@ import java.util.UUID;
 @Entity
 @Table(name = "vehicle_alarm_actions")
 public class VehicleAlarmAction {
-    @Id private UUID id;
+    @Id @Column(name = "id", nullable = false) private UUID id;
     @Column(name = "vehicle_alarm_id", nullable = false) private UUID vehicleAlarmId;
-    @Column(nullable = false) private String actionType;
-    @Column private String fromStatus;
-    @Column private String toStatus;
-    @Column private String reason;
-    @Column(name = "actor_id") private UUID actorId;
-    @Column(nullable = false) private Instant occurredAt;
-    @Column(nullable = false) private Instant createdAt;
+    @Column(name = "action_type", nullable = false, length = 40) private String actionType;
+    @Column(name = "from_status", nullable = true, length = 20) private String fromStatus;
+    @Column(name = "to_status", nullable = true, length = 20) private String toStatus;
+    @Column(name = "reason", nullable = true, length = 500) private String reason;
+    @Column(name = "actor_id", nullable = true) private UUID actorId;
+    @Column(name = "occurred_at", nullable = false) private Instant occurredAt;
+    @Column(name = "created_at", nullable = false) private Instant createdAt;
 
     protected VehicleAlarmAction() { }
 
