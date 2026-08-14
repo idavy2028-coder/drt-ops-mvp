@@ -102,9 +102,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         for (String roleName : roleNames) {
             roles.add(RoleCode.valueOf(roleName));
         }
-        return Permission.permissionsFor(roles).stream()
+        List<SimpleGrantedAuthority> permissions = Permission.permissionsFor(roles).stream()
                 .map(Permission::name)
                 .map(SimpleGrantedAuthority::new)
                 .toList();
+        List<SimpleGrantedAuthority> roleAuthorities = roles.stream()
+                .map(role -> new SimpleGrantedAuthority("ROLE_" + role.name()))
+                .toList();
+        return java.util.stream.Stream.concat(permissions.stream(), roleAuthorities.stream()).toList();
     }
 }

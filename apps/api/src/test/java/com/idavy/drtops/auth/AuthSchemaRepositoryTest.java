@@ -89,13 +89,15 @@ class AuthSchemaRepositoryTest {
                         Permission.ORDER_CREATE,
                         Permission.ORDER_READ,
                         Permission.TASK_READ,
+                        Permission.VEHICLE_ALARM_READ,
                         Permission.METRICS_READ)
                 .doesNotContain(Permission.TASK_EXECUTE);
         assertThat(Permission.permissionsFor(Set.of(RoleCode.AUDITOR)))
                 .containsExactlyInAnyOrder(
                         Permission.AUDIT_READ,
                         Permission.METRICS_READ,
-                        Permission.DECISION_READ);
+                        Permission.DECISION_READ,
+                        Permission.VEHICLE_ALARM_READ);
 
         UserDetails details = userDetailsService.loadUserByUsername("OPERATOR01");
         assertThat(details.getUsername()).isEqualTo("operator01");

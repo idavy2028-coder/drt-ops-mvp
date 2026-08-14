@@ -101,6 +101,9 @@ public class SecurityConfiguration {
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-locations/export.csv").hasAuthority("LOCATION_EXPORT")
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-tasks/**").hasAuthority("TASK_READ")
                         .requestMatchers(HttpMethod.POST, "/api/vehicle-tasks/**").hasAuthority("TASK_EXECUTE")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicle-alarms/**").hasAuthority("VEHICLE_ALARM_READ")
+                        .requestMatchers(HttpMethod.POST, "/api/vehicle-alarms/*/actions")
+                        .hasAuthority("VEHICLE_ALARM_HANDLE")
                         .requestMatchers("/api/dispatch-rule-sets/**").hasAuthority("RULE_MANAGE")
                         .requestMatchers(
                                 "/api/vehicles/**",

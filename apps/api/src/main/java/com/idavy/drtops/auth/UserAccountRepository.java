@@ -18,6 +18,10 @@ public interface UserAccountRepository extends JpaRepository<UserAccount, UUID> 
     @EntityGraph(attributePaths = "roles")
     Optional<UserAccount> findByUsernameIgnoreCase(String username);
 
+    @EntityGraph(attributePaths = "roles")
+    @Query("select account from UserAccount account where account.id = :id")
+    Optional<UserAccount> findWithRolesById(@Param("id") UUID id);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select account from UserAccount account where account.id = :id")
     Optional<UserAccount> findByIdForPasswordChange(@Param("id") UUID id);

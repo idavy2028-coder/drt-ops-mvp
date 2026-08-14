@@ -45,6 +45,8 @@ class P6VehicleAlarmMigrationTest {
                 assertThat(columnExists(connection, "vehicle_alarm_outbox", "status")).isTrue();
                 assertThat(columnExists(connection, "vehicle_alarms", "location_quality_reasons")).isTrue();
                 assertThat(columnExists(connection, "vehicle_alarms", "terminal_alarm_id")).isTrue();
+                assertThat(columnExists(connection, "vehicle_alarms", "public_id")).isTrue();
+                assertThat(indexExists(connection, "uq_vehicle_alarms_public_id")).isTrue();
                 assertThat(indexExists(connection, "uq_vehicle_alarms_open_source_alarm")).isTrue();
                 assertThat(columnExists(connection, "vehicle_alarm_attachments", "channel")).isTrue();
                 assertThat(foreignKeyExists(connection, "vehicle_alarm_outbox", "vehicle_alarm_id", "vehicle_alarms")).isTrue();
@@ -55,6 +57,46 @@ class P6VehicleAlarmMigrationTest {
                 assertOutboxHasRequiredForeignKeyAndStatusBoundary(connection);
             }
         }
+    }
+
+    @Test
+    void upgradesExistingV15AlarmRowsWithIndependentImmutablePublicIds() throws Exception {
+        Assumptions.assumeTrue(Boolean.getBoolean("drt.integration.postgis"));
+        Assumptions.assumeTrue(DockerClientFactory.instance().isDockerAvailable());
+        try (PostgreSQLContainer<?> database = database()) {
+            database.start();
+            Flyway.configure().dataSource(database.getJdbcUrl(), database.getUsername(), database.getPassword())
+                    .locations("classpath:db/migration").target("15").load().migrate();
+            try (Connection connection = DriverManager.getConnection(database.getJdbcUrl(), database.getUsername(), database.getPassword())) {
+                Fixture first = fixture(connection);
+                Fixture second = fixture(connection);
+                insertAlarm(connection, first.alarmId(), first.vehicleId(), first.terminalId(), first.deduplicationKey());
+                insertAlarm(connection, second.alarmId(), second.vehicleId(), second.terminalId(), second.deduplicationKey());
+
+                Flyway.configure().dataSource(database.getJdbcUrl(), database.getUsername(), database.getPassword())
+                        .locations("classpath:db/migration").load().migrate();
+
+                UUID firstPublicId = queryUuid(connection, "select public_id from vehicle_alarms where id = ?", first.alarmId());
+                UUID secondPublicId = queryUuid(connection, "select public_id from vehicle_alarms where id = ?", second.alarmId());
+                assertThat(firstPublicId).isNotEqualTo(first.alarmId()).isNotEqualTo(secondPublicId);
+                assertThat(secondPublicId).isNotEqualTo(second.alarmId());
+                assertThatThrownBy(() -> update(connection,
+                        "update vehicle_alarms set public_id = ? where id = ?", UUID.randomUUID(), first.alarmId()))
+                        .isInstanceOf(SQLException.class);
+                assertThatThrownBy(() -> update(connection,
+                        "update vehicle_alarms set public_id = ? where id = ?", firstPublicId, second.alarmId()))
+                        .isInstanceOf(SQLException.class);
+                assertThat(update(connection,
+                        "update vehicle_alarms set processing_status = 'ACKNOWLEDGED', handled_at = now(), version = version + 1 where id = ?",
+                        first.alarmId())).isEqualTo(1);
+            }
+        }
+    }
+
+    private static PostgreSQLContainer<?> database() {
+        return new PostgreSQLContainer<>(DockerImageName.parse("postgis/postgis:16-3.5")
+                .asCompatibleSubstituteFor("postgres"))
+                .withStartupTimeout(Duration.ofMinutes(5));
     }
 
     private static void assertCanonicalModuleBoundary(Connection connection) throws Exception {
@@ -69,6 +111,8 @@ class P6VehicleAlarmMigrationTest {
     private static void assertFactsAreDeduplicatedAndImmutable(Connection connection) throws Exception {
         Fixture fixture = fixture(connection);
         insertAlarm(connection, fixture.alarmId(), fixture.vehicleId(), fixture.terminalId(), fixture.deduplicationKey());
+        UUID publicId = queryUuid(connection, "select public_id from vehicle_alarms where id = ?", fixture.alarmId());
+        assertThat(publicId).isNotEqualTo(fixture.alarmId());
         assertThatThrownBy(() -> insertAlarm(connection, UUID.randomUUID(), fixture.vehicleId(), fixture.terminalId(), fixture.deduplicationKey()))
                 .isInstanceOf(SQLException.class).hasMessageContaining("duplicate key");
         assertThatThrownBy(() -> update(connection,
@@ -76,6 +120,9 @@ class P6VehicleAlarmMigrationTest {
                 .isInstanceOf(SQLException.class);
         assertThatThrownBy(() -> update(connection,
                 "update vehicle_alarms set terminal_alarm_id = 2 where id = ?", fixture.alarmId()))
+                .isInstanceOf(SQLException.class);
+        assertThatThrownBy(() -> update(connection,
+                "update vehicle_alarms set public_id = ? where id = ?", UUID.randomUUID(), fixture.alarmId()))
                 .isInstanceOf(SQLException.class);
         assertThatThrownBy(() -> update(connection,
                 "update vehicle_alarms set location_quality_reasons = '[\"tampered\"]'::jsonb where id = ?", fixture.alarmId()))
@@ -156,7 +203,8 @@ class P6VehicleAlarmMigrationTest {
     private static void insertAlarm(
             Connection connection, UUID alarmId, UUID vehicleId, UUID terminalId, String deduplicationKey, String module)
             throws SQLException {
-        update(connection, """
+        if (!columnExists(connection, "vehicle_alarms", "public_id")) {
+            update(connection, """
                 insert into vehicle_alarms (
                   id, vehicle_id, terminal_id, standard, module, terminal_alarm_id,
                   alarm_type_code, alarm_type_name_snapshot,
@@ -168,6 +216,20 @@ class P6VehicleAlarmMigrationTest {
                   1, '00000001', 'START', now(), now(), 118.0000000, 32.0000000, 60.00,
                   'GOOD', '[]'::jsonb, 'NEW', repeat('c', 64), ?, 0, now())
                 """, alarmId, vehicleId, terminalId, module, deduplicationKey);
+            return;
+        }
+        update(connection, """
+                insert into vehicle_alarms (
+                  id, public_id, vehicle_id, terminal_id, standard, module, terminal_alarm_id,
+                  alarm_type_code, alarm_type_name_snapshot,
+                  alarm_level, terminal_alarm_identifier, terminal_alarm_state, occurred_at, gateway_received_at,
+                  longitude, latitude, speed_kph, location_quality_status, location_quality_reasons,
+                  processing_status, payload_digest,
+                  deduplication_key, version, created_at)
+                values (?, ?, ?, ?, 'T/JSATL12-2017', ?, 4097, 1, 'FORWARD_COLLISION',
+                  1, '00000001', 'START', now(), now(), 118.0000000, 32.0000000, 60.00,
+                  'GOOD', '[]'::jsonb, 'NEW', repeat('c', 64), ?, 0, now())
+                """, alarmId, UUID.randomUUID(), vehicleId, terminalId, module, deduplicationKey);
     }
 
     private static void insertTransfer(Connection connection, UUID id, UUID attachmentId, String status) throws SQLException {
@@ -187,6 +249,13 @@ class P6VehicleAlarmMigrationTest {
 
     private static UUID queryUuid(Connection connection, String sql) throws SQLException {
         try (var query = connection.prepareStatement(sql); var rows = query.executeQuery()) { rows.next(); return rows.getObject(1, UUID.class); }
+    }
+
+    private static UUID queryUuid(Connection connection, String sql, Object value) throws SQLException {
+        try (var query = connection.prepareStatement(sql)) {
+            query.setObject(1, value);
+            try (var rows = query.executeQuery()) { rows.next(); return rows.getObject(1, UUID.class); }
+        }
     }
 
     private static String queryString(Connection connection, String sql, Object value) throws SQLException {

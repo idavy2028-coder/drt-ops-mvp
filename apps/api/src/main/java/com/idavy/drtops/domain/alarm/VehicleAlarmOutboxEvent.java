@@ -17,6 +17,7 @@ public class VehicleAlarmOutboxEvent {
     @Column(nullable = false) private String eventType;
     @JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false, columnDefinition = "jsonb") private String payload;
     @Column(nullable = false) private String status;
+    @Column(name = "published_at") private Instant publishedAt;
     @Column(nullable = false) private Instant createdAt;
     protected VehicleAlarmOutboxEvent() { }
     static VehicleAlarmOutboxEvent pending(UUID alarmId, String eventType) {
@@ -25,6 +26,10 @@ public class VehicleAlarmOutboxEvent {
         event.payload = "{}"; event.status = "PENDING"; event.createdAt = Instant.now(); return event;
     }
     public UUID getVehicleAlarmId() { return vehicleAlarmId; }
+    public UUID getId() { return id; }
     public String getEventType() { return eventType; }
     public String getStatus() { return status; }
+    public Instant getCreatedAt() { return createdAt; }
+    public Instant getPublishedAt() { return publishedAt; }
+    void markPublished(Instant at) { status = "PUBLISHED"; publishedAt = at; }
 }

@@ -17,6 +17,7 @@ import org.hibernate.type.SqlTypes;
 @Table(name = "vehicle_alarms")
 public class VehicleAlarm {
     @Id private UUID id;
+    @Column(name = "public_id", nullable = false, updatable = false, unique = true) private UUID publicId;
     @Column(nullable = false) private UUID vehicleId;
     @Column(nullable = false) private UUID terminalId;
     @Column(name = "location_event_id") private UUID locationEventId;
@@ -46,7 +47,7 @@ public class VehicleAlarm {
 
     protected VehicleAlarm() { }
     private VehicleAlarm(VehicleAlarmIngressService.AlarmFact fact, String key, AlarmStore.LocationReference location) {
-        id = UUID.randomUUID(); vehicleId = fact.vehicleId(); terminalId = fact.terminalId(); standard = fact.standard();
+        id = UUID.randomUUID(); publicId = UUID.randomUUID(); vehicleId = fact.vehicleId(); terminalId = fact.terminalId(); standard = fact.standard();
         locationEventId = location.eventId();
         module = fact.module(); terminalAlarmId = fact.terminalAlarmId();
         alarmTypeCode = fact.typeCode(); alarmTypeNameSnapshot = fact.alarmType();
@@ -67,6 +68,7 @@ public class VehicleAlarm {
         this.handledAt = handledAt;
     }
     public UUID getId() { return id; }
+    public UUID getPublicId() { return publicId; }
     public String getDeduplicationKey() { return deduplicationKey; }
     public Instant getEndedAt() { return endedAt; }
     public String getTerminalAlarmIdentifier() { return terminalAlarmIdentifier; }
@@ -79,6 +81,9 @@ public class VehicleAlarm {
     public String getModule() { return module; }
     public long getTerminalAlarmId() { return terminalAlarmId; }
     public int getAlarmTypeCode() { return alarmTypeCode; }
+    public String getAlarmTypeNameSnapshot() { return alarmTypeNameSnapshot; }
+    public int getAlarmLevel() { return alarmLevel; }
+    public Instant getOccurredAt() { return occurredAt; }
     public ProcessingStatus getProcessingStatus() { return processingStatus; }
     public UUID getHandledBy() { return handledBy; }
     public Instant getHandledAt() { return handledAt; }
