@@ -225,6 +225,12 @@ describe("DispatchMap", () => {
     outsideBounds.latestLocation.longitude = 181;
     await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 2, locations: [outsideBounds] }));
     expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+
+    const oneSidedNull = latestLocation();
+    oneSidedNull.latestLocation.longitude = null as unknown as number;
+    oneSidedNull.latestLocation.latitude = 32;
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 3, locations: [oneSidedNull] }));
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
   });
 
   it("renders a static high-severity alarm badge without leaking the internal vehicle identity", async () => {

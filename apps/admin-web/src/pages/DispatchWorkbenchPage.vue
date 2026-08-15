@@ -39,7 +39,6 @@ const actionError = ref("");
 const loading = ref(false);
 let locationPollTimer: number | undefined;
 let alarmSubscription: VehicleAlarmEventSubscription | undefined;
-let alarmRevision = 0;
 
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value));
 const activeServiceArea = computed(() => serviceAreas.value.find((area) => area.enabled) ?? serviceAreas.value[0]);
@@ -86,23 +85,26 @@ async function selectTask(taskId: UUID): Promise<void> {
 
 async function loadAlarms(): Promise<void> {
   if (!canReadAlarms.value) return;
-  const revisionAtRequest = alarmRevision;
   try {
     const loaded = await listVehicleAlarms();
-    alarms.value = alarmRevision === revisionAtRequest ? loaded : mergeAlarmSnapshots(loaded, alarms.value);
+    alarms.value = mergeAlarmSnapshots(loaded, alarms.value);
     alarmStatus.value = "";
   }
   catch (error) { alarmStatus.value = userMessage(error, "报警数据加载失败，请稍后刷新"); }
 }
 
 function upsertAlarm(alarm: VehicleAlarmView): void {
-  alarmRevision += 1;
   alarms.value = [alarm, ...alarms.value.filter((existing) => existing.publicId !== alarm.publicId)];
 }
 
-function mergeAlarmSnapshots(snapshot: VehicleAlarmView[], newerInMemory: VehicleAlarmView[]): VehicleAlarmView[] {
-  const newerIds = new Set(newerInMemory.map((alarm) => alarm.publicId));
-  return [...newerInMemory, ...snapshot.filter((alarm) => !newerIds.has(alarm.publicId))];
+function mergeAlarmSnapshots(snapshot: VehicleAlarmView[], inMemory: VehicleAlarmView[]): VehicleAlarmView[] {
+  const inMemoryByPublicId = new Map(inMemory.map((alarm) => [alarm.publicId, alarm]));
+  const snapshotIds = new Set(snapshot.map((alarm) => alarm.publicId));
+  const mergedSnapshot = snapshot.map((alarm) => {
+    const current = inMemoryByPublicId.get(alarm.publicId);
+    return current !== undefined && current.version > alarm.version ? current : alarm;
+  });
+  return [...inMemory.filter((alarm) => !snapshotIds.has(alarm.publicId)), ...mergedSnapshot];
 }
 
 function startAlarmStream(): void {

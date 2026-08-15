@@ -157,8 +157,8 @@ function focusSelectedVehicle(): void {
   if (!tileMap.value || !props.selectedVehicleId) return;
   const item = props.locations.find((location) => location.vehicleId === props.selectedVehicleId);
   if (!item) return;
+  if (!hasSafeVehicleCoordinates(item.latestLocation.longitude, item.latestLocation.latitude)) return;
   const point = { longitude: Number(item.latestLocation.longitude), latitude: Number(item.latestLocation.latitude) };
-  if (!hasSafeVehicleCoordinates(point)) return;
   tileMap.value.focusPoint(point);
   vehicleMarkers.get(item.vehicleId)?.openPopup();
 }
@@ -184,7 +184,9 @@ function hasFiniteCoordinates(point: { longitude: number; latitude: number }): b
   return Number.isFinite(point.longitude) && Number.isFinite(point.latitude);
 }
 
-function hasSafeVehicleCoordinates(point: { longitude: number; latitude: number }): boolean {
+function hasSafeVehicleCoordinates(longitudeValue: unknown, latitudeValue: unknown): boolean {
+  if (longitudeValue === null || longitudeValue === undefined || latitudeValue === null || latitudeValue === undefined) return false;
+  const point = { longitude: Number(longitudeValue), latitude: Number(latitudeValue) };
   return hasFiniteCoordinates(point)
     && point.longitude >= -180 && point.longitude <= 180
     && point.latitude >= -90 && point.latitude <= 90

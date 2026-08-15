@@ -253,6 +253,30 @@ describe("DispatchWorkbenchPage", () => {
 
     await waitFor(() => expect(latestBoardAlarms().map((item) => item.publicId)).toEqual(expect.arrayContaining(["alarm-trusted", "alarm-streamed"])));
   });
+
+  it("merges each refreshed alarm by public id and version while retaining newer streamed alarms", async () => {
+    const olderA = alarm("alarm-a", { status: "NEW", version: 1 });
+    const olderB = alarm("alarm-b", { status: "NEW", version: 1 });
+    const refreshed = deferred<VehicleAlarmView[]>();
+    const newerA = alarm("alarm-a", { status: "ACKNOWLEDGED", version: 2 });
+    const newerB = alarm("alarm-b", { status: "TAKEN_OVER", version: 2 });
+    const streamedC = alarm("alarm-c", { status: "NEW", version: 1 });
+    alarmApi.listVehicleAlarms.mockResolvedValueOnce([olderA, olderB]).mockReturnValueOnce(refreshed.promise);
+    alarmApi.getVehicleAlarm.mockResolvedValueOnce(newerB).mockResolvedValueOnce(streamedC);
+    render(DispatchWorkbenchPage);
+    await waitFor(() => expect(latestBoardAlarms()).toEqual([olderA, olderB]));
+
+    alarmStream.handlers?.onResyncRequired?.();
+    await waitFor(() => expect(alarmApi.listVehicleAlarms).toHaveBeenCalledTimes(2));
+    alarmStream.handlers?.onVehicleAlarm?.({ publicId: newerB.publicId, type: "ALARM_UPDATED", status: newerB.status, level: newerB.level, module: newerB.module, occurredAt: newerB.occurredAt });
+    await waitFor(() => expect(latestBoardAlarms()).toEqual(expect.arrayContaining([newerB])));
+    alarmStream.handlers?.onVehicleAlarm?.({ publicId: streamedC.publicId, type: "ALARM_CREATED", status: streamedC.status, level: streamedC.level, module: streamedC.module, occurredAt: streamedC.occurredAt });
+    await waitFor(() => expect(latestBoardAlarms()).toEqual(expect.arrayContaining([streamedC])));
+
+    refreshed.resolve([newerA, olderB]);
+
+    await waitFor(() => expect(latestBoardAlarms()).toEqual(expect.arrayContaining([newerA, newerB, streamedC])));
+  });
 });
 
 function latestLocation(overrides: { currentStatus?: string; driverReportedAt?: string; longitude?: number; latitude?: number } = {}) {
