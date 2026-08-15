@@ -95,6 +95,9 @@ public class VehicleAlarm {
     public String getAlarmTypeNameSnapshot() { return alarmTypeNameSnapshot; }
     public int getAlarmLevel() { return alarmLevel; }
     public Instant getOccurredAt() { return occurredAt; }
+    public BigDecimal getLongitude() { return longitude; }
+    public BigDecimal getLatitude() { return latitude; }
+    public BigDecimal getSpeedKph() { return speedKph; }
     public ProcessingStatus getProcessingStatus() { return processingStatus; }
     public UUID getHandledBy() { return handledBy; }
     public Instant getHandledAt() { return handledAt; }

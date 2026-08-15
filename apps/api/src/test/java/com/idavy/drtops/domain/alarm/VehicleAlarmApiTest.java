@@ -11,6 +11,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.idavy.drtops.auth.Permission;
 import com.idavy.drtops.auth.RoleCode;
+import com.idavy.drtops.domain.fleet.Vehicle;
+import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.jayway.jsonpath.JsonPath;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -36,6 +38,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class VehicleAlarmApiTest {
 
     private static final UUID ACTOR_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
 
     @Autowired
     MockMvc mockMvc;
@@ -49,11 +52,17 @@ class VehicleAlarmApiTest {
     @Autowired
     VehicleAlarmOutboxRepository outbox;
 
+    @Autowired
+    VehicleRepository vehicles;
+
     @BeforeEach
     void reset() {
         actions.deleteAll();
         outbox.deleteAll();
         alarms.deleteAll();
+        vehicles.deleteAll();
+        vehicles.saveAndFlush(Vehicle.create(VEHICLE_ID, "甘G·A1001", "小型客车", 8,
+                "IN_SERVICE", "POINT(118 32)", "通渭试点车队", true));
         alarms.saveAndFlush(alarm("ADAS", "FORWARD_COLLISION", 1,
                 Instant.parse("2026-08-14T10:00:00Z")));
         alarms.saveAndFlush(alarm("DMS", "FATIGUE", 2,
@@ -73,6 +82,21 @@ class VehicleAlarmApiTest {
                 .andExpect(jsonPath("$.data[0]", not(hasKey("terminalAlarmIdentifier"))))
                 .andExpect(jsonPath("$.data[0]", not(hasKey("payloadDigest"))))
                 .andExpect(jsonPath("$.data[0]", not(hasKey("deduplicationKey"))));
+    }
+
+    @Test
+    void exposesOnlyTheApprovedAlarmDisplayFieldsForTheAuthorizedDispatchConsole() throws Exception {
+        mockMvc.perform(get("/api/vehicle-alarms?module=ADAS")
+                        .with(user(ACTOR_ID.toString()).authorities(authorities(RoleCode.DISPATCHER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].plateNumber").value("甘G·A1001"))
+                .andExpect(jsonPath("$.data[0].longitude").value(118.0))
+                .andExpect(jsonPath("$.data[0].latitude").value(32.0))
+                .andExpect(jsonPath("$.data[0].speedKph").value(60.0))
+                .andExpect(jsonPath("$.data[0]", not(hasKey("id"))))
+                .andExpect(jsonPath("$.data[0]", not(hasKey("terminalId"))))
+                .andExpect(jsonPath("$.data[0]", not(hasKey("payloadDigest"))))
+                .andExpect(jsonPath("$.data[0]", not(hasKey("terminalAlarmIdentifier"))));
     }
 
     @Test
@@ -212,7 +236,7 @@ class VehicleAlarmApiTest {
 
     private static VehicleAlarm alarm(String module, String type, int typeCode, Instant occurredAt) {
         VehicleAlarmIngressService.AlarmFact fact = new VehicleAlarmIngressService.AlarmFact(
-                UUID.randomUUID(), UUID.randomUUID(), "T/JSATL12-2017", module, typeCode, type,
+                UUID.randomUUID(), VEHICLE_ID, "T/JSATL12-2017", module, typeCode, type,
                 typeCode, "START", 1, "ALARM-" + typeCode, occurredAt, occurredAt.plusSeconds(1),
                 new BigDecimal("118.0000000"), new BigDecimal("32.0000000"), new BigDecimal("60.00"),
                 UUID.randomUUID(), "UNASSESSED", "a".repeat(64));

@@ -14,6 +14,7 @@ const props = withDefaults(defineProps<{
   selectedTask?: VehicleTask;
   selectedVehicleId?: string;
   vehicleFocusRequest?: number;
+  alarmVehicleIds?: string[];
 }>(), {
   serviceArea: undefined,
   stops: () => [],
@@ -21,7 +22,8 @@ const props = withDefaults(defineProps<{
   eventChain: () => [],
   selectedTask: undefined,
   selectedVehicleId: undefined,
-  vehicleFocusRequest: 0
+  vehicleFocusRequest: 0,
+  alarmVehicleIds: () => []
 });
 
 const emit = defineEmits<{
@@ -62,7 +64,7 @@ onBeforeUnmount(() => {
   clearRenderedLayers();
   tileMap.value?.destroy();
 });
-watch([() => props.serviceArea, () => props.stops, () => props.locations, () => props.eventChain, () => props.selectedTask, layers], () => renderMapLayers(), { deep: true });
+watch([() => props.serviceArea, () => props.stops, () => props.locations, () => props.eventChain, () => props.selectedTask, () => props.alarmVehicleIds, layers], () => renderMapLayers(), { deep: true });
 watch(() => props.vehicleFocusRequest, () => focusSelectedVehicle(), { flush: "post" });
 
 async function initializeMap(): Promise<void> {
@@ -107,11 +109,12 @@ function renderMapLayers(): void {
   if (layers.value.locations) {
     props.locations.filter((item) => hasFiniteCoordinates({ longitude: Number(item.latestLocation.longitude), latitude: Number(item.latestLocation.latitude) })).forEach((item) => {
       const location = item.latestLocation;
+      const hasSafetyAlarm = props.alarmVehicleIds.includes(item.vehicleId);
       const marker = L.marker(toLeafletLatLng({ longitude: Number(location.longitude), latitude: Number(location.latitude) }), {
         title: item.plateNumber,
         icon: L.divIcon({
-          className: `dispatch-vehicle-marker ${vehicleStatusClass(item)}`,
-          html: '<span class="vehicle-marker-pin"><span aria-hidden="true">车</span></span>',
+          className: `dispatch-vehicle-marker ${vehicleStatusClass(item)}${hasSafetyAlarm ? " has-safety-alarm" : ""}`,
+          html: `<span class="vehicle-marker-pin"><span aria-hidden="true">车</span></span>${hasSafetyAlarm ? '<span class="vehicle-alarm-badge" aria-label="高等级安全报警">!</span>' : ""}`,
           iconSize: [36, 36],
           iconAnchor: [18, 18],
           popupAnchor: [0, -18]
@@ -265,6 +268,7 @@ function formatDateTime(value?: string): string {
 :deep(.dispatch-vehicle-marker.is-idle .vehicle-marker-pin) { background: #16885d; }
 :deep(.dispatch-vehicle-marker.is-active .vehicle-marker-pin) { background: #1774c9; }
 :deep(.dispatch-vehicle-marker.is-alert .vehicle-marker-pin) { background: #d4473f; }
+:deep(.vehicle-alarm-badge) { align-items: center; background: #a83a27; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 2px 5px #17201c42; color: #fff; display: flex; font: 900 11px/1 Arial, sans-serif; height: 16px; justify-content: center; position: absolute; right: -1px; top: -1px; width: 16px; }
 :deep(.dispatch-vehicle-popup) { min-width: 180px; }
 :deep(.dispatch-vehicle-popup strong) { color: #17201c; display: block; font-size: 15px; margin-bottom: 8px; }
 :deep(.dispatch-vehicle-popup dl) { display: grid; gap: 5px; margin: 0; }

@@ -2,8 +2,13 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { authStore } from "../auth/authStore";
+import type { VehicleAlarmEventHandlers } from "../api/alarmEvents";
 
 const dispatchMap = vi.hoisted(() => ({ receivedProps: [] as Array<Record<string, unknown>> }));
+const alarmBoard = vi.hoisted(() => ({ receivedProps: [] as Array<Record<string, unknown>> }));
+const alarmApi = vi.hoisted(() => ({ listVehicleAlarms: vi.fn(), getVehicleAlarm: vi.fn(), submitVehicleAlarmAction: vi.fn() }));
+const alarmStream = vi.hoisted(() => ({ handlers: undefined as VehicleAlarmEventHandlers | undefined, close: vi.fn(), subscribeVehicleAlarmEvents: vi.fn() }));
 const orderApi = vi.hoisted(() => ({ listOrders: vi.fn() }));
 const taskApi = vi.hoisted(() => ({ listTasks: vi.fn() }));
 const manualReviewApi = vi.hoisted(() => ({ listManualReviews: vi.fn(), approveManualReview: vi.fn(), rejectManualReview: vi.fn() }));
@@ -15,7 +20,7 @@ vi.mock("../components/DispatchMap.vue", async () => {
   return {
     default: defineComponent({
       name: "DispatchMapStub",
-      props: ["serviceArea", "stops", "locations", "eventChain", "selectedTask", "selectedVehicleId", "vehicleFocusRequest"],
+      props: ["serviceArea", "stops", "locations", "eventChain", "selectedTask", "selectedVehicleId", "vehicleFocusRequest", "alarmVehicleIds"],
       emits: ["selectVehicle"],
       setup(props, { emit }) {
         dispatchMap.receivedProps.push(props as Record<string, unknown>);
@@ -27,11 +32,31 @@ vi.mock("../components/DispatchMap.vue", async () => {
     })
   };
 });
+vi.mock("../components/AlarmBoard.vue", async () => {
+  const { defineComponent, h } = await import("vue");
+  return {
+    default: defineComponent({
+      name: "AlarmBoardStub",
+      props: ["alarms", "canHandle"],
+      emits: ["selectAlarm", "action"],
+      setup(props, { emit }) {
+        alarmBoard.receivedProps.push(props as Record<string, unknown>);
+        return () => h("section", { "aria-label": "主动安全报警看板" }, [
+          h("button", { type: "button", onClick: () => emit("selectAlarm", alarm("alarm-trusted")) }, "选择可信报警"),
+          h("button", { type: "button", onClick: () => emit("selectAlarm", alarm("alarm-quarantined")) }, "选择可疑报警"),
+          h("button", { type: "button", onClick: () => emit("action", { publicId: "alarm-trusted", action: "ACKNOWLEDGE", expectedVersion: 4, reason: "已核实", confirmed: true }) }, "提交报警处理")
+        ]);
+      }
+    })
+  };
+});
 vi.mock("../api/orders", () => orderApi);
 vi.mock("../api/tasks", () => taskApi);
 vi.mock("../api/manualReviews", () => manualReviewApi);
 vi.mock("../api/vehicleLocations", () => vehicleLocationApi);
 vi.mock("../api/resources", () => resourceApi);
+vi.mock("../api/vehicleAlarms", () => alarmApi);
+vi.mock("../api/alarmEvents", () => ({ subscribeVehicleAlarmEvents: alarmStream.subscribeVehicleAlarmEvents }));
 
 import DispatchWorkbenchPage from "./DispatchWorkbenchPage.vue";
 
@@ -47,10 +72,17 @@ beforeEach(() => {
   vehicleLocationApi.listVehicleLocationEvents.mockResolvedValue([]);
   resourceApi.listServiceAreas.mockResolvedValue([]);
   resourceApi.listVirtualStops.mockResolvedValue([]);
+  alarmApi.listVehicleAlarms.mockResolvedValue([alarm("alarm-trusted"), alarm("alarm-quarantined")]);
+  alarmApi.getVehicleAlarm.mockResolvedValue(alarm("alarm-streamed"));
+  alarmApi.submitVehicleAlarmAction.mockResolvedValue(alarm("alarm-trusted", { status: "ACKNOWLEDGED", version: 5 }));
+  alarmStream.subscribeVehicleAlarmEvents.mockImplementation((handlers: VehicleAlarmEventHandlers) => { alarmStream.handlers = handlers; return { close: alarmStream.close }; });
   dispatchMap.receivedProps.length = 0;
+  alarmBoard.receivedProps.length = 0;
+  alarmStream.handlers = undefined;
+  authStore.setSessionForTest({ accessToken: "dispatch-token", user: { id: "dispatcher-1", username: "dispatcher", roles: ["DISPATCHER"], mustChangePassword: false } });
 });
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); });
+afterEach(() => { cleanup(); authStore.clearSessionForTest(); vi.clearAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe("DispatchWorkbenchPage", () => {
   it("renders workbench regions and passes operational map data", async () => {
@@ -105,17 +137,17 @@ describe("DispatchWorkbenchPage", () => {
     vehicleLocationApi.listLatestVehicleLocations.mockResolvedValueOnce([latestLocation()]).mockRejectedValueOnce(new Error("位置服务暂不可用"));
     render(DispatchWorkbenchPage);
     await vi.runAllTicks();
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1]).toEqual(expect.objectContaining({ locations: [latestLocation()] }));
     expect(screen.getByText(/已保留上次快照/)).toBeInTheDocument();
   });
 
-  it("clears the fifteen-second polling timer after unmount", async () => {
+  it("clears the ten-second polling timer after unmount", async () => {
     vi.useFakeTimers();
     const clearIntervalSpy = vi.spyOn(window, "clearInterval");
     const { unmount } = render(DispatchWorkbenchPage);
     await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(vehicleLocationApi.listLatestVehicleLocations).toHaveBeenCalledTimes(2);
     unmount();
     expect(clearIntervalSpy).toHaveBeenCalled();
@@ -154,8 +186,38 @@ describe("DispatchWorkbenchPage", () => {
     expect(await screen.findByText("人工拒绝失败")).toBeInTheDocument();
     expect(screen.getByText("张三")).toBeInTheDocument();
   });
+
+  it("links authorized alarm selection to the vehicle map, avoids untrusted focus, and reports SSE degradation", async () => {
+    render(DispatchWorkbenchPage);
+    await waitFor(() => expect(alarmApi.listVehicleAlarms).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText("主动安全报警看板")).toBeInTheDocument();
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1].alarmVehicleIds).toEqual(["vehicle-1", "vehicle-2"]));
+
+    await fireEvent.click(screen.getByRole("button", { name: "选择可信报警" }));
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1]).toEqual(expect.objectContaining({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 1 })));
+    await fireEvent.click(screen.getByRole("button", { name: "选择可疑报警" }));
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1]).toEqual(expect.objectContaining({ selectedVehicleId: "vehicle-2", vehicleFocusRequest: 1 })));
+
+    alarmStream.handlers?.onDegradedChange?.(true);
+    expect(await screen.findByText("实时推送已降级")).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "提交报警处理" }));
+    await waitFor(() => expect(alarmApi.submitVehicleAlarmAction).toHaveBeenCalledWith("alarm-trusted", {
+      action: "ACKNOWLEDGE", expectedVersion: 4, reason: "已核实", confirmed: true
+    }));
+  });
 });
 
 function latestLocation(overrides: { currentStatus?: string; driverReportedAt?: string } = {}) {
   return { vehicleId: "vehicle-1", plateNumber: "甘G-T001", currentStatus: overrides.currentStatus ?? "IN_SERVICE", latestLocation: { longitude: 104.6378, latitude: 35.2109, standardizedAddress: "通渭县客运中心", source: "MANUAL_DISPATCHER", coordinateSystem: "GCJ02", driverReportedAt: overrides.driverReportedAt ?? "2026-07-13T00:33:00Z", recordedAt: "2026-07-13T00:35:00Z", eventId: "loc-1", vehicleTaskId: "task-1" } };
+}
+
+function alarm(publicId: string, overrides: { status?: string; version?: number } = {}) {
+  const quarantined = publicId === "alarm-quarantined";
+  return {
+    publicId, vehicleId: quarantined ? "vehicle-2" : "vehicle-1", plateNumber: quarantined ? "甘G·A1002" : "甘G·A1001",
+    standard: "T/JSATL12-2017", module: "ADAS", alarmTypeCode: 1, alarmType: "前向碰撞", level: 3,
+    status: overrides.status ?? "NEW", occurredAt: "2026-08-15T02:00:00Z", endedAt: null,
+    locationQualityStatus: quarantined ? "QUARANTINED" : "GOOD", hasAttachment: false, version: overrides.version ?? 4,
+    longitude: quarantined ? 0 : 118, latitude: quarantined ? 0 : 32, speedKph: 60
+  };
 }

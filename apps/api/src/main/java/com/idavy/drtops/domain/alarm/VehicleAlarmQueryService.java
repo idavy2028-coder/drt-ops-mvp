@@ -1,5 +1,7 @@
 package com.idavy.drtops.domain.alarm;
 
+import com.idavy.drtops.domain.fleet.VehicleRepository;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -13,14 +15,17 @@ import org.springframework.stereotype.Service;
 public class VehicleAlarmQueryService {
     private final VehicleAlarmRepository alarms;
     private final VehicleAlarmAttachmentRepository attachments;
+    private final VehicleRepository vehicles;
     private final VehicleAlarmAuthorization authorization;
 
     VehicleAlarmQueryService(
             VehicleAlarmRepository alarms,
             VehicleAlarmAttachmentRepository attachments,
+            VehicleRepository vehicles,
             VehicleAlarmAuthorization authorization) {
         this.alarms = Objects.requireNonNull(alarms);
         this.attachments = Objects.requireNonNull(attachments);
+        this.vehicles = Objects.requireNonNull(vehicles);
         this.authorization = Objects.requireNonNull(authorization);
     }
 
@@ -53,7 +58,9 @@ public class VehicleAlarmQueryService {
                 alarm.getPublicId(), alarm.getVehicleId(), alarm.getStandard(), alarm.getModule(),
                 alarm.getAlarmTypeCode(), alarm.getAlarmTypeNameSnapshot(), alarm.getAlarmLevel(),
                 alarm.getProcessingStatus().name(), alarm.getOccurredAt(), alarm.getEndedAt(),
-                alarm.getLocationQualityStatus(), attachments.existsByVehicleAlarmId(alarm.getId()), alarm.getVersion());
+                alarm.getLocationQualityStatus(), attachments.existsByVehicleAlarmId(alarm.getId()), alarm.getVersion(),
+                vehicles.findById(alarm.getVehicleId()).map(vehicle -> vehicle.getPlateNumber()).orElse(null),
+                alarm.getLongitude(), alarm.getLatitude(), alarm.getSpeedKph());
     }
 
     private void requireRead(UUID actorId) {
@@ -108,6 +115,10 @@ public class VehicleAlarmQueryService {
             Instant endedAt,
             String locationQualityStatus,
             boolean hasAttachment,
-            long version) {
+            long version,
+            String plateNumber,
+            BigDecimal longitude,
+            BigDecimal latitude,
+            BigDecimal speedKph) {
     }
 }

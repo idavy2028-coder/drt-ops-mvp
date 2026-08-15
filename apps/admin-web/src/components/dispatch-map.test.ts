@@ -211,6 +211,16 @@ describe("DispatchMap", () => {
     await waitFor(() => expect(tileMapRuntime.handle.focusPoint).toHaveBeenCalledWith({ longitude: 104.6401, latitude: 35.2109 }));
   });
 
+  it("renders a static high-severity alarm badge without leaking the internal vehicle identity", async () => {
+    renderMap({ alarmVehicleIds: ["vehicle-1"] });
+    await waitFor(() => expect(leaflet.divIcon).toHaveBeenCalled());
+
+    const vehicleIcon = leaflet.divIcon.mock.calls[leaflet.divIcon.mock.calls.length - 1]?.[0] as { className: string; html: string };
+    expect(vehicleIcon.className).toContain("has-safety-alarm");
+    expect(vehicleIcon.html).toContain("vehicle-alarm-badge");
+    expect(vehicleIcon.html).not.toContain("vehicle-1");
+  });
+
   it("invalidates the Leaflet canvas when the map container changes size", async () => {
     renderMap();
     await waitFor(() => expect(tileMapRuntime.createTileMap).toHaveBeenCalled());
@@ -233,19 +243,20 @@ describe("DispatchMap", () => {
   });
 });
 
-function renderMap(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number } = {}) {
+function renderMap(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; alarmVehicleIds?: string[] } = {}) {
   return render(DispatchMap, {
     props: mapProps(overrides)
   });
 }
 
-function mapProps(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; locations?: VehicleLocationSnapshotItem[] } = {}) {
+function mapProps(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; locations?: VehicleLocationSnapshotItem[]; alarmVehicleIds?: string[] } = {}) {
   return {
     serviceArea,
     stops,
     locations: overrides.locations ?? [latestLocation()],
     selectedVehicleId: overrides.selectedVehicleId,
     vehicleFocusRequest: overrides.vehicleFocusRequest,
+    alarmVehicleIds: overrides.alarmVehicleIds,
     selectedTask,
     eventChain: [
       locationEvent("PASSENGER_BOARDED", "2026-07-13T00:42:00Z", 104.637, 35.212),
