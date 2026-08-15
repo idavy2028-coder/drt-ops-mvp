@@ -3,6 +3,7 @@ package com.idavy.drtops.domain.alarm;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -26,7 +27,7 @@ interface VehicleAlarmOutboxRepository extends JpaRepository<VehicleAlarmOutboxE
             order by event.createdAt asc, event.id asc
             """)
     List<VehicleAlarmOutboxEvent> findPublishedAfter(
-            @Param("createdAt") Instant createdAt, @Param("id") UUID id);
+            @Param("createdAt") Instant createdAt, @Param("id") UUID id, Pageable pageable);
 
     @Modifying
     @Query("delete from VehicleAlarmOutboxEvent event where event.status = 'PUBLISHED' and event.createdAt < :cutoff")

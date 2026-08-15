@@ -65,7 +65,7 @@ public class VehicleAlarmActionService {
         auditLogs.save(AuditLog.record(
                 "VEHICLE_ALARM", alarm.getId(), auditAction(actionType), "USER", actorId.toString(), reason,
                 metadata(currentStatus, targetStatus)));
-        outbox.save(VehicleAlarmOutboxEvent.pending(alarm.getId(), "ALARM_STATUS_CHANGED"));
+        outbox.save(VehicleAlarmOutboxEvent.pending(alarm, "ALARM_STATUS_CHANGED"));
         try {
             return alarms.saveAndFlush(alarm);
         } catch (ObjectOptimisticLockingFailureException | OptimisticLockException exception) {

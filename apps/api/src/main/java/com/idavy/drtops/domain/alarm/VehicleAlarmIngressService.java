@@ -40,7 +40,7 @@ public class VehicleAlarmIngressService {
     }
     private void ingestValidated(AlarmFact fact) {
         if ("END".equals(fact.state())) {
-            store.findOpenStart(fact).ifPresent(start -> { store.end(start, fact.occurredAt()); store.appendOutbox(start.getId(), "ALARM_ENDED"); });
+            store.findOpenStart(fact).ifPresent(start -> { store.end(start, fact.occurredAt()); store.appendOutbox(start, "ALARM_ENDED"); });
             return;
         }
         String key = keyFor(fact);
@@ -49,7 +49,7 @@ public class VehicleAlarmIngressService {
         AlarmStore.LocationReference location = store.findLocation(fact.positionIdempotencyKey())
                 .orElseThrow(() -> new IllegalStateException("position ingress is not settled"));
         VehicleAlarm alarm = store.save(VehicleAlarm.start(fact, key, location));
-        store.appendOutbox(alarm.getId(), "ALARM_CREATED");
+        store.appendOutbox(alarm, "ALARM_CREATED");
     }
     private static void validate(AlarmFact fact) {
         if (fact == null

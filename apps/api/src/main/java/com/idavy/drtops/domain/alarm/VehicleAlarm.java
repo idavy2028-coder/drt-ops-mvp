@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import java.math.BigDecimal;
@@ -47,7 +48,7 @@ public class VehicleAlarm {
 
     protected VehicleAlarm() { }
     private VehicleAlarm(VehicleAlarmIngressService.AlarmFact fact, String key, AlarmStore.LocationReference location) {
-        id = UUID.randomUUID(); publicId = UUID.randomUUID(); vehicleId = fact.vehicleId(); terminalId = fact.terminalId(); standard = fact.standard();
+        id = UUID.randomUUID(); publicId = independentPublicId(id); vehicleId = fact.vehicleId(); terminalId = fact.terminalId(); standard = fact.standard();
         locationEventId = location.eventId();
         module = fact.module(); terminalAlarmId = fact.terminalAlarmId();
         alarmTypeCode = fact.typeCode(); alarmTypeNameSnapshot = fact.alarmType();
@@ -60,6 +61,16 @@ public class VehicleAlarm {
     }
     static VehicleAlarm start(VehicleAlarmIngressService.AlarmFact fact, String key, AlarmStore.LocationReference location) {
         return new VehicleAlarm(fact, key, location);
+    }
+    @PrePersist
+    private void ensureDistinctPublicId() {
+        if (id == null) id = UUID.randomUUID();
+        if (publicId == null || publicId.equals(id)) publicId = independentPublicId(id);
+    }
+    private static UUID independentPublicId(UUID internalId) {
+        UUID candidate;
+        do { candidate = UUID.randomUUID(); } while (candidate.equals(internalId));
+        return candidate;
     }
     void endAt(Instant at) { if (endedAt == null) endedAt = at; }
     void transitionTo(ProcessingStatus status, UUID actorId, Instant handledAt) {

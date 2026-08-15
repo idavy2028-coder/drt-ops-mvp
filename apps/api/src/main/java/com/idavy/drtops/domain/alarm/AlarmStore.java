@@ -12,7 +12,7 @@ public interface AlarmStore {
     Optional<VehicleAlarm> findByDeduplicationKey(String key);
     Optional<VehicleAlarm> findOpenStart(VehicleAlarmIngressService.AlarmFact fact);
     VehicleAlarm save(VehicleAlarm alarm);
-    void appendOutbox(UUID alarmId, String eventType);
+    void appendOutbox(VehicleAlarm alarm, String eventType);
     void end(VehicleAlarm alarm, Instant endedAt);
 
     record LocationReference(UUID eventId, String qualityStatus, String qualityReasons) { }

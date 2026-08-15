@@ -34,7 +34,7 @@ final class InMemoryAlarmStore implements AlarmStore {
                 && value.getEndedAt() == null).findFirst();
     }
     @Override public VehicleAlarm save(VehicleAlarm alarm) { if (!facts.contains(alarm)) facts.add(alarm); return alarm; }
-    @Override public void appendOutbox(UUID alarmId, String eventType) { outbox.add(new OutboxRecord(alarmId, eventType)); }
+    @Override public void appendOutbox(VehicleAlarm alarm, String eventType) { outbox.add(new OutboxRecord(alarm.getId(), eventType)); }
     @Override public void end(VehicleAlarm alarm, Instant endedAt) { alarm.endAt(endedAt); }
     List<VehicleAlarm> facts() { return List.copyOf(facts); }
     List<OutboxRecord> outbox() { return List.copyOf(outbox); }

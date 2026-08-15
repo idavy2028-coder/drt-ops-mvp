@@ -70,6 +70,6 @@ class JpaAlarmStore implements AlarmStore {
                 fact.terminalAlarmId());
     }
     @Override public VehicleAlarm save(VehicleAlarm alarm) { return alarms.save(alarm); }
-    @Override public void appendOutbox(UUID alarmId, String eventType) { outbox.save(VehicleAlarmOutboxEvent.pending(alarmId, eventType)); }
+    @Override public void appendOutbox(VehicleAlarm alarm, String eventType) { outbox.save(VehicleAlarmOutboxEvent.pending(alarm, eventType)); }
     @Override public void end(VehicleAlarm alarm, Instant endedAt) { alarm.endAt(endedAt); alarms.save(alarm); }
 }

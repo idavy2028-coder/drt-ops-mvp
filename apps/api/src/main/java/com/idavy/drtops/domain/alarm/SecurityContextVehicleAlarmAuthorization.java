@@ -30,6 +30,11 @@ class SecurityContextVehicleAlarmAuthorization implements VehicleAlarmAuthorizat
                     && authentication.getAuthorities().stream()
                     .anyMatch(granted -> Permission.VEHICLE_ALARM_READ.name().equals(granted.getAuthority()));
         }
+        return mayContinueReadPersisted(actorId);
+    }
+
+    @Override
+    public boolean mayContinueReadPersisted(UUID actorId) {
         return users.findWithRolesById(actorId)
                 .filter(account -> account.isEnabled()
                         && Permission.permissionsFor(account.getRoles()).contains(Permission.VEHICLE_ALARM_READ))
