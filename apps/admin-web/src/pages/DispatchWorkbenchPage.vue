@@ -39,6 +39,7 @@ const actionError = ref("");
 const loading = ref(false);
 let locationPollTimer: number | undefined;
 let alarmSubscription: VehicleAlarmEventSubscription | undefined;
+let alarmRevision = 0;
 
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value));
 const activeServiceArea = computed(() => serviceAreas.value.find((area) => area.enabled) ?? serviceAreas.value[0]);
@@ -54,17 +55,17 @@ const highUnresolvedAlarmVehicleIds = computed(() => [...new Set(alarms.value
 async function loadWorkbench() {
   try {
     status.value = ""; loading.value = true;
-    const [loadedOrders, loadedTasks, loadedReviews, loadedLocations, loadedAreas, loadedStops, loadedAlarms] = await Promise.all([
-      listOrders(), listTasks(), listManualReviews(), listLatestVehicleLocations(), listServiceAreas(), listVirtualStops(),
-      canReadAlarms.value ? listVehicleAlarms() : Promise.resolve([])
+    const [loadedOrders, loadedTasks, loadedReviews, loadedLocations, loadedAreas, loadedStops] = await Promise.all([
+      listOrders(), listTasks(), listManualReviews(), listLatestVehicleLocations(), listServiceAreas(), listVirtualStops()
     ]);
     orders.value = loadedOrders; tasks.value = loadedTasks; reviews.value = loadedReviews; latestLocations.value = loadedLocations;
-    serviceAreas.value = loadedAreas; virtualStops.value = loadedStops; locationStatus.value = ""; alarms.value = loadedAlarms;
+    serviceAreas.value = loadedAreas; virtualStops.value = loadedStops; locationStatus.value = "";
     if (!selectedTaskId.value || !loadedTasks.some((task) => task.id === selectedTaskId.value)) selectedTaskId.value = loadedTasks[0]?.id;
     if (!selectedVehicleId.value || !loadedLocations.some((item) => item.vehicleId === selectedVehicleId.value && hasValidLocation(item))) {
       selectedVehicleId.value = (loadedLocations.find((item) => isActiveVehicle(item) && hasValidLocation(item))
         ?? loadedLocations.find(hasValidLocation))?.vehicleId;
     }
+    void loadAlarms();
     await loadTaskChain(selectedTaskId.value);
   } catch (error) {
     status.value = userMessage(error, "工作台数据加载失败");
@@ -85,12 +86,23 @@ async function selectTask(taskId: UUID): Promise<void> {
 
 async function loadAlarms(): Promise<void> {
   if (!canReadAlarms.value) return;
-  try { alarms.value = await listVehicleAlarms(); alarmStatus.value = ""; }
+  const revisionAtRequest = alarmRevision;
+  try {
+    const loaded = await listVehicleAlarms();
+    alarms.value = alarmRevision === revisionAtRequest ? loaded : mergeAlarmSnapshots(loaded, alarms.value);
+    alarmStatus.value = "";
+  }
   catch (error) { alarmStatus.value = userMessage(error, "报警数据加载失败，请稍后刷新"); }
 }
 
 function upsertAlarm(alarm: VehicleAlarmView): void {
+  alarmRevision += 1;
   alarms.value = [alarm, ...alarms.value.filter((existing) => existing.publicId !== alarm.publicId)];
+}
+
+function mergeAlarmSnapshots(snapshot: VehicleAlarmView[], newerInMemory: VehicleAlarmView[]): VehicleAlarmView[] {
+  const newerIds = new Set(newerInMemory.map((alarm) => alarm.publicId));
+  return [...newerInMemory, ...snapshot.filter((alarm) => !newerIds.has(alarm.publicId))];
 }
 
 function startAlarmStream(): void {
@@ -108,17 +120,27 @@ function startAlarmStream(): void {
 }
 
 function hasTrustedAlarmLocation(alarm: VehicleAlarmView): boolean {
-  const longitude = Number(alarm.longitude);
-  const latitude = Number(alarm.latitude);
   return !["QUARANTINED", "REJECTED"].includes(alarm.locationQualityStatus)
-    && Number.isFinite(longitude) && Number.isFinite(latitude)
+    && hasSafeCoordinates(alarm.longitude, alarm.latitude);
+}
+
+function hasTrustedVehicleLocation(vehicleId: UUID): boolean {
+  const location = latestLocations.value.find((item) => item.vehicleId === vehicleId)?.latestLocation;
+  return location !== undefined && hasSafeCoordinates(location.longitude, location.latitude);
+}
+
+function hasSafeCoordinates(longitudeValue: unknown, latitudeValue: unknown): boolean {
+  if (longitudeValue === null || longitudeValue === undefined || latitudeValue === null || latitudeValue === undefined) return false;
+  const longitude = Number(longitudeValue);
+  const latitude = Number(latitudeValue);
+  return Number.isFinite(longitude) && Number.isFinite(latitude)
     && longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90
     && (longitude !== 0 || latitude !== 0);
 }
 
 function selectAlarm(alarm: VehicleAlarmView): void {
   selectedVehicleId.value = alarm.vehicleId;
-  if (hasTrustedAlarmLocation(alarm)) vehicleFocusRequest.value += 1;
+  if (hasTrustedAlarmLocation(alarm) && hasTrustedVehicleLocation(alarm.vehicleId)) vehicleFocusRequest.value += 1;
 }
 
 async function handleAlarmAction(payload: { publicId: string; action: VehicleAlarmAction; expectedVersion: number; reason: string; confirmed: true }): Promise<void> {
@@ -162,7 +184,7 @@ async function reject(payload: { decisionId: UUID; reason: string }) {
 }
 
 function isActiveVehicle(item: VehicleLocationSnapshotItem): boolean { return item.latestLocation.vehicleTaskId !== undefined && !["IDLE", "OFFLINE", "COMPLETED"].includes(item.currentStatus); }
-function hasValidLocation(item: VehicleLocationSnapshotItem): boolean { return Number.isFinite(Number(item.latestLocation.longitude)) && Number.isFinite(Number(item.latestLocation.latitude)); }
+function hasValidLocation(item: VehicleLocationSnapshotItem): boolean { return hasSafeCoordinates(item.latestLocation.longitude, item.latestLocation.latitude); }
 
 onMounted(() => {
   void loadWorkbench();

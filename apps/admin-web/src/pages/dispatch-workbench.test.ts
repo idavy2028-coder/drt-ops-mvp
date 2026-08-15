@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vu
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
 import type { VehicleAlarmEventHandlers } from "../api/alarmEvents";
+import type { VehicleAlarmView } from "../api/vehicleAlarms";
 
 const dispatchMap = vi.hoisted(() => ({ receivedProps: [] as Array<Record<string, unknown>> }));
 const alarmBoard = vi.hoisted(() => ({ receivedProps: [] as Array<Record<string, unknown>> }));
@@ -44,6 +45,8 @@ vi.mock("../components/AlarmBoard.vue", async () => {
         return () => h("section", { "aria-label": "主动安全报警看板" }, [
           h("button", { type: "button", onClick: () => emit("selectAlarm", alarm("alarm-trusted")) }, "选择可信报警"),
           h("button", { type: "button", onClick: () => emit("selectAlarm", alarm("alarm-quarantined")) }, "选择可疑报警"),
+          h("button", { type: "button", onClick: () => emit("selectAlarm", alarm("alarm-single-null", { longitude: null })) }, "选择单边空坐标报警"),
+          h("button", { type: "button", onClick: () => emit("selectAlarm", alarm("alarm-rejected", { locationQualityStatus: "REJECTED", vehicleId: "vehicle-3" })) }, "选择拒绝位置报警"),
           h("button", { type: "button", onClick: () => emit("action", { publicId: "alarm-trusted", action: "ACKNOWLEDGE", expectedVersion: 4, reason: "已核实", confirmed: true }) }, "提交报警处理")
         ]);
       }
@@ -205,19 +208,75 @@ describe("DispatchWorkbenchPage", () => {
       action: "ACKNOWLEDGE", expectedVersion: 4, reason: "已核实", confirmed: true
     }));
   });
+
+  it("selects alarms with one-sided, quarantined, or rejected positions without requesting map focus", async () => {
+    render(DispatchWorkbenchPage);
+    await waitFor(() => expect(alarmApi.listVehicleAlarms).toHaveBeenCalledTimes(1));
+
+    await fireEvent.click(screen.getByRole("button", { name: "选择单边空坐标报警" }));
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1]).toEqual(expect.objectContaining({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 0 })));
+    await fireEvent.click(screen.getByRole("button", { name: "选择可疑报警" }));
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1]).toEqual(expect.objectContaining({ selectedVehicleId: "vehicle-2", vehicleFocusRequest: 0 })));
+    await fireEvent.click(screen.getByRole("button", { name: "选择拒绝位置报警" }));
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1]).toEqual(expect.objectContaining({ selectedVehicleId: "vehicle-3", vehicleFocusRequest: 0 })));
+  });
+
+  it("does not request focus when a trusted alarm is associated with a vehicle snapshot at zero-zero", async () => {
+    vehicleLocationApi.listLatestVehicleLocations.mockResolvedValue([latestLocation({ longitude: 0, latitude: 0 })]);
+    render(DispatchWorkbenchPage);
+    await waitFor(() => expect(alarmApi.listVehicleAlarms).toHaveBeenCalledTimes(1));
+
+    await fireEvent.click(screen.getByRole("button", { name: "选择可信报警" }));
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1]).toEqual(expect.objectContaining({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 0 })));
+  });
+
+  it("keeps orders, tasks, and vehicle positions available when the initial alarm list fails", async () => {
+    alarmApi.listVehicleAlarms.mockRejectedValue(new Error("alarm read unavailable"));
+    render(DispatchWorkbenchPage);
+
+    await waitFor(() => expect(dispatchMap.receivedProps[dispatchMap.receivedProps.length - 1].locations).toEqual([latestLocation()]));
+    expect(await screen.findByText("order-1")).toBeInTheDocument();
+    expect(taskApi.listTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("merges a streamed alarm when an older initial alarm list resolves afterwards", async () => {
+    const initialList = deferred<VehicleAlarmView[]>();
+    const streamed = alarm("alarm-streamed");
+    alarmApi.listVehicleAlarms.mockReturnValueOnce(initialList.promise);
+    alarmApi.getVehicleAlarm.mockResolvedValueOnce(streamed);
+    render(DispatchWorkbenchPage);
+    await waitFor(() => expect(alarmStream.handlers).toBeDefined());
+
+    alarmStream.handlers?.onVehicleAlarm?.({ publicId: streamed.publicId, type: "ALARM_CREATED", status: "NEW", level: 3, module: "ADAS", occurredAt: streamed.occurredAt });
+    await waitFor(() => expect(latestBoardAlarms()).toEqual([streamed]));
+    initialList.resolve([alarm("alarm-trusted")]);
+
+    await waitFor(() => expect(latestBoardAlarms().map((item) => item.publicId)).toEqual(expect.arrayContaining(["alarm-trusted", "alarm-streamed"])));
+  });
 });
 
-function latestLocation(overrides: { currentStatus?: string; driverReportedAt?: string } = {}) {
-  return { vehicleId: "vehicle-1", plateNumber: "甘G-T001", currentStatus: overrides.currentStatus ?? "IN_SERVICE", latestLocation: { longitude: 104.6378, latitude: 35.2109, standardizedAddress: "通渭县客运中心", source: "MANUAL_DISPATCHER", coordinateSystem: "GCJ02", driverReportedAt: overrides.driverReportedAt ?? "2026-07-13T00:33:00Z", recordedAt: "2026-07-13T00:35:00Z", eventId: "loc-1", vehicleTaskId: "task-1" } };
+function latestLocation(overrides: { currentStatus?: string; driverReportedAt?: string; longitude?: number; latitude?: number } = {}) {
+  return { vehicleId: "vehicle-1", plateNumber: "甘G-T001", currentStatus: overrides.currentStatus ?? "IN_SERVICE", latestLocation: { longitude: overrides.longitude ?? 104.6378, latitude: overrides.latitude ?? 35.2109, standardizedAddress: "通渭县客运中心", source: "MANUAL_DISPATCHER", coordinateSystem: "GCJ02", driverReportedAt: overrides.driverReportedAt ?? "2026-07-13T00:33:00Z", recordedAt: "2026-07-13T00:35:00Z", eventId: "loc-1", vehicleTaskId: "task-1" } };
 }
 
-function alarm(publicId: string, overrides: { status?: string; version?: number } = {}) {
+function alarm(publicId: string, overrides: Partial<Pick<VehicleAlarmView, "status" | "version" | "locationQualityStatus" | "longitude" | "latitude" | "vehicleId">> = {}): VehicleAlarmView {
   const quarantined = publicId === "alarm-quarantined";
   return {
     publicId, vehicleId: quarantined ? "vehicle-2" : "vehicle-1", plateNumber: quarantined ? "甘G·A1002" : "甘G·A1001",
     standard: "T/JSATL12-2017", module: "ADAS", alarmTypeCode: 1, alarmType: "前向碰撞", level: 3,
     status: overrides.status ?? "NEW", occurredAt: "2026-08-15T02:00:00Z", endedAt: null,
     locationQualityStatus: quarantined ? "QUARANTINED" : "GOOD", hasAttachment: false, version: overrides.version ?? 4,
-    longitude: quarantined ? 0 : 118, latitude: quarantined ? 0 : 32, speedKph: 60
+    longitude: quarantined ? 0 : 118, latitude: quarantined ? 0 : 32, speedKph: 60,
+    ...overrides
   };
+}
+
+function latestBoardAlarms(): VehicleAlarmView[] {
+  return (alarmBoard.receivedProps[alarmBoard.receivedProps.length - 1]?.alarms ?? []) as VehicleAlarmView[];
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((nextResolve) => { resolve = nextResolve; });
+  return { promise, resolve(value) { resolve?.(value); } };
 }

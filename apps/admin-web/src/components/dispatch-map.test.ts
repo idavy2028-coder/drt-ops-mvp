@@ -211,6 +211,22 @@ describe("DispatchMap", () => {
     await waitFor(() => expect(tileMapRuntime.handle.focusPoint).toHaveBeenCalledWith({ longitude: 104.6401, latitude: 35.2109 }));
   });
 
+  it("never focuses a selected vehicle whose final snapshot is zero-zero or outside geographic bounds", async () => {
+    const zero = latestLocation();
+    zero.latestLocation.longitude = 0;
+    zero.latestLocation.latitude = 0;
+    const view = renderMap({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 0, locations: [zero] });
+    await waitFor(() => expect(leaflet.markerLayers).toHaveLength(3));
+
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 1, locations: [zero] }));
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+
+    const outsideBounds = latestLocation();
+    outsideBounds.latestLocation.longitude = 181;
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 2, locations: [outsideBounds] }));
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+  });
+
   it("renders a static high-severity alarm badge without leaking the internal vehicle identity", async () => {
     renderMap({ alarmVehicleIds: ["vehicle-1"] });
     await waitFor(() => expect(leaflet.divIcon).toHaveBeenCalled());
@@ -243,7 +259,7 @@ describe("DispatchMap", () => {
   });
 });
 
-function renderMap(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; alarmVehicleIds?: string[] } = {}) {
+function renderMap(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; locations?: VehicleLocationSnapshotItem[]; alarmVehicleIds?: string[] } = {}) {
   return render(DispatchMap, {
     props: mapProps(overrides)
   });

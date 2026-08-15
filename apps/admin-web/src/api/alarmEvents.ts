@@ -34,8 +34,9 @@ export function subscribeVehicleAlarmEvents(handlers: VehicleAlarmEventHandlers)
   let consecutiveFailures = 0;
   let degraded = false;
   let lastEventId = handlers.lastEventId;
+  let refreshAttempted = false;
 
-  void connect(true);
+  void connect();
 
   return {
     close() {
@@ -46,7 +47,7 @@ export function subscribeVehicleAlarmEvents(handlers: VehicleAlarmEventHandlers)
     }
   };
 
-  async function connect(canRefresh: boolean): Promise<void> {
+  async function connect(): Promise<void> {
     if (closed) return;
     controller = new AbortController();
     try {
@@ -55,15 +56,16 @@ export function subscribeVehicleAlarmEvents(handlers: VehicleAlarmEventHandlers)
         credentials: "include",
         signal: controller.signal
       });
-      if (response.status === 401 && canRefresh && await authStore.refresh()) {
-        await connect(false);
-        return;
+      if (response.status === 401 && !refreshAttempted) {
+        refreshAttempted = true;
+        if (await authStore.refresh()) {
+          await connect();
+          return;
+        }
       }
       if (!response.ok || response.body === null) {
         throw new Error(`vehicle alarm event stream failed with ${response.status}`);
       }
-      consecutiveFailures = 0;
-      setDegraded(false);
       await readEvents(response.body);
       if (!closed) scheduleReconnect();
     } catch (error) {
@@ -75,7 +77,7 @@ export function subscribeVehicleAlarmEvents(handlers: VehicleAlarmEventHandlers)
     consecutiveFailures += 1;
     if (consecutiveFailures >= RECONNECT_DELAYS_MS.length) startPolling();
     const delay = RECONNECT_DELAYS_MS[Math.min(consecutiveFailures - 1, RECONNECT_DELAYS_MS.length - 1)];
-    reconnectTimer = window.setTimeout(() => { void connect(true); }, delay);
+    reconnectTimer = window.setTimeout(() => { void connect(); }, delay);
   }
 
   function startPolling(): void {
@@ -133,17 +135,28 @@ export function subscribeVehicleAlarmEvents(handlers: VehicleAlarmEventHandlers)
     }
     if (id !== undefined) lastEventId = id;
     if (event === "heartbeat") {
+      markHealthy();
       handlers.onHeartbeat?.();
       return;
     }
     if (event === "resync-required") {
       lastEventId = undefined;
+      markHealthy();
       handlers.onResyncRequired?.();
       return;
     }
     if (event !== "vehicle-alarm" || data.length === 0) return;
     const parsed = JSON.parse(data.join("\n")) as unknown;
-    if (isVehicleAlarmStreamEvent(parsed)) handlers.onVehicleAlarm?.(parsed);
+    if (isVehicleAlarmStreamEvent(parsed)) {
+      markHealthy();
+      handlers.onVehicleAlarm?.(parsed);
+    }
+  }
+
+  function markHealthy(): void {
+    consecutiveFailures = 0;
+    refreshAttempted = false;
+    setDegraded(false);
   }
 }
 

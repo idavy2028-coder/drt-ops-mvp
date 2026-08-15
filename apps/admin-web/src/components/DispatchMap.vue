@@ -158,7 +158,7 @@ function focusSelectedVehicle(): void {
   const item = props.locations.find((location) => location.vehicleId === props.selectedVehicleId);
   if (!item) return;
   const point = { longitude: Number(item.latestLocation.longitude), latitude: Number(item.latestLocation.latitude) };
-  if (!hasFiniteCoordinates(point)) return;
+  if (!hasSafeVehicleCoordinates(point)) return;
   tileMap.value.focusPoint(point);
   vehicleMarkers.get(item.vehicleId)?.openPopup();
 }
@@ -182,6 +182,13 @@ function hasCoordinates(stop: VirtualStop): stop is VirtualStop & Required<Pick<
 
 function hasFiniteCoordinates(point: { longitude: number; latitude: number }): boolean {
   return Number.isFinite(point.longitude) && Number.isFinite(point.latitude);
+}
+
+function hasSafeVehicleCoordinates(point: { longitude: number; latitude: number }): boolean {
+  return hasFiniteCoordinates(point)
+    && point.longitude >= -180 && point.longitude <= 180
+    && point.latitude >= -90 && point.latitude <= 90
+    && (point.longitude !== 0 || point.latitude !== 0);
 }
 
 function statusLabel(status: string): string {

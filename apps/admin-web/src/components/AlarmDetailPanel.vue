@@ -25,6 +25,12 @@ function formatTime(value?: string | null): string {
   if (!value) return "--";
   return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
 }
+
+function formatSpeed(value?: VehicleAlarmView["speedKph"]): string {
+  const speed = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(speed)) return "尚无数据";
+  return `${Number.isInteger(speed) ? speed : speed.toFixed(1)} km/h`;
+}
 </script>
 
 <template>
@@ -33,9 +39,10 @@ function formatTime(value?: string | null): string {
     <dl>
       <div><dt>模块</dt><dd>{{ alarm.module }}</dd></div><div><dt>状态</dt><dd>{{ alarm.status }}</dd></div>
       <div><dt>发生时间</dt><dd>{{ formatTime(alarm.occurredAt) }}</dd></div><div><dt>定位质量</dt><dd>{{ alarm.locationQualityStatus }}</dd></div>
+      <div><dt>速度</dt><dd>{{ formatSpeed(alarm.speedKph) }}</dd></div>
     </dl>
     <p v-if="alarm.locationQualityStatus === 'QUARANTINED' || alarm.locationQualityStatus === 'REJECTED'" class="location-warning">位置可疑，已仅关联车辆，不触发地图聚焦。</p>
-    <p v-if="alarm.hasAttachment" class="attachment-note">附件暂不可用</p>
+    <p class="attachment-note">{{ alarm.hasAttachment ? "附件暂不可用" : "无附件" }}</p>
     <div v-if="canHandle && actions.length" class="alarm-actions"><button v-for="action in actions" :key="action" type="button" @click="pendingAction = action">{{ actionLabel(action) }}</button></div>
     <AlarmActionDialog :visible="pendingAction !== undefined" :alarm="alarm" :action="pendingAction" @close="pendingAction = undefined" @confirm="(payload) => { pendingAction = undefined; emit('action', payload); }" />
   </section>

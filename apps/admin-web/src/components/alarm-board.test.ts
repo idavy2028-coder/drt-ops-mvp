@@ -47,6 +47,44 @@ describe("AlarmBoard", () => {
     }]]);
   });
 
+  it("derives the selected alarm from the latest parent list before submitting a follow-up action", async () => {
+    const current = { ...alarms()[1], status: "NEW", version: 6 };
+    const view = render(AlarmBoard, { props: { alarms: [current], canHandle: true } });
+
+    await fireEvent.click(screen.getByRole("button", { name: /查看报警/ }));
+    expect(screen.getByLabelText("报警详情")).toHaveTextContent("NEW");
+    await view.rerender({ alarms: [{ ...current, status: "ACKNOWLEDGED", version: 7 }], canHandle: true });
+
+    const details = screen.getByLabelText("报警详情");
+    expect(details).toHaveTextContent("ACKNOWLEDGED");
+    expect(within(details).queryByRole("button", { name: "确认报警" })).not.toBeInTheDocument();
+    await fireEvent.click(within(details).getByRole("button", { name: "接手处理" }));
+    await fireEvent.update(screen.getByLabelText("处理原因（同时作为备注）"), "已完成现场核实");
+    await fireEvent.click(screen.getByLabelText("我已核实并确认执行该处理"));
+    await fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+
+    expect(view.emitted("action")).toEqual([[{
+      publicId: current.publicId, action: "TAKE_OVER", expectedVersion: 7, reason: "已完成现场核实", confirmed: true
+    }]]);
+  });
+
+  it("shows explicit speed and attachment availability for both missing and available evidence", async () => {
+    const unavailable = { ...alarms()[1], speedKph: null, hasAttachment: false };
+    const view = render(AlarmBoard, { props: { alarms: [unavailable], canHandle: true } });
+
+    await fireEvent.click(screen.getByRole("button", { name: /查看报警/ }));
+    let details = screen.getByLabelText("报警详情");
+    expect(details).toHaveTextContent("速度");
+    expect(details).toHaveTextContent("尚无数据");
+    expect(details).toHaveTextContent("无附件");
+
+    await view.rerender({ alarms: [{ ...unavailable, speedKph: 52, hasAttachment: true }], canHandle: true });
+    details = screen.getByLabelText("报警详情");
+    expect(details).toHaveTextContent("52 km/h");
+    expect(details).toHaveTextContent("附件暂不可用");
+    expect(details.querySelector("a")).toBeNull();
+  });
+
   it("does not render handling controls for read-only users or any internal alarm material", async () => {
     const sensitiveAlarm = {
       ...alarms()[0],

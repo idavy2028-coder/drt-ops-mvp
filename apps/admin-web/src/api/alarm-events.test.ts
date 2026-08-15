@@ -94,6 +94,110 @@ describe("subscribeVehicleAlarmEvents", () => {
     stream.close();
   });
 
+  it("keeps cumulative one-two-four-second failures when successful HTTP responses close before a valid SSE frame", async () => {
+    vi.useFakeTimers();
+    authStore.setSessionForTest({ accessToken: "access-secret", user: dispatcher });
+    const fetchStub = vi.fn().mockResolvedValue(sseResponse(closedSseStream()));
+    vi.stubGlobal("fetch", fetchStub);
+    const states: boolean[] = [];
+    const polls: number[] = [];
+
+    const stream = subscribeVehicleAlarmEvents({
+      onDegradedChange: (degraded) => states.push(degraded),
+      poll: () => { polls.push(Date.now()); }
+    });
+
+    await vi.runAllTicks();
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchStub).toHaveBeenCalledTimes(3);
+    expect(states).toEqual([true]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fetchStub).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(polls).toHaveLength(1);
+    stream.close();
+  });
+
+  it("stays degraded until a real heartbeat arrives and then stops alarm polling", async () => {
+    vi.useFakeTimers();
+    authStore.setSessionForTest({ accessToken: "access-secret", user: dispatcher });
+    const healthy = controllableSseStream();
+    const fetchStub = vi.fn()
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(sseResponse(healthy.stream));
+    vi.stubGlobal("fetch", fetchStub);
+    const states: boolean[] = [];
+    const polls: number[] = [];
+
+    const stream = subscribeVehicleAlarmEvents({
+      onDegradedChange: (degraded) => states.push(degraded),
+      poll: () => { polls.push(Date.now()); }
+    });
+
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(states).toEqual([true]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fetchStub).toHaveBeenCalledTimes(4);
+    expect(states).toEqual([true]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(polls).toHaveLength(1);
+
+    healthy.send("event: heartbeat\ndata: {}\n\n");
+    await vi.runAllTicks();
+    expect(states).toEqual([true, false]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(polls).toHaveLength(1);
+    stream.close();
+  });
+
+  it("attempts a token refresh only once until a stream delivers a healthy SSE frame", async () => {
+    vi.useFakeTimers();
+    authStore.setSessionForTest({ accessToken: "expired-token", user: dispatcher });
+    const refresh = vi.spyOn(authStore, "refresh").mockResolvedValue(true);
+    const fetchStub = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const stream = subscribeVehicleAlarmEvents({});
+    await settlePromises();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchStub).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    stream.close();
+  });
+
+  it("aborts the active request and clears both reconnect and alarm-poll timers on close", async () => {
+    vi.useFakeTimers();
+    authStore.setSessionForTest({ accessToken: "access-secret", user: dispatcher });
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval");
+    const fetchStub = vi.fn().mockRejectedValue(new TypeError("network unavailable"));
+    vi.stubGlobal("fetch", fetchStub);
+    const polls: number[] = [];
+
+    const stream = subscribeVehicleAlarmEvents({ poll: () => { polls.push(Date.now()); } });
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const callsBeforeClose = fetchStub.mock.calls.length;
+    stream.close();
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchStub).toHaveBeenCalledTimes(callsBeforeClose);
+    expect(polls).toHaveLength(0);
+  });
+
   it("aborts the pending fetch when the workbench is unmounted", async () => {
     authStore.setSessionForTest({ accessToken: "access-secret", user: dispatcher });
     let requestSignal: AbortSignal | undefined;
@@ -109,6 +213,29 @@ describe("subscribeVehicleAlarmEvents", () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 });
+
+function sseResponse(stream: ReadableStream<Uint8Array>): Response {
+  return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
+function closedSseStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } });
+}
+
+function controllableSseStream(): { stream: ReadableStream<Uint8Array>; send(frame: string): void } {
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(nextController) { controller = nextController; }
+  });
+  return {
+    stream,
+    send(frame) { controller?.enqueue(new TextEncoder().encode(frame)); }
+  };
+}
+
+async function settlePromises(): Promise<void> {
+  for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
+}
 
 describe("vehicle alarm API", () => {
   afterEach(() => {

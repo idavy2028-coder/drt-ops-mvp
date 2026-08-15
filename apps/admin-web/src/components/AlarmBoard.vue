@@ -10,7 +10,7 @@ const emit = defineEmits<{
 }>();
 
 const expanded = ref(true);
-const selectedAlarm = ref<VehicleAlarmView>();
+const selectedPublicId = ref<string>();
 const level = ref("ALL");
 const status = ref("ALL");
 const vehicle = ref("");
@@ -24,6 +24,9 @@ const orderedAlarms = computed(() => props.alarms.filter(matchesFilters).sort((l
 const unacknowledgedCount = computed(() => props.alarms.filter((alarm) => alarm.status === "NEW").length);
 const highestLevel = computed(() => Math.max(0, ...props.alarms.map((alarm) => alarm.level)));
 const latestOccurredAt = computed(() => [...props.alarms].sort((left, right) => new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime())[0]?.occurredAt);
+const selectedAlarm = computed(() => selectedPublicId.value === undefined
+  ? undefined
+  : props.alarms.find((alarm) => alarm.publicId === selectedPublicId.value));
 
 function matchesFilters(alarm: VehicleAlarmView): boolean {
   return (level.value === "ALL" || alarm.level === Number(level.value))
@@ -33,7 +36,7 @@ function matchesFilters(alarm: VehicleAlarmView): boolean {
     && (vehicle.value.trim() === "" || (alarm.plateNumber ?? "").includes(vehicle.value.trim()));
 }
 
-function select(alarm: VehicleAlarmView): void { selectedAlarm.value = alarm; emit("selectAlarm", alarm); }
+function select(alarm: VehicleAlarmView): void { selectedPublicId.value = alarm.publicId; emit("selectAlarm", alarm); }
 function formatTime(value?: string): string { return value ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value)) : "--"; }
 function locationSuspicious(alarm: VehicleAlarmView): boolean { return alarm.locationQualityStatus === "QUARANTINED" || alarm.locationQualityStatus === "REJECTED"; }
 </script>
