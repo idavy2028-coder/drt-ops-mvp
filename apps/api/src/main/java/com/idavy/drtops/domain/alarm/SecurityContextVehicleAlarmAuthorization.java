@@ -52,6 +52,16 @@ class SecurityContextVehicleAlarmAuthorization implements VehicleAlarmAuthorizat
                 && hasAuthority(actorId, "ROLE_SYSTEM_ADMIN");
     }
 
+    @Override
+    public boolean mayRequestAttachment(UUID actorId) {
+        return has(actorId, Permission.VEHICLE_ALARM_ATTACHMENT_REQUEST);
+    }
+
+    @Override
+    public boolean mayReadAttachment(UUID actorId) {
+        return has(actorId, Permission.VEHICLE_ALARM_ATTACHMENT_READ);
+    }
+
     private boolean has(UUID actorId, Permission permission) {
         return hasAuthority(actorId, permission.name());
     }

@@ -10,4 +10,6 @@ public interface VehicleAlarmAuthorization {
     default boolean mayContinueReadPersisted(UUID actorId) { return mayContinueRead(actorId); }
     boolean mayHandle(UUID actorId);
     boolean mayReopen(UUID actorId);
+    default boolean mayRequestAttachment(UUID actorId) { return false; }
+    default boolean mayReadAttachment(UUID actorId) { return false; }
 }

@@ -101,6 +101,12 @@ public class SecurityConfiguration {
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-locations/export.csv").hasAuthority("LOCATION_EXPORT")
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-tasks/**").hasAuthority("TASK_READ")
                         .requestMatchers(HttpMethod.POST, "/api/vehicle-tasks/**").hasAuthority("TASK_EXECUTE")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicle-alarms/*/attachments")
+                        .hasAuthority("VEHICLE_ALARM_ATTACHMENT_READ")
+                        .requestMatchers(HttpMethod.POST, "/api/vehicle-alarms/*/attachments/*/requests")
+                        .hasAuthority("VEHICLE_ALARM_ATTACHMENT_REQUEST")
+                        .requestMatchers(HttpMethod.POST, "/api/vehicle-alarms/*/attachments/*/view-url")
+                        .hasAuthority("VEHICLE_ALARM_ATTACHMENT_READ")
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-alarms/**").hasAuthority("VEHICLE_ALARM_READ")
                         .requestMatchers(HttpMethod.POST, "/api/vehicle-alarms/*/actions")
                         .hasAuthority("VEHICLE_ALARM_HANDLE")
@@ -113,6 +119,10 @@ public class SecurityConfiguration {
                                 "/api/map/**")
                         .hasAuthority("RESOURCE_MANAGE")
                         .requestMatchers("/api/**").authenticated()
+                        // Media callbacks carry their own HMAC signature/timestamp/nonce proof and are
+                        // verified inside MediaCallbackController; no operator session exists for them.
+                        .requestMatchers(HttpMethod.POST, "/internal/media-callbacks/alarm-attachments")
+                        .permitAll()
                         .anyRequest().denyAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

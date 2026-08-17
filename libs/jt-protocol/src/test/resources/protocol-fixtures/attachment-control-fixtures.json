@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "fixtureStatus": "DERIVED_SYNTHETIC",
+  "sources": {
+    "jsatl12": {
+      "code": "T/JSATL12-2017",
+      "basis": "标准正文镜像 PDF 表 4-21/4-23/4-24/4-25/4-27/4-28/4-29 与 4.6.2 命名规则",
+      "mirrorSha256": "FCEE7F87E21A8961FE5203E9201758AEDB04E1F969EB1E1F519D0639EE526339",
+      "sourceAudit": "task14-materials/source-audit.md"
+    },
+    "jt1078Compat": {
+      "code": "JT/T1078.1-2016",
+      "basis": "标准正文未取得；布局由 yezhihao/jt808-server(Apache-2.0) 与 cuteLittleDevil/go-jt808(MIT) 双来源交叉佐证",
+      "corroborationSha256": {
+        "T1206.java": "E48B306022487E1A9B713E523886FCEC5ECCFFF59D68DF232087DA691876EF76",
+        "T9206.java": "A657C68603584CEC0EA277E5AE3F7BA49153B4F71C7E819A6041790065C430AF",
+        "T9207.java": "360CD90E1BF590390268E74334D244AAD4C588F94E447FED402760C48DC5BD96",
+        "t_0x1206.go": "513AEACAB6E16F85AFA91BF73296EF46C48A980608F20FD269D88378FD83EFC8",
+        "p_0x9206.go": "49E77FA5715B0183D1201076EA864395FCC5744C69F150BCD049D7F8EBDE24AC",
+        "p_0x9207.go": "C3996AD7CF4CE230971EB6737D87B22ACA6B1E1D06E6027CAF0D6C96D55FEE0A"
+      },
+      "limitation": "不能宣称 JT/T 1078.1 标准正文已核对"
+    }
+  },
+  "deidentification": {
+    "containsRealTerminalCapture": false,
+    "terminalIdPlaceholder": "0000000",
+    "serverAddressPlaceholder": "192.0.2.10 (TEST-NET-1 文档保留地址)",
+    "credentialPlaceholders": ["media-user", "synthetic-pass"],
+    "policy": "DERIVED_SYNTHETIC; not a vendor interoperability claim; 不含鉴权码、VIN、车牌、真实手机号与真实运营时间地点"
+  },
+  "samples": [
+    {
+      "sampleId": "A01",
+      "messageId": "0x9208",
+      "direction": "platform-to-terminal",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "T/JSATL12-2017 表 4-21",
+      "bodySha256": "8c1ecd3a87e9847734f56d8bdb52bb8f94533fa356e1fe0d38701c793ad92197",
+      "bodyHex": "0a3139322e302e322e31304a394a3a414c41524d4944303030303030303031414c41524d4e4f3030303030303030303030303030303030303030303030303100000000000000000000000000000000",
+      "expected": {
+        "serverAddress": "192.0.2.10",
+        "tcpPort": 19001,
+        "udpPort": 19002,
+        "alarmIdentifierAscii": "ALARMID000000001",
+        "alarmNumberAscii": "ALARMNO0000000000000000000000001",
+        "reservedHex": "00000000000000000000000000000000"
+      }
+    },
+    {
+      "sampleId": "A02",
+      "messageId": "0x1210",
+      "direction": "terminal-to-attachment-server",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "T/JSATL12-2017 表 4-23/4-24 与 4.6.2 命名规则",
+      "bodySha256": "53bdf4fd9abf2258fb983962e1ec939a31bd52bd3ac608be1d7f5da126a58d12",
+      "bodyHex": "30303030303030414c41524d4944303030303030303031414c41524d4e4f3030303030303030303030303030303030303030303030303100021f30305f36345f363430315f30315f53594e544845544943303030312e6a7067000190002030325f36345f363430315f30325f53594e544845544943303030312e6832363400100000",
+      "expected": {
+        "terminalIdAscii": "0000000",
+        "alarmIdentifierAscii": "ALARMID000000001",
+        "alarmNumberAscii": "ALARMNO0000000000000000000000001",
+        "infoType": 0,
+        "attachments": [
+          {"fileName": "00_64_6401_01_SYNTHETIC0001.jpg", "fileSize": 102400},
+          {"fileName": "02_64_6401_02_SYNTHETIC0001.h264", "fileSize": 1048576}
+        ]
+      }
+    },
+    {
+      "sampleId": "A03",
+      "messageId": "0x1211",
+      "direction": "terminal-to-attachment-server",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "T/JSATL12-2017 表 4-25",
+      "bodySha256": "e4dbba7169e7f980ced62ff82308c4b15ee5ced6a555b13ba3b3566a95fc0fa4",
+      "bodyHex": "1f30305f36345f363430315f30315f53594e544845544943303030312e6a70670000019000",
+      "expected": {"fileName": "00_64_6401_01_SYNTHETIC0001.jpg", "fileType": 0, "fileSize": 102400}
+    },
+    {
+      "sampleId": "A04",
+      "messageId": "0x1212",
+      "direction": "terminal-to-attachment-server",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "T/JSATL12-2017 表 4-27（布局同表 4-25）",
+      "bodyHex": "1f30305f36345f363430315f30315f53594e544845544943303030312e6a70670000019000",
+      "expected": {"fileName": "00_64_6401_01_SYNTHETIC0001.jpg", "fileType": 0, "fileSize": 102400}
+    },
+    {
+      "sampleId": "A05",
+      "messageId": "0x9212",
+      "direction": "attachment-server-to-terminal",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "T/JSATL12-2017 表 4-28/4-29",
+      "bodySha256": "cb045919f034b3a83bc0d2beefef91419b3d1834be1ad1050b1d13d5e7a3cbdf",
+      "bodyHex": "1f30305f36345f363430315f30315f53594e544845544943303030312e6a70670001010001000000010000",
+      "expected": {
+        "fileName": "00_64_6401_01_SYNTHETIC0001.jpg",
+        "fileType": 0,
+        "uploadResult": 1,
+        "retransmitPackages": [{"offset": 65536, "length": 65536}]
+      }
+    },
+    {
+      "sampleId": "A06",
+      "messageId": "0x1206",
+      "direction": "terminal-to-platform",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "JT/T 1078 兼容：双开源佐证（仅元数据：应答流水号 WORD + 结果 BYTE，体长必须等于 3）",
+      "bodyHex": "000100",
+      "expected": {"responseSerialNo": 1, "result": 0, "createsAlarm": false}
+    },
+    {
+      "sampleId": "A06-FAIL",
+      "messageId": "0x1206",
+      "direction": "terminal-to-platform",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "JT/T 1078 兼容：终端报告上传失败",
+      "bodyHex": "000201",
+      "expected": {"responseSerialNo": 2, "result": 1, "createsAlarm": false}
+    },
+    {
+      "sampleId": "A07",
+      "messageId": "0x9207",
+      "direction": "platform-to-terminal",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "JT/T 1078 兼容：双开源佐证（应答流水号 WORD + 上传控制 BYTE：0 暂停/1 继续/2 取消）",
+      "bodyHex": "000300",
+      "expected": {"responseSerialNo": 3, "control": 0}
+    },
+    {
+      "sampleId": "A08",
+      "messageId": "0x9206",
+      "direction": "platform-to-terminal",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "JT/T 1078 兼容：双开源佐证；用户名/密码为合成占位符，一次性凭证只存在于调用内存与下行编码",
+      "bodySha256": "ac78eab5597396b5378cf1fb5308c58fb47d667b442dbd226a44d1ff35d22ed9",
+      "bodyHex": "0a3139322e302e322e31304a390a6d656469612d757365720e73796e7468657469632d706173730d2f75706c6f61642f616c61726d40260817000000260817235959000000000000000100000100",
+      "expected": {
+        "serverAddress": "192.0.2.10",
+        "serverPort": 19001,
+        "username": "media-user",
+        "password": "synthetic-pass",
+        "uploadPath": "/upload/alarm",
+        "channel": 64,
+        "startTimeBcd": "260817000000",
+        "endTimeBcd": "260817235959",
+        "alarmFlagHex": "0000000000000001",
+        "mediaResourceType": 0,
+        "streamType": 0,
+        "storageLocation": 1,
+        "taskExecutionCondition": 0
+      }
+    },
+    {
+      "sampleId": "A09-STREAM-REJECT",
+      "messageId": "none",
+      "direction": "terminal-to-attachment-server",
+      "provenance": "DERIVED_SYNTHETIC",
+      "fieldBasis": "T/JSATL12-2017 表 4-26：码流数据报文帧头 0x30316364；永不进入网关与 API，出现在 808 链路必须拒绝",
+      "bodyHex": "30316364",
+      "expected": {"rejected": true, "reasonCode": "STREAM_DATA_REJECTED_ON_808"}
+    }
+  ]
+}

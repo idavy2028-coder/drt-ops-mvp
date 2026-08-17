@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.alarm;
 
 import com.idavy.drtops.common.ApiResponse;
+import com.idavy.drtops.integration.media.MediaServiceUnavailableException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -26,10 +27,15 @@ import org.springframework.web.bind.annotation.RestController;
 public class VehicleAlarmController {
     private final VehicleAlarmQueryService queries;
     private final VehicleAlarmActionService actions;
+    private final AlarmAttachmentService attachments;
 
-    VehicleAlarmController(VehicleAlarmQueryService queries, VehicleAlarmActionService actions) {
+    VehicleAlarmController(
+            VehicleAlarmQueryService queries,
+            VehicleAlarmActionService actions,
+            AlarmAttachmentService attachments) {
         this.queries = queries;
         this.actions = actions;
+        this.attachments = attachments;
     }
 
     @GetMapping
@@ -66,6 +72,34 @@ public class VehicleAlarmController {
         return ApiResponse.ok(queries.get(actorId, alarm.getPublicId()));
     }
 
+    @GetMapping("/{publicId}/attachments")
+    ApiResponse<List<AlarmAttachmentService.AttachmentView>> attachments(
+            Authentication authentication, @PathVariable UUID publicId) {
+        return ApiResponse.ok(attachments.listAttachments(actorId(authentication), publicId));
+    }
+
+    /**
+     * Attachment upload requests are deliberately confirmed commands. Per the 2026-08-17 ruling the
+     * raw terminal alarm identifier is not retained, so the domain answers ALARM_IDENTIFIER_UNAVAILABLE
+     * (HTTP 422) until that retention exists; no transfer is created.
+     */
+    @PostMapping("/{publicId}/attachments/{attachmentId}/requests")
+    ApiResponse<AlarmAttachmentService.AttachmentView> requestAttachment(
+            Authentication authentication, @PathVariable UUID publicId, @PathVariable UUID attachmentId,
+            @Valid @RequestBody AttachmentRequest request) {
+        if (!request.confirmed()) {
+            throw new IllegalArgumentException("attachment request must be confirmed");
+        }
+        return ApiResponse.ok(attachments.requestUpload(
+                actorId(authentication), publicId, attachmentId, request.reason().trim()));
+    }
+
+    @PostMapping("/{publicId}/attachments/{attachmentId}/view-url")
+    ApiResponse<AlarmAttachmentService.AttachmentViewUrl> attachmentViewUrl(
+            Authentication authentication, @PathVariable UUID publicId, @PathVariable UUID attachmentId) {
+        return ApiResponse.ok(attachments.issueViewUrl(actorId(authentication), publicId, attachmentId));
+    }
+
     private static UUID actorId(Authentication authentication) {
         if (authentication == null) throw new VehicleAlarmAuthorizationException("vehicle alarm access is forbidden");
         Object principal = authentication.getPrincipal();
@@ -92,13 +126,47 @@ public class VehicleAlarmController {
         return error(HttpStatus.FORBIDDEN, exception.getMessage());
     }
 
+    @ExceptionHandler(AlarmAttachmentNotFoundException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> attachmentNotFound(
+            AlarmAttachmentNotFoundException exception) {
+        return error(HttpStatus.NOT_FOUND, exception.getMessage());
+    }
+
+    @ExceptionHandler(AlarmAttachmentConflictException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> attachmentConflict(
+            AlarmAttachmentConflictException exception) {
+        return errorWithCode(HttpStatus.CONFLICT, exception.errorCode());
+    }
+
+    @ExceptionHandler(AlarmAttachmentRequestException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> attachmentRejected(
+            AlarmAttachmentRequestException exception) {
+        return errorWithCode(HttpStatus.UNPROCESSABLE_ENTITY, exception.errorCode());
+    }
+
+    @ExceptionHandler(MediaServiceUnavailableException.class)
+    ResponseEntity<ApiResponse<Map<String, String>>> mediaUnavailable(
+            MediaServiceUnavailableException exception) {
+        return errorWithCode(HttpStatus.SERVICE_UNAVAILABLE, "MEDIA_SERVICE_UNAVAILABLE");
+    }
+
     private static ResponseEntity<ApiResponse<Map<String, String>>> error(HttpStatus status, String message) {
         return ResponseEntity.status(status).body(ApiResponse.ok(Map.of("message", message)));
+    }
+
+    private static ResponseEntity<ApiResponse<Map<String, String>>> errorWithCode(
+            HttpStatus status, String errorCode) {
+        return ResponseEntity.status(status).body(ApiResponse.ok(Map.of("errorCode", errorCode)));
     }
 
     public record ActionRequest(
             @NotNull Action action,
             @NotNull @PositiveOrZero Long expectedVersion,
+            @NotBlank @Size(max = 300) String reason,
+            @NotNull Boolean confirmed) {
+    }
+
+    public record AttachmentRequest(
             @NotBlank @Size(max = 300) String reason,
             @NotNull Boolean confirmed) {
     }
