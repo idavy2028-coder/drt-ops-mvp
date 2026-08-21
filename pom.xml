@@ -11,5 +11,6 @@
     <module>libs/jt-protocol</module>
     <module>apps/jt-gateway</module>
     <module>apps/api</module>
+    <module>tools/jt-terminal-simulator</module>
   </modules>
 </project>
