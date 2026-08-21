@@ -9,3 +9,10 @@
 **/__pycache__
 **/.pytest_cache
 **/.vite
+
+# Exclude local deployment and real-terminal material from every build context.
+.env
+.env.*
+!.env.example
+.private/
+**/.private/

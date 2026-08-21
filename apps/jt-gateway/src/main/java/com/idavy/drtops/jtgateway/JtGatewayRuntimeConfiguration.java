@@ -8,6 +8,7 @@ import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
 import com.idavy.drtops.jtgateway.ingress.GatewayOutboxDispatcher;
 import com.idavy.drtops.jtgateway.ingress.GatewayOutboxRepository;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiClient;
+import com.idavy.drtops.jtgateway.ingress.OperationsApiStatus;
 import com.idavy.drtops.jtgateway.netty.JtGatewayServer;
 import com.idavy.drtops.jtgateway.session.OperationsTerminalRegistryClient;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
@@ -18,9 +19,11 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.net.http.HttpClient;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Locale;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
@@ -31,6 +34,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.dao.DataAccessException;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.web.client.RestClient;
 
@@ -52,6 +56,11 @@ public class JtGatewayRuntimeConfiguration {
     GatewayIngressBuffer gatewayIngressBuffer(
             GatewayOutboxRepository repository, ObjectMapper objectMapper, Clock gatewayClock) {
         return new GatewayIngressBuffer(repository, objectMapper, gatewayClock);
+    }
+
+    @Bean
+    OperationsApiStatus operationsApiStatus(Clock gatewayClock) {
+        return new OperationsApiStatus(gatewayClock);
     }
 
     @Bean
@@ -77,22 +86,39 @@ public class JtGatewayRuntimeConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    HttpTimeoutConfiguration gatewayHttpTimeoutConfiguration(Environment environment) {
+        return HttpTimeoutConfiguration.from(environment);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
     TerminalRegistryPort terminalRegistryPort(
-            RestClient.Builder builder, ServiceConfiguration service) {
+            RestClient.Builder builder,
+            ServiceConfiguration service,
+            HttpTimeoutConfiguration timeouts,
+            OperationsApiStatus apiStatus,
+            GatewayIngressBuffer auditBuffer,
+            ObjectMapper objectMapper) {
         return new OperationsTerminalRegistryClient(
-                builder, service.baseUrl().toString(), service.credential(),
-                service.credentialVersion(), service.gatewayInstance(), new SecureRandom());
+                boundedBuilder(builder, timeouts), service.baseUrl().toString(), service.credential(),
+                service.credentialVersion(), service.gatewayInstance(), new SecureRandom(), apiStatus,
+                auditBuffer, objectMapper);
     }
 
     @Bean
     @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
     OperationsApiClient operationsApiClient(
-            RestClient.Builder builder, ServiceConfiguration service) {
+            RestClient.Builder builder,
+            ServiceConfiguration service,
+            HttpTimeoutConfiguration timeouts,
+            OperationsApiStatus apiStatus) {
         return new OperationsApiClient(
-                builder,
+                boundedBuilder(builder, timeouts),
                 endpoint(service.baseUrl(), "/internal/jt-gateway/ingress"),
+                endpoint(service.baseUrl(), "/internal/jt-gateway/audit-events"),
                 service::credential,
-                service.credentialVersion());
+                service.credentialVersion(),
+                apiStatus);
     }
 
     @Bean
@@ -150,43 +176,72 @@ public class JtGatewayRuntimeConfiguration {
     }
 
     @Bean
+    HealthIndicator jtGatewayLivenessHealthIndicator(
+            ObjectProvider<GatewayServerLifecycle> lifecycle,
+            Environment environment) {
+        return () -> {
+            boolean enabled = environment.getProperty(
+                    "jt.gateway.tcp.enabled", Boolean.class, false);
+            GatewayServerLifecycle listener = lifecycle.getIfAvailable();
+            boolean listening = !enabled || listener != null && listener.isListening();
+            return (listening ? Health.up() : Health.down())
+                    .withDetail("tcpListening", enabled && listening)
+                    .build();
+        };
+    }
+
+    @Bean
     HealthIndicator jtGatewayHealthIndicator(
             GatewayIngressBuffer buffer,
             GatewayOutboxRepository repository,
             ObjectProvider<GatewayServerLifecycle> lifecycle,
             ObjectProvider<OperationsApiClient> apiClient,
+            OperationsApiStatus apiStatus,
+            Clock gatewayClock,
             Environment environment) {
         return () -> {
             boolean enabled = environment.getProperty(
                     "jt.gateway.tcp.enabled", Boolean.class, false);
             GatewayServerLifecycle listener = lifecycle.getIfAvailable();
             OperationsApiClient operations = apiClient.getIfAvailable();
-            boolean tcpListening = enabled && listener != null && listener.isRunning();
+            boolean tcpListening = enabled && listener != null && listener.isListening();
             boolean writable = buffer.bufferWritable();
-            int pending = -1;
+            GatewayOutboxRepository.OperationalSnapshot outbox =
+                    new GatewayOutboxRepository.OperationalSnapshot(-1, -1, -1, -1);
             if (writable) {
                 try {
-                    pending = repository.pendingCount();
+                    outbox = repository.operationalSnapshot(gatewayClock.instant());
                 } catch (DataAccessException unavailable) {
                     writable = false;
                 }
             }
-            Object reachable = !enabled ? "DISABLED"
-                    : operations == null || !operations.deliveryAttempted() ? "UNKNOWN"
-                    : operations.operationsApiReachable();
+            OperationsApiStatus.Snapshot api = apiStatus.snapshot();
+            Object apiState = enabled ? api.state().name() : "DISABLED";
+            Object reachable = !enabled ? "DISABLED" : switch (api.state()) {
+                case UNKNOWN -> "UNKNOWN";
+                case UP -> true;
+                case DOWN -> false;
+            };
             Object lastDeliverySuccessful = !enabled ? "DISABLED"
                     : operations == null || !operations.deliveryAttempted() ? "UNKNOWN"
                     : operations.lastDeliverySuccessful();
-            boolean up = writable && (!enabled || tcpListening)
-                    && (!(reachable instanceof Boolean value) || value)
-                    && (!(lastDeliverySuccessful instanceof Boolean value) || value);
+            int maximumAge = integer(environment, "jt.gateway.health.max-unresolved-age-seconds", 300);
+            boolean up = writable
+                    && (!enabled || tcpListening && api.state() == OperationsApiStatus.State.UP)
+                    && outbox.deadLetter() == 0
+                    && outbox.oldestUnresolvedAgeSeconds() <= maximumAge;
             Health.Builder health = up ? Health.up() : Health.down();
             return health
                     .withDetail("tcpListening", tcpListening)
                     .withDetail("bufferWritable", writable)
+                    .withDetail("operationsApiStatus", apiState)
+                    .withDetail("operationsApiOperation", api.operation())
                     .withDetail("operationsApiReachable", reachable)
                     .withDetail("lastDeliverySuccessful", lastDeliverySuccessful)
-                    .withDetail("outboxPending", pending)
+                    .withDetail("outboxPending", outbox.pending())
+                    .withDetail("outboxDelivering", outbox.delivering())
+                    .withDetail("outboxDeadLetter", outbox.deadLetter())
+                    .withDetail("oldestUnresolvedAgeSeconds", outbox.oldestUnresolvedAgeSeconds())
                     .build();
         };
     }
@@ -201,8 +256,17 @@ public class JtGatewayRuntimeConfiguration {
             Gauge.builder("jt.gateway.tcp.listening", lifecycle,
                             provider -> {
                                 GatewayServerLifecycle listener = provider.getIfAvailable();
-                                return listener != null && listener.isRunning() ? 1 : 0;
+                                return listener != null && listener.isListening() ? 1 : 0;
                             })
+                    .register(registry);
+            Gauge.builder("jt.gateway.outbox.delivering", repository,
+                            target -> snapshotMetric(target, "DELIVERING"))
+                    .register(registry);
+            Gauge.builder("jt.gateway.outbox.dead.letter", repository,
+                            target -> snapshotMetric(target, "DEAD_LETTER"))
+                    .register(registry);
+            Gauge.builder("jt.gateway.outbox.oldest.unresolved.age.seconds", repository,
+                            target -> snapshotMetric(target, "OLDEST"))
                     .register(registry);
             Gauge.builder("jt.gateway.buffer.writable", buffer,
                             target -> target.bufferWritable() ? 1 : 0)
@@ -233,9 +297,34 @@ public class JtGatewayRuntimeConfiguration {
         };
     }
 
+    private static double snapshotMetric(GatewayOutboxRepository repository, String field) {
+        try {
+            GatewayOutboxRepository.OperationalSnapshot snapshot =
+                    repository.operationalSnapshot(Instant.now());
+            return switch (field) {
+                case "DELIVERING" -> snapshot.delivering();
+                case "DEAD_LETTER" -> snapshot.deadLetter();
+                case "OLDEST" -> snapshot.oldestUnresolvedAgeSeconds();
+                default -> -1;
+            };
+        } catch (DataAccessException unavailable) {
+            return -1;
+        }
+    }
+
     private static URI endpoint(URI baseUrl, String path) {
         String base = baseUrl.toString();
         return URI.create((base.endsWith("/") ? base.substring(0, base.length() - 1) : base) + path);
+    }
+
+    private static RestClient.Builder boundedBuilder(
+            RestClient.Builder source, HttpTimeoutConfiguration timeouts) {
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(timeouts.connectTimeout())
+                .build();
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(client);
+        requestFactory.setReadTimeout(timeouts.readTimeout());
+        return source.clone().requestFactory(requestFactory);
     }
 
     private static int integer(Environment environment, String name, int defaultValue) {
@@ -278,6 +367,28 @@ public class JtGatewayRuntimeConfiguration {
                 throw new IllegalArgumentException(name + " must be configured when TCP is enabled");
             }
             return value;
+        }
+    }
+
+    record HttpTimeoutConfiguration(Duration connectTimeout, Duration readTimeout) {
+        private static final Duration DELIVERY_LEASE = Duration.ofMinutes(1);
+
+        HttpTimeoutConfiguration {
+            requireBounded(connectTimeout, "connect timeout");
+            requireBounded(readTimeout, "read timeout");
+        }
+
+        static HttpTimeoutConfiguration from(Environment environment) {
+            return new HttpTimeoutConfiguration(
+                    Duration.ofMillis(integer(environment, "jt.gateway.http.connect-timeout-ms", 2000)),
+                    Duration.ofMillis(integer(environment, "jt.gateway.http.read-timeout-ms", 5000)));
+        }
+
+        private static void requireBounded(Duration timeout, String field) {
+            if (timeout == null || timeout.isZero() || timeout.isNegative()
+                    || timeout.compareTo(DELIVERY_LEASE) >= 0) {
+                throw new IllegalArgumentException(field + " must be positive and shorter than delivery lease");
+            }
         }
     }
 }

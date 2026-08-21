@@ -20,6 +20,9 @@ jt:
     service-credential:
       version: ${JT_GATEWAY_SERVICE_CREDENTIAL_VERSION:0}
       plaintext: ${JT_GATEWAY_SERVICE_CREDENTIAL_PLAINTEXT:}
+    http:
+      connect-timeout-ms: ${JT_GATEWAY_HTTP_CONNECT_TIMEOUT_MS:2000}
+      read-timeout-ms: ${JT_GATEWAY_HTTP_READ_TIMEOUT_MS:5000}
     tcp:
       enabled: ${JT_GATEWAY_TCP_ENABLED:false}
       bind-address: ${JT_GATEWAY_TCP_BIND_ADDRESS:0.0.0.0}
@@ -37,6 +40,8 @@ jt:
       max-attempts: ${JT_GATEWAY_DISPATCH_MAX_ATTEMPTS:8}
       initial-backoff-ms: ${JT_GATEWAY_DISPATCH_INITIAL_BACKOFF_MS:1000}
       maximum-backoff-ms: ${JT_GATEWAY_DISPATCH_MAXIMUM_BACKOFF_MS:300000}
+    health:
+      max-unresolved-age-seconds: ${JT_GATEWAY_MAX_UNRESOLVED_AGE_SECONDS:300}
 
 management:
   endpoint:
@@ -44,6 +49,13 @@ management:
       show-details: always
       probes:
         enabled: true
+      group:
+        liveness:
+          include: livenessState,jtGatewayLiveness
+          show-details: always
+        readiness:
+          include: readinessState,jtGateway
+          show-details: always
   endpoints:
     web:
       exposure:

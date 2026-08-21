@@ -33,4 +33,8 @@ public final class GatewayServerLifecycle implements SmartLifecycle {
     public boolean isRunning() {
         return running;
     }
+
+    public boolean isListening() {
+        return running && server.isListening();
+    }
 }

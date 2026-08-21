@@ -63,6 +63,33 @@ class GatewayOutboxDispatcherTest {
     }
 
     @Test
+    void reportsPendingDeliveringDeadLetterAndOldestUnresolvedAge() {
+        var fixture = fixture(1);
+        GatewayIngressEnvelope deadLetter = new GatewayIngressEnvelope(
+                1, envelopeKey(70), IngressKind.ALARM, NOW.minusSeconds(30), "{\"sequence\":70}");
+        GatewayIngressEnvelope delivering = new GatewayIngressEnvelope(
+                1, envelopeKey(71), IngressKind.ALARM, NOW.minusSeconds(20), "{\"sequence\":71}");
+        GatewayIngressEnvelope pending = new GatewayIngressEnvelope(
+                1, envelopeKey(72), IngressKind.ALARM, NOW.minusSeconds(10), "{\"sequence\":72}");
+        fixture.buffer.append(deadLetter);
+        fixture.buffer.append(delivering);
+        fixture.buffer.append(pending);
+        GatewayOutboxRepository.OutboxEntry first = fixture.repository.claimEligible(
+                NOW, GatewayOutboxRepository.Priority.HIGH, 1).getFirst();
+        fixture.repository.markFailed(List.of(new GatewayOutboxRepository.FailureUpdate(
+                first, 1, NOW, true, "SYNTHETIC_REJECTION")));
+        fixture.repository.claimEligible(NOW, GatewayOutboxRepository.Priority.HIGH, 1);
+
+        GatewayOutboxRepository.OperationalSnapshot snapshot =
+                fixture.repository.operationalSnapshot(NOW);
+
+        assertEquals(1, snapshot.pending());
+        assertEquals(1, snapshot.delivering());
+        assertEquals(1, snapshot.deadLetter());
+        assertEquals(30, snapshot.oldestUnresolvedAgeSeconds());
+    }
+
+    @Test
     void deliversUrgentIngressBeforeAtMostFiftyLocationsPerSecond() {
         var fixture = fixture(8);
         for (int index = 0; index < 60; index++) {

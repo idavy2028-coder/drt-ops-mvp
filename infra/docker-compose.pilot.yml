@@ -7,9 +7,9 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: ${DRT_OPS_DATABASE:-drt_ops}
-      POSTGRES_USER: ${DRT_OPS_DATASOURCE_USERNAME:-drt_ops}
-      POSTGRES_PASSWORD: ${DRT_OPS_DATASOURCE_PASSWORD:-drt_ops}
+      POSTGRES_DB: ${DRT_OPS_DATABASE:?DRT_OPS_DATABASE must be set}
+      POSTGRES_USER: ${DRT_OPS_DATASOURCE_USERNAME:?DRT_OPS_DATASOURCE_USERNAME must be set}
+      POSTGRES_PASSWORD: ${DRT_OPS_DATASOURCE_PASSWORD:?DRT_OPS_DATASOURCE_PASSWORD must be set}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init-postgis.sql:/docker-entrypoint-initdb.d/init-postgis.sql:ro
@@ -76,16 +76,16 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DRT_OPS_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DRT_OPS_DATABASE:-drt_ops}
-      DRT_OPS_DATASOURCE_USERNAME: ${DRT_OPS_DATASOURCE_USERNAME:-drt_ops}
-      DRT_OPS_DATASOURCE_PASSWORD: ${DRT_OPS_DATASOURCE_PASSWORD:-drt_ops}
+      DRT_OPS_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DRT_OPS_DATABASE:?DRT_OPS_DATABASE must be set}
+      DRT_OPS_DATASOURCE_USERNAME: ${DRT_OPS_DATASOURCE_USERNAME:?DRT_OPS_DATASOURCE_USERNAME must be set}
+      DRT_OPS_DATASOURCE_PASSWORD: ${DRT_OPS_DATASOURCE_PASSWORD:?DRT_OPS_DATASOURCE_PASSWORD must be set}
       DISPATCH_ALGORITHM_BASE_URL: http://algorithm:8090
       DRT_AMAP_ENABLED: "true"
-      DRT_AMAP_WEB_SERVICE_KEY: local-simulator
+      DRT_AMAP_WEB_SERVICE_KEY: ${DRT_AMAP_WEB_SERVICE_KEY:?DRT_AMAP_WEB_SERVICE_KEY must be set}
       DRT_AMAP_BASE_URL: http://route-simulator:8091
-      DRT_AUTH_JWT_SECRET: ${DRT_AUTH_JWT_SECRET:-pilot-only-jwt-secret-change-before-production}
-      DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME: ${DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME:-admin}
-      DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD:-pilot-only-password}
+      DRT_AUTH_JWT_SECRET: ${DRT_AUTH_JWT_SECRET:?DRT_AUTH_JWT_SECRET must be set}
+      DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME: ${DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME:?DRT_AUTH_BOOTSTRAP_ADMIN_USERNAME must be set}
+      DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD:?DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD must be set}
       DRT_AUTH_REFRESH_COOKIE_SECURE: ${DRT_AUTH_REFRESH_COOKIE_SECURE:-false}
       DRT_WEB_ALLOWED_ORIGINS: ${DRT_WEB_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5176,http://127.0.0.1:5176}
       JT_GATEWAY_SERVICE_CREDENTIALS_CURRENT_VERSION: ${JT_GATEWAY_SERVICE_CREDENTIAL_VERSION:?JT_GATEWAY_SERVICE_CREDENTIAL_VERSION must be set}
@@ -146,7 +146,7 @@ services:
           cpus: "0.25"
           memory: 256M
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7612/actuator/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7612/actuator/health/liveness"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -172,3 +172,4 @@ volumes:
   postgres-data:
   redis-data:
   jt-gateway-data:
+    name: ${JT_GATEWAY_DATA_VOLUME:?JT_GATEWAY_DATA_VOLUME must be set}

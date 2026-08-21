@@ -17,6 +17,8 @@
 
 1. 四台终端均已由现场确认，别名与脱敏车牌一一对应且无重复。
 2. 私有资料文件位于 `.private/` 或等效忽略路径，权限为最小可读；未进入 Git 暂存区。
+   执行 `git check-ignore --no-index .private/p6-2-real-terminals.csv .env .env.production.local`，三条路径都必须被命中；再执行 `git check-ignore --no-index .env.example`，该模板不得被忽略。
+   最后执行 `git status --short --untracked-files=all`，确认没有 `.env`、`.private/` 或真实终端资料进入工作树清单。
 3. 已确认协议版本、坐标系、T/JSATL12、JT/T 1078 能力及固件版本，并留存来源引用。
 4. 已完成网络可达、NAT/防火墙、厂商安全报警与静态回放核对；失败项写明原因、时间窗和补证计划。
 5. 已确认附件控制方式和外部媒体测试 profile；媒体文件或 token 仅留在受控私有位置。

@@ -1,5 +1,11 @@
 package com.idavy.drtops.jtgateway.session;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
+import com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope;
+import com.idavy.drtops.jtgateway.ingress.IngressKind;
+import com.idavy.drtops.jtgateway.ingress.OperationsApiStatus;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -24,6 +30,9 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     private final int credentialVersion;
     private final String gatewayInstance;
     private final SecureRandom secureRandom;
+    private final OperationsApiStatus apiStatus;
+    private final GatewayIngressBuffer auditBuffer;
+    private final ObjectMapper objectMapper;
 
     public OperationsTerminalRegistryClient(
             RestClient.Builder builder,
@@ -31,7 +40,10 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             String credential,
             int credentialVersion,
             String gatewayInstance,
-            SecureRandom secureRandom) {
+            SecureRandom secureRandom,
+            OperationsApiStatus apiStatus,
+            GatewayIngressBuffer auditBuffer,
+            ObjectMapper objectMapper) {
         this.client = Objects.requireNonNull(builder, "builder").baseUrl(baseUrl).build();
         this.credential = requireText(credential, "credential");
         if (credentialVersion < 1) {
@@ -40,6 +52,9 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
         this.credentialVersion = credentialVersion;
         this.gatewayInstance = requireText(gatewayInstance, "gatewayInstance");
         this.secureRandom = Objects.requireNonNull(secureRandom, "secureRandom");
+        this.apiStatus = Objects.requireNonNull(apiStatus, "apiStatus");
+        this.auditBuffer = Objects.requireNonNull(auditBuffer, "auditBuffer");
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
     }
 
     @Override
@@ -55,8 +70,14 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             RegistrationPayload approved = response == null ? null : response.data();
             if (approved == null || !approved.approved() || approved.terminalId() == null
                     || approved.vehicleId() == null || approved.tokenVersion() < 1) {
+                if (approved == null) {
+                    apiStatus.failure("REGISTRATION_VERIFY");
+                } else {
+                    apiStatus.success("REGISTRATION_VERIFY");
+                }
                 return RegistrationDecision.rejected(RegistrationRejection.NOT_PREPROVISIONED);
             }
+            apiStatus.success("REGISTRATION_VERIFY");
             byte[] entropy = new byte[32];
             secureRandom.nextBytes(entropy);
             byte[] token = Base64.getUrlEncoder().withoutPadding().encode(entropy);
@@ -68,6 +89,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                                 approved.tokenVersion(), digest, gatewayInstance))
                         .retrieve()
                         .toBodilessEntity();
+                apiStatus.success("REGISTRATION_COMPLETE");
                 return RegistrationDecision.approved(
                         approved.terminalId(), approved.vehicleId(), approved.sourceCoordinateSystem(),
                         approved.activeSafetyStandard(), approved.activeSafetyModules(),
@@ -76,6 +98,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                 Arrays.fill(token, (byte) 0);
             }
         } catch (RestClientException | IllegalArgumentException unavailable) {
+            apiStatus.failure("REGISTRATION");
             return RegistrationDecision.rejected(RegistrationRejection.NOT_PREPROVISIONED);
         }
     }
@@ -90,10 +113,16 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                             terminalId, tokenVersion, presentedTokenSha256, gatewayInstance))
                     .retrieve()
                     .body(AuthenticationResponse.class);
+            if (response == null || response.data() == null) {
+                apiStatus.failure("AUTHENTICATION_VERIFY");
+            } else {
+                apiStatus.success("AUTHENTICATION_VERIFY");
+            }
             return response != null && response.data() != null && response.data().approved()
                     ? AuthenticationDecision.allow()
                     : AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         } catch (RestClientException unavailable) {
+            apiStatus.failure("AUTHENTICATION_VERIFY");
             return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         }
     }
@@ -103,15 +132,24 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
         Objects.requireNonNull(event, "event");
         AuditMapping mapping = auditMapping(event.type());
         try {
-            authenticatedPost("/internal/jt-gateway/audit-events")
-                    .body(new AuditRequest(
-                            event.terminalId(), null, mapping.eventType(), mapping.result(),
-                            event.reasonCode(), null, null, null, event.remoteAddress(),
-                            event.occurredAt().atOffset(ZoneOffset.UTC), gatewayInstance))
-                    .retrieve()
-                    .toBodilessEntity();
-        } catch (RestClientException ignored) {
-            // Auditing is best effort and never discloses event material through an exception.
+            AuditRequest audit = new AuditRequest(
+                    event.terminalId(), null, mapping.eventType(), mapping.result(),
+                    event.reasonCode(), null, null, null, event.remoteAddress(),
+                    event.occurredAt().atOffset(ZoneOffset.UTC), gatewayInstance);
+            String keyMaterial = String.join("|",
+                    event.type().name(), String.valueOf(event.terminalId()), event.terminalAlias(),
+                    event.remoteAddress(), event.reasonCode(), event.occurredAt().toString());
+            GatewayIngressBuffer.WriteResult result = auditBuffer.append(new GatewayIngressEnvelope(
+                    1,
+                    UUID.nameUUIDFromBytes(keyMaterial.getBytes(StandardCharsets.UTF_8)),
+                    IngressKind.SESSION_AUDIT,
+                    event.occurredAt(),
+                    objectMapper.writeValueAsString(audit)));
+            if (result == GatewayIngressBuffer.WriteResult.UNAVAILABLE) {
+                throw new IllegalStateException("session audit buffer is unavailable");
+            }
+        } catch (JsonProcessingException serializationFailure) {
+            throw new IllegalStateException("session audit serialization failed", serializationFailure);
         }
     }
 

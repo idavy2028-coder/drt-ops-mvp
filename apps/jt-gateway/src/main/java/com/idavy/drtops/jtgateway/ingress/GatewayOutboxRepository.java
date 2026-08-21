@@ -80,7 +80,7 @@ public final class GatewayOutboxRepository {
                 return List.of();
             }
             String kindPredicate = priority == Priority.HIGH
-                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_METADATA', 'ATTACHMENT_CONTROL') "
+                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'SESSION_AUDIT', 'ATTACHMENT_METADATA', 'ATTACHMENT_CONTROL') "
                             + "AND (dependency_idempotency_key IS NULL OR dependency_idempotency_key IN "
                             + "(SELECT idempotency_key FROM gateway_outbox dependency WHERE dependency.status = 'DELIVERED'))"
                     : "kind = 'LOCATION'";
@@ -275,6 +275,27 @@ public final class GatewayOutboxRepository {
         return count("SELECT COUNT(*) FROM gateway_outbox WHERE status = 'DELIVERED'");
     }
 
+    public OperationalSnapshot operationalSnapshot(Instant now) {
+        Objects.requireNonNull(now, "now");
+        return jdbc.queryForObject("""
+                SELECT
+                    SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN status = 'DELIVERING' THEN 1 ELSE 0 END) AS delivering_count,
+                    SUM(CASE WHEN status = 'DEAD_LETTER' THEN 1 ELSE 0 END) AS dead_letter_count,
+                    MIN(CASE WHEN status IN ('PENDING', 'DELIVERING', 'DEAD_LETTER')
+                             THEN created_at ELSE NULL END) AS oldest_unresolved_at
+                FROM gateway_outbox
+                """, (result, ignored) -> {
+            OffsetDateTime oldest = result.getObject("oldest_unresolved_at", OffsetDateTime.class);
+            long age = oldest == null ? 0 : Math.max(0, Duration.between(oldest.toInstant(), now).getSeconds());
+            return new OperationalSnapshot(
+                    result.getInt("pending_count"),
+                    result.getInt("delivering_count"),
+                    result.getInt("dead_letter_count"),
+                    age);
+        });
+    }
+
     private int count(String sql) {
         Integer value = jdbc.queryForObject(sql, Integer.class);
         return value == null ? 0 : value;
@@ -311,6 +332,9 @@ public final class GatewayOutboxRepository {
         HIGH,
         LOCATION
     }
+
+    public record OperationalSnapshot(
+            int pending, int delivering, int deadLetter, long oldestUnresolvedAgeSeconds) { }
 
     public record FailureUpdate(
             OutboxEntry entry,

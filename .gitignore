@@ -9,3 +9,10 @@ playwright-report/
 .pytest_cache/
 .tools/
 __pycache__/
+
+# Local deployment and real-terminal material must never enter Git.
+.env
+.env.*
+!.env.example
+.private/
+**/.private/

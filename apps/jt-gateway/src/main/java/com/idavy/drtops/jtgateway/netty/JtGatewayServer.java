@@ -182,6 +182,10 @@ public final class JtGatewayServer implements AutoCloseable {
         return acceptedChannels == null ? 0 : acceptedChannels.size();
     }
 
+    public synchronized boolean isListening() {
+        return serverChannel != null && serverChannel.isActive();
+    }
+
     private int pendingBusinessTasks() {
         int pending = 0;
         if (businessWorkers == null) {

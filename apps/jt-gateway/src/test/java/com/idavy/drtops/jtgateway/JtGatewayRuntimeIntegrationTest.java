@@ -10,7 +10,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jtgateway.ingress.GatewayOutboxRepository;
+import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
+import com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope;
+import com.idavy.drtops.jtgateway.ingress.GatewayOutboxDispatcher;
+import com.idavy.drtops.jtgateway.ingress.IngressKind;
 import com.idavy.drtops.jtgateway.netty.JtGatewayServer;
+import com.idavy.drtops.jtgateway.session.RegistrationDecision;
+import com.idavy.drtops.jtgateway.session.TerminalRegistrationIdentity;
+import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import com.idavy.drtops.jtsimulator.SimulatedTerminal;
 import com.sun.net.httpserver.HttpExchange;
@@ -32,6 +39,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -69,6 +82,12 @@ class JtGatewayRuntimeIntegrationTest {
                     Map.entry("spring.datasource.password", "")));
             try {
                 assertEquals(1, context.getBeansOfType(JtGatewayServer.class).size());
+                int managementPort = ((WebServerApplicationContext) context).getWebServer().getPort();
+                HttpResponse<String> initialReadiness = health(managementPort, "readiness");
+                assertEquals(503, initialReadiness.statusCode());
+                assertTrue(initialReadiness.body().contains("operationsApiStatus"));
+                assertTrue(initialReadiness.body().contains("UNKNOWN"));
+                assertEquals(200, health(managementPort, "liveness").statusCode());
                 TerminalSessionRegistry sessions = context.getBean(TerminalSessionRegistry.class);
                 SimulatedTerminal terminal = new SimulatedTerminal(
                         TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, "SIM-PLATE");
@@ -93,7 +112,6 @@ class JtGatewayRuntimeIntegrationTest {
                     assertEquals(0, context.getBean(GatewayOutboxRepository.class).pendingCount());
                     assertTrue(api.allRequestsAuthenticated());
 
-                    int managementPort = ((WebServerApplicationContext) context).getWebServer().getPort();
                     HttpResponse<String> health = HttpClient.newHttpClient().send(
                             HttpRequest.newBuilder(URI.create(
                                             "http://127.0.0.1:" + managementPort + "/actuator/health"))
@@ -104,6 +122,9 @@ class JtGatewayRuntimeIntegrationTest {
                     assertTrue(health.body().contains("tcpListening"));
                     assertTrue(health.body().contains("bufferWritable"));
                     assertTrue(health.body().contains("operationsApiReachable"));
+                    assertTrue(health.body().contains("outboxDelivering"));
+                    assertTrue(health.body().contains("outboxDeadLetter"));
+                    assertTrue(health.body().contains("oldestUnresolvedAgeSeconds"));
                     assertFalse(health.body().contains(SERVICE_CREDENTIAL));
                     assertFalse(health.body().contains(TERMINAL_IDENTITY));
 
@@ -119,6 +140,11 @@ class JtGatewayRuntimeIntegrationTest {
                     assertTrue(metrics.body().contains("jt_gateway_operations_api_reachable"));
                     assertTrue(metrics.body().contains("jt_gateway_operations_delivery_successful"));
                     assertFalse(metrics.body().contains(SERVICE_CREDENTIAL));
+                    assertEquals(200, health(managementPort, "readiness").statusCode());
+                    context.getBean(JtGatewayServer.class).close();
+                    HttpResponse<String> stoppedReadiness = health(managementPort, "readiness");
+                    assertEquals(503, stoppedReadiness.statusCode());
+                    assertTrue(stoppedReadiness.body().contains("\"tcpListening\":false"));
                 } finally {
                     terminal.close();
                 }
@@ -131,7 +157,8 @@ class JtGatewayRuntimeIntegrationTest {
         GatewayOutboxRepository restarted = new GatewayOutboxRepository(
                 new org.springframework.jdbc.datasource.DriverManagerDataSource(
                         fileDatabaseUrl(database), "sa", ""));
-        assertEquals(1, restarted.totalCount(), "the file-backed outbox must survive context shutdown");
+        assertEquals(3, restarted.totalCount(),
+                "location plus registration/authentication audits must survive context shutdown");
     }
 
     @Test
@@ -161,6 +188,60 @@ class JtGatewayRuntimeIntegrationTest {
                 "spring.datasource.password", "")));
         assertNotNull(failure.getMessage());
         assertConnectionRefused(devicePort);
+    }
+
+    @Test
+    void boundsIngressTimeoutKeepsRegistrationIsolatedAndRecoversTheDispatcher() throws Exception {
+        int devicePort = freeLoopbackPort();
+        ExecutorService callers = Executors.newFixedThreadPool(2);
+        try (OperationsApiStub api = new OperationsApiStub();
+                ConfigurableApplicationContext context = start(Map.ofEntries(
+                        Map.entry("jt.gateway.tcp.enabled", "true"),
+                        Map.entry("jt.gateway.tcp.bind-address", "127.0.0.1"),
+                        Map.entry("jt.gateway.tcp.port", Integer.toString(devicePort)),
+                        Map.entry("jt.gateway.operations-api.base-url", api.baseUrl()),
+                        Map.entry("jt.gateway.service-credential.version", "3"),
+                        Map.entry("jt.gateway.service-credential.plaintext", SERVICE_CREDENTIAL),
+                        Map.entry("jt.gateway.instance", "runtime-timeout-test"),
+                        Map.entry("jt.gateway.http.connect-timeout-ms", "100"),
+                        Map.entry("jt.gateway.http.read-timeout-ms", "100"),
+                        Map.entry("jt.gateway.dispatch.initial-backoff-ms", "1"),
+                        Map.entry("jt.gateway.dispatch.initial-delay", "600000"),
+                        Map.entry("spring.datasource.url",
+                                "jdbc:h2:mem:runtime_timeout;MODE=PostgreSQL;DB_CLOSE_DELAY=-1"),
+                        Map.entry("spring.datasource.username", "sa"),
+                        Map.entry("spring.datasource.password", "")))) {
+            GatewayIngressEnvelope envelope = new GatewayIngressEnvelope(
+                    1, UUID.fromString("66666666-6666-6666-6666-666666666666"),
+                    IngressKind.ALARM, java.time.Instant.now(), "{\"alarm\":\"synthetic\"}");
+            context.getBean(GatewayIngressBuffer.class).append(envelope);
+            api.blockNextIngress();
+            Future<GatewayOutboxDispatcher.DispatchReport> dispatch = callers.submit(
+                    context.getBean(GatewayOutboxDispatcher.class)::dispatchOnce);
+            assertTrue(api.awaitBlockedIngress(Duration.ofSeconds(2)));
+
+            Future<RegistrationDecision> registration = callers.submit(() ->
+                    context.getBean(TerminalRegistryPort.class).verifyRegistration(
+                            new TerminalRegistrationIdentity(
+                                    ProtocolVersion.JT808_2013, TERMINAL_IDENTITY,
+                                    "SIMMF", "SIM-MODEL", "SIM0001", "SIM-PLATE")));
+            assertTrue(registration.get(2, TimeUnit.SECONDS).approved());
+
+            GatewayOutboxDispatcher.DispatchReport timedOut = dispatch.get(2, TimeUnit.SECONDS);
+            assertEquals(1, timedOut.retried());
+            api.releaseBlockedIngress();
+            GatewayOutboxRepository repository = context.getBean(GatewayOutboxRepository.class);
+            await(() -> repository.find(envelope.idempotencyKey()).orElseThrow()
+                            .nextAttemptAt().compareTo(java.time.Instant.now()) <= 0,
+                    Duration.ofSeconds(2));
+
+            GatewayOutboxDispatcher.DispatchReport recovered =
+                    context.getBean(GatewayOutboxDispatcher.class).dispatchOnce();
+            assertEquals(1, recovered.delivered());
+            assertEquals(0, repository.pendingCount());
+        } finally {
+            callers.shutdownNow();
+        }
     }
 
     private ConfigurableApplicationContext start(Map<String, String> taskProperties) {
@@ -193,6 +274,14 @@ class JtGatewayRuntimeIntegrationTest {
         });
     }
 
+    private static HttpResponse<String> health(int managementPort, String group) throws Exception {
+        return HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create(
+                                "http://127.0.0.1:" + managementPort + "/actuator/health/" + group))
+                        .GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
     private static void await(BooleanSupplier condition, Duration timeout) throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
@@ -207,6 +296,10 @@ class JtGatewayRuntimeIntegrationTest {
         private final List<Boolean> authenticated = new CopyOnWriteArrayList<>();
         private final List<String> requestPaths = new CopyOnWriteArrayList<>();
         private final List<JsonNode> ingress = new CopyOnWriteArrayList<>();
+        private final ExecutorService httpWorkers = Executors.newCachedThreadPool();
+        private final AtomicBoolean blockIngress = new AtomicBoolean();
+        private final CountDownLatch ingressBlocked = new CountDownLatch(1);
+        private final CountDownLatch releaseIngress = new CountDownLatch(1);
         private volatile String registeredTokenDigest;
 
         private OperationsApiStub() throws IOException {
@@ -235,6 +328,16 @@ class JtGatewayRuntimeIntegrationTest {
             server.createContext("/internal/jt-gateway/audit-events", exchange ->
                     respond(exchange, 200, "{\"data\":{\"recorded\":true}}"));
             server.createContext("/internal/jt-gateway/ingress", exchange -> {
+                if (blockIngress.compareAndSet(true, false)) {
+                    ingressBlocked.countDown();
+                    try {
+                        releaseIngress.await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        exchange.close();
+                        return;
+                    }
+                }
                 JsonNode batch = read(exchange);
                 batch.forEach(ingress::add);
                 com.fasterxml.jackson.databind.node.ArrayNode results = mapper.createArrayNode();
@@ -246,6 +349,7 @@ class JtGatewayRuntimeIntegrationTest {
                 response.set("data", results);
                 respond(exchange, 200, response.toString());
             });
+            server.setExecutor(httpWorkers);
             server.start();
         }
 
@@ -255,6 +359,18 @@ class JtGatewayRuntimeIntegrationTest {
 
         private int ingressCount() {
             return ingress.size();
+        }
+
+        private void blockNextIngress() {
+            blockIngress.set(true);
+        }
+
+        private boolean awaitBlockedIngress(Duration timeout) throws InterruptedException {
+            return ingressBlocked.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        private void releaseBlockedIngress() {
+            releaseIngress.countDown();
         }
 
         private boolean allRequestsAuthenticated() {
@@ -290,7 +406,9 @@ class JtGatewayRuntimeIntegrationTest {
 
         @Override
         public void close() {
+            releaseIngress.countDown();
             server.stop(0);
+            httpWorkers.shutdownNow();
         }
     }
 }

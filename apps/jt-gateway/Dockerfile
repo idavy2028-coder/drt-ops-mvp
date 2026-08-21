@@ -5,6 +5,7 @@ WORKDIR /workspace
 COPY pom.xml ./
 COPY libs/jt-protocol/pom.xml libs/jt-protocol/pom.xml
 COPY apps/jt-gateway/pom.xml apps/jt-gateway/pom.xml
+COPY apps/api/pom.xml apps/api/pom.xml
 COPY tools/jt-terminal-simulator/pom.xml tools/jt-terminal-simulator/pom.xml
 RUN mvn -q -pl apps/jt-gateway -am dependency:go-offline
 

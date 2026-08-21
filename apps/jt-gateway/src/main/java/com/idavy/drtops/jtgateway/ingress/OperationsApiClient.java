@@ -1,5 +1,8 @@
 package com.idavy.drtops.jtgateway.ingress;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatusCode;
@@ -21,8 +24,11 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
 
     private final RestClient restClient;
     private final URI endpoint;
+    private final URI auditEndpoint;
+    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
     private final Supplier<String> bearerCredential;
     private final int credentialVersion;
+    private final OperationsApiStatus apiStatus;
     private final AtomicBoolean operationsApiReachable = new AtomicBoolean(false);
     private final AtomicBoolean deliveryAttempted = new AtomicBoolean(false);
     private final AtomicBoolean lastDeliverySuccessful = new AtomicBoolean(false);
@@ -32,13 +38,35 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
             URI endpoint,
             Supplier<String> bearerCredential,
             int credentialVersion) {
+        this(builder, endpoint, siblingAuditEndpoint(endpoint), bearerCredential, credentialVersion,
+                new OperationsApiStatus(java.time.Clock.systemUTC()));
+    }
+
+    public OperationsApiClient(
+            RestClient.Builder builder,
+            URI endpoint,
+            Supplier<String> bearerCredential,
+            int credentialVersion,
+            OperationsApiStatus apiStatus) {
+        this(builder, endpoint, siblingAuditEndpoint(endpoint), bearerCredential, credentialVersion, apiStatus);
+    }
+
+    public OperationsApiClient(
+            RestClient.Builder builder,
+            URI endpoint,
+            URI auditEndpoint,
+            Supplier<String> bearerCredential,
+            int credentialVersion,
+            OperationsApiStatus apiStatus) {
         this.restClient = Objects.requireNonNull(builder, "builder").build();
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
+        this.auditEndpoint = Objects.requireNonNull(auditEndpoint, "auditEndpoint");
         this.bearerCredential = Objects.requireNonNull(bearerCredential, "bearerCredential");
         if (credentialVersion < 1) {
             throw new IllegalArgumentException("credentialVersion must be positive");
         }
         this.credentialVersion = credentialVersion;
+        this.apiStatus = Objects.requireNonNull(apiStatus, "apiStatus");
     }
 
     @Override
@@ -51,33 +79,84 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
         String credential = bearerCredential.get();
         if (credential == null || credential.isBlank()) {
             operationsApiReachable.set(false);
+            apiStatus.failure("INGRESS");
             return GatewayOutboxDispatcher.DeliveryResult.retryable("CREDENTIAL_UNAVAILABLE");
         }
         try {
-            ResponseEntity<IngressResponse> response = restClient.post()
-                    .uri(endpoint)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + credential)
-                    .header(CREDENTIAL_VERSION_HEADER, Integer.toString(credentialVersion))
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(List.copyOf(batch))
-                    .retrieve()
-                    .onStatus(status -> !status.is2xxSuccessful(), (request, rejected) -> {
-                        // Preserve the status as a bounded retry code; never read or log the body.
-                    })
-                    .toEntity(IngressResponse.class);
-            HttpStatusCode status = response.getStatusCode();
-            boolean successful = status.is2xxSuccessful();
-            operationsApiReachable.set(successful);
-            if (!successful) {
-                return GatewayOutboxDispatcher.DeliveryResult.retryable("HTTP_" + status.value());
+            List<GatewayIngressEnvelope> ingress = batch.stream()
+                    .filter(envelope -> envelope.kind() != IngressKind.SESSION_AUDIT)
+                    .toList();
+            List<GatewayIngressEnvelope> audits = batch.stream()
+                    .filter(envelope -> envelope.kind() == IngressKind.SESSION_AUDIT)
+                    .toList();
+            GatewayOutboxDispatcher.DeliveryResult result = ingress.isEmpty()
+                    ? GatewayOutboxDispatcher.DeliveryResult.success()
+                    : deliverIngress(ingress, credential);
+            if (result.successful()) {
+                for (GatewayIngressEnvelope audit : audits) {
+                    result = deliverAudit(audit, credential);
+                    if (!result.successful()) {
+                        break;
+                    }
+                }
             }
-            GatewayOutboxDispatcher.DeliveryResult result = validateResponse(batch, response.getBody());
             lastDeliverySuccessful.set(result.successful());
+            if (result.successful()) {
+                operationsApiReachable.set(true);
+                apiStatus.success(audits.isEmpty() ? "INGRESS" : "SESSION_AUDIT");
+            } else {
+                apiStatus.failure(audits.isEmpty() ? "INGRESS" : "SESSION_AUDIT");
+            }
             return result;
-        } catch (RestClientException unavailable) {
+        } catch (RestClientException | JsonProcessingException unavailable) {
             operationsApiReachable.set(false);
+            apiStatus.failure("DELIVERY");
             return GatewayOutboxDispatcher.DeliveryResult.retryable("CLIENT_UNAVAILABLE");
         }
+    }
+
+    private GatewayOutboxDispatcher.DeliveryResult deliverIngress(
+            List<GatewayIngressEnvelope> batch, String credential) {
+        ResponseEntity<IngressResponse> response = restClient.post()
+                .uri(endpoint)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + credential)
+                .header(CREDENTIAL_VERSION_HEADER, Integer.toString(credentialVersion))
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(List.copyOf(batch))
+                .retrieve()
+                .onStatus(status -> !status.is2xxSuccessful(), (request, rejected) -> {
+                    // Preserve the status as a bounded retry code; never log the body.
+                })
+                .toEntity(IngressResponse.class);
+        HttpStatusCode status = response.getStatusCode();
+        operationsApiReachable.set(status.is2xxSuccessful());
+        return status.is2xxSuccessful()
+                ? validateResponse(batch, response.getBody())
+                : GatewayOutboxDispatcher.DeliveryResult.retryable("HTTP_" + status.value());
+    }
+
+    private GatewayOutboxDispatcher.DeliveryResult deliverAudit(
+            GatewayIngressEnvelope envelope, String credential) throws JsonProcessingException {
+        JsonNode payload = objectMapper.readTree(envelope.payloadJson());
+        ResponseEntity<AuditResponse> response = restClient.post()
+                .uri(auditEndpoint)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + credential)
+                .header(CREDENTIAL_VERSION_HEADER, Integer.toString(credentialVersion))
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(payload)
+                .retrieve()
+                .onStatus(status -> !status.is2xxSuccessful(), (request, rejected) -> {
+                })
+                .toEntity(AuditResponse.class);
+        HttpStatusCode status = response.getStatusCode();
+        operationsApiReachable.set(status.is2xxSuccessful());
+        if (!status.is2xxSuccessful()) {
+            return GatewayOutboxDispatcher.DeliveryResult.retryable("HTTP_" + status.value());
+        }
+        return response.getBody() != null && response.getBody().data() != null
+                        && response.getBody().data().recorded()
+                ? GatewayOutboxDispatcher.DeliveryResult.success()
+                : GatewayOutboxDispatcher.DeliveryResult.retryable("API_AUDIT_NOT_RECORDED");
     }
 
     public boolean operationsApiReachable() {
@@ -90,6 +169,13 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
 
     public boolean lastDeliverySuccessful() {
         return lastDeliverySuccessful.get();
+    }
+
+    private static URI siblingAuditEndpoint(URI ingressEndpoint) {
+        String value = Objects.requireNonNull(ingressEndpoint, "ingressEndpoint").toString();
+        return value.endsWith("/ingress")
+                ? URI.create(value.substring(0, value.length() - "/ingress".length()) + "/audit-events")
+                : ingressEndpoint.resolve("audit-events");
     }
 
     private static GatewayOutboxDispatcher.DeliveryResult validateResponse(
@@ -123,4 +209,8 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
     private record IngressResponse(List<IngressResult> data) { }
 
     private record IngressResult(UUID idempotencyKey, String status, List<String> reasonCodes) { }
+
+    private record AuditResponse(AuditRecorded data) { }
+
+    private record AuditRecorded(boolean recorded) { }
 }
