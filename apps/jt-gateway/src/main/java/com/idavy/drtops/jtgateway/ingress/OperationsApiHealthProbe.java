@@ -21,7 +21,8 @@ public final class OperationsApiHealthProbe {
 
     @Scheduled(
             fixedDelayString = "${jt.gateway.health.api-probe-fixed-delay-ms:10000}",
-            initialDelayString = "${jt.gateway.health.api-probe-initial-delay-ms:0}")
+            initialDelayString = "${jt.gateway.health.api-probe-initial-delay-ms:0}",
+            scheduler = "gatewayProbeTaskScheduler")
     void probe() {
         try {
             client.get().uri(endpoint).retrieve().toBodilessEntity();

@@ -85,9 +85,10 @@ class JtGatewayRuntimeIntegrationTest {
                 int managementPort = ((WebServerApplicationContext) context).getWebServer().getPort();
                 await(() -> api.probeCount() > 0, Duration.ofSeconds(3));
                 HttpResponse<String> initialReadiness = health(managementPort, "readiness");
-                assertEquals(200, initialReadiness.statusCode(), initialReadiness.body());
+                assertEquals(503, initialReadiness.statusCode(), initialReadiness.body());
                 assertTrue(initialReadiness.body().contains("operationsApiStatus"));
-                assertTrue(initialReadiness.body().contains("UP"));
+                assertTrue(initialReadiness.body().contains(
+                        "\"operationsApiProbeStatus\":\"UP\""));
                 assertTrue(api.probesAreUnauthenticatedHealthGets());
                 assertEquals(200, health(managementPort, "liveness").statusCode());
                 HttpResponse<String> idleMetrics = HttpClient.newHttpClient().send(
@@ -97,7 +98,7 @@ class JtGatewayRuntimeIntegrationTest {
                         HttpResponse.BodyHandlers.ofString());
                 assertEquals(200, idleMetrics.statusCode());
                 assertTrue(idleMetrics.body().contains(
-                        "jt_gateway_operations_api_reachable 1.0"), idleMetrics.body());
+                        "jt_gateway_operations_api_reachable 0.0"), idleMetrics.body());
                 TerminalSessionRegistry sessions = context.getBean(TerminalSessionRegistry.class);
                 SimulatedTerminal terminal = new SimulatedTerminal(
                         TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, "SIM-PLATE");
@@ -115,6 +116,7 @@ class JtGatewayRuntimeIntegrationTest {
                     await(() -> sessions.current(TERMINAL_ID).isPresent(), Duration.ofSeconds(1));
                     assertTrue(sessions.current(TERMINAL_ID).isPresent(),
                             "the production Netty server must use the application session registry");
+                    assertEquals(200, health(managementPort, "readiness").statusCode());
                     terminal.sendPosition();
                     SimulatedTerminal.ReplyRecord position = terminal.awaitReply(Duration.ofSeconds(3));
                     assertNotNull(position);
@@ -258,6 +260,47 @@ class JtGatewayRuntimeIntegrationTest {
         }
     }
 
+    @Test
+    void blockedHealthProbeDoesNotDelayScheduledOutboxDelivery() throws Exception {
+        int devicePort = freeLoopbackPort();
+        try (OperationsApiStub api = new OperationsApiStub()) {
+            api.blockNextProbe();
+            ConfigurableApplicationContext context = start(Map.ofEntries(
+                    Map.entry("jt.gateway.tcp.enabled", "true"),
+                    Map.entry("jt.gateway.tcp.bind-address", "127.0.0.1"),
+                    Map.entry("jt.gateway.tcp.port", Integer.toString(devicePort)),
+                    Map.entry("jt.gateway.operations-api.base-url", api.baseUrl()),
+                    Map.entry("jt.gateway.service-credential.version", "3"),
+                    Map.entry("jt.gateway.service-credential.plaintext", SERVICE_CREDENTIAL),
+                    Map.entry("jt.gateway.instance", "runtime-scheduler-test"),
+                    Map.entry("jt.gateway.http.read-timeout-ms", "5000"),
+                    Map.entry("jt.gateway.health.api-probe-initial-delay-ms", "0"),
+                    Map.entry("jt.gateway.health.api-probe-fixed-delay-ms", "600000"),
+                    Map.entry("jt.gateway.dispatch.initial-delay", "0"),
+                    Map.entry("jt.gateway.dispatch.fixed-delay", "25"),
+                    Map.entry("spring.datasource.url",
+                            "jdbc:h2:mem:scheduler_isolation;MODE=PostgreSQL;DB_CLOSE_DELAY=-1"),
+                    Map.entry("spring.datasource.username", "sa"),
+                    Map.entry("spring.datasource.password", "")));
+            try {
+                assertTrue(api.awaitBlockedProbe(Duration.ofSeconds(2)));
+                GatewayIngressEnvelope envelope = new GatewayIngressEnvelope(
+                        1, UUID.fromString("77777777-7777-7777-7777-777777777777"),
+                        IngressKind.LOCATION, java.time.Instant.now(),
+                        "{\"latitude\":35.0,\"longitude\":105.0}");
+                assertEquals(GatewayIngressBuffer.WriteResult.STORED,
+                        context.getBean(GatewayIngressBuffer.class).append(envelope));
+
+                assertTrue(api.awaitIngress(Duration.ofSeconds(1)),
+                        "a blocked probe must not occupy the serial dispatcher scheduler");
+                assertEquals(0, context.getBean(GatewayOutboxRepository.class).pendingCount());
+            } finally {
+                api.releaseBlockedProbe();
+                context.close();
+            }
+        }
+    }
+
     private ConfigurableApplicationContext start(Map<String, String> taskProperties) {
         List<String> arguments = new ArrayList<>();
         arguments.add("--server.port=0");
@@ -313,8 +356,12 @@ class JtGatewayRuntimeIntegrationTest {
         private final List<JsonNode> ingress = new CopyOnWriteArrayList<>();
         private final ExecutorService httpWorkers = Executors.newCachedThreadPool();
         private final AtomicBoolean blockIngress = new AtomicBoolean();
+        private final AtomicBoolean blockProbe = new AtomicBoolean();
         private final CountDownLatch ingressBlocked = new CountDownLatch(1);
         private final CountDownLatch releaseIngress = new CountDownLatch(1);
+        private final CountDownLatch probeBlocked = new CountDownLatch(1);
+        private final CountDownLatch releaseProbe = new CountDownLatch(1);
+        private final CountDownLatch ingressReceived = new CountDownLatch(1);
         private volatile String registeredTokenDigest;
 
         private OperationsApiStub() throws IOException {
@@ -342,8 +389,19 @@ class JtGatewayRuntimeIntegrationTest {
             });
             server.createContext("/internal/jt-gateway/audit-events", exchange ->
                     respond(exchange, 200, "{\"data\":{\"recorded\":true}}"));
-            server.createContext("/actuator/health", exchange ->
-                    respond(exchange, 200, "{\"status\":\"UP\"}"));
+            server.createContext("/actuator/health", exchange -> {
+                if (blockProbe.compareAndSet(true, false)) {
+                    probeBlocked.countDown();
+                    try {
+                        releaseProbe.await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        exchange.close();
+                        return;
+                    }
+                }
+                respond(exchange, 200, "{\"status\":\"UP\"}");
+            });
             server.createContext("/internal/jt-gateway/ingress", exchange -> {
                 if (blockIngress.compareAndSet(true, false)) {
                     ingressBlocked.countDown();
@@ -357,6 +415,7 @@ class JtGatewayRuntimeIntegrationTest {
                 }
                 JsonNode batch = read(exchange);
                 batch.forEach(ingress::add);
+                ingressReceived.countDown();
                 com.fasterxml.jackson.databind.node.ArrayNode results = mapper.createArrayNode();
                 batch.forEach(envelope -> results.addObject()
                         .put("idempotencyKey", envelope.required("idempotencyKey").asText())
@@ -390,12 +449,28 @@ class JtGatewayRuntimeIntegrationTest {
             blockIngress.set(true);
         }
 
+        private void blockNextProbe() {
+            blockProbe.set(true);
+        }
+
         private boolean awaitBlockedIngress(Duration timeout) throws InterruptedException {
             return ingressBlocked.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
         }
 
         private void releaseBlockedIngress() {
             releaseIngress.countDown();
+        }
+
+        private boolean awaitBlockedProbe(Duration timeout) throws InterruptedException {
+            return probeBlocked.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        private void releaseBlockedProbe() {
+            releaseProbe.countDown();
+        }
+
+        private boolean awaitIngress(Duration timeout) throws InterruptedException {
+            return ingressReceived.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
         }
 
         private boolean allRequestsAuthenticated() {
@@ -440,6 +515,7 @@ class JtGatewayRuntimeIntegrationTest {
         @Override
         public void close() {
             releaseIngress.countDown();
+            releaseProbe.countDown();
             server.stop(0);
             httpWorkers.shutdownNow();
         }

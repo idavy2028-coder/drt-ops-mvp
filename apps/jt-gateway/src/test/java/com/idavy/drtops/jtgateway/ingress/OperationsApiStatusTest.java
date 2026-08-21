@@ -23,14 +23,16 @@ class OperationsApiStatusTest {
     private static final Instant NOW = Instant.parse("2026-08-21T10:00:00Z");
 
     @Test
-    void expiresHistoricalSuccessAfterTheConfiguredFreshnessTtl() {
+    void expiresAuthenticatedSuccessAfterTheDefaultNinetySecondFreshnessTtl() {
         MutableClock clock = new MutableClock(NOW);
-        OperationsApiStatus status = new OperationsApiStatus(clock, Duration.ofSeconds(30));
+        OperationsApiStatus status = new OperationsApiStatus(clock);
 
         status.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
         assertEquals(OperationsApiStatus.State.UP, status.snapshot().state());
 
-        clock.advance(Duration.ofSeconds(31));
+        clock.advance(Duration.ofSeconds(89));
+        assertEquals(OperationsApiStatus.State.UP, status.snapshot().state());
+        clock.advance(Duration.ofSeconds(2));
         OperationsApiStatus.Snapshot stale = status.snapshot();
         assertEquals(OperationsApiStatus.State.DOWN, stale.state());
         assertEquals("STALE", stale.operation());
@@ -40,7 +42,7 @@ class OperationsApiStatusTest {
     @Test
     void givesFreshIngressFailurePriorityOverLaterRegistrySuccessUntilIngressRecovers() {
         MutableClock clock = new MutableClock(NOW);
-        OperationsApiStatus status = new OperationsApiStatus(clock, Duration.ofSeconds(30));
+        OperationsApiStatus status = new OperationsApiStatus(clock, Duration.ofSeconds(90));
 
         status.failure(OperationsApiStatus.Source.INGRESS, "INGRESS");
         clock.advance(Duration.ofSeconds(1));
@@ -56,9 +58,9 @@ class OperationsApiStatusTest {
     }
 
     @Test
-    void safeProbeRecoversIdleStatusWithoutSendingServiceCredentials() throws Exception {
+    void safeProbeReportsProcessReachabilityWithoutRestoringAuthenticatedContract() throws Exception {
         MutableClock clock = new MutableClock(NOW);
-        OperationsApiStatus status = new OperationsApiStatus(clock, Duration.ofSeconds(30));
+        OperationsApiStatus status = new OperationsApiStatus(clock, Duration.ofSeconds(90));
         AtomicReference<String> method = new AtomicReference<>();
         AtomicReference<String> path = new AtomicReference<>();
         AtomicReference<String> authorization = new AtomicReference<>();
@@ -86,16 +88,19 @@ class OperationsApiStatusTest {
 
             probe.probe();
 
-            assertEquals(OperationsApiStatus.State.UP, status.snapshot().state());
+            assertEquals(OperationsApiStatus.State.DOWN, status.snapshot().state());
             assertEquals("GET", method.get());
             assertEquals("/actuator/health", path.get());
             assertNull(authorization.get());
             assertNull(credentialVersion.get());
 
-            clock.advance(Duration.ofSeconds(31));
+            status.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
+            assertEquals(OperationsApiStatus.State.UP, status.snapshot().state());
+
+            clock.advance(Duration.ofSeconds(91));
             assertEquals(OperationsApiStatus.State.DOWN, status.snapshot().state());
             probe.probe();
-            assertEquals(OperationsApiStatus.State.UP, status.snapshot().state());
+            assertEquals(OperationsApiStatus.State.DOWN, status.snapshot().state());
             assertTrue(status.snapshot().sources().get(OperationsApiStatus.Source.PROBE).fresh());
         } finally {
             server.stop(0);

@@ -14,7 +14,8 @@ public final class GatewayDispatchScheduler {
 
     @Scheduled(
             fixedDelayString = "${jt.gateway.dispatch.fixed-delay:1000}",
-            initialDelayString = "${jt.gateway.dispatch.initial-delay:1000}")
+            initialDelayString = "${jt.gateway.dispatch.initial-delay:1000}",
+            scheduler = "gatewayDispatchTaskScheduler")
     void dispatch() {
         try {
             dispatcher.dispatchOnce();

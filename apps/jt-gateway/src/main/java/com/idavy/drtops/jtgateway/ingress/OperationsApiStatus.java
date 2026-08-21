@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Sanitized operations API reachability facts with source isolation and bounded freshness. */
 public final class OperationsApiStatus {
-    private static final Duration DEFAULT_FRESHNESS_TTL = Duration.ofSeconds(30);
+    private static final Duration DEFAULT_FRESHNESS_TTL = Duration.ofSeconds(90);
 
     private final Clock clock;
     private final Duration freshnessTtl;
@@ -56,7 +56,7 @@ public final class OperationsApiStatus {
             latestHistorical = later(latestHistorical, observation);
             if (fresh && observation.state() == State.DOWN) {
                 latestFailure = later(latestFailure, observation);
-            } else if (fresh && observation.state() == State.UP) {
+            } else if (fresh && observation.state() == State.UP && source != Source.PROBE) {
                 latestSuccess = later(latestSuccess, observation);
             }
         }
@@ -67,8 +67,12 @@ public final class OperationsApiStatus {
             return aggregate(latestSuccess, sources);
         }
         if (latestHistorical != null && latestHistorical.checkedAt() != null) {
+            String operation = observations.entrySet().stream()
+                    .anyMatch(entry -> entry.getKey() != Source.PROBE
+                            && entry.getValue().checkedAt() != null)
+                    ? "STALE" : "AUTHENTICATED_CONTRACT_REQUIRED";
             return new Snapshot(
-                    State.DOWN, "STALE", latestHistorical.checkedAt(), Map.copyOf(sources));
+                    State.DOWN, operation, latestHistorical.checkedAt(), Map.copyOf(sources));
         }
         return new Snapshot(State.UNKNOWN, "NONE", null, Map.copyOf(sources));
     }

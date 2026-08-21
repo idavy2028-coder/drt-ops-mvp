@@ -38,6 +38,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.client.RestClient;
 
 @Configuration(proxyBeanMethods = false)
@@ -64,7 +65,7 @@ public class JtGatewayRuntimeConfiguration {
     @Bean
     OperationsApiStatus operationsApiStatus(Clock gatewayClock, Environment environment) {
         return new OperationsApiStatus(gatewayClock, Duration.ofSeconds(integer(
-                environment, "jt.gateway.health.api-status-ttl-seconds", 30)));
+                environment, "jt.gateway.health.api-status-ttl-seconds", 90)));
     }
 
     @Bean
@@ -136,6 +137,18 @@ public class JtGatewayRuntimeConfiguration {
                 boundedBuilder(builder, timeouts),
                 endpoint(service.baseUrl(), "/actuator/health"),
                 apiStatus);
+    }
+
+    @Bean(name = "gatewayDispatchTaskScheduler")
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    ThreadPoolTaskScheduler gatewayDispatchTaskScheduler() {
+        return taskScheduler("jt-gateway-dispatch-");
+    }
+
+    @Bean(name = "gatewayProbeTaskScheduler")
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    ThreadPoolTaskScheduler gatewayProbeTaskScheduler() {
+        return taskScheduler("jt-gateway-probe-");
     }
 
     @Bean
@@ -375,6 +388,15 @@ public class JtGatewayRuntimeConfiguration {
     private static URI endpoint(URI baseUrl, String path) {
         String base = baseUrl.toString();
         return URI.create((base.endsWith("/") ? base.substring(0, base.length() - 1) : base) + path);
+    }
+
+    private static ThreadPoolTaskScheduler taskScheduler(String threadNamePrefix) {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);
+        scheduler.setThreadNamePrefix(threadNamePrefix);
+        scheduler.setRemoveOnCancelPolicy(true);
+        scheduler.setWaitForTasksToCompleteOnShutdown(false);
+        return scheduler;
     }
 
     private static RestClient.Builder boundedBuilder(

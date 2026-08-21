@@ -44,16 +44,44 @@ $envBackup = Join-Path $backupDirectory "postgres-password-$rotationStamp.env"
 $databaseBackup = Join-Path $backupDirectory "postgres-before-password-$rotationStamp.sql"
 New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
 Copy-Item -LiteralPath '.env' -Destination $envBackup
-docker compose @compose exec -T postgres sh -ceu 'pg_dumpall --username "$POSTGRES_USER"' |
-    Set-Content -LiteralPath $databaseBackup -Encoding utf8NoBOM
-if (!(Test-Path -LiteralPath $databaseBackup) -or
-        (Get-Item -LiteralPath $databaseBackup).Length -le 0) {
-    throw 'PostgreSQL backup is empty; abort password rotation'
+
+# postgres-backup-contract-begin
+function Invoke-CheckedPostgresDump {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Destination,
+        [Parameter(Mandatory)] [scriptblock] $DumpCommand
+    )
+
+    Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+    try {
+        & $DumpCommand | Set-Content -LiteralPath $Destination -Encoding UTF8
+        $dumpExitCode = $LASTEXITCODE
+        if ($null -eq $dumpExitCode -or $dumpExitCode -ne 0) {
+            throw "pg_dumpall failed with exit code $dumpExitCode"
+        }
+        $dumpText = Get-Content -Raw -LiteralPath $Destination
+        $hasHeader = $dumpText -match '(?m)^-- PostgreSQL database cluster dump\r?$'
+        $hasRole = $dumpText -match '(?m)^CREATE ROLE\s+\S+;\r?$'
+        $hasCompletion = $dumpText -match
+            '(?m)^-- PostgreSQL database cluster dump complete\r?$'
+        if (!$hasHeader -or !$hasRole -or !$hasCompletion) {
+            throw 'pg_dumpall output is incomplete or not a cluster dump'
+        }
+    } catch {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+# postgres-backup-contract-end
+
+Invoke-CheckedPostgresDump -Destination $databaseBackup -DumpCommand {
+    docker compose @compose exec -T postgres sh -ceu 'pg_dumpall --username "$POSTGRES_USER"'
 }
 Get-FileHash -Algorithm SHA256 -LiteralPath $databaseBackup
 ```
 
-备份成功后停止数据库写入方，再通过 `psql` 的交互式 `\password` 输入新密码两次。输入不会出现在命令行；不要改用 `ALTER ROLE ... PASSWORD`、`PGPASSWORD=`、PowerShell 历史变量或把真实 `.env` 的 `docker compose config` 输出保存到日志。
+门禁会在 native exit 非 0 时立即删除部分文件并终止；exit 0 后还必须同时看到 cluster dump 头、角色定义和最终 completion marker，否则同样删除文件并终止。只有函数正常返回后才能停止数据库写入方，再通过 `psql` 的交互式 `\password` 输入新密码两次。输入不会出现在命令行；不要改用 `ALTER ROLE ... PASSWORD`、`PGPASSWORD=`、PowerShell 历史变量或把真实 `.env` 的 `docker compose config` 输出保存到日志。
 
 ```powershell
 $compose = @('--env-file', '.env', '-f', 'infra/docker-compose.pilot.yml')
@@ -69,10 +97,11 @@ docker compose @compose up -d --no-deps --force-recreate --wait postgres
 docker compose @compose up -d --no-deps --force-recreate --wait api
 docker compose @compose exec -T api curl --fail --silent http://127.0.0.1:8080/actuator/health
 docker compose @compose up -d --no-deps --force-recreate --wait jt-gateway
+# 用已批准的终端/模拟器执行一次真实注册鉴权或已认证 ingress，再检查 readiness。
 docker compose @compose exec -T jt-gateway curl --fail --silent http://127.0.0.1:7612/actuator/health/readiness
 ```
 
-只有 API 健康明确为 `UP` 且 gateway readiness 为 `UP` 才算切换完成。`postgres` 容器环境中的新 `POSTGRES_PASSWORD` 只是保持部署元数据一致；真正的角色密码变更来自前面的交互式 `\password`。
+只有 API 健康明确为 `UP`，并且真实已认证 registry/ingress 合同成功后 gateway readiness 为 `UP`，才算切换完成。匿名 probe 成功不能替代该合同验证。`postgres` 容器环境中的新 `POSTGRES_PASSWORD` 只是保持部署元数据一致；真正的角色密码变更来自前面的交互式 `\password`。
 
 ### 数据库密码回退
 
@@ -126,11 +155,11 @@ docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gate
 docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gateway curl --fail --silent http://127.0.0.1:7612/actuator/health/readiness
 ```
 
-liveness 验证真实 Netty listener channel；readiness 还要求 outbox 可写、运营 API 在新鲜度窗口内可达、无 dead-letter 且最老未解决记录未超阈值。默认 `JT_GATEWAY_API_STATUS_TTL_SECONDS=30`，主动探针每 10 秒以不带服务凭证的 GET 请求访问运营 API `/actuator/health`，因此无终端、空 outbox 时也能建立健康事实。`jtGateway` 详情至少包含：
+liveness 只验证真实 Netty listener channel，Compose 容器 healthcheck 也只使用 liveness，避免尚未发生业务流量时反复重启。readiness 还要求 outbox 可写、90 秒内有已认证 registry/ingress 合同成功、没有更新的失败、无 dead-letter 且最老未解决记录未超阈值。90 秒覆盖终端 60 秒空闲上报和调度抖动。主动 probe 每 10 秒以不带服务凭证的 GET 请求访问运营 API `/actuator/health`，只说明网络/进程可达，绝不能把 authenticated contract readiness 恢复为 UP。`jtGateway` 详情至少包含：
 
 - `tcpListening`：启用后设备监听是否存活；
 - `bufferWritable`：H2 outbox 是否可写；
-- `operationsApiReachable`：registry、ingress 与 probe 的聚合结果；窗口内任一失败优先为 `false`，其次任一成功为 `true`，全部过期为 `false`，从未观测为 `UNKNOWN`；
+- `operationsApiReachable`：已认证 registry/ingress 合同的聚合结果；窗口内任一失败优先为 `false`，其次已认证成功为 `true`，全部过期或只有匿名 probe 成功时为 `false`，从未观测时为 `UNKNOWN`；
 - `operationsApiRegistryStatus`、`operationsApiIngressStatus`、`operationsApiProbeStatus`：各来源分别显示 `UNKNOWN`、`UP`、`DOWN` 或 `STALE`，防止一个成功请求覆盖另一来源的失败；
 - `lastDeliverySuccessful`：最近一次 2xx 响应是否逐项覆盖整批并全部为 `ACCEPTED`/`REPLAYED`；
 - `outboxPending`、`outboxDelivering`、`outboxDeadLetter`：各状态数量；
@@ -193,7 +222,7 @@ docker compose --env-file .env -f infra/docker-compose.pilot.yml up -d --no-deps
 1. 生成新明文和摘要，将版本号递增。
 2. 在 API 侧把旧的 current 复制到 previous，再发布新的 current 版本和摘要。
 3. 更新网关的 current 明文与版本，重建网关容器。
-4. 验证健康和一笔脱敏测试投递后，观察一个完整轮换窗口。
+4. 使用已批准的测试终端/模拟器执行一次真实注册鉴权或已认证 ingress，确认对应 `operationsApiRegistryStatus`/`operationsApiIngressStatus=UP` 且 readiness 为 `UP`；匿名 probe 或 liveness 为 UP 不算凭证验证。
 5. 确认没有旧版本请求后，清空 API 的 previous 版本和摘要。
 
 任何阶段都不得把明文同步到 API，也不得把摘要当作可登录凭证复用。若轮换导致 401，回退网关到仍在 API previous 窗口内的旧版本，恢复投递后再重新执行轮换。
@@ -206,6 +235,7 @@ Copy-Item .env .private/jt-gateway-before-credential-rotation.env
 docker compose --env-file .env -f infra/docker-compose.pilot.yml up -d --no-deps --force-recreate api
 docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gateway curl --fail --silent http://api:8080/actuator/health
 docker compose --env-file .env -f infra/docker-compose.pilot.yml up -d --no-deps --force-recreate jt-gateway
+# 用已批准的终端/模拟器执行一次真实注册鉴权或已认证 ingress 后再检查：
 docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gateway curl --fail --silent http://127.0.0.1:7612/actuator/health/readiness
 ```
 
@@ -215,6 +245,8 @@ docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gate
 Copy-Item .private/jt-gateway-before-credential-rotation.env .env -Force
 docker compose --env-file .env -f infra/docker-compose.pilot.yml up -d --no-deps --force-recreate api
 docker compose --env-file .env -f infra/docker-compose.pilot.yml up -d --no-deps --force-recreate jt-gateway
+# 使用旧版本凭证完成一次真实已认证合同后，确认 readiness 恢复。
+docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gateway curl --fail --silent http://127.0.0.1:7612/actuator/health/readiness
 ```
 
 ## 附件元数据的剩余审批边界
