@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.ArrayList;
 import java.util.List;
@@ -196,7 +197,7 @@ class AlarmEventStreamIntegrationTest {
     void replaysPublishedEventsAfterLastEventIdInStableCursorOrderAndRedactsInternalFields() throws Exception {
         UUID actorId = authenticatePersistedReader();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         VehicleAlarmOutboxEvent first = published(alarm, "ALARM_CREATED", firstAt);
         VehicleAlarmOutboxEvent second = published(alarm, "ALARM_STATUS_CHANGED", firstAt.plusMillis(1));
         String cursor = cursor(firstAt, first.getId());
@@ -212,7 +213,7 @@ class AlarmEventStreamIntegrationTest {
     void buffersANewerLiveEventUntilReplayDeliversTheEarlierDatabaseEvent() throws Exception {
         UUID actorId = authenticatePersistedReader();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         VehicleAlarmOutboxEvent replayFirst = published(alarm, "ALARM_CREATED", firstAt);
         VehicleAlarmOutboxEvent replaySecond = published(alarm, "ALARM_STATUS_CHANGED", firstAt.plusMillis(1));
         VehicleAlarmOutboxEvent liveThird = VehicleAlarmOutboxEvent.pending(alarm, "ALARM_STATUS_CHANGED");
@@ -271,7 +272,7 @@ class AlarmEventStreamIntegrationTest {
         operator.assignRoles(Set.of(RoleCode.OPERATOR));
         UUID actorId = users.saveAndFlush(operator).getId();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         published(alarm, "ALARM_CREATED", firstAt);
         published(alarm, "ALARM_STATUS_CHANGED", firstAt.plusMillis(1));
 
@@ -305,7 +306,7 @@ class AlarmEventStreamIntegrationTest {
     void replaysImmutableSnapshotsAfterConsecutiveStateChangesAndAStreamRestart() {
         UUID actorId = authenticatePersistedReaderAndHandler();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         published(alarm, "ALARM_CREATED", firstAt);
 
         VehicleAlarm acknowledged = actionService.transition(alarm.getId(), alarm.getVersion(), actorId,
@@ -660,6 +661,10 @@ class AlarmEventStreamIntegrationTest {
             Thread.currentThread().interrupt();
             throw new AssertionError(failure, exception);
         }
+    }
+
+    private static Instant withinReplayWindow() {
+        return Instant.now().minus(Duration.ofDays(1)).truncatedTo(ChronoUnit.MICROS);
     }
 
     private static int occurrences(String value, String needle) {
