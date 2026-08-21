@@ -181,14 +181,23 @@ final class GatewayTestRig implements AutoCloseable {
                 boolean credentialPresented = exchange.getRequestHeaders()
                         .containsKey("Authorization");
                 try {
-                    for (JsonNode envelope : reader.readTree(body)) {
+                    JsonNode batch = reader.readTree(body);
+                    com.fasterxml.jackson.databind.node.ArrayNode results = reader.createArrayNode();
+                    for (JsonNode envelope : batch) {
                         received.add(new ReceivedEnvelope(
                                 envelope.required("kind").asText(),
                                 envelope.required("payloadJson").asText(),
                                 envelope.required("idempotencyKey").asText(),
                                 credentialPresented));
+                        results.addObject()
+                                .put("idempotencyKey", envelope.required("idempotencyKey").asText())
+                                .put("status", "ACCEPTED")
+                                .putArray("reasonCodes");
                     }
-                    byte[] ok = "{}".getBytes(StandardCharsets.UTF_8);
+                    com.fasterxml.jackson.databind.node.ObjectNode response = reader.createObjectNode();
+                    response.set("data", results);
+                    byte[] ok = response.toString().getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", "application/json");
                     exchange.sendResponseHeaders(200, ok.length);
                     exchange.getResponseBody().write(ok);
                     exchange.close();

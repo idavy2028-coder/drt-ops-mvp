@@ -1,0 +1,283 @@
+package com.idavy.drtops.jtgateway;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.jt.protocol.core.Jt808CoreModule;
+import com.idavy.drtops.jt.protocol.core.LocationReportCodec;
+import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
+import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
+import com.idavy.drtops.jtgateway.ingress.GatewayOutboxDispatcher;
+import com.idavy.drtops.jtgateway.ingress.GatewayOutboxRepository;
+import com.idavy.drtops.jtgateway.ingress.OperationsApiClient;
+import com.idavy.drtops.jtgateway.netty.JtGatewayServer;
+import com.idavy.drtops.jtgateway.session.OperationsTerminalRegistryClient;
+import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
+import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.binder.MeterBinder;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.UnknownHostException;
+import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.Locale;
+import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessException;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.web.client.RestClient;
+
+@Configuration(proxyBeanMethods = false)
+@EnableScheduling
+public class JtGatewayRuntimeConfiguration {
+
+    @Bean
+    Clock gatewayClock() {
+        return Clock.systemUTC();
+    }
+
+    @Bean
+    GatewayOutboxRepository gatewayOutboxRepository(DataSource dataSource) {
+        return new GatewayOutboxRepository(dataSource);
+    }
+
+    @Bean
+    GatewayIngressBuffer gatewayIngressBuffer(
+            GatewayOutboxRepository repository, ObjectMapper objectMapper, Clock gatewayClock) {
+        return new GatewayIngressBuffer(repository, objectMapper, gatewayClock);
+    }
+
+    @Bean
+    Jt808CoreModule jt808CoreModule() {
+        return new Jt808CoreModule(new LocationReportCodec());
+    }
+
+    @Bean
+    ProtocolModuleRegistry protocolModuleRegistry(
+            Jt808CoreModule coreModule,
+            GatewayIngressBuffer buffer,
+            ObjectMapper objectMapper,
+            TerminalSessionRegistry sessions,
+            Clock gatewayClock) {
+        return new ProtocolModuleRegistry(coreModule, buffer, objectMapper, sessions, gatewayClock);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    ServiceConfiguration gatewayServiceConfiguration(Environment environment) {
+        return ServiceConfiguration.from(environment);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    TerminalRegistryPort terminalRegistryPort(
+            RestClient.Builder builder, ServiceConfiguration service) {
+        return new OperationsTerminalRegistryClient(
+                builder, service.baseUrl().toString(), service.credential(),
+                service.credentialVersion(), service.gatewayInstance(), new SecureRandom());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    OperationsApiClient operationsApiClient(
+            RestClient.Builder builder, ServiceConfiguration service) {
+        return new OperationsApiClient(
+                builder,
+                endpoint(service.baseUrl(), "/internal/jt-gateway/ingress"),
+                service::credential,
+                service.credentialVersion());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    GatewayOutboxDispatcher gatewayOutboxDispatcher(
+            GatewayOutboxRepository repository,
+            OperationsApiClient client,
+            Clock gatewayClock,
+            Environment environment) {
+        return new GatewayOutboxDispatcher(
+                repository,
+                client,
+                gatewayClock,
+                integer(environment, "jt.gateway.dispatch.max-attempts", 8),
+                Duration.ofMillis(integer(environment, "jt.gateway.dispatch.initial-backoff-ms", 1000)),
+                Duration.ofMillis(integer(environment, "jt.gateway.dispatch.maximum-backoff-ms", 300000)));
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    GatewayDispatchScheduler gatewayDispatchScheduler(GatewayOutboxDispatcher dispatcher) {
+        return new GatewayDispatchScheduler(dispatcher);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    JtGatewayServer jtGatewayServer(
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessions,
+            ProtocolModuleRegistry protocolModules,
+            Environment environment) {
+        try {
+            InetAddress address = InetAddress.getByName(
+                    environment.getProperty("jt.gateway.tcp.bind-address", "0.0.0.0"));
+            JtGatewayServer.Configuration configuration = new JtGatewayServer.Configuration(
+                    new InetSocketAddress(address, integer(environment, "jt.gateway.tcp.port", 7611)),
+                    integer(environment, "jt.gateway.tcp.max-connections-per-ip", 4),
+                    integer(environment, "jt.gateway.tcp.max-messages-per-second", 100),
+                    integer(environment, "jt.gateway.tcp.business-threads", 2),
+                    integer(environment, "jt.gateway.tcp.maximum-pending-business-tasks", 1024),
+                    integer(environment, "jt.gateway.tcp.business-queue-high-watermark", 800),
+                    integer(environment, "jt.gateway.tcp.business-queue-low-watermark", 400),
+                    Duration.ofMillis(integer(
+                            environment, "jt.gateway.tcp.maximum-congestion-ms", 5000)));
+            return new JtGatewayServer(configuration, registryPort, sessions, protocolModules);
+        } catch (UnknownHostException exception) {
+            throw new IllegalArgumentException("JT gateway bind address is invalid", exception);
+        }
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    GatewayServerLifecycle gatewayServerLifecycle(JtGatewayServer server) {
+        return new GatewayServerLifecycle(server);
+    }
+
+    @Bean
+    HealthIndicator jtGatewayHealthIndicator(
+            GatewayIngressBuffer buffer,
+            GatewayOutboxRepository repository,
+            ObjectProvider<GatewayServerLifecycle> lifecycle,
+            ObjectProvider<OperationsApiClient> apiClient,
+            Environment environment) {
+        return () -> {
+            boolean enabled = environment.getProperty(
+                    "jt.gateway.tcp.enabled", Boolean.class, false);
+            GatewayServerLifecycle listener = lifecycle.getIfAvailable();
+            OperationsApiClient operations = apiClient.getIfAvailable();
+            boolean tcpListening = enabled && listener != null && listener.isRunning();
+            boolean writable = buffer.bufferWritable();
+            int pending = -1;
+            if (writable) {
+                try {
+                    pending = repository.pendingCount();
+                } catch (DataAccessException unavailable) {
+                    writable = false;
+                }
+            }
+            Object reachable = !enabled ? "DISABLED"
+                    : operations == null || !operations.deliveryAttempted() ? "UNKNOWN"
+                    : operations.operationsApiReachable();
+            Object lastDeliverySuccessful = !enabled ? "DISABLED"
+                    : operations == null || !operations.deliveryAttempted() ? "UNKNOWN"
+                    : operations.lastDeliverySuccessful();
+            boolean up = writable && (!enabled || tcpListening)
+                    && (!(reachable instanceof Boolean value) || value)
+                    && (!(lastDeliverySuccessful instanceof Boolean value) || value);
+            Health.Builder health = up ? Health.up() : Health.down();
+            return health
+                    .withDetail("tcpListening", tcpListening)
+                    .withDetail("bufferWritable", writable)
+                    .withDetail("operationsApiReachable", reachable)
+                    .withDetail("lastDeliverySuccessful", lastDeliverySuccessful)
+                    .withDetail("outboxPending", pending)
+                    .build();
+        };
+    }
+
+    @Bean
+    MeterBinder jtGatewayMetrics(
+            GatewayIngressBuffer buffer,
+            GatewayOutboxRepository repository,
+            ObjectProvider<GatewayServerLifecycle> lifecycle,
+            ObjectProvider<OperationsApiClient> apiClient) {
+        return registry -> {
+            Gauge.builder("jt.gateway.tcp.listening", lifecycle,
+                            provider -> {
+                                GatewayServerLifecycle listener = provider.getIfAvailable();
+                                return listener != null && listener.isRunning() ? 1 : 0;
+                            })
+                    .register(registry);
+            Gauge.builder("jt.gateway.buffer.writable", buffer,
+                            target -> target.bufferWritable() ? 1 : 0)
+                    .register(registry);
+            Gauge.builder("jt.gateway.outbox.pending", repository,
+                            target -> {
+                                try {
+                                    return target.pendingCount();
+                                } catch (DataAccessException unavailable) {
+                                    return -1;
+                                }
+                            })
+                    .register(registry);
+            Gauge.builder("jt.gateway.operations.api.reachable", apiClient,
+                            provider -> {
+                                OperationsApiClient client = provider.getIfAvailable();
+                                return client != null && client.deliveryAttempted()
+                                        && client.operationsApiReachable() ? 1 : 0;
+                            })
+                    .register(registry);
+            Gauge.builder("jt.gateway.operations.delivery.successful", apiClient,
+                            provider -> {
+                                OperationsApiClient client = provider.getIfAvailable();
+                                return client != null && client.deliveryAttempted()
+                                        && client.lastDeliverySuccessful() ? 1 : 0;
+                            })
+                    .register(registry);
+        };
+    }
+
+    private static URI endpoint(URI baseUrl, String path) {
+        String base = baseUrl.toString();
+        return URI.create((base.endsWith("/") ? base.substring(0, base.length() - 1) : base) + path);
+    }
+
+    private static int integer(Environment environment, String name, int defaultValue) {
+        Integer value = environment.getProperty(name, Integer.class, defaultValue);
+        if (value == null || value < 0) {
+            throw new IllegalArgumentException(name + " must be non-negative");
+        }
+        return value;
+    }
+
+    record ServiceConfiguration(
+            URI baseUrl, String credential, int credentialVersion, String gatewayInstance) {
+        static ServiceConfiguration from(Environment environment) {
+            String rawBaseUrl = required(environment, "jt.gateway.operations-api.base-url");
+            URI baseUrl;
+            try {
+                baseUrl = URI.create(rawBaseUrl);
+            } catch (IllegalArgumentException malformed) {
+                throw new IllegalArgumentException("operations API base URL is invalid", malformed);
+            }
+            String scheme = baseUrl.getScheme() == null
+                    ? "" : baseUrl.getScheme().toLowerCase(Locale.ROOT);
+            if (!("http".equals(scheme) || "https".equals(scheme)) || baseUrl.getHost() == null) {
+                throw new IllegalArgumentException("operations API base URL must be HTTP(S)");
+            }
+            int version = integer(environment, "jt.gateway.service-credential.version", 0);
+            if (version < 1) {
+                throw new IllegalArgumentException("service credential version must be positive");
+            }
+            return new ServiceConfiguration(
+                    baseUrl,
+                    required(environment, "jt.gateway.service-credential.plaintext"),
+                    version,
+                    required(environment, "jt.gateway.instance"));
+        }
+
+        private static String required(Environment environment, String name) {
+            String value = environment.getProperty(name);
+            if (value == null || value.isBlank()) {
+                throw new IllegalArgumentException(name + " must be configured when TCP is enabled");
+            }
+            return value;
+        }
+    }
+}

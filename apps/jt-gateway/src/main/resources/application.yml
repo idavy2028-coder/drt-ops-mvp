@@ -1,13 +1,49 @@
 server:
   port: ${JT_GATEWAY_MANAGEMENT_PORT:7612}
+  address: ${JT_GATEWAY_MANAGEMENT_ADDRESS:0.0.0.0}
+  shutdown: graceful
+
+spring:
+  datasource:
+    url: ${JT_GATEWAY_DATASOURCE_URL:jdbc:h2:file:./data/gateway-outbox;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE}
+    username: ${JT_GATEWAY_DATASOURCE_USERNAME:sa}
+    password: ${JT_GATEWAY_DATASOURCE_PASSWORD:}
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: true
 
 jt:
   gateway:
+    instance: ${JT_GATEWAY_INSTANCE:}
+    operations-api:
+      base-url: ${JT_GATEWAY_OPERATIONS_API_BASE_URL:}
+    service-credential:
+      version: ${JT_GATEWAY_SERVICE_CREDENTIAL_VERSION:0}
+      plaintext: ${JT_GATEWAY_SERVICE_CREDENTIAL_PLAINTEXT:}
     tcp:
       enabled: ${JT_GATEWAY_TCP_ENABLED:false}
+      bind-address: ${JT_GATEWAY_TCP_BIND_ADDRESS:0.0.0.0}
       port: ${JT_GATEWAY_TCP_PORT:7611}
+      max-connections-per-ip: ${JT_GATEWAY_MAX_CONNECTIONS_PER_IP:4}
+      max-messages-per-second: ${JT_GATEWAY_MAX_MESSAGES_PER_SECOND:100}
+      business-threads: ${JT_GATEWAY_BUSINESS_THREADS:2}
+      maximum-pending-business-tasks: ${JT_GATEWAY_MAX_PENDING_BUSINESS_TASKS:1024}
+      business-queue-high-watermark: ${JT_GATEWAY_BUSINESS_QUEUE_HIGH_WATERMARK:800}
+      business-queue-low-watermark: ${JT_GATEWAY_BUSINESS_QUEUE_LOW_WATERMARK:400}
+      maximum-congestion-ms: ${JT_GATEWAY_MAX_CONGESTION_MS:5000}
+    dispatch:
+      fixed-delay: ${JT_GATEWAY_DISPATCH_FIXED_DELAY_MS:1000}
+      initial-delay: ${JT_GATEWAY_DISPATCH_INITIAL_DELAY_MS:1000}
+      max-attempts: ${JT_GATEWAY_DISPATCH_MAX_ATTEMPTS:8}
+      initial-backoff-ms: ${JT_GATEWAY_DISPATCH_INITIAL_BACKOFF_MS:1000}
+      maximum-backoff-ms: ${JT_GATEWAY_DISPATCH_MAXIMUM_BACKOFF_MS:300000}
 
 management:
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
   endpoints:
     web:
       exposure:

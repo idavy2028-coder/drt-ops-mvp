@@ -88,6 +88,10 @@ services:
       DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD: ${DRT_AUTH_BOOTSTRAP_ADMIN_PASSWORD:-pilot-only-password}
       DRT_AUTH_REFRESH_COOKIE_SECURE: ${DRT_AUTH_REFRESH_COOKIE_SECURE:-false}
       DRT_WEB_ALLOWED_ORIGINS: ${DRT_WEB_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5176,http://127.0.0.1:5176}
+      JT_GATEWAY_SERVICE_CREDENTIALS_CURRENT_VERSION: ${JT_GATEWAY_SERVICE_CREDENTIAL_VERSION:?JT_GATEWAY_SERVICE_CREDENTIAL_VERSION must be set}
+      JT_GATEWAY_SERVICE_CREDENTIALS_CURRENT_HASH: ${JT_GATEWAY_SERVICE_CREDENTIAL_SHA256:?JT_GATEWAY_SERVICE_CREDENTIAL_SHA256 must be set}
+      JT_GATEWAY_SERVICE_CREDENTIALS_PREVIOUS_VERSION: ${JT_GATEWAY_PREVIOUS_SERVICE_CREDENTIAL_VERSION:-}
+      JT_GATEWAY_SERVICE_CREDENTIALS_PREVIOUS_HASH: ${JT_GATEWAY_PREVIOUS_SERVICE_CREDENTIAL_SHA256:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,6 +101,52 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  jt-gateway:
+    build:
+      context: ..
+      dockerfile: apps/jt-gateway/Dockerfile
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${JT_GATEWAY_TCP_PORT:-7611}:7611"
+    expose:
+      - "7612"
+    environment:
+      JT_GATEWAY_TCP_ENABLED: "true"
+      JT_GATEWAY_TCP_PORT: "7611"
+      JT_GATEWAY_MANAGEMENT_PORT: "7612"
+      JT_GATEWAY_DATASOURCE_URL: jdbc:h2:file:/var/lib/jt-gateway/gateway-outbox;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE
+      JT_GATEWAY_OPERATIONS_API_BASE_URL: ${JT_GATEWAY_OPERATIONS_API_BASE_URL:?JT_GATEWAY_OPERATIONS_API_BASE_URL must be set}
+      JT_GATEWAY_SERVICE_CREDENTIAL_VERSION: ${JT_GATEWAY_SERVICE_CREDENTIAL_VERSION:?JT_GATEWAY_SERVICE_CREDENTIAL_VERSION must be set}
+      JT_GATEWAY_SERVICE_CREDENTIAL_PLAINTEXT: ${JT_GATEWAY_SERVICE_CREDENTIAL_PLAINTEXT:?JT_GATEWAY_SERVICE_CREDENTIAL_PLAINTEXT must be set}
+      JT_GATEWAY_INSTANCE: ${JT_GATEWAY_INSTANCE:?JT_GATEWAY_INSTANCE must be set}
+    volumes:
+      - jt-gateway-data:/var/lib/jt-gateway
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 768M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7612/actuator/health"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -121,3 +171,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  jt-gateway-data:

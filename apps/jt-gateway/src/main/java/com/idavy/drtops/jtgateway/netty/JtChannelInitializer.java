@@ -1,5 +1,6 @@
 package com.idavy.drtops.jtgateway.netty;
 
+import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
 import com.idavy.drtops.jt.protocol.codec.Jt808FrameDecoder;
 import com.idavy.drtops.jt.protocol.codec.Jt808FrameEncoder;
 import com.idavy.drtops.jtgateway.session.RegistrationAuthenticationHandler;
@@ -25,6 +26,7 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
     private final int highWatermark;
     private final int lowWatermark;
     private final Duration maximumCongestion;
+    private final ProtocolModuleRegistry protocolModuleRegistry;
     private final ChannelGroup acceptedChannels;
 
     public JtChannelInitializer(
@@ -47,6 +49,32 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                 highWatermark,
                 lowWatermark,
                 maximumCongestion,
+                null,
+                null);
+    }
+
+    public JtChannelInitializer(
+            ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            EventExecutorGroup businessWorkers,
+            IntSupplier queuePressure,
+            Clock clock,
+            int highWatermark,
+            int lowWatermark,
+            Duration maximumCongestion,
+            ProtocolModuleRegistry protocolModuleRegistry) {
+        this(
+                admissionTracker,
+                registryPort,
+                sessionRegistry,
+                businessWorkers,
+                queuePressure,
+                clock,
+                highWatermark,
+                lowWatermark,
+                maximumCongestion,
+                protocolModuleRegistry,
                 null);
     }
 
@@ -60,6 +88,7 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
             int highWatermark,
             int lowWatermark,
             Duration maximumCongestion,
+            ProtocolModuleRegistry protocolModuleRegistry,
             ChannelGroup acceptedChannels) {
         this.admissionTracker = java.util.Objects.requireNonNull(admissionTracker, "admissionTracker");
         this.registryPort = java.util.Objects.requireNonNull(registryPort, "registryPort");
@@ -70,6 +99,7 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
         this.highWatermark = highWatermark;
         this.lowWatermark = lowWatermark;
         this.maximumCongestion = java.util.Objects.requireNonNull(maximumCongestion, "maximumCongestion");
+        this.protocolModuleRegistry = protocolModuleRegistry;
         this.acceptedChannels = acceptedChannels;
     }
 
@@ -88,11 +118,19 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                         lowWatermark,
                         maximumCongestion,
                         System::nanoTime));
+        RegistrationAuthenticationHandler registrationAuthentication =
+                new RegistrationAuthenticationHandler(
+                        registryPort, sessionRegistry, clock, Duration.ofSeconds(30));
         channel.pipeline().addLast(
                 businessWorkers,
                 "registrationAuthentication",
-                new RegistrationAuthenticationHandler(
-                        registryPort, sessionRegistry, clock, Duration.ofSeconds(30)));
+                registrationAuthentication);
+        if (protocolModuleRegistry != null) {
+            channel.pipeline().addLast(
+                    businessWorkers,
+                    "protocolDispatch",
+                    new ProtocolDispatchHandler(registrationAuthentication, protocolModuleRegistry));
+        }
         channel.pipeline().addLast(
                 businessWorkers,
                 "terminalExceptionGuard",

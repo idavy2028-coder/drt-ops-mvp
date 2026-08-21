@@ -33,12 +33,34 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class GatewayOutboxDispatcherTest {
     private static final Instant NOW = Instant.parse("2026-08-12T05:00:00Z");
     private static final URI OPERATIONS_ENDPOINT =
             URI.create("http://operations.invalid/internal/v1/jt/ingress");
     private static final String TEST_CREDENTIAL = "test-credential-not-a-secret";
+
+    @Test
+    void persistsAttachmentMetadataAndDispatchesItAheadOfLocationTraffic() {
+        var fixture = fixture(8);
+        IngressKind attachmentMetadata = IngressKind.valueOf("ATTACHMENT_METADATA");
+        fixture.buffer.append(envelope(90, IngressKind.LOCATION));
+        assertEquals(GatewayIngressBuffer.WriteResult.STORED,
+                fixture.buffer.append(envelope(91, attachmentMetadata)));
+
+        GatewayOutboxDispatcher.DispatchReport report = fixture.dispatcher.dispatchOnce();
+
+        assertEquals(2, report.delivered());
+        assertEquals(List.of(attachmentMetadata),
+                fixture.client.batches.get(0).stream()
+                        .map(GatewayIngressEnvelope::kind)
+                        .toList());
+        assertEquals(List.of(IngressKind.LOCATION),
+                fixture.client.batches.get(1).stream()
+                        .map(GatewayIngressEnvelope::kind)
+                        .toList());
+    }
 
     @Test
     void deliversUrgentIngressBeforeAtMostFiftyLocationsPerSecond() {
@@ -318,7 +340,8 @@ class GatewayOutboxDispatcherTest {
                     .andExpect(jsonPath("$[0].idempotencyKey")
                             .value(envelope.idempotencyKey().toString()))
                     .andExpect(jsonPath("$[0].payloadJson").value(envelope.payloadJson()))
-                    .andRespond(withStatus(HttpStatus.ACCEPTED));
+                    .andRespond(withSuccess(acceptedResponse(envelope.idempotencyKey()),
+                            org.springframework.http.MediaType.APPLICATION_JSON));
 
             GatewayOutboxDispatcher.DeliveryResult result = client.deliver(List.of(envelope));
 
@@ -334,6 +357,68 @@ class GatewayOutboxDispatcherTest {
     }
 
     @Test
+    void keepsTheWholeBatchPendingWhenTheApiRejectsOneEnvelope() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsApiClient client = operationsClient(builder);
+        var fixture = fixture(8, client);
+        GatewayIngressEnvelope first = envelope(4_100, IngressKind.ALARM);
+        GatewayIngressEnvelope second = envelope(4_101, IngressKind.ATTACHMENT_METADATA);
+        fixture.buffer.append(first);
+        fixture.buffer.append(second);
+        server.expect(requestTo(OPERATIONS_ENDPOINT.toString()))
+                .andRespond(withSuccess("""
+                        {"data":[
+                          {"idempotencyKey":"%s","status":"ACCEPTED","reasonCodes":[]},
+                          {"idempotencyKey":"%s","status":"REJECTED","reasonCodes":["INVALID_PAYLOAD"]}
+                        ]}
+                        """.formatted(first.idempotencyKey(), second.idempotencyKey()),
+                        org.springframework.http.MediaType.APPLICATION_JSON));
+
+        GatewayOutboxDispatcher.DispatchReport report = fixture.dispatcher.dispatchOnce();
+
+        assertEquals(2, report.attempted());
+        assertEquals(0, report.delivered());
+        assertEquals(2, report.retried());
+        assertEquals(2, fixture.repository.pendingCount());
+        assertEquals("API_ITEM_REJECTED",
+                fixture.repository.find(first.idempotencyKey()).orElseThrow().lastErrorCode());
+        assertTrue(client.operationsApiReachable());
+        assertFalse(client.lastDeliverySuccessful());
+        server.verify();
+    }
+
+    @Test
+    void keepsTheWholeBatchPendingWhenTheApiOmitsAnEnvelopeResult() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsApiClient client = operationsClient(builder);
+        var fixture = fixture(8, client);
+        GatewayIngressEnvelope first = envelope(4_110, IngressKind.ALARM);
+        GatewayIngressEnvelope second = envelope(4_111, IngressKind.ATTACHMENT_METADATA);
+        fixture.buffer.append(first);
+        fixture.buffer.append(second);
+        server.expect(requestTo(OPERATIONS_ENDPOINT.toString()))
+                .andRespond(withSuccess("""
+                        {"data":[
+                          {"idempotencyKey":"%s","status":"ACCEPTED","reasonCodes":[]}
+                        ]}
+                        """.formatted(first.idempotencyKey()),
+                        org.springframework.http.MediaType.APPLICATION_JSON));
+
+        GatewayOutboxDispatcher.DispatchReport report = fixture.dispatcher.dispatchOnce();
+
+        assertEquals(2, report.attempted());
+        assertEquals(0, report.delivered());
+        assertEquals(2, report.retried());
+        assertEquals("API_RESPONSE_INCOMPLETE",
+                fixture.repository.find(second.idempotencyKey()).orElseThrow().lastErrorCode());
+        assertTrue(client.operationsApiReachable());
+        assertFalse(client.lastDeliverySuccessful());
+        server.verify();
+    }
+
+    @Test
     void retainsAndBacksOffForHttpErrorsUntilA2xxResponseConfirmsDelivery() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
@@ -345,7 +430,10 @@ class GatewayOutboxDispatcherTest {
         expectStatus(server, HttpStatus.UNAUTHORIZED);
         expectStatus(server, HttpStatus.TOO_MANY_REQUESTS);
         expectStatus(server, HttpStatus.SERVICE_UNAVAILABLE);
-        expectStatus(server, HttpStatus.NO_CONTENT);
+        server.expect(requestTo(OPERATIONS_ENDPOINT.toString()))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(acceptedResponse(key),
+                        org.springframework.http.MediaType.APPLICATION_JSON));
         fixture.dispatcher.dispatchOnce();
         assertPending(fixture.repository, key, 1, NOW.plusSeconds(1), "HTTP_401");
         assertFalse(client.operationsApiReachable());
@@ -493,6 +581,11 @@ class GatewayOutboxDispatcherTest {
         server.expect(requestTo(OPERATIONS_ENDPOINT.toString()))
                 .andExpect(method(HttpMethod.POST))
                 .andRespond(withStatus(status));
+    }
+
+    private static String acceptedResponse(UUID idempotencyKey) {
+        return "{\"data\":[{\"idempotencyKey\":\"" + idempotencyKey
+                + "\",\"status\":\"ACCEPTED\",\"reasonCodes\":[]}]}";
     }
 
     private static void assertPending(

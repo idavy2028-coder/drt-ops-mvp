@@ -80,7 +80,7 @@ public final class GatewayOutboxRepository {
                 return List.of();
             }
             String kindPredicate = priority == Priority.HIGH
-                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_CONTROL') "
+                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_METADATA', 'ATTACHMENT_CONTROL') "
                             + "AND (dependency_idempotency_key IS NULL OR dependency_idempotency_key IN "
                             + "(SELECT idempotency_key FROM gateway_outbox dependency WHERE dependency.status = 'DELIVERED'))"
                     : "kind = 'LOCATION'";

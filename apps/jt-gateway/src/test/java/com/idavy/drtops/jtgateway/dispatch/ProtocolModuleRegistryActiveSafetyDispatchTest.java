@@ -61,11 +61,17 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(new Jt808CoreModule(new LocationReportCodec()), buffer,
                 new ObjectMapper().findAndRegisterModules(), sessions, Clock.fixed(Instant.parse("2026-01-15T02:00:00Z"), ZoneOffset.UTC));
         Jt808Frame fileUploadCompleted = new Jt808Frame(new Jt808MessageHeader(
-                0x1206, 0, 0, 0, false, ProtocolVersion.JT808_2013, 0,
-                "000000000000", 2, null, null), Unpooled.buffer(0), (byte) 0);
+                0x1206, 3, 3, 0, false, ProtocolVersion.JT808_2013, 0,
+                "000000000000", 2, null, null),
+                Unpooled.wrappedBuffer(new byte[] {0, 1, 0}), (byte) 0);
 
         assertTrue(registry.dispatch(session, fileUploadCompleted).mayAcknowledgeSuccess());
-        assertEquals(0, repository.totalCount());
+        List<IngressKind> kinds = repository.claimEligible(
+                        Instant.now(), GatewayOutboxRepository.Priority.HIGH, 10).stream()
+                .map(GatewayOutboxRepository.OutboxEntry::kind)
+                .toList();
+        assertEquals(List.of(IngressKind.ATTACHMENT_METADATA), kinds);
+        assertEquals(0, kinds.stream().filter(kind -> kind == IngressKind.ALARM).count());
     }
 
     @Test

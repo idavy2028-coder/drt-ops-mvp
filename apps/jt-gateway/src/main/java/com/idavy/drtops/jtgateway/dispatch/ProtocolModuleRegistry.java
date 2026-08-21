@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.jt.protocol.codec.Jt808Frame;
 import com.idavy.drtops.jt.protocol.core.LocationReport;
 import com.idavy.drtops.jt.protocol.core.Jt808CoreModule;
+import com.idavy.drtops.jt.protocol.jt1078.AlarmAttachmentMessageCodec;
+import com.idavy.drtops.jt.protocol.jt1078.Jt1078ControlModule;
+import com.idavy.drtops.jtgateway.ingress.CanonicalAttachmentMetadata;
 import com.idavy.drtops.jtgateway.ingress.CanonicalPositionIngress;
 import com.idavy.drtops.jtgateway.ingress.CanonicalVehicleAlarm;
 import com.idavy.drtops.jtgateway.ingress.CanonicalProtocolAudit;
@@ -22,6 +25,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -29,6 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Routes authenticated JT/T 808 frames without letting unknown messages enter the position domain. */
 public final class ProtocolModuleRegistry {
     private static final int LOCATION_REPORT_MESSAGE_ID = 0x0200;
+    private static final String ATTACHMENT_SIGNALING_STANDARD = "T/JSATL12-2017";
     private static final java.util.Set<Integer> CONSUMED_MESSAGE_IDS = java.util.Set.of(0x0100, 0x0102, 0x0002);
     private final Jt808CoreModule coreModule;
     private final PositionIngressBuffer positionBuffer;
@@ -37,6 +42,7 @@ public final class ProtocolModuleRegistry {
     private final GatewayIngressBuffer gatewayBuffer;
     private final ObjectMapper objectMapper;
     private final ActiveSafetyAlarmRouter activeSafetyAlarmRouter = new ActiveSafetyAlarmRouter();
+    private final Jt1078ControlModule attachmentControlModule = new Jt1078ControlModule();
     private final AtomicLong unknownMessageCount = new AtomicLong();
 
     public ProtocolModuleRegistry(
@@ -88,6 +94,10 @@ public final class ProtocolModuleRegistry {
         if (CONSUMED_MESSAGE_IDS.contains(messageId)) {
             return DispatchResult.REJECTED;
         }
+        if (messageId == Jt1078ControlModule.MSG_ALARM_ATTACHMENT_INFO
+                || messageId == Jt1078ControlModule.MSG_FILE_UPLOAD_COMPLETE_NOTIFICATION) {
+            return dispatchAttachmentMetadata(session, frame);
+        }
         if (messageId != LOCATION_REPORT_MESSAGE_ID) {
             unknownMessageCount.incrementAndGet();
             return DispatchResult.MAY_ACKNOWLEDGE_SUCCESS;
@@ -117,6 +127,88 @@ public final class ProtocolModuleRegistry {
         }
         return appendActiveSafetyAlarms(session, report, ingress, gatewayReceivedAt)
                 ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS : DispatchResult.REJECTED;
+    }
+
+    private DispatchResult dispatchAttachmentMetadata(TerminalSession session, Jt808Frame frame) {
+        Instant receivedAt = clock.instant();
+        if (gatewayBuffer == null) {
+            return DispatchResult.REJECTED;
+        }
+        if (!ATTACHMENT_SIGNALING_STANDARD.equals(session.activeSafetyStandard())
+                || session.activeSafetyModules().isEmpty()) {
+            return appendProtocolAudit(
+                    session, frame, receivedAt, "ACTIVE_SAFETY_ATTACHMENT_NOT_CAPABLE");
+        }
+        try {
+            Object decoded = attachmentControlModule.decode(
+                    frame.header().messageId(), frame.body().duplicate());
+            CanonicalAttachmentMetadata metadata = toAttachmentMetadata(
+                    session, frame, receivedAt, decoded);
+            UUID key = UUID.nameUUIDFromBytes(String.join("|",
+                    session.terminalId().toString(),
+                    Integer.toString(frame.header().messageId()),
+                    Integer.toString(frame.header().serialNumber()),
+                    metadata.payloadDigest()).getBytes(StandardCharsets.UTF_8));
+            GatewayIngressBuffer.WriteResult result = gatewayBuffer.append(new GatewayIngressEnvelope(
+                    1,
+                    key,
+                    IngressKind.ATTACHMENT_METADATA,
+                    receivedAt,
+                    objectMapper.writeValueAsString(metadata)));
+            return durable(result);
+        } catch (RuntimeException | JsonProcessingException malformed) {
+            return appendProtocolAudit(
+                    session, frame, receivedAt, "ACTIVE_SAFETY_ATTACHMENT_METADATA_REJECTED");
+        }
+    }
+
+    private CanonicalAttachmentMetadata toAttachmentMetadata(
+            TerminalSession session, Jt808Frame frame, Instant receivedAt, Object decoded) {
+        String payloadDigest = digest(frame);
+        if (decoded instanceof AlarmAttachmentMessageCodec.AlarmAttachmentInfo info) {
+            List<CanonicalAttachmentMetadata.AttachmentFile> files = info.attachments().stream()
+                    .map(file -> new CanonicalAttachmentMetadata.AttachmentFile(
+                            file.fileName(), file.fileSize()))
+                    .toList();
+            return new CanonicalAttachmentMetadata(
+                    session.terminalId(), session.vehicleId(), frame.header().messageId(), receivedAt,
+                    digest(info.alarmIdentifier()), digest(info.alarmNumber()), info.infoType(),
+                    null, null, files, payloadDigest);
+        }
+        if (decoded instanceof AlarmAttachmentMessageCodec.FileUploadCompleteNotification complete) {
+            return new CanonicalAttachmentMetadata(
+                    session.terminalId(), session.vehicleId(), frame.header().messageId(), receivedAt,
+                    null, null, null, complete.responseSerialNo(), complete.result(), List.of(), payloadDigest);
+        }
+        throw new IllegalArgumentException("unsupported attachment metadata message");
+    }
+
+    private DispatchResult appendProtocolAudit(
+            TerminalSession session, Jt808Frame frame, Instant receivedAt, String reasonCode) {
+        CanonicalProtocolAudit audit = new CanonicalProtocolAudit(
+                session.terminalId(), session.vehicleId(), reasonCode,
+                frame.header().protocolVersion().name(), frame.header().messageId(), digest(frame));
+        try {
+            UUID key = UUID.nameUUIDFromBytes(String.join("|",
+                    session.terminalId().toString(),
+                    Integer.toString(frame.header().messageId()),
+                    Integer.toString(frame.header().serialNumber()),
+                    reasonCode,
+                    audit.payloadDigest()).getBytes(StandardCharsets.UTF_8));
+            GatewayIngressBuffer.WriteResult result = gatewayBuffer.append(new GatewayIngressEnvelope(
+                    1, key, IngressKind.PROTOCOL_AUDIT, receivedAt,
+                    objectMapper.writeValueAsString(audit)));
+            return durable(result);
+        } catch (JsonProcessingException serializationFailure) {
+            return DispatchResult.REJECTED;
+        }
+    }
+
+    private static DispatchResult durable(GatewayIngressBuffer.WriteResult result) {
+        return result == GatewayIngressBuffer.WriteResult.STORED
+                        || result == GatewayIngressBuffer.WriteResult.DUPLICATE
+                ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS
+                : DispatchResult.REJECTED;
     }
 
     public long unknownMessageCount() {
@@ -215,8 +307,15 @@ public final class ProtocolModuleRegistry {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] body = new byte[frame.body().readableBytes()];
             frame.body().duplicate().readBytes(body);
-            digest.update(body);
-            return HexFormat.of().formatHex(digest.digest());
+            return HexFormat.of().formatHex(digest.digest(body));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static String digest(byte[] value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
         }

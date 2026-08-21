@@ -4,5 +4,6 @@ public enum IngressKind {
     LOCATION,
     ALARM,
     PROTOCOL_AUDIT,
+    ATTACHMENT_METADATA,
     ATTACHMENT_CONTROL
 }

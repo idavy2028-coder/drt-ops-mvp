@@ -1,5 +1,6 @@
 package com.idavy.drtops.jtgateway.netty;
 
+import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.bootstrap.ServerBootstrap;
@@ -34,6 +35,7 @@ public final class JtGatewayServer implements AutoCloseable {
     private final Configuration configuration;
     private final TerminalRegistryPort registryPort;
     private final TerminalSessionRegistry sessionRegistry;
+    private final ProtocolModuleRegistry protocolModuleRegistry;
     private EventLoopGroup bossGroup;
     private EventLoopGroup ioGroup;
     private DefaultEventExecutorGroup businessWorkers;
@@ -44,9 +46,18 @@ public final class JtGatewayServer implements AutoCloseable {
             Configuration configuration,
             TerminalRegistryPort registryPort,
             TerminalSessionRegistry sessionRegistry) {
+        this(configuration, registryPort, sessionRegistry, null);
+    }
+
+    public JtGatewayServer(
+            Configuration configuration,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            ProtocolModuleRegistry protocolModuleRegistry) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         this.registryPort = Objects.requireNonNull(registryPort, "registryPort");
         this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
+        this.protocolModuleRegistry = protocolModuleRegistry;
     }
 
     public synchronized int start() {
@@ -74,6 +85,7 @@ public final class JtGatewayServer implements AutoCloseable {
                 configuration.businessQueueHighWatermark(),
                 configuration.businessQueueLowWatermark(),
                 configuration.maximumCongestion(),
+                protocolModuleRegistry,
                 acceptedChannels);
         try {
             serverChannel = new ServerBootstrap()
