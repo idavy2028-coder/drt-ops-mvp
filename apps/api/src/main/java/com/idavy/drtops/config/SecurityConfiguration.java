@@ -3,6 +3,7 @@ package com.idavy.drtops.config;
 import com.idavy.drtops.auth.AuthAuditService;
 import java.util.UUID;
 import org.springframework.http.HttpMethod;
+import org.springframework.core.annotation.Order;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
@@ -14,6 +15,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 
 @Configuration
 @EnableWebSecurity
@@ -21,6 +23,33 @@ import org.springframework.security.core.context.SecurityContextHolder;
 public class SecurityConfiguration {
 
     @Bean
+    FilterRegistrationBean<GatewayServiceAuthenticationFilter> gatewayServiceAuthenticationFilterRegistration(
+            GatewayServiceAuthenticationFilter filter) {
+        FilterRegistrationBean<GatewayServiceAuthenticationFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
+    }
+
+    @Bean
+    @Order(1)
+    SecurityFilterChain gatewaySecurityFilterChain(
+            HttpSecurity http,
+            GatewayServiceAuthenticationFilter gatewayServiceAuthenticationFilter,
+            AuthenticationFailureHandler authenticationFailureHandler) throws Exception {
+        http.securityMatcher("/internal/jt-gateway/**")
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(authenticationFailureHandler)
+                        .accessDeniedHandler((request, response, exception) -> response.sendError(403)))
+                .authorizeHttpRequests(authorize -> authorize
+                        .anyRequest().hasAuthority(GatewayServiceAuthenticationFilter.PRINCIPAL))
+                .addFilterBefore(gatewayServiceAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             JwtAuthenticationFilter jwtAuthenticationFilter,
@@ -63,6 +92,8 @@ public class SecurityConfiguration {
                         .requestMatchers("/api/users/**").hasAuthority("USER_MANAGE")
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/location-reporting-candidates")
                         .hasAuthority("LOCATION_REPORT")
+                        .requestMatchers(HttpMethod.GET, "/api/terminals/**").hasAuthority("TERMINAL_READ")
+                        .requestMatchers("/api/terminals/**").hasAuthority("TERMINAL_MANAGE")
                         .requestMatchers(HttpMethod.POST, "/api/vehicles/*/location-reports").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/locations/latest").hasAuthority("LOCATION_READ")
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/*/location-events").hasAuthority("LOCATION_READ")
@@ -70,6 +101,15 @@ public class SecurityConfiguration {
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-locations/export.csv").hasAuthority("LOCATION_EXPORT")
                         .requestMatchers(HttpMethod.GET, "/api/vehicle-tasks/**").hasAuthority("TASK_READ")
                         .requestMatchers(HttpMethod.POST, "/api/vehicle-tasks/**").hasAuthority("TASK_EXECUTE")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicle-alarms/*/attachments")
+                        .hasAuthority("VEHICLE_ALARM_ATTACHMENT_READ")
+                        .requestMatchers(HttpMethod.POST, "/api/vehicle-alarms/*/attachments/*/requests")
+                        .hasAuthority("VEHICLE_ALARM_ATTACHMENT_REQUEST")
+                        .requestMatchers(HttpMethod.POST, "/api/vehicle-alarms/*/attachments/*/view-url")
+                        .hasAuthority("VEHICLE_ALARM_ATTACHMENT_READ")
+                        .requestMatchers(HttpMethod.GET, "/api/vehicle-alarms/**").hasAuthority("VEHICLE_ALARM_READ")
+                        .requestMatchers(HttpMethod.POST, "/api/vehicle-alarms/*/actions")
+                        .hasAuthority("VEHICLE_ALARM_HANDLE")
                         .requestMatchers("/api/dispatch-rule-sets/**").hasAuthority("RULE_MANAGE")
                         .requestMatchers(
                                 "/api/vehicles/**",
@@ -79,6 +119,10 @@ public class SecurityConfiguration {
                                 "/api/map/**")
                         .hasAuthority("RESOURCE_MANAGE")
                         .requestMatchers("/api/**").authenticated()
+                        // Media callbacks carry their own HMAC signature/timestamp/nonce proof and are
+                        // verified inside MediaCallbackController; no operator session exists for them.
+                        .requestMatchers(HttpMethod.POST, "/internal/media-callbacks/alarm-attachments")
+                        .permitAll()
                         .anyRequest().denyAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

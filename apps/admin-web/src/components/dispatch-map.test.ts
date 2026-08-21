@@ -211,6 +211,38 @@ describe("DispatchMap", () => {
     await waitFor(() => expect(tileMapRuntime.handle.focusPoint).toHaveBeenCalledWith({ longitude: 104.6401, latitude: 35.2109 }));
   });
 
+  it("never focuses a selected vehicle whose final snapshot is zero-zero or outside geographic bounds", async () => {
+    const zero = latestLocation();
+    zero.latestLocation.longitude = 0;
+    zero.latestLocation.latitude = 0;
+    const view = renderMap({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 0, locations: [zero] });
+    await waitFor(() => expect(leaflet.markerLayers).toHaveLength(3));
+
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 1, locations: [zero] }));
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+
+    const outsideBounds = latestLocation();
+    outsideBounds.latestLocation.longitude = 181;
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 2, locations: [outsideBounds] }));
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+
+    const oneSidedNull = latestLocation();
+    oneSidedNull.latestLocation.longitude = null as unknown as number;
+    oneSidedNull.latestLocation.latitude = 32;
+    await view.rerender(mapProps({ selectedVehicleId: "vehicle-1", vehicleFocusRequest: 3, locations: [oneSidedNull] }));
+    expect(tileMapRuntime.handle.focusPoint).not.toHaveBeenCalled();
+  });
+
+  it("renders a static high-severity alarm badge without leaking the internal vehicle identity", async () => {
+    renderMap({ alarmVehicleIds: ["vehicle-1"] });
+    await waitFor(() => expect(leaflet.divIcon).toHaveBeenCalled());
+
+    const vehicleIcon = leaflet.divIcon.mock.calls[leaflet.divIcon.mock.calls.length - 1]?.[0] as { className: string; html: string };
+    expect(vehicleIcon.className).toContain("has-safety-alarm");
+    expect(vehicleIcon.html).toContain("vehicle-alarm-badge");
+    expect(vehicleIcon.html).not.toContain("vehicle-1");
+  });
+
   it("invalidates the Leaflet canvas when the map container changes size", async () => {
     renderMap();
     await waitFor(() => expect(tileMapRuntime.createTileMap).toHaveBeenCalled());
@@ -233,19 +265,20 @@ describe("DispatchMap", () => {
   });
 });
 
-function renderMap(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number } = {}) {
+function renderMap(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; locations?: VehicleLocationSnapshotItem[]; alarmVehicleIds?: string[] } = {}) {
   return render(DispatchMap, {
     props: mapProps(overrides)
   });
 }
 
-function mapProps(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; locations?: VehicleLocationSnapshotItem[] } = {}) {
+function mapProps(overrides: { selectedVehicleId?: string; vehicleFocusRequest?: number; locations?: VehicleLocationSnapshotItem[]; alarmVehicleIds?: string[] } = {}) {
   return {
     serviceArea,
     stops,
     locations: overrides.locations ?? [latestLocation()],
     selectedVehicleId: overrides.selectedVehicleId,
     vehicleFocusRequest: overrides.vehicleFocusRequest,
+    alarmVehicleIds: overrides.alarmVehicleIds,
     selectedTask,
     eventChain: [
       locationEvent("PASSENGER_BOARDED", "2026-07-13T00:42:00Z", 104.637, 35.212),

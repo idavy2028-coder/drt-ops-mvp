@@ -13,6 +13,7 @@ const navItems: Array<{ label: string; to: string; permission: PermissionCode }>
   { label: "资源配置", to: "/resources", permission: "RESOURCE_MANAGE" },
   { label: "规则配置", to: "/rules", permission: "RULE_MANAGE" },
   { label: "审计日志", to: "/audit-logs", permission: "AUDIT_READ" },
+  { label: "终端管理", to: "/terminals", permission: "TERMINAL_READ" },
   { label: "用户与权限", to: "/users", permission: "USER_MANAGE" }
 ];
 
@@ -59,7 +60,20 @@ const today = new Intl.DateTimeFormat("zh-CN", {
       </header>
 
       <main class="content-surface">
-        <RouterView />
+        <RouterView v-slot="{ Component, route }">
+          <KeepAlive>
+            <component
+              :is="Component"
+              v-if="route.meta.keepAlive"
+              :key="String(route.name)"
+            />
+          </KeepAlive>
+          <component
+            :is="Component"
+            v-if="!route.meta.keepAlive"
+            :key="route.fullPath"
+          />
+        </RouterView>
       </main>
     </div>
   </div>

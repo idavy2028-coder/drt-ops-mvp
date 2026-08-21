@@ -20,7 +20,13 @@ public enum Permission {
     LOCATION_READ,
     LOCATION_REPORT,
     LOCATION_CORRECT,
-    LOCATION_EXPORT;
+    LOCATION_EXPORT,
+    TERMINAL_READ,
+    TERMINAL_MANAGE,
+    VEHICLE_ALARM_READ,
+    VEHICLE_ALARM_HANDLE,
+    VEHICLE_ALARM_ATTACHMENT_REQUEST,
+    VEHICLE_ALARM_ATTACHMENT_READ;
 
     private static final Map<RoleCode, Set<Permission>> ROLE_PERMISSIONS = Map.of(
             RoleCode.SYSTEM_ADMIN, Set.of(
@@ -35,7 +41,13 @@ public enum Permission {
                     LOCATION_READ,
                     LOCATION_REPORT,
                     LOCATION_CORRECT,
-                    LOCATION_EXPORT),
+                    LOCATION_EXPORT,
+                    TERMINAL_READ,
+                    TERMINAL_MANAGE,
+                    VEHICLE_ALARM_READ,
+                    VEHICLE_ALARM_HANDLE,
+                    VEHICLE_ALARM_ATTACHMENT_REQUEST,
+                    VEHICLE_ALARM_ATTACHMENT_READ),
             RoleCode.DISPATCHER, Set.of(
                     ORDER_CREATE,
                     ORDER_READ,
@@ -45,17 +57,23 @@ public enum Permission {
                     TASK_EXECUTE,
                     DECISION_READ,
                     LOCATION_READ,
-                    LOCATION_REPORT),
+                    LOCATION_REPORT,
+                    VEHICLE_ALARM_READ,
+                    VEHICLE_ALARM_HANDLE,
+                    VEHICLE_ALARM_ATTACHMENT_REQUEST,
+                    VEHICLE_ALARM_ATTACHMENT_READ),
             RoleCode.OPERATOR, Set.of(
                     RESOURCE_MANAGE,
                     ORDER_CREATE,
                     ORDER_READ,
                     TASK_READ,
-                    METRICS_READ),
+                    METRICS_READ,
+                    VEHICLE_ALARM_READ),
             RoleCode.AUDITOR, Set.of(
                     AUDIT_READ,
                     METRICS_READ,
-                    DECISION_READ));
+                    DECISION_READ,
+                    VEHICLE_ALARM_READ));
 
     public static Set<Permission> permissionsFor(Set<RoleCode> roles) {
         EnumSet<Permission> permissions = EnumSet.noneOf(Permission.class);

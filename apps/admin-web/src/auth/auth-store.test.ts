@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "./authStore";
+import { permissionsForRoles } from "./permissions";
 
 describe("authStore", () => {
   afterEach(() => {
@@ -49,5 +50,20 @@ describe("authStore", () => {
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.get("Authorization")).toBe("Bearer temporary-token");
     expect(authStore.authenticated).toBe(false);
+  });
+
+  it("grants active-safety read access to the four approved roles and handling only to administrators and dispatchers", () => {
+    const expected = [
+      { role: "SYSTEM_ADMIN", canHandle: true },
+      { role: "DISPATCHER", canHandle: true },
+      { role: "OPERATOR", canHandle: false },
+      { role: "AUDITOR", canHandle: false }
+    ];
+
+    for (const { role, canHandle } of expected) {
+      const permissions = [...permissionsForRoles([role])];
+      expect(permissions, `${role} can read alarm metadata`).toContain("VEHICLE_ALARM_READ");
+      expect(permissions.includes("VEHICLE_ALARM_HANDLE"), `${role} handling permission`).toBe(canHandle);
+    }
   });
 });

@@ -25,6 +25,7 @@ import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
 import com.idavy.drtops.domain.location.LocationEventType;
+import com.idavy.drtops.domain.location.LocationQualityStatus;
 import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.location.VehicleLocationEvent;
@@ -249,6 +250,14 @@ class VehicleLocationFlowIntegrationTest {
                 LocationEventType.PASSENGER_ALIGHTED,
                 LocationEventType.TASK_COMPLETED);
         assertThat(taskEvents).filteredOn(VehicleLocationEvent::isOutsideServiceArea).hasSize(1);
+        assertThat(taskEvents).allSatisfy(event -> {
+            assertThat(event.getSource()).isEqualTo(LocationSource.MANUAL_DISPATCHER);
+            assertThat(event.getRecordedBy()).isNotNull();
+            assertThat(event.getTerminalId()).isNull();
+            assertThat(event.getCoordinateTransformVersion()).isEqualTo("LEGACY_NONE");
+            assertThat(event.getQualityStatus()).isEqualTo(LocationQualityStatus.GOOD);
+            assertThat(event.getQualityReasons()).isEqualTo("[]");
+        });
 
         VehicleLocationEvent latestTaskEvent = taskEvents.getLast();
         UUID oldEventId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(
