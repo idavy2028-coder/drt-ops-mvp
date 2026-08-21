@@ -50,38 +50,103 @@ function Invoke-CheckedPostgresDump {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Destination,
-        [Parameter(Mandatory)] [scriptblock] $DumpCommand
+        [Parameter(Mandatory)] [string] $ContainerPath,
+        [Parameter(Mandatory)] [string[]] $ComposeArguments
     )
 
     Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+    $completed = $false
+    $primaryFailure = $null
     try {
-        & $DumpCommand | Set-Content -LiteralPath $Destination -Encoding UTF8
-        $dumpExitCode = $LASTEXITCODE
-        if ($null -eq $dumpExitCode -or $dumpExitCode -ne 0) {
-            throw "pg_dumpall failed with exit code $dumpExitCode"
+        docker compose @ComposeArguments exec -T postgres sh -ceu `
+            'umask 077; pg_dumpall --username "$POSTGRES_USER" > "$1"' `
+            sh $ContainerPath
+        $execExitCode = $LASTEXITCODE
+        if ($null -eq $execExitCode -or $execExitCode -ne 0) {
+            throw "container pg_dumpall failed with exit code $execExitCode"
         }
-        $dumpText = Get-Content -Raw -LiteralPath $Destination
-        $hasHeader = $dumpText -match '(?m)^-- PostgreSQL database cluster dump\r?$'
-        $hasRole = $dumpText -match '(?m)^CREATE ROLE\s+\S+;\r?$'
-        $hasCompletion = $dumpText -match
-            '(?m)^-- PostgreSQL database cluster dump complete\r?$'
+
+        docker compose @ComposeArguments cp "postgres:$ContainerPath" $Destination
+        $copyExitCode = $LASTEXITCODE
+        if ($null -eq $copyExitCode -or $copyExitCode -ne 0) {
+            throw "docker compose cp failed with exit code $copyExitCode"
+        }
+        if (!(Test-Path -LiteralPath $Destination) -or
+                (Get-Item -LiteralPath $Destination).Length -le 0) {
+            throw 'copied PostgreSQL backup is empty'
+        }
+
+        $hasHeader = $false
+        $hasRole = $false
+        [string[]] $tailLines = New-Object string[] 32
+        $lineNumber = 0
+        $reader = [System.IO.File]::OpenText($Destination)
+        try {
+            while (($line = $reader.ReadLine()) -ne $null) {
+                $lineNumber++
+                if ($lineNumber -le 32 -and
+                        $line -eq '-- PostgreSQL database cluster dump') {
+                    $hasHeader = $true
+                }
+                if (!$hasRole -and $line -match '^CREATE ROLE\s+.+;$') {
+                    $hasRole = $true
+                }
+                $tailLines[($lineNumber - 1) % $tailLines.Length] = $line
+            }
+        } finally {
+            $reader.Dispose()
+        }
+        $hasCompletion = $tailLines -contains
+            '-- PostgreSQL database cluster dump complete'
         if (!$hasHeader -or !$hasRole -or !$hasCompletion) {
             throw 'pg_dumpall output is incomplete or not a cluster dump'
         }
+
+        $completed = $true
     } catch {
-        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
-        throw
+        $primaryFailure = $_
+    } finally {
+        $cleanupFailure = $null
+        try {
+            docker compose @ComposeArguments exec -T postgres sh -ceu `
+                'rm -f -- "$1"' sh $ContainerPath
+            $cleanupExitCode = $LASTEXITCODE
+            if ($null -eq $cleanupExitCode -or $cleanupExitCode -ne 0) {
+                throw "container dump cleanup failed with exit code $cleanupExitCode"
+            }
+        } catch {
+            $cleanupFailure = $_
+        }
+        if (!$completed -or $null -ne $cleanupFailure) {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $primaryFailure) {
+            if ($null -ne $cleanupFailure) {
+                throw "$($primaryFailure.Exception.Message); cleanup also failed: " +
+                    $cleanupFailure.Exception.Message
+            }
+            throw $primaryFailure
+        }
+        if ($null -ne $cleanupFailure) {
+            throw $cleanupFailure
+        }
     }
 }
 # postgres-backup-contract-end
 
-Invoke-CheckedPostgresDump -Destination $databaseBackup -DumpCommand {
-    docker compose @compose exec -T postgres sh -ceu 'pg_dumpall --username "$POSTGRES_USER"'
-}
+$containerBackup = "/tmp/postgres-before-password-$rotationStamp-$PID.sql"
+Invoke-CheckedPostgresDump -Destination $databaseBackup `
+    -ContainerPath $containerBackup -ComposeArguments $compose
 Get-FileHash -Algorithm SHA256 -LiteralPath $databaseBackup
 ```
 
-门禁会在 native exit 非 0 时立即删除部分文件并终止；exit 0 后还必须同时看到 cluster dump 头、角色定义和最终 completion marker，否则同样删除文件并终止。只有函数正常返回后才能停止数据库写入方，再通过 `psql` 的交互式 `\password` 输入新密码两次。输入不会出现在命令行；不要改用 `ALTER ROLE ... PASSWORD`、`PGPASSWORD=`、PowerShell 历史变量或把真实 `.env` 的 `docker compose config` 输出保存到日志。
+`pg_dumpall` 在 PostgreSQL 容器内直接写临时文件，再由 `docker compose cp` 原样复制，SQL 字节不会经过 Windows PowerShell 5.1 的 native stdout 文本转码。门禁会逐项检查 exec、cp 和容器清理的 native exit；任一步失败、宿主文件为空或 cluster dump 结构不完整，都会删除宿主部分文件并终止。函数无论成功失败都会尝试删除容器临时文件；若主流程与清理同时失败，异常会同时保留主失败和清理失败，避免丢失首个故障点。头部只检查前 32 行、角色逐行扫描、completion marker 只检查末 32 行，不把整份 SQL 读入内存。
+
+### 密码轮换前的隔离恢复硬门禁
+
+**本轮 Docker daemon 不可用，尚未执行恢复演练，不得声称上述备份已验证可恢复。** 在真实部署窗口中，必须先把 `$databaseBackup` 恢复到不映射宿主端口、不复用 `postgres-data` 的隔离临时 PostgreSQL，确认恢复命令无错误，并核对角色数、数据库数及已批准关键业务表计数；结果由数据库负责人签字后，才能停止写入方并轮换密码。不得在原卷上试恢复，也不得因恢复失败继续执行 `\password`。
+
+隔离恢复应使用单独的临时容器和临时卷；操作时不要输出 SQL 内容、角色名、数据库名或密码。完成核对后删除临时容器和临时卷，保留宿主备份及其 SHA-256。只有该恢复门禁通过后，才通过 `psql` 的交互式 `\password` 输入新密码两次。输入不会出现在命令行；不要改用 `ALTER ROLE ... PASSWORD`、`PGPASSWORD=`、PowerShell 历史变量或把真实 `.env` 的 `docker compose config` 输出保存到日志。
 
 ```powershell
 $compose = @('--env-file', '.env', '-f', 'infra/docker-compose.pilot.yml')
