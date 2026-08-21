@@ -79,7 +79,7 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
         String credential = bearerCredential.get();
         if (credential == null || credential.isBlank()) {
             operationsApiReachable.set(false);
-            apiStatus.failure("INGRESS");
+            apiStatus.failure(OperationsApiStatus.Source.INGRESS, "INGRESS");
             return GatewayOutboxDispatcher.DeliveryResult.retryable("CREDENTIAL_UNAVAILABLE");
         }
         try {
@@ -103,14 +103,16 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
             lastDeliverySuccessful.set(result.successful());
             if (result.successful()) {
                 operationsApiReachable.set(true);
-                apiStatus.success(audits.isEmpty() ? "INGRESS" : "SESSION_AUDIT");
+                apiStatus.success(OperationsApiStatus.Source.INGRESS,
+                        audits.isEmpty() ? "INGRESS" : "SESSION_AUDIT");
             } else {
-                apiStatus.failure(audits.isEmpty() ? "INGRESS" : "SESSION_AUDIT");
+                apiStatus.failure(OperationsApiStatus.Source.INGRESS,
+                        audits.isEmpty() ? "INGRESS" : "SESSION_AUDIT");
             }
             return result;
         } catch (RestClientException | JsonProcessingException unavailable) {
             operationsApiReachable.set(false);
-            apiStatus.failure("DELIVERY");
+            apiStatus.failure(OperationsApiStatus.Source.INGRESS, "DELIVERY");
             return GatewayOutboxDispatcher.DeliveryResult.retryable("CLIENT_UNAVAILABLE");
         }
     }

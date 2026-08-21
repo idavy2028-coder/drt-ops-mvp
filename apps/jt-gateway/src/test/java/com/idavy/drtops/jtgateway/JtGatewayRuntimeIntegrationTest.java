@@ -83,11 +83,21 @@ class JtGatewayRuntimeIntegrationTest {
             try {
                 assertEquals(1, context.getBeansOfType(JtGatewayServer.class).size());
                 int managementPort = ((WebServerApplicationContext) context).getWebServer().getPort();
+                await(() -> api.probeCount() > 0, Duration.ofSeconds(3));
                 HttpResponse<String> initialReadiness = health(managementPort, "readiness");
-                assertEquals(503, initialReadiness.statusCode());
+                assertEquals(200, initialReadiness.statusCode(), initialReadiness.body());
                 assertTrue(initialReadiness.body().contains("operationsApiStatus"));
-                assertTrue(initialReadiness.body().contains("UNKNOWN"));
+                assertTrue(initialReadiness.body().contains("UP"));
+                assertTrue(api.probesAreUnauthenticatedHealthGets());
                 assertEquals(200, health(managementPort, "liveness").statusCode());
+                HttpResponse<String> idleMetrics = HttpClient.newHttpClient().send(
+                        HttpRequest.newBuilder(URI.create(
+                                        "http://127.0.0.1:" + managementPort + "/actuator/prometheus"))
+                                .GET().build(),
+                        HttpResponse.BodyHandlers.ofString());
+                assertEquals(200, idleMetrics.statusCode());
+                assertTrue(idleMetrics.body().contains(
+                        "jt_gateway_operations_api_reachable 1.0"), idleMetrics.body());
                 TerminalSessionRegistry sessions = context.getBean(TerminalSessionRegistry.class);
                 SimulatedTerminal terminal = new SimulatedTerminal(
                         TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, "SIM-PLATE");
@@ -102,6 +112,7 @@ class JtGatewayRuntimeIntegrationTest {
                     SimulatedTerminal.ReplyRecord authentication = terminal.awaitReply(Duration.ofSeconds(3));
                     assertNotNull(authentication);
                     assertEquals(0, authentication.result());
+                    await(() -> sessions.current(TERMINAL_ID).isPresent(), Duration.ofSeconds(1));
                     assertTrue(sessions.current(TERMINAL_ID).isPresent(),
                             "the production Netty server must use the application session registry");
                     terminal.sendPosition();
@@ -109,7 +120,10 @@ class JtGatewayRuntimeIntegrationTest {
                     assertNotNull(position);
                     assertEquals(0, position.result());
                     await(() -> api.ingressCount() == 1, Duration.ofSeconds(5));
-                    assertEquals(0, context.getBean(GatewayOutboxRepository.class).pendingCount());
+                    GatewayOutboxRepository repository =
+                            context.getBean(GatewayOutboxRepository.class);
+                    await(() -> repository.pendingCount() == 0, Duration.ofSeconds(5));
+                    assertEquals(0, repository.pendingCount());
                     assertTrue(api.allRequestsAuthenticated());
 
                     HttpResponse<String> health = HttpClient.newHttpClient().send(
@@ -294,6 +308,7 @@ class JtGatewayRuntimeIntegrationTest {
         private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
         private final HttpServer server;
         private final List<Boolean> authenticated = new CopyOnWriteArrayList<>();
+        private final List<Boolean> safeProbes = new CopyOnWriteArrayList<>();
         private final List<String> requestPaths = new CopyOnWriteArrayList<>();
         private final List<JsonNode> ingress = new CopyOnWriteArrayList<>();
         private final ExecutorService httpWorkers = Executors.newCachedThreadPool();
@@ -327,6 +342,8 @@ class JtGatewayRuntimeIntegrationTest {
             });
             server.createContext("/internal/jt-gateway/audit-events", exchange ->
                     respond(exchange, 200, "{\"data\":{\"recorded\":true}}"));
+            server.createContext("/actuator/health", exchange ->
+                    respond(exchange, 200, "{\"status\":\"UP\"}"));
             server.createContext("/internal/jt-gateway/ingress", exchange -> {
                 if (blockIngress.compareAndSet(true, false)) {
                     ingressBlocked.countDown();
@@ -359,6 +376,14 @@ class JtGatewayRuntimeIntegrationTest {
 
         private int ingressCount() {
             return ingress.size();
+        }
+
+        private int probeCount() {
+            return safeProbes.size();
+        }
+
+        private boolean probesAreUnauthenticatedHealthGets() {
+            return !safeProbes.isEmpty() && safeProbes.stream().allMatch(Boolean::booleanValue);
         }
 
         private void blockNextIngress() {
@@ -397,7 +422,15 @@ class JtGatewayRuntimeIntegrationTest {
         }
 
         private void recordAuthentication(HttpExchange exchange) {
-            requestPaths.add(exchange.getRequestURI().getPath());
+            String path = exchange.getRequestURI().getPath();
+            requestPaths.add(path);
+            if ("/actuator/health".equals(path)) {
+                safeProbes.add("GET".equals(exchange.getRequestMethod())
+                        && exchange.getRequestHeaders().getFirst("Authorization") == null
+                        && exchange.getRequestHeaders().getFirst(
+                                "X-Service-Credential-Version") == null);
+                return;
+            }
             authenticated.add(("Bearer " + SERVICE_CREDENTIAL).equals(
                             exchange.getRequestHeaders().getFirst("Authorization"))
                     && "3".equals(exchange.getRequestHeaders().getFirst(

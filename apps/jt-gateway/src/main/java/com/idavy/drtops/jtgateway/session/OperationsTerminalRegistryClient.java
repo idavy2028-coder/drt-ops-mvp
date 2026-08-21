@@ -71,13 +71,13 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             if (approved == null || !approved.approved() || approved.terminalId() == null
                     || approved.vehicleId() == null || approved.tokenVersion() < 1) {
                 if (approved == null) {
-                    apiStatus.failure("REGISTRATION_VERIFY");
+                    apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
                 } else {
-                    apiStatus.success("REGISTRATION_VERIFY");
+                    apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
                 }
                 return RegistrationDecision.rejected(RegistrationRejection.NOT_PREPROVISIONED);
             }
-            apiStatus.success("REGISTRATION_VERIFY");
+            apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
             byte[] entropy = new byte[32];
             secureRandom.nextBytes(entropy);
             byte[] token = Base64.getUrlEncoder().withoutPadding().encode(entropy);
@@ -89,7 +89,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                                 approved.tokenVersion(), digest, gatewayInstance))
                         .retrieve()
                         .toBodilessEntity();
-                apiStatus.success("REGISTRATION_COMPLETE");
+                apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_COMPLETE");
                 return RegistrationDecision.approved(
                         approved.terminalId(), approved.vehicleId(), approved.sourceCoordinateSystem(),
                         approved.activeSafetyStandard(), approved.activeSafetyModules(),
@@ -98,7 +98,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                 Arrays.fill(token, (byte) 0);
             }
         } catch (RestClientException | IllegalArgumentException unavailable) {
-            apiStatus.failure("REGISTRATION");
+            apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "REGISTRATION");
             return RegistrationDecision.rejected(RegistrationRejection.NOT_PREPROVISIONED);
         }
     }
@@ -114,15 +114,15 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                     .retrieve()
                     .body(AuthenticationResponse.class);
             if (response == null || response.data() == null) {
-                apiStatus.failure("AUTHENTICATION_VERIFY");
+                apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             } else {
-                apiStatus.success("AUTHENTICATION_VERIFY");
+                apiStatus.success(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             }
             return response != null && response.data() != null && response.data().approved()
                     ? AuthenticationDecision.allow()
                     : AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         } catch (RestClientException unavailable) {
-            apiStatus.failure("AUTHENTICATION_VERIFY");
+            apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         }
     }

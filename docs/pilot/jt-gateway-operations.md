@@ -16,6 +16,82 @@
 
 API 只接收凭证版本和摘要；明文只进入网关容器。H2 文件保存在独立 `jt-gateway-data` 卷，API 容器没有该卷的挂载权限。
 
+## PostgreSQL 新部署与既有卷密码迁移
+
+### 新部署
+
+新部署必须使用一个从未初始化过的 `postgres-data` 卷，并在首次 `up` 前把 `.env` 中的数据库名、用户和密码全部替换为新值。官方 PostgreSQL 镜像的 `POSTGRES_PASSWORD` **只在数据目录首次初始化时生效**；已有卷再次启动时，即使 `.env` 改了密码，也不会修改数据库角色密码。
+
+新卷首次启动可在批准的部署窗口执行：
+
+```powershell
+$compose = @('--env-file', '.env', '-f', 'infra/docker-compose.pilot.yml')
+docker compose @compose config --quiet
+docker compose @compose up -d --wait postgres
+```
+
+若 `postgres-data` 已存在或不确定是否用过，必须按下一节升级，不能把它当成新部署，也不能通过删除卷让新密码“生效”。
+
+### 已有 `postgres-data` 卷升级
+
+以下命令必须在同一个受控 PowerShell 会话执行。第一步先备份 `.env` 和全库；SQL 备份含业务数据和角色哈希，只能保存在 Git 已忽略的 `.private/backups/`，不得上传工单或流水线日志。
+
+```powershell
+$compose = @('--env-file', '.env', '-f', 'infra/docker-compose.pilot.yml')
+$rotationStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$backupDirectory = Join-Path $PWD '.private/backups'
+$envBackup = Join-Path $backupDirectory "postgres-password-$rotationStamp.env"
+$databaseBackup = Join-Path $backupDirectory "postgres-before-password-$rotationStamp.sql"
+New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
+Copy-Item -LiteralPath '.env' -Destination $envBackup
+docker compose @compose exec -T postgres sh -ceu 'pg_dumpall --username "$POSTGRES_USER"' |
+    Set-Content -LiteralPath $databaseBackup -Encoding utf8NoBOM
+if (!(Test-Path -LiteralPath $databaseBackup) -or
+        (Get-Item -LiteralPath $databaseBackup).Length -le 0) {
+    throw 'PostgreSQL backup is empty; abort password rotation'
+}
+Get-FileHash -Algorithm SHA256 -LiteralPath $databaseBackup
+```
+
+备份成功后停止数据库写入方，再通过 `psql` 的交互式 `\password` 输入新密码两次。输入不会出现在命令行；不要改用 `ALTER ROLE ... PASSWORD`、`PGPASSWORD=`、PowerShell 历史变量或把真实 `.env` 的 `docker compose config` 输出保存到日志。
+
+```powershell
+$compose = @('--env-file', '.env', '-f', 'infra/docker-compose.pilot.yml')
+docker compose @compose stop jt-gateway api
+docker compose @compose exec postgres sh -ceu 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "\password $POSTGRES_USER"'
+```
+
+交互修改成功后，用本地编辑器只更新 `.env` 的 `DRT_OPS_DATASOURCE_PASSWORD`。随后依次重建 PostgreSQL 容器以同步其环境元数据、切换 API 并验证数据库健康，最后再启动 gateway：
+
+```powershell
+$compose = @('--env-file', '.env', '-f', 'infra/docker-compose.pilot.yml')
+docker compose @compose up -d --no-deps --force-recreate --wait postgres
+docker compose @compose up -d --no-deps --force-recreate --wait api
+docker compose @compose exec -T api curl --fail --silent http://127.0.0.1:8080/actuator/health
+docker compose @compose up -d --no-deps --force-recreate --wait jt-gateway
+docker compose @compose exec -T jt-gateway curl --fail --silent http://127.0.0.1:7612/actuator/health/readiness
+```
+
+只有 API 健康明确为 `UP` 且 gateway readiness 为 `UP` 才算切换完成。`postgres` 容器环境中的新 `POSTGRES_PASSWORD` 只是保持部署元数据一致；真正的角色密码变更来自前面的交互式 `\password`。
+
+### 数据库密码回退
+
+若 API 无法连接数据库或 gateway readiness 不恢复，停止写入方，用同一个交互命令输入备份 `.env` 中的旧密码，然后恢复旧 `.env` 并按 PostgreSQL→API→gateway 顺序重建。旧密码仍只在交互提示中输入，不得拼进命令或日志：
+
+```powershell
+$compose = @('--env-file', '.env', '-f', 'infra/docker-compose.pilot.yml')
+docker compose @compose stop jt-gateway api
+docker compose @compose exec postgres sh -ceu 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "\password $POSTGRES_USER"'
+Copy-Item -LiteralPath $envBackup -Destination '.env' -Force
+docker compose @compose up -d --no-deps --force-recreate --wait postgres
+docker compose @compose up -d --no-deps --force-recreate --wait api
+docker compose @compose exec -T api curl --fail --silent http://127.0.0.1:8080/actuator/health
+docker compose @compose up -d --no-deps --force-recreate --wait jt-gateway
+docker compose @compose exec -T jt-gateway curl --fail --silent http://127.0.0.1:7612/actuator/health/readiness
+```
+
+若交互回退也失败，保持服务停止，保留原卷和第一步生成的 SQL/`.env` 备份并升级给数据库负责人；不要删除 `postgres-data`，也不要在未演练的卷上直接导入 `pg_dumpall` 备份。
+
 ## 启动与停止
 
 启动前先做离线配置展开并人工复核：
@@ -50,11 +126,12 @@ docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gate
 docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gateway curl --fail --silent http://127.0.0.1:7612/actuator/health/readiness
 ```
 
-liveness 验证真实 Netty listener channel；readiness 还要求 outbox 可写、运营 API 已有成功事实、无 dead-letter 且最老未解决记录未超阈值。`jtGateway` 详情至少包含：
+liveness 验证真实 Netty listener channel；readiness 还要求 outbox 可写、运营 API 在新鲜度窗口内可达、无 dead-letter 且最老未解决记录未超阈值。默认 `JT_GATEWAY_API_STATUS_TTL_SECONDS=30`，主动探针每 10 秒以不带服务凭证的 GET 请求访问运营 API `/actuator/health`，因此无终端、空 outbox 时也能建立健康事实。`jtGateway` 详情至少包含：
 
 - `tcpListening`：启用后设备监听是否存活；
 - `bufferWritable`：H2 outbox 是否可写；
-- `operationsApiReachable`：最近一次投递请求是否获得运营 API 的 2xx 响应；尚未尝试时为 `UNKNOWN`；
+- `operationsApiReachable`：registry、ingress 与 probe 的聚合结果；窗口内任一失败优先为 `false`，其次任一成功为 `true`，全部过期为 `false`，从未观测为 `UNKNOWN`；
+- `operationsApiRegistryStatus`、`operationsApiIngressStatus`、`operationsApiProbeStatus`：各来源分别显示 `UNKNOWN`、`UP`、`DOWN` 或 `STALE`，防止一个成功请求覆盖另一来源的失败；
 - `lastDeliverySuccessful`：最近一次 2xx 响应是否逐项覆盖整批并全部为 `ACCEPTED`/`REPLAYED`；
 - `outboxPending`、`outboxDelivering`、`outboxDeadLetter`：各状态数量；
 - `oldestUnresolvedAgeSeconds`：最老 PENDING/DELIVERING/DEAD_LETTER 记录年龄。

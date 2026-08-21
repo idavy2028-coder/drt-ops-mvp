@@ -8,6 +8,7 @@ import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
 import com.idavy.drtops.jtgateway.ingress.GatewayOutboxDispatcher;
 import com.idavy.drtops.jtgateway.ingress.GatewayOutboxRepository;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiClient;
+import com.idavy.drtops.jtgateway.ingress.OperationsApiHealthProbe;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiStatus;
 import com.idavy.drtops.jtgateway.netty.JtGatewayServer;
 import com.idavy.drtops.jtgateway.session.OperationsTerminalRegistryClient;
@@ -36,6 +37,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
 import org.springframework.web.client.RestClient;
 
 @Configuration(proxyBeanMethods = false)
@@ -53,14 +55,16 @@ public class JtGatewayRuntimeConfiguration {
     }
 
     @Bean
+    @DependsOnDatabaseInitialization
     GatewayIngressBuffer gatewayIngressBuffer(
             GatewayOutboxRepository repository, ObjectMapper objectMapper, Clock gatewayClock) {
         return new GatewayIngressBuffer(repository, objectMapper, gatewayClock);
     }
 
     @Bean
-    OperationsApiStatus operationsApiStatus(Clock gatewayClock) {
-        return new OperationsApiStatus(gatewayClock);
+    OperationsApiStatus operationsApiStatus(Clock gatewayClock, Environment environment) {
+        return new OperationsApiStatus(gatewayClock, Duration.ofSeconds(integer(
+                environment, "jt.gateway.health.api-status-ttl-seconds", 30)));
     }
 
     @Bean
@@ -118,6 +122,19 @@ public class JtGatewayRuntimeConfiguration {
                 endpoint(service.baseUrl(), "/internal/jt-gateway/audit-events"),
                 service::credential,
                 service.credentialVersion(),
+                apiStatus);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    OperationsApiHealthProbe operationsApiHealthProbe(
+            RestClient.Builder builder,
+            ServiceConfiguration service,
+            HttpTimeoutConfiguration timeouts,
+            OperationsApiStatus apiStatus) {
+        return new OperationsApiHealthProbe(
+                boundedBuilder(builder, timeouts),
+                endpoint(service.baseUrl(), "/actuator/health"),
                 apiStatus);
     }
 
@@ -237,6 +254,12 @@ public class JtGatewayRuntimeConfiguration {
                     .withDetail("operationsApiStatus", apiState)
                     .withDetail("operationsApiOperation", api.operation())
                     .withDetail("operationsApiReachable", reachable)
+                    .withDetail("operationsApiRegistryStatus",
+                            sourceHealthState(enabled, api, OperationsApiStatus.Source.REGISTRY))
+                    .withDetail("operationsApiIngressStatus",
+                            sourceHealthState(enabled, api, OperationsApiStatus.Source.INGRESS))
+                    .withDetail("operationsApiProbeStatus",
+                            sourceHealthState(enabled, api, OperationsApiStatus.Source.PROBE))
                     .withDetail("lastDeliverySuccessful", lastDeliverySuccessful)
                     .withDetail("outboxPending", outbox.pending())
                     .withDetail("outboxDelivering", outbox.delivering())
@@ -251,7 +274,8 @@ public class JtGatewayRuntimeConfiguration {
             GatewayIngressBuffer buffer,
             GatewayOutboxRepository repository,
             ObjectProvider<GatewayServerLifecycle> lifecycle,
-            ObjectProvider<OperationsApiClient> apiClient) {
+            ObjectProvider<OperationsApiClient> apiClient,
+            OperationsApiStatus apiStatus) {
         return registry -> {
             Gauge.builder("jt.gateway.tcp.listening", lifecycle,
                             provider -> {
@@ -280,12 +304,17 @@ public class JtGatewayRuntimeConfiguration {
                                 }
                             })
                     .register(registry);
-            Gauge.builder("jt.gateway.operations.api.reachable", apiClient,
-                            provider -> {
-                                OperationsApiClient client = provider.getIfAvailable();
-                                return client != null && client.deliveryAttempted()
-                                        && client.operationsApiReachable() ? 1 : 0;
-                            })
+            Gauge.builder("jt.gateway.operations.api.reachable", apiStatus,
+                            JtGatewayRuntimeConfiguration::apiStatusMetric)
+                    .register(registry);
+            Gauge.builder("jt.gateway.operations.api.registry.reachable", apiStatus,
+                            target -> apiSourceMetric(target, OperationsApiStatus.Source.REGISTRY))
+                    .register(registry);
+            Gauge.builder("jt.gateway.operations.api.ingress.reachable", apiStatus,
+                            target -> apiSourceMetric(target, OperationsApiStatus.Source.INGRESS))
+                    .register(registry);
+            Gauge.builder("jt.gateway.operations.api.probe.reachable", apiStatus,
+                            target -> apiSourceMetric(target, OperationsApiStatus.Source.PROBE))
                     .register(registry);
             Gauge.builder("jt.gateway.operations.delivery.successful", apiClient,
                             provider -> {
@@ -310,6 +339,37 @@ public class JtGatewayRuntimeConfiguration {
         } catch (DataAccessException unavailable) {
             return -1;
         }
+    }
+
+    private static String sourceHealthState(
+            boolean enabled,
+            OperationsApiStatus.Snapshot snapshot,
+            OperationsApiStatus.Source source) {
+        if (!enabled) {
+            return "DISABLED";
+        }
+        OperationsApiStatus.SourceSnapshot sourceSnapshot = snapshot.sources().get(source);
+        if (sourceSnapshot.checkedAt() == null) {
+            return "UNKNOWN";
+        }
+        return sourceSnapshot.fresh() ? sourceSnapshot.state().name() : "STALE";
+    }
+
+    private static double apiStatusMetric(OperationsApiStatus status) {
+        return switch (status.snapshot().state()) {
+            case UNKNOWN -> -1;
+            case UP -> 1;
+            case DOWN -> 0;
+        };
+    }
+
+    private static double apiSourceMetric(
+            OperationsApiStatus status, OperationsApiStatus.Source source) {
+        OperationsApiStatus.SourceSnapshot snapshot = status.snapshot().sources().get(source);
+        if (snapshot.checkedAt() == null) {
+            return -1;
+        }
+        return snapshot.fresh() && snapshot.state() == OperationsApiStatus.State.UP ? 1 : 0;
     }
 
     private static URI endpoint(URI baseUrl, String path) {

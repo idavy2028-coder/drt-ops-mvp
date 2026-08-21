@@ -42,6 +42,9 @@ jt:
       maximum-backoff-ms: ${JT_GATEWAY_DISPATCH_MAXIMUM_BACKOFF_MS:300000}
     health:
       max-unresolved-age-seconds: ${JT_GATEWAY_MAX_UNRESOLVED_AGE_SECONDS:300}
+      api-status-ttl-seconds: ${JT_GATEWAY_API_STATUS_TTL_SECONDS:30}
+      api-probe-fixed-delay-ms: ${JT_GATEWAY_API_PROBE_FIXED_DELAY_MS:10000}
+      api-probe-initial-delay-ms: ${JT_GATEWAY_API_PROBE_INITIAL_DELAY_MS:0}
 
 management:
   endpoint:
