@@ -35,4 +35,7 @@ interface VehicleAlarmRepository extends JpaRepository<VehicleAlarm, UUID> {
     Optional<VehicleAlarm> findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdAndEndedAtIsNull(
             UUID terminalId, UUID vehicleId, String standard, String module, int alarmTypeCode,
             long terminalAlarmId);
+    Optional<VehicleAlarm> findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmId(
+            UUID terminalId, UUID vehicleId, String standard, String module, int alarmTypeCode,
+            long terminalAlarmId);
 }

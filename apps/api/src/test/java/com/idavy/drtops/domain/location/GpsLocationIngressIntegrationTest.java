@@ -51,6 +51,7 @@ class GpsLocationIngressIntegrationTest {
     private static final UUID VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000001");
     private static final UUID OTHER_VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000002");
     private static final UUID TERMINAL_ID = UUID.fromString("bb000000-0000-0000-0000-000000000001");
+    private static final UUID OTHER_TERMINAL_ID = UUID.fromString("bb000000-0000-0000-0000-000000000002");
     private static final Instant POSTGRES_TIMESTAMPTZ_MIN = Instant.ofEpochSecond(-210_866_803_200L);
     private static final Instant POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE = Instant.ofEpochSecond(9_224_318_016_000L);
     @Autowired MockMvc mockMvc;
@@ -165,12 +166,314 @@ class GpsLocationIngressIntegrationTest {
 
         assertThat(eventRepository.findByIdempotencyKey(positionKey)).isPresent();
         assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(event -> {
+            assertThat(event.getIdempotencyKey()).isEqualTo(auditKey);
             assertThat(event.getTerminalId()).isEqualTo(TERMINAL_ID);
             assertThat(event.getVehicleId()).isEqualTo(VEHICLE_ID);
             assertThat(event.getReasonCode()).isEqualTo("ACTIVE_SAFETY_EXTENSION_REJECTED");
             assertThat(event.getMessageId()).isEqualTo(0x0200);
         });
         assertThat(receiptRepository.findById(auditKey)).isPresent();
+    }
+
+    @Test
+    void returnsOneOrderedResultPerMixedItemWithoutLettingOneBadAlarmHideItsNeighbors() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID firstPositionKey = UUID.randomUUID();
+        UUID badAlarmKey = UUID.randomUUID();
+        UUID auditKey = UUID.randomUUID();
+        UUID attachmentKey = UUID.randomUUID();
+        UUID secondPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope firstPosition = envelopeAt(firstPositionKey, VEHICLE_ID, 0x02,
+                "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope badAlarm = new GatewayIngressEnvelope(
+                1, badAlarmKey, "ALARM", receivedAt, "{");
+        GatewayIngressEnvelope audit = protocolAuditEnvelope(auditKey, receivedAt);
+        GatewayIngressEnvelope attachment = new GatewayIngressEnvelope(
+                1, attachmentKey, "ATTACHMENT_METADATA", receivedAt, "{}");
+        GatewayIngressEnvelope secondPosition = envelopeAt(secondPositionKey, VEHICLE_ID, 0x02,
+                "105.2384989", "35.2109658", Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        var response = postIngress(List.of(
+                firstPosition, badAlarm, audit, attachment, secondPosition))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(data).hasSize(5);
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("idempotencyKey").asText()).toList())
+                .containsExactly(firstPositionKey.toString(), badAlarmKey.toString(), auditKey.toString(),
+                        attachmentKey.toString(), secondPositionKey.toString());
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("ACCEPTED", "REJECTED", "ACCEPTED", "REJECTED", "ACCEPTED");
+        assertThat(data.get(1).path("reasonCodes").get(0).asText()).isEqualTo("INVALID_PAYLOAD");
+        assertThat(data.get(3).path("reasonCodes").get(0).asText())
+                .isEqualTo("ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE");
+        postIngress(List.of(attachment)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]")
+                        .value("ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE"));
+        postIngress(List.of(badAlarm)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"));
+        assertThat(eventRepository.findByIdempotencyKey(firstPositionKey)).isPresent();
+        assertThat(eventRepository.findByIdempotencyKey(secondPositionKey)).isPresent();
+    }
+
+    @Test
+    void reportsAlarmAndProtocolAuditAcceptanceThenTheirOwnReplaySemantics() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID positionKey = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelopeAt(positionKey, VEHICLE_ID, 0x02,
+                "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope alarm = alarmEnvelope(positionKey, "ADAS", 1, "FORWARD_COLLISION",
+                "7".repeat(64), receivedAt, receivedAt);
+        GatewayIngressEnvelope alarmBusinessReplay = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", receivedAt, alarm.payloadJson());
+        GatewayIngressEnvelope audit = protocolAuditEnvelope(UUID.randomUUID(), receivedAt);
+
+        postIngress(List.of(position, alarm, audit)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(3))
+                .andExpect(jsonPath("$.data[0].idempotencyKey").value(positionKey.toString()))
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].idempotencyKey").value(alarm.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[2].idempotencyKey").value(audit.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[2].status").value("ACCEPTED"));
+
+        postIngress(List.of(alarmBusinessReplay, audit)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].idempotencyKey")
+                        .value(alarmBusinessReplay.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"))
+                .andExpect(jsonPath("$.data[1].idempotencyKey").value(audit.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[1].status").value("REPLAYED"));
+
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarms", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void acceptsTheGatewayLocationKindWithTheExistingGpsSemantics() throws Exception {
+        UUID key = UUID.randomUUID();
+        GatewayIngressEnvelope historicalPosition = envelope(
+                key, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+        GatewayIngressEnvelope gatewayLocation = new GatewayIngressEnvelope(
+                historicalPosition.schemaVersion(), historicalPosition.idempotencyKey(), "LOCATION",
+                historicalPosition.gatewayReceivedAt(), historicalPosition.payloadJson());
+
+        postIngress(List.of(gatewayLocation)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].idempotencyKey").value(key.toString()))
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        assertThat(eventRepository.findByIdempotencyKey(key)).isPresent();
+    }
+
+    @Test
+    void rejectsAnUncorrelatableBatchBeforePersistingItsEarlierValidItem() throws Exception {
+        GatewayIngressEnvelope valid = envelope(
+                UUID.randomUUID(), VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+        GatewayIngressEnvelope missingKey = new GatewayIngressEnvelope(
+                1, null, "UNKNOWN", Instant.parse("2026-08-12T09:00:00Z"), "{}");
+
+        postIngress(List.of(valid, missingKey)).andExpect(status().isBadRequest());
+
+        assertThat(eventRepository.findAll()).isEmpty();
+        assertThat(receiptRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void rejectsCrossVehicleAcceptedAndRejectedPositionDependenciesWithoutHidingANeighbor() throws Exception {
+        JtTerminal otherTerminal = terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", UUID.randomUUID()));
+        JtTerminalVehicleBinding otherBinding = JtTerminalVehicleBinding.bind(
+                otherTerminal, OTHER_VEHICLE_ID, "测试绑定2", UUID.randomUUID());
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                otherBinding, "validFrom", OffsetDateTime.parse("2026-08-12T00:00:00Z"));
+        bindingRepository.save(otherBinding);
+
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID acceptedPositionKey = UUID.randomUUID();
+        UUID rejectedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope acceptedPosition = envelopeAt(
+                acceptedPositionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope rejectedPosition = envelopeAt(
+                rejectedPositionKey, VEHICLE_ID, 0x02, "181.0000000", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope crossAccepted = alarmFor(
+                OTHER_TERMINAL_ID, OTHER_VEHICLE_ID, acceptedPositionKey,
+                "ADAS", 1, "FORWARD_COLLISION", "8".repeat(64), receivedAt);
+        GatewayIngressEnvelope crossRejected = alarmFor(
+                OTHER_TERMINAL_ID, OTHER_VEHICLE_ID, rejectedPositionKey,
+                "DMS", 2, "PHONE", "9".repeat(64), receivedAt);
+        UUID manualPositionKey = UUID.randomUUID();
+        OffsetDateTime manualAt = OffsetDateTime.parse("2026-08-12T08:59:50Z");
+        VehicleLocationEvent manual = VehicleLocationEvent.record(
+                VEHICLE_ID, null, null, null, LocationEventType.MANUAL_REPORT,
+                LocationSource.MANUAL_DISPATCHER,
+                "POINT(105.2384988 35.2109657)", new BigDecimal("105.2384988"),
+                new BigDecimal("35.2109657"), "GCJ02", "人工测试位置", manualAt,
+                manualAt.plusSeconds(1), UUID.randomUUID(), "测试", null, null,
+                manualPositionKey, "e".repeat(64), true, false);
+        org.springframework.test.util.ReflectionTestUtils.setField(manual, "terminalId", TERMINAL_ID);
+        eventRepository.saveAndFlush(manual);
+        GatewayIngressEnvelope manualDependency = alarmFor(
+                TERMINAL_ID, VEHICLE_ID, manualPositionKey,
+                "ADAS", 3, "LANE_DEPARTURE", "e".repeat(64), receivedAt);
+        UUID wrongKindKey = UUID.randomUUID();
+        GatewayIngressEnvelope attachment = new GatewayIngressEnvelope(
+                1, wrongKindKey, "ATTACHMENT_METADATA", receivedAt, "{}");
+        postIngress(List.of(attachment)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"));
+        JtGatewayIngressReceipt wrongKindReceipt = receiptRepository.findById(wrongKindKey).orElseThrow();
+        wrongKindReceipt.identify("ATTACHMENT_METADATA", TERMINAL_ID, VEHICLE_ID);
+        receiptRepository.saveAndFlush(wrongKindReceipt);
+        GatewayIngressEnvelope wrongKindDependency = alarmFor(
+                TERMINAL_ID, VEHICLE_ID, wrongKindKey,
+                "DMS", 4, "DISTRACTION", "f".repeat(64), receivedAt);
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(acceptedPosition, rejectedPosition, crossAccepted, crossRejected,
+                        manualDependency, wrongKindDependency, neighbor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[3].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[3].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[4].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[4].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[5].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[5].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[6].status").value("ACCEPTED"));
+        postIngress(List.of(crossAccepted, crossRejected)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"));
+
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsAnEndBeforeItsStartWithoutHidingTheNextValidItem() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID positionKey = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelopeAt(
+                positionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope start = alarmEnvelope(
+                positionKey, "ADAS", 1, "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
+        postIngress(List.of(position, start)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+        com.fasterxml.jackson.databind.node.ObjectNode endPayload =
+                (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(start.payloadJson());
+        endPayload.put("state", "END");
+        endPayload.put("occurredAt", "2026-08-12T08:59:49Z");
+        endPayload.put("extensionPayloadDigest", "b".repeat(64));
+        GatewayIngressEnvelope earlyEnd = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", receivedAt, objectMapper.writeValueAsString(endPayload));
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(earlyEnd, neighbor)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+        postIngress(List.of(earlyEnd)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"));
+
+        assertThat(jdbc.queryForObject(
+                "select ended_at from vehicle_alarms", OffsetDateTime.class)).isNull();
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsAProtocolAuditWithUnknownForeignKeysWithoutHidingANeighbor() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID auditKey = UUID.randomUUID();
+        GatewayIngressEnvelope invalidAudit = new GatewayIngressEnvelope(
+                1, auditKey, "PROTOCOL_AUDIT", receivedAt,
+                objectMapper.writeValueAsString(java.util.Map.of(
+                        "terminalId", UUID.fromString("bb000000-0000-0000-0000-000000000099"),
+                        "vehicleId", UUID.fromString("aa000000-0000-0000-0000-000000000099"),
+                        "reasonCode", "SYNTHETIC_PROTOCOL_REJECTION",
+                        "protocolVersion", "JT808_2013",
+                        "messageId", 0x0200,
+                        "payloadDigest", "c".repeat(64))));
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(invalidAudit, neighbor)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].idempotencyKey").value(auditKey.toString()))
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+        postIngress(List.of(invalidAudit)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"));
+
+        assertThat(gatewayAuditRepository.findAll())
+                .noneMatch(audit -> "SYNTHETIC_PROTOCOL_REJECTION".equals(audit.getReasonCode()));
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsUnparseableEnvelopeFieldsPerItemWithoutHidingValidNeighbors() throws Exception {
+        UUID firstKey = UUID.randomUUID();
+        UUID badTimeKey = UUID.randomUUID();
+        UUID badSchemaKey = UUID.randomUUID();
+        UUID objectPayloadKey = UUID.randomUUID();
+        UUID lastKey = UUID.randomUUID();
+        com.fasterxml.jackson.databind.node.ArrayNode batch = objectMapper.createArrayNode();
+        batch.add(objectMapper.valueToTree(envelopeAt(
+                firstKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), Instant.parse("2026-08-12T09:00:00Z"))));
+        com.fasterxml.jackson.databind.node.ObjectNode badTime = objectMapper.createObjectNode();
+        badTime.put("schemaVersion", 1).put("idempotencyKey", badTimeKey.toString())
+                .put("kind", "LOCATION").put("gatewayReceivedAt", "not-an-instant")
+                .put("payloadJson", "{}");
+        batch.add(badTime);
+        com.fasterxml.jackson.databind.node.ObjectNode badSchema = objectMapper.createObjectNode();
+        badSchema.put("schemaVersion", "one").put("idempotencyKey", badSchemaKey.toString())
+                .put("kind", "LOCATION").put("gatewayReceivedAt", "2026-08-12T09:00:00Z")
+                .put("payloadJson", "{}");
+        batch.add(badSchema);
+        com.fasterxml.jackson.databind.node.ObjectNode objectPayload = objectMapper.createObjectNode();
+        objectPayload.put("schemaVersion", 1).put("idempotencyKey", objectPayloadKey.toString())
+                .put("kind", "ALARM").put("gatewayReceivedAt", "2026-08-12T09:00:00Z")
+                .set("payloadJson", objectMapper.createObjectNode().put("unexpected", true));
+        batch.add(objectPayload);
+        batch.add(objectMapper.valueToTree(envelopeAt(
+                lastKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), Instant.parse("2026-08-12T09:00:00Z"))));
+
+        internalPost(objectMapper.writeValueAsString(batch)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(5))
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].idempotencyKey").value(badTimeKey.toString()))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].idempotencyKey").value(badSchemaKey.toString()))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[3].idempotencyKey").value(objectPayloadKey.toString()))
+                .andExpect(jsonPath("$.data[3].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[4].status").value("ACCEPTED"));
+
+        assertThat(eventRepository.findByIdempotencyKey(firstKey)).isPresent();
+        assertThat(eventRepository.findByIdempotencyKey(lastKey)).isPresent();
     }
 
     @Test
@@ -239,7 +542,10 @@ class GpsLocationIngressIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].status").value("REJECTED"))
                 .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_COORDINATE"));
         assertThat(eventRepository.findAll()).isEmpty();
-        assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(audit -> assertThat(audit.getReasonCode()).isEqualTo("INVALID_COORDINATE"));
+        assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(audit -> {
+            assertThat(audit.getIdempotencyKey()).isEqualTo(rejectedKey);
+            assertThat(audit.getReasonCode()).isEqualTo("INVALID_COORDINATE");
+        });
 
         UUID acceptedKey = UUID.randomUUID();
         GatewayIngressEnvelope accepted = envelope(acceptedKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"));
@@ -290,22 +596,16 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
-    void replaysTheSameKeyInsideOneBatchWithoutDuplicatingTheEvent() throws Exception {
+    void rejectsDuplicateBatchKeysBeforePersistingAnyItem() throws Exception {
         UUID idempotencyKey = UUID.randomUUID();
         GatewayIngressEnvelope accepted = envelope(
                 idempotencyKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
                 Instant.parse("2026-08-12T08:59:50Z"));
 
-        postIngress(List.of(accepted, accepted)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
-                .andExpect(jsonPath("$.data[1].status").value("REPLAYED"))
-                .andExpect(jsonPath("$.data[1].reasonCodes").isEmpty());
+        postIngress(List.of(accepted, accepted)).andExpect(status().isBadRequest());
 
-        assertThat(eventRepository.findAll()).hasSize(1);
-        assertThat(receiptRepository.findAll()).singleElement().satisfies(receipt -> {
-            assertThat(receipt.getFinalStatus()).isEqualTo("ACCEPTED");
-            assertThat(receipt.getReasonCodes()).isEmpty();
-        });
+        assertThat(eventRepository.findAll()).isEmpty();
+        assertThat(receiptRepository.findAll()).isEmpty();
     }
 
     @Test
@@ -503,7 +803,7 @@ class GpsLocationIngressIntegrationTest {
                 base.alarmBits(), base.statusBits(), base.speedKph(), base.directionDegrees(), null,
                 base.satelliteCount(), base.payloadDigest()));
 
-        postIngress(java.util.Arrays.asList(valid, null, missingTerminalTime, missingGatewayTime, negativeSpeed,
+        postIngress(java.util.Arrays.asList(valid, missingTerminalTime, missingGatewayTime, negativeSpeed,
                         invalidDirection, invalidDigest, missingProtocol, missingAltitude))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
@@ -513,10 +813,9 @@ class GpsLocationIngressIntegrationTest {
                 .andExpect(jsonPath("$.data[4].status").value("REJECTED"))
                 .andExpect(jsonPath("$.data[5].status").value("REJECTED"))
                 .andExpect(jsonPath("$.data[6].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[7].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[8].status").value("REJECTED"));
+                .andExpect(jsonPath("$.data[7].status").value("REJECTED"));
         assertThat(eventRepository.findAll()).hasSize(1);
-        assertThat(gatewayAuditRepository.findAll()).hasSize(8);
+        assertThat(gatewayAuditRepository.findAll()).hasSize(7);
     }
 
     @Test
@@ -740,6 +1039,39 @@ class GpsLocationIngressIntegrationTest {
         payload.put("extensionPayloadDigest", digest);
         return new GatewayIngressEnvelope(1, UUID.randomUUID(), "ALARM", envelopeGatewayReceivedAt,
                 objectMapper.writeValueAsString(payload));
+    }
+    private GatewayIngressEnvelope alarmFor(
+            UUID terminalId,
+            UUID vehicleId,
+            UUID positionKey,
+            String module,
+            int typeCode,
+            String alarmType,
+            String digest,
+            Instant receivedAt) throws Exception {
+        GatewayIngressEnvelope source = alarmEnvelope(
+                positionKey, module, typeCode, alarmType, digest, receivedAt, receivedAt);
+        com.fasterxml.jackson.databind.node.ObjectNode payload =
+                (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(source.payloadJson());
+        payload.put("terminalId", terminalId.toString());
+        payload.put("vehicleId", vehicleId.toString());
+        payload.put("terminalAlarmIdentifier", module + "-CROSS-DEPENDENCY");
+        return new GatewayIngressEnvelope(
+                1, source.idempotencyKey(), "ALARM", receivedAt, objectMapper.writeValueAsString(payload));
+    }
+    private int apiAlarmCount() {
+        return jdbc.queryForObject("select count(*) from vehicle_alarms", Integer.class);
+    }
+    private GatewayIngressEnvelope protocolAuditEnvelope(UUID idempotencyKey, Instant receivedAt) throws Exception {
+        return new GatewayIngressEnvelope(
+                1, idempotencyKey, "PROTOCOL_AUDIT", receivedAt,
+                objectMapper.writeValueAsString(java.util.Map.of(
+                        "terminalId", TERMINAL_ID,
+                        "vehicleId", VEHICLE_ID,
+                        "reasonCode", "ACTIVE_SAFETY_EXTENSION_REJECTED",
+                        "protocolVersion", "JT808_2013",
+                        "messageId", 0x0200,
+                        "payloadDigest", "d".repeat(64))));
     }
     private org.springframework.test.web.servlet.ResultActions internalPost(String body) throws Exception {
         return mockMvc.perform(post("/internal/jt-gateway/ingress").header("Authorization", "Bearer " + CREDENTIAL)

@@ -6,7 +6,6 @@ import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope;
 import com.idavy.drtops.jtgateway.ingress.IngressKind;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiStatus;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -132,16 +131,14 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
         Objects.requireNonNull(event, "event");
         AuditMapping mapping = auditMapping(event.type());
         try {
+            UUID idempotencyKey = UUID.randomUUID();
             AuditRequest audit = new AuditRequest(
-                    event.terminalId(), null, mapping.eventType(), mapping.result(),
+                    idempotencyKey, event.terminalId(), null, mapping.eventType(), mapping.result(),
                     event.reasonCode(), null, null, null, event.remoteAddress(),
                     event.occurredAt().atOffset(ZoneOffset.UTC), gatewayInstance);
-            String keyMaterial = String.join("|",
-                    event.type().name(), String.valueOf(event.terminalId()), event.terminalAlias(),
-                    event.remoteAddress(), event.reasonCode(), event.occurredAt().toString());
             GatewayIngressBuffer.WriteResult result = auditBuffer.append(new GatewayIngressEnvelope(
                     1,
-                    UUID.nameUUIDFromBytes(keyMaterial.getBytes(StandardCharsets.UTF_8)),
+                    idempotencyKey,
                     IngressKind.SESSION_AUDIT,
                     event.occurredAt(),
                     objectMapper.writeValueAsString(audit)));
@@ -210,7 +207,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     private record AuthenticationPayload(boolean approved, String reasonCode) { }
 
     private record AuditRequest(
-            UUID terminalId, UUID vehicleId, String eventType, String result, String reasonCode,
+            UUID idempotencyKey, UUID terminalId, UUID vehicleId, String eventType, String result, String reasonCode,
             String protocolVersion, Integer messageId, String payloadDigest, String remoteAddress,
             java.time.OffsetDateTime occurredAt, String gatewayInstance) { }
 

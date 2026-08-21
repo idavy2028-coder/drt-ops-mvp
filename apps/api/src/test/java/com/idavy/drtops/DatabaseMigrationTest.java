@@ -34,6 +34,7 @@ class DatabaseMigrationTest {
         String pilotVirtualStops = readMigration("V11__enhance_virtual_stops_for_pilot.sql");
         String deferredTaskStopSequence = readMigration("V12__defer_task_stop_sequence_constraint.sql");
         String gpsLocationQuality = readMigration("V14__extend_gps_location_quality.sql");
+        String gatewayAuditIdempotency = readMigration("V17__add_jt_gateway_audit_idempotency.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -101,6 +102,16 @@ class DatabaseMigrationTest {
                 "idempotency_key UUID PRIMARY KEY",
                 "final_status VARCHAR(20) NOT NULL",
                 "reason_codes JSONB NOT NULL");
+
+        assertThat(gatewayAuditIdempotency).contains(
+                "ADD COLUMN idempotency_key UUID",
+                "SET idempotency_key = id",
+                "ALTER COLUMN idempotency_key SET NOT NULL",
+                "UNIQUE (idempotency_key)",
+                "ALTER TABLE jt_gateway_ingress_receipts",
+                "ADD COLUMN terminal_id UUID",
+                "ADD COLUMN vehicle_id UUID",
+                "ADD COLUMN ingress_kind VARCHAR(32)");
     }
 
     @Test

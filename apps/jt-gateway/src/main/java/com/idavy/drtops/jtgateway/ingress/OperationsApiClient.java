@@ -139,7 +139,12 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
 
     private GatewayOutboxDispatcher.DeliveryResult deliverAudit(
             GatewayIngressEnvelope envelope, String credential) throws JsonProcessingException {
-        JsonNode payload = objectMapper.readTree(envelope.payloadJson());
+        JsonNode decoded = objectMapper.readTree(envelope.payloadJson());
+        if (decoded == null || !decoded.isObject()) {
+            return GatewayOutboxDispatcher.DeliveryResult.retryable("API_AUDIT_PAYLOAD_INVALID");
+        }
+        com.fasterxml.jackson.databind.node.ObjectNode payload = decoded.deepCopy();
+        payload.put("idempotencyKey", envelope.idempotencyKey().toString());
         ResponseEntity<AuditResponse> response = restClient.post()
                 .uri(auditEndpoint)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + credential)
@@ -155,10 +160,12 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
         if (!status.is2xxSuccessful()) {
             return GatewayOutboxDispatcher.DeliveryResult.retryable("HTTP_" + status.value());
         }
-        return response.getBody() != null && response.getBody().data() != null
-                        && response.getBody().data().recorded()
+        AuditRecorded recorded = response.getBody() == null ? null : response.getBody().data();
+        return recorded != null
+                        && envelope.idempotencyKey().equals(recorded.idempotencyKey())
+                        && ("ACCEPTED".equals(recorded.status()) || "REPLAYED".equals(recorded.status()))
                 ? GatewayOutboxDispatcher.DeliveryResult.success()
-                : GatewayOutboxDispatcher.DeliveryResult.retryable("API_AUDIT_NOT_RECORDED");
+                : GatewayOutboxDispatcher.DeliveryResult.retryable("API_AUDIT_RESPONSE_INVALID");
     }
 
     public boolean operationsApiReachable() {
@@ -190,8 +197,10 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
             expected.add(envelope.idempotencyKey());
         }
         Set<UUID> received = new HashSet<>();
-        for (IngressResult result : response.data()) {
+        for (int index = 0; index < response.data().size(); index++) {
+            IngressResult result = response.data().get(index);
             if (result == null || result.idempotencyKey() == null
+                    || !batch.get(index).idempotencyKey().equals(result.idempotencyKey())
                     || !expected.contains(result.idempotencyKey())
                     || !received.add(result.idempotencyKey())) {
                 return GatewayOutboxDispatcher.DeliveryResult.retryable("API_RESPONSE_INCOMPLETE");
@@ -214,5 +223,5 @@ public final class OperationsApiClient implements GatewayOutboxDispatcher.Delive
 
     private record AuditResponse(AuditRecorded data) { }
 
-    private record AuditRecorded(boolean recorded) { }
+    private record AuditRecorded(UUID idempotencyKey, String status) { }
 }

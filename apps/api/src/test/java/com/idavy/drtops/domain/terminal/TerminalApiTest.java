@@ -352,15 +352,25 @@ class TerminalApiTest {
     }
 
     @Test
-    void appendsAllowedGatewayAuditEventWithoutEchoingTerminalIdentity() throws Exception {
+    void acceptsThenReplaysTheSameGatewayAuditIdempotencyKeyWithoutEchoingTerminalIdentity() throws Exception {
         JtTerminal terminal = presetAndBind("T-API-003", "PHONE-9003");
+        UUID idempotencyKey = UUID.randomUUID();
         internalPost("/internal/jt-gateway/audit-events", """
-                {"terminalId":"%s","vehicleId":"%s","eventType":"ONLINE","result":"APPLIED",
+                {"idempotencyKey":"%s","terminalId":"%s","vehicleId":"%s","eventType":"ONLINE","result":"APPLIED",
                  "reasonCode":"SESSION_ESTABLISHED","protocolVersion":"JT808_2019",
                  "occurredAt":"2026-08-12T08:00:00Z","gatewayInstance":"gateway-a"}
-                """.formatted(terminal.getId(), VEHICLE_ID))
+                """.formatted(idempotencyKey, terminal.getId(), VEHICLE_ID))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.recorded").value(true));
+                .andExpect(jsonPath("$.data.idempotencyKey").value(idempotencyKey.toString()))
+                .andExpect(jsonPath("$.data.status").value("ACCEPTED"));
+        internalPost("/internal/jt-gateway/audit-events", """
+                {"idempotencyKey":"%s","terminalId":"%s","vehicleId":"%s","eventType":"ONLINE","result":"APPLIED",
+                 "reasonCode":"SESSION_ESTABLISHED","protocolVersion":"JT808_2019",
+                 "occurredAt":"2026-08-12T08:00:00Z","gatewayInstance":"gateway-a"}
+                """.formatted(idempotencyKey, terminal.getId(), VEHICLE_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.idempotencyKey").value(idempotencyKey.toString()))
+                .andExpect(jsonPath("$.data.status").value("REPLAYED"));
 
         assertThat(gatewayAuditRepository.findAll())
                 .singleElement()
@@ -369,6 +379,46 @@ class TerminalApiTest {
                     assertThat(event.getResult()).isEqualTo(JtGatewayAuditEvent.Result.APPLIED);
                     assertThat(event.getTerminalId()).isEqualTo(terminal.getId());
                 });
+    }
+
+    @Test
+    void requiresAnAuditIdempotencyKey() throws Exception {
+        internalPost("/internal/jt-gateway/audit-events", """
+                {"eventType":"OFFLINE","result":"APPLIED","reasonCode":"SOCKET_CLOSED",
+                 "occurredAt":"2026-08-12T08:00:00Z","gatewayInstance":"gateway-a"}
+                """).andExpect(status().isBadRequest());
+
+        assertThat(gatewayAuditRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void normalizesConcurrentAuditRetriesToOneAcceptedAndOneReplayedResponse() throws Exception {
+        UUID idempotencyKey = UUID.randomUUID();
+        String body = """
+                {"idempotencyKey":"%s","eventType":"OFFLINE","result":"APPLIED",
+                 "reasonCode":"SOCKET_CLOSED","occurredAt":"2026-08-12T08:00:00Z",
+                 "gatewayInstance":"gateway-a"}
+                """.formatted(idempotencyKey);
+        java.util.concurrent.CyclicBarrier start = new java.util.concurrent.CyclicBarrier(2);
+        try (java.util.concurrent.ExecutorService workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.List<java.util.concurrent.Future<String>> responses = new java.util.ArrayList<>();
+            for (int index = 0; index < 2; index++) {
+                responses.add(workers.submit(() -> {
+                    start.await();
+                    return internalPost("/internal/jt-gateway/audit-events", body)
+                            .andExpect(status().isOk())
+                            .andReturn().getResponse().getContentAsString();
+                }));
+            }
+            assertThat(responses.stream().map(future -> {
+                try {
+                    return (String) JsonPath.read(future.get(), "$.data.status");
+                } catch (Exception exception) {
+                    throw new AssertionError(exception);
+                }
+            }).toList()).containsExactlyInAnyOrder("ACCEPTED", "REPLAYED");
+        }
+        assertThat(gatewayAuditRepository.findAll()).hasSize(1);
     }
 
     @Test

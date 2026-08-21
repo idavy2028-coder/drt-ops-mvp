@@ -51,6 +51,29 @@ public class GpsLocationIngressService {
         }
         return results;
     }
+    public Result reject(GatewayIngressEnvelope envelope, String reason) {
+        return reject(envelope, reason, false);
+    }
+    public Result rejectStable(GatewayIngressEnvelope envelope, String reason) {
+        return reject(envelope, reason, true);
+    }
+    private Result reject(GatewayIngressEnvelope envelope, String reason, boolean stableRejection) {
+        if (envelope == null || envelope.idempotencyKey() == null || reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("rejected ingress item must be correlatable");
+        }
+        return itemTransaction.execute(status -> rejectClaimed(envelope, reason, stableRejection));
+    }
+    private Result rejectClaimed(GatewayIngressEnvelope envelope, String reason, boolean stableRejection) {
+        if (receiptClaimer.claim(envelope.idempotencyKey()) == 0) {
+            JtGatewayIngressReceipt receipt = receiptRepository.findById(envelope.idempotencyKey()).orElseThrow();
+            return new Result(envelope.idempotencyKey(), stableRejection ? "REJECTED" : "REPLAYED",
+                    receipt.getReasonCodes());
+        }
+        Result result = rejectAudit(envelope, null, reason);
+        JtGatewayIngressReceipt receipt = receiptRepository.findById(envelope.idempotencyKey()).orElseThrow();
+        receipt.complete("REJECTED", result.reasonCodes(), OffsetDateTime.now(ZoneOffset.UTC));
+        return result;
+    }
     private Result ingestClaimed(GatewayIngressEnvelope envelope) {
         if (envelope == null) {
             return rejectAudit(null, null, "INVALID_PAYLOAD");
@@ -68,11 +91,16 @@ public class GpsLocationIngressService {
         return result;
     }
     private Result ingestOne(GatewayIngressEnvelope envelope) {
-        if (envelope.schemaVersion()!=1 || !"POSITION".equals(envelope.kind()) || envelope.idempotencyKey()==null) return rejectAudit(envelope, null, "UNSUPPORTED_ENVELOPE");
+        if (envelope.schemaVersion()!=1
+                || !("POSITION".equals(envelope.kind()) || "LOCATION".equals(envelope.kind()))
+                || envelope.idempotencyKey()==null) return rejectAudit(envelope, null, "UNSUPPORTED_ENVELOPE");
         final CanonicalPositionIngress ingress;
         try { ingress = mapper.readValue(envelope.payloadJson(), CanonicalPositionIngress.class); }
         catch (Exception malformed) { return rejectAudit(envelope, null, "INVALID_PAYLOAD"); }
         if (ingress == null) return rejectAudit(envelope, null, "INVALID_PAYLOAD");
+        receiptRepository.findById(envelope.idempotencyKey())
+                .ifPresent(receipt -> receipt.identify(
+                        envelope.kind(), ingress.terminalId(), ingress.vehicleId()));
         try {
             if (!valid(ingress, envelope)) return rejectAudit(envelope, ingress, "INVALID_PAYLOAD");
             JtTerminalVehicleBinding binding = bindingRepository.findByTerminalIdAndStatus(ingress.terminalId(), JtTerminalVehicleBinding.Status.ACTIVE).orElse(null);
@@ -106,17 +134,23 @@ public class GpsLocationIngressService {
         } catch (Exception exception) { throw exception; }
     }
     private Result rejectAudit(GatewayIngressEnvelope envelope, CanonicalPositionIngress ingress, String reason) {
-        auditRepository.save(JtGatewayAuditEvent.record(null, null, JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
+        auditRepository.save(JtGatewayAuditEvent.record(gatewayAuditKey(envelope), null, null,
+                JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
                 JtGatewayAuditEvent.Result.REJECTED, reason, validProtocolVersion(ingress == null ? null : ingress.protocolVersion()), null, validDigest(ingress == null ? null : ingress.payloadDigest()), null,
                 OffsetDateTime.now(ZoneOffset.UTC), "JT_GATEWAY_SERVICE"));
         return Result.rejected(envelope == null ? null : envelope.idempotencyKey(), reason);
     }
     private Result rejectAudit(GatewayIngressEnvelope envelope, CanonicalPositionIngress ingress, Set<LocationQualityReason> reasons) {
         List<String> reasonCodes = reasons.stream().map(Enum::name).sorted().toList();
-        auditRepository.save(JtGatewayAuditEvent.record(null, null, JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
+        auditRepository.save(JtGatewayAuditEvent.record(gatewayAuditKey(envelope), null, null,
+                JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
                 JtGatewayAuditEvent.Result.REJECTED, reasonCodes.getFirst(), validProtocolVersion(ingress.protocolVersion()), null, validDigest(ingress.payloadDigest()), null,
                 OffsetDateTime.now(ZoneOffset.UTC), "JT_GATEWAY_SERVICE"));
         return new Result(envelope.idempotencyKey(), "REJECTED", reasonCodes);
+    }
+    private static java.util.UUID gatewayAuditKey(GatewayIngressEnvelope envelope) {
+        return envelope == null || envelope.idempotencyKey() == null
+                ? java.util.UUID.randomUUID() : envelope.idempotencyKey();
     }
     private static boolean valid(CanonicalPositionIngress ingress, GatewayIngressEnvelope envelope) {
         return validPostgresTimestamp(envelope.gatewayReceivedAt())

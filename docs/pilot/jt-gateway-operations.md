@@ -16,6 +16,25 @@
 
 API 只接收凭证版本和摘要；明文只进入网关容器。H2 文件保存在独立 `jt-gateway-data` 卷，API 容器没有该卷的挂载权限。
 
+## API 交付合同
+
+### 逐项 ingress 结果
+
+`POST /internal/jt-gateway/ingress` 只接受 1 至 50 条的 JSON 数组。每个可关联输入都必须按原顺序返回一条结果，`idempotencyKey` 与输入 UUID 完全相同，`status` 只能是 `ACCEPTED`、`REPLAYED` 或 `REJECTED`，`reasonCodes` 是稳定有序的数组。缺失 key、重复 key 或 null envelope 无法形成无歧义关联，API 会在写入任何一项前返回 400；有 key 的坏 schema、时间、payload 或业务事实只拒绝自身，不遮蔽同批邻项。
+
+- `LOCATION` 使用既有 GPS 质量和幂等语义；历史 `POSITION` 别名仍兼容，但 gateway 生产投递使用 `LOCATION`。
+- `ALARM` 新 START/END 事实及其 outbox 同事务返回 `ACCEPTED`；只有已接受的 ingress receipt 或既有业务事实重放返回 `REPLAYED`；绑定、位置依赖、字段或状态非法及其同 key 重投都返回稳定 `REJECTED`。告警位置依赖必须是同 terminal、同 vehicle 的 GPS `LOCATION/POSITION` 事件或可证明归属的已拒绝位置 receipt，人工位置、其他车辆或其他 kind 的 receipt 均不可复用。
+- `PROTOCOL_AUDIT` 首次持久化返回 `ACCEPTED`，同 receipt 重投返回 `REPLAYED`，非法输入返回 `REJECTED`。
+- `ATTACHMENT_METADATA` 的运营映射仍未授权；首次和每次重投都固定返回 `REJECTED` 与 `ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE`，不写 GPS、告警附件或媒体业务表。
+
+gateway 对返回结果执行严格全批校验：数量、每个索引的 key 与输入顺序、key 集合、重复 key 和状态任一不符，或任一项为 `REJECTED`，本次领取的整批都不会标记 delivered，而是按既有退避和 dead-letter 策略保留。HTTP 2xx 本身不代表投递成功。排障时只记录稳定错误码、计数和时间窗，不记录 payload、完整终端身份或远端媒体信息。
+
+### session audit 幂等
+
+gateway 把 durable outbox 的随机 UUID `idempotencyKey` 同时写入 `POST /internal/jt-gateway/audit-events` 请求；API 响应必须回显相同 key，并返回 `ACCEPTED` 或 `REPLAYED`。升级前已存在、payload 尚无该字段的 SESSION_AUDIT 记录由 delivery client 在发送时以 outbox UUID 补齐，不能另生成 key。API 数据库 V17 为 `jt_gateway_audit_events.idempotency_key` 回填历史行自身 `id`，随后施加 `NOT NULL` 和唯一约束；同时为 ingress receipt 增加可空的 kind、terminal 和 vehicle 归属，用于拒绝跨类型或跨车辆的告警位置依赖。API 已落库但响应丢失时，gateway 使用原 outbox UUID 重投，API 返回 `REPLAYED`，数据库仍只有一行；并发唯一冲突也归一为 `REPLAYED`，不得当成 HTTP 500。
+
+部署 API 前必须先完成 Flyway V17。当前隔离测试已覆盖 H2 机械兼容检查以及真实 Spring API/Netty/outbox 的响应丢失重试；本轮因没有可用的临时 PostgreSQL/Docker，真实 PostgreSQL 的 V0→V17 与 V16→V17 迁移仍是上线门禁，不能用 H2 结果替代。部署窗口应在明确批准的空白临时库和 V16 快照库分别执行迁移、核对回填与唯一约束，再允许生产数据库升级。
+
 ## PostgreSQL 新部署与既有卷密码迁移
 
 ### 新部署
@@ -316,6 +335,6 @@ docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gate
 
 ## 附件元数据的剩余审批边界
 
-当前网关能够解码、脱敏、持久化并投递 `ATTACHMENT_METADATA`，但现有运营 API 尚未批准附件类型、通道、媒体格式和 0x1206 的落库合同。网关因此要求 API 的 `ApiResponse.data` 用 idempotencyKey 对整批逐项确认；API 返回 `REJECTED`、遗漏、重复或未知状态时，整批保持重试并使 `lastDeliverySuccessful=false`。这避免 2xx 静默丢失，但不等于附件全链路验收通过。
+当前网关能够解码、脱敏、持久化并投递 `ATTACHMENT_METADATA`，但现有运营 API 尚未批准附件类型、通道、媒体格式和 0x1206 的落库合同。API 因此对首次和重复投递都固定返回 `REJECTED + ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE`；网关要求 `ApiResponse.data` 用 idempotencyKey 对整批逐项确认，看到该拒绝、遗漏、重复或未知状态时，整批保持重试并使 `lastDeliverySuccessful=false`。这避免 2xx 静默丢失，但不等于附件全链路验收通过。
 
 在真实附件验收前，必须另行审批并实现 API metadata contract；本轮不得通过手工清空 pending、降低确认规则或伪造 ACCEPTED 响应绕过该边界。

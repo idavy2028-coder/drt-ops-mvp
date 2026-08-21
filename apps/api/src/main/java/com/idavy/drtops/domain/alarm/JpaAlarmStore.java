@@ -3,6 +3,7 @@ package com.idavy.drtops.domain.alarm;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.location.JtGatewayIngressReceiptRepository;
+import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.location.VehicleLocationEvent;
 import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
 import java.time.Instant;
@@ -46,15 +47,26 @@ class JpaAlarmStore implements AlarmStore {
                 gatewayReceivedAt.atOffset(java.time.ZoneOffset.UTC));
         return matches != null && matches > 0;
     }
-    @Override public Optional<LocationReference> findLocation(UUID positionIdempotencyKey) {
-        Optional<VehicleLocationEvent> event = locations.findByIdempotencyKey(positionIdempotencyKey);
+    @Override public Optional<LocationReference> findLocation(
+            UUID positionIdempotencyKey, UUID terminalId, UUID vehicleId) {
+        Optional<VehicleLocationEvent> event = locations.findByIdempotencyKey(positionIdempotencyKey)
+                .filter(location -> location.getSource() == LocationSource.GPS_DEVICE
+                        && terminalId.equals(location.getTerminalId())
+                        && vehicleId.equals(location.getVehicleId()));
         if (event.isPresent()) {
             return Optional.of(new LocationReference(
                     event.get().getId(), event.get().getQualityStatus().name(), event.get().getQualityReasons()));
         }
         return receipts.findById(positionIdempotencyKey)
                 .filter(receipt -> "REJECTED".equals(receipt.getFinalStatus()))
+                .filter(receipt -> receipt.matchesLocationIdentity(terminalId, vehicleId))
                 .map(receipt -> new LocationReference(null, "REJECTED", serializeReasons(receipt.getReasonCodes())));
+    }
+    @Override public boolean hasLocationDependency(UUID positionIdempotencyKey) {
+        return locations.findByIdempotencyKey(positionIdempotencyKey).isPresent()
+                || receipts.findById(positionIdempotencyKey)
+                        .filter(receipt -> "REJECTED".equals(receipt.getFinalStatus()))
+                        .isPresent();
     }
     private String serializeReasons(java.util.List<String> reasons) {
         try {
@@ -66,6 +78,11 @@ class JpaAlarmStore implements AlarmStore {
     @Override public Optional<VehicleAlarm> findByDeduplicationKey(String key) { return alarms.findByDeduplicationKey(key); }
     @Override public Optional<VehicleAlarm> findOpenStart(VehicleAlarmIngressService.AlarmFact fact) {
         return alarms.findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdAndEndedAtIsNull(
+                fact.terminalId(), fact.vehicleId(), fact.standard(), fact.module(), fact.typeCode(),
+                fact.terminalAlarmId());
+    }
+    @Override public Optional<VehicleAlarm> findStart(VehicleAlarmIngressService.AlarmFact fact) {
+        return alarms.findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmId(
                 fact.terminalId(), fact.vehicleId(), fact.standard(), fact.module(), fact.typeCode(),
                 fact.terminalAlarmId());
     }

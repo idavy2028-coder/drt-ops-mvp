@@ -446,6 +446,35 @@ class GatewayOutboxDispatcherTest {
     }
 
     @Test
+    void keepsTheWholeBatchPendingWhenTheApiReordersEnvelopeResults() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsApiClient client = operationsClient(builder);
+        var fixture = fixture(8, client);
+        GatewayIngressEnvelope first = envelope(4_120, IngressKind.ALARM);
+        GatewayIngressEnvelope second = envelope(4_121, IngressKind.PROTOCOL_AUDIT);
+        fixture.buffer.append(first);
+        fixture.buffer.append(second);
+        server.expect(requestTo(OPERATIONS_ENDPOINT.toString()))
+                .andRespond(withSuccess("""
+                        {"data":[
+                          {"idempotencyKey":"%s","status":"ACCEPTED","reasonCodes":[]},
+                          {"idempotencyKey":"%s","status":"ACCEPTED","reasonCodes":[]}
+                        ]}
+                        """.formatted(second.idempotencyKey(), first.idempotencyKey()),
+                        org.springframework.http.MediaType.APPLICATION_JSON));
+
+        GatewayOutboxDispatcher.DispatchReport report = fixture.dispatcher.dispatchOnce();
+
+        assertEquals(2, report.attempted());
+        assertEquals(0, report.delivered());
+        assertEquals(2, report.retried());
+        assertEquals("API_RESPONSE_INCOMPLETE",
+                fixture.repository.find(first.idempotencyKey()).orElseThrow().lastErrorCode());
+        server.verify();
+    }
+
+    @Test
     void retainsAndBacksOffForHttpErrorsUntilA2xxResponseConfirmsDelivery() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

@@ -8,9 +8,12 @@ import java.util.UUID;
 public interface AlarmStore {
     void lockTerminal(UUID terminalId);
     boolean matchesBindingAt(UUID terminalId, UUID vehicleId, Instant gatewayReceivedAt);
-    Optional<LocationReference> findLocation(UUID positionIdempotencyKey);
+    Optional<LocationReference> findLocation(
+            UUID positionIdempotencyKey, UUID terminalId, UUID vehicleId);
+    boolean hasLocationDependency(UUID positionIdempotencyKey);
     Optional<VehicleAlarm> findByDeduplicationKey(String key);
     Optional<VehicleAlarm> findOpenStart(VehicleAlarmIngressService.AlarmFact fact);
+    Optional<VehicleAlarm> findStart(VehicleAlarmIngressService.AlarmFact fact);
     VehicleAlarm save(VehicleAlarm alarm);
     void appendOutbox(VehicleAlarm alarm, String eventType);
     void end(VehicleAlarm alarm, Instant endedAt);

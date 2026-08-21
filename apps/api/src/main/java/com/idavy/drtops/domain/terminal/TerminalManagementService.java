@@ -213,9 +213,23 @@ public class TerminalManagementService {
                 : AuthenticationDecision.rejected();
     }
 
-    @Transactional
-    public void recordGatewayAudit(JtGatewayAuditEvent event) {
-        gatewayAuditRepository.save(event);
+    public GatewayAuditResult recordGatewayAudit(JtGatewayAuditEvent event) {
+        try {
+            return committedStateTransaction.execute(status -> {
+                if (gatewayAuditRepository.existsByIdempotencyKey(event.getIdempotencyKey())) {
+                    return new GatewayAuditResult(event.getIdempotencyKey(), "REPLAYED");
+                }
+                gatewayAuditRepository.saveAndFlush(event);
+                return new GatewayAuditResult(event.getIdempotencyKey(), "ACCEPTED");
+            });
+        } catch (org.springframework.dao.DataIntegrityViolationException conflict) {
+            Boolean replayed = committedStateTransaction.execute(status ->
+                    gatewayAuditRepository.existsByIdempotencyKey(event.getIdempotencyKey()));
+            if (Boolean.TRUE.equals(replayed)) {
+                return new GatewayAuditResult(event.getIdempotencyKey(), "REPLAYED");
+            }
+            throw conflict;
+        }
     }
 
     @Transactional
@@ -541,4 +555,5 @@ public class TerminalManagementService {
             return new AuthenticationDecision(false, "AUTHENTICATION_REJECTED");
         }
     }
+    public record GatewayAuditResult(UUID idempotencyKey, String status) { }
 }

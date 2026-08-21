@@ -1,5 +1,8 @@
 package com.idavy.drtops.domain.alarm;
 
+import com.idavy.drtops.domain.location.JtGatewayIngressReceipt;
+import com.idavy.drtops.domain.location.JtGatewayIngressReceiptClaimer;
+import com.idavy.drtops.domain.location.JtGatewayIngressReceiptRepository;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -10,7 +13,14 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 
 @Service
 public class VehicleAlarmIngressService {
@@ -18,7 +28,27 @@ public class VehicleAlarmIngressService {
     private static final Instant POSTGRES_TIMESTAMPTZ_MAX = Instant.ofEpochSecond(9_224_318_016_000L)
             .minusNanos(1_000);
     private final AlarmStore store;
-    public VehicleAlarmIngressService(AlarmStore store) { this.store = Objects.requireNonNull(store); }
+    private final JtGatewayIngressReceiptRepository receipts;
+    private final JtGatewayIngressReceiptClaimer receiptClaimer;
+    private final TransactionTemplate itemTransaction;
+    public VehicleAlarmIngressService(AlarmStore store) {
+        this.store = Objects.requireNonNull(store);
+        this.receipts = null;
+        this.receiptClaimer = null;
+        this.itemTransaction = null;
+    }
+    @Autowired
+    public VehicleAlarmIngressService(
+            AlarmStore store,
+            JtGatewayIngressReceiptRepository receipts,
+            JtGatewayIngressReceiptClaimer receiptClaimer,
+            PlatformTransactionManager transactionManager) {
+        this.store = Objects.requireNonNull(store);
+        this.receipts = Objects.requireNonNull(receipts);
+        this.receiptClaimer = Objects.requireNonNull(receiptClaimer);
+        this.itemTransaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
+        this.itemTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
     @Transactional
     public void ingest(List<AlarmFact> batch) {
         if (batch == null || batch.isEmpty() || batch.size() > 50) {
@@ -38,6 +68,69 @@ public class VehicleAlarmIngressService {
         });
         batch.forEach(this::ingestValidated);
     }
+    public Result ingest(UUID idempotencyKey, AlarmFact fact) {
+        if (idempotencyKey == null || itemTransaction == null) {
+            throw new IllegalArgumentException("alarm ingress item must be correlatable");
+        }
+        return itemTransaction.execute(status -> ingestClaimed(idempotencyKey, fact));
+    }
+    private Result ingestClaimed(UUID idempotencyKey, AlarmFact fact) {
+        if (receiptClaimer.claim(idempotencyKey) == 0) {
+            JtGatewayIngressReceipt receipt = receipts.findById(idempotencyKey).orElseThrow();
+            return new Result(idempotencyKey,
+                    "ACCEPTED".equals(receipt.getFinalStatus()) ? "REPLAYED" : "REJECTED",
+                    receipt.getReasonCodes());
+        }
+        Result result = applyOne(idempotencyKey, fact);
+        JtGatewayIngressReceipt receipt = receipts.findById(idempotencyKey).orElseThrow();
+        receipt.complete("REJECTED".equals(result.status()) ? "REJECTED" : "ACCEPTED",
+                result.reasonCodes(), OffsetDateTime.now(ZoneOffset.UTC));
+        return result;
+    }
+    private Result applyOne(UUID idempotencyKey, AlarmFact fact) {
+        try {
+            validate(fact);
+        } catch (IllegalArgumentException invalid) {
+            return Result.rejected(idempotencyKey, "INVALID_PAYLOAD");
+        }
+        try {
+            store.lockTerminal(fact.terminalId());
+        } catch (EmptyResultDataAccessException unknownTerminal) {
+            return Result.rejected(idempotencyKey, "TERMINAL_BINDING_MISMATCH");
+        }
+        if (!store.matchesBindingAt(fact.terminalId(), fact.vehicleId(), fact.gatewayReceivedAt())) {
+            return Result.rejected(idempotencyKey, "TERMINAL_BINDING_MISMATCH");
+        }
+        if ("END".equals(fact.state())) {
+            var open = store.findOpenStart(fact);
+            if (open.isPresent()) {
+                if (fact.occurredAt().isBefore(open.get().getOccurredAt())) {
+                    return Result.rejected(idempotencyKey, "ALARM_STATE_INVALID");
+                }
+                store.end(open.get(), fact.occurredAt());
+                store.appendOutbox(open.get(), "ALARM_ENDED");
+                return Result.accepted(idempotencyKey);
+            }
+            return store.findStart(fact).isPresent()
+                    ? Result.replayed(idempotencyKey)
+                    : Result.rejected(idempotencyKey, "ALARM_STATE_INVALID");
+        }
+        String key = keyFor(fact);
+        if (store.findByDeduplicationKey(key).isPresent() || store.findOpenStart(fact).isPresent()) {
+            return Result.replayed(idempotencyKey);
+        }
+        AlarmStore.LocationReference location = store.findLocation(
+                fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId()).orElse(null);
+        if (location == null) {
+            return Result.rejected(idempotencyKey,
+                    store.hasLocationDependency(fact.positionIdempotencyKey())
+                            ? "POSITION_DEPENDENCY_MISMATCH"
+                            : "POSITION_INGRESS_NOT_SETTLED");
+        }
+        VehicleAlarm alarm = store.save(VehicleAlarm.start(fact, key, location));
+        store.appendOutbox(alarm, "ALARM_CREATED");
+        return Result.accepted(idempotencyKey);
+    }
     private void ingestValidated(AlarmFact fact) {
         if ("END".equals(fact.state())) {
             store.findOpenStart(fact).ifPresent(start -> { store.end(start, fact.occurredAt()); store.appendOutbox(start, "ALARM_ENDED"); });
@@ -46,7 +139,8 @@ public class VehicleAlarmIngressService {
         String key = keyFor(fact);
         if (store.findByDeduplicationKey(key).isPresent()) return;
         if (store.findOpenStart(fact).isPresent()) return;
-        AlarmStore.LocationReference location = store.findLocation(fact.positionIdempotencyKey())
+        AlarmStore.LocationReference location = store.findLocation(
+                        fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId())
                 .orElseThrow(() -> new IllegalStateException("position ingress is not settled"));
         VehicleAlarm alarm = store.save(VehicleAlarm.start(fact, key, location));
         store.appendOutbox(alarm, "ALARM_CREATED");
@@ -114,5 +208,10 @@ public class VehicleAlarmIngressService {
                 alarmType, terminalAlarmId, state, level, terminalAlarmIdentifier, occurredAt, gatewayReceivedAt,
                 longitude, latitude, speedKph,
                 positionKey, locationQualityStatus, payloadDigest); }
+    }
+    public record Result(UUID idempotencyKey, String status, List<String> reasonCodes) {
+        static Result accepted(UUID key) { return new Result(key, "ACCEPTED", List.of()); }
+        static Result replayed(UUID key) { return new Result(key, "REPLAYED", List.of()); }
+        static Result rejected(UUID key, String reason) { return new Result(key, "REJECTED", List.of(reason)); }
     }
 }

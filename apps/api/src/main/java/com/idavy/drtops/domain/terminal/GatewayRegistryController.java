@@ -49,12 +49,12 @@ public class GatewayRegistryController {
     }
 
     @PostMapping("/audit-events")
-    ApiResponse<Map<String, Boolean>> recordAudit(@Valid @RequestBody GatewayAuditEventRequest request) {
-        service.recordGatewayAudit(JtGatewayAuditEvent.record(
-                request.terminalId(), request.vehicleId(), request.eventType(), request.result(),
+    ApiResponse<TerminalManagementService.GatewayAuditResult> recordAudit(
+            @Valid @RequestBody GatewayAuditEventRequest request) {
+        return ApiResponse.ok(service.recordGatewayAudit(JtGatewayAuditEvent.record(
+                request.idempotencyKey(), request.terminalId(), request.vehicleId(), request.eventType(), request.result(),
                 request.reasonCode(), request.protocolVersion(), request.messageId(), request.payloadDigest(),
-                request.remoteAddress(), request.occurredAt(), request.gatewayInstance()));
-        return ApiResponse.ok(Map.of("recorded", true));
+                request.remoteAddress(), request.occurredAt(), request.gatewayInstance())));
     }
 
     public record RegistrationVerificationRequest(
@@ -80,6 +80,7 @@ public class GatewayRegistryController {
     }
 
     public record GatewayAuditEventRequest(
+            @NotNull UUID idempotencyKey,
             UUID terminalId,
             UUID vehicleId,
             @NotNull JtGatewayAuditEvent.EventType eventType,

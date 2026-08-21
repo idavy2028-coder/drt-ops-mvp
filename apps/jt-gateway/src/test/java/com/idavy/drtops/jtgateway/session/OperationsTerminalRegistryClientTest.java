@@ -41,7 +41,7 @@ class OperationsTerminalRegistryClientTest {
     private static final URI AUDIT = URI.create("http://operations.invalid/internal/jt-gateway/audit-events");
 
     @Test
-    void persistsSessionAuditThenRetriesHttpFailureAndRecoversWithoutSensitiveMaterial() {
+    void persistsSessionAuditThenRetriesHttpFailureAndRecoversWithoutSensitiveMaterial() throws Exception {
         MutableClock clock = new MutableClock(NOW);
         DataSource dataSource = new DriverManagerDataSource(
                 "jdbc:h2:mem:session_audit_outbox;MODE=PostgreSQL;DB_CLOSE_DELAY=-1", "sa", "");
@@ -64,6 +64,8 @@ class OperationsTerminalRegistryClientTest {
                 repository.claimEligible(NOW, GatewayOutboxRepository.Priority.HIGH, 1)
                         .getFirst().idempotencyKey()).orElseThrow();
         assertEquals(IngressKind.SESSION_AUDIT, pending.kind());
+        assertEquals(pending.idempotencyKey().toString(),
+                mapper.readTree(pending.payloadJson()).required("idempotencyKey").asText());
         assertFalse(pending.payloadJson().contains("123456789012"));
         assertFalse(pending.payloadJson().contains("secret-token"));
         repository.recoverInterruptedDeliveries(NOW);
@@ -76,11 +78,15 @@ class OperationsTerminalRegistryClientTest {
                 repository, delivery, clock, 8, Duration.ofSeconds(1), Duration.ofMinutes(5));
         server.expect(requestTo(AUDIT.toString()))
                 .andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer " + CREDENTIAL))
+                .andExpect(jsonPath("$.idempotencyKey").value(pending.idempotencyKey().toString()))
                 .andExpect(jsonPath("$.eventType").value("PROTOCOL_REJECTED"))
                 .andExpect(jsonPath("$.result").value("REJECTED"))
                 .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
         server.expect(requestTo(AUDIT.toString()))
-                .andRespond(withSuccess("{\"data\":{\"recorded\":true}}", MediaType.APPLICATION_JSON));
+                .andExpect(jsonPath("$.idempotencyKey").value(pending.idempotencyKey().toString()))
+                .andRespond(withSuccess("""
+                        {"data":{"idempotencyKey":"%s","status":"REPLAYED"}}
+                        """.formatted(pending.idempotencyKey()), MediaType.APPLICATION_JSON));
 
         assertEquals(1, dispatcher.dispatchOnce().retried());
         assertEquals(1, repository.pendingCount());
@@ -89,6 +95,61 @@ class OperationsTerminalRegistryClientTest {
         assertEquals(1, dispatcher.dispatchOnce().delivered());
         assertEquals(0, repository.pendingCount());
         assertTrue(delivery.lastDeliverySuccessful());
+        server.verify();
+    }
+
+    @Test
+    void refusesToDeliverWhenTheAuditResponseHasTheWrongKeyOrANonSuccessStatus() {
+        RestClient.Builder deliveryBuilder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(deliveryBuilder).build();
+        OperationsApiClient delivery = new OperationsApiClient(
+                deliveryBuilder, INGRESS, AUDIT, () -> CREDENTIAL, 3,
+                new OperationsApiStatus(Clock.systemUTC()));
+        UUID key = UUID.randomUUID();
+        com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope audit =
+                new com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope(
+                        1, key, IngressKind.SESSION_AUDIT, NOW,
+                        "{\"idempotencyKey\":\"" + key + "\",\"eventType\":\"OFFLINE\"}");
+        server.expect(requestTo(AUDIT.toString()))
+                .andRespond(withSuccess("""
+                        {"data":{"idempotencyKey":"%s","status":"ACCEPTED"}}
+                        """.formatted(UUID.randomUUID()), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(AUDIT.toString()))
+                .andRespond(withSuccess("""
+                        {"data":{"idempotencyKey":"%s","status":"REJECTED"}}
+                        """.formatted(key), MediaType.APPLICATION_JSON));
+
+        GatewayOutboxDispatcher.DeliveryResult wrongKey = delivery.deliver(java.util.List.of(audit));
+        GatewayOutboxDispatcher.DeliveryResult rejected = delivery.deliver(java.util.List.of(audit));
+
+        assertFalse(wrongKey.successful());
+        assertEquals("API_AUDIT_RESPONSE_INVALID", wrongKey.errorCode());
+        assertFalse(rejected.successful());
+        assertEquals("API_AUDIT_RESPONSE_INVALID", rejected.errorCode());
+        server.verify();
+    }
+
+    @Test
+    void injectsTheDurableOutboxUuidIntoALegacySessionAuditPayload() {
+        RestClient.Builder deliveryBuilder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(deliveryBuilder).build();
+        OperationsApiClient delivery = new OperationsApiClient(
+                deliveryBuilder, INGRESS, AUDIT, () -> CREDENTIAL, 3,
+                new OperationsApiStatus(Clock.systemUTC()));
+        UUID key = UUID.randomUUID();
+        com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope legacyAudit =
+                new com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope(
+                        1, key, IngressKind.SESSION_AUDIT, NOW,
+                        "{\"eventType\":\"OFFLINE\",\"result\":\"APPLIED\"}");
+        server.expect(requestTo(AUDIT.toString()))
+                .andExpect(jsonPath("$.idempotencyKey").value(key.toString()))
+                .andRespond(withSuccess("""
+                        {"data":{"idempotencyKey":"%s","status":"ACCEPTED"}}
+                        """.formatted(key), MediaType.APPLICATION_JSON));
+
+        GatewayOutboxDispatcher.DeliveryResult result = delivery.deliver(java.util.List.of(legacyAudit));
+
+        assertTrue(result.successful());
         server.verify();
     }
 

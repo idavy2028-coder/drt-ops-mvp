@@ -387,8 +387,12 @@ class JtGatewayRuntimeIntegrationTest {
                 respond(exchange, 200, "{\"data\":{\"approved\":" + approved
                         + ",\"reasonCode\":" + (approved ? "null" : "\"AUTHENTICATION_REJECTED\"") + "}}");
             });
-            server.createContext("/internal/jt-gateway/audit-events", exchange ->
-                    respond(exchange, 200, "{\"data\":{\"recorded\":true}}"));
+            server.createContext("/internal/jt-gateway/audit-events", exchange -> {
+                JsonNode request = read(exchange);
+                String idempotencyKey = request.required("idempotencyKey").asText();
+                respond(exchange, 200, "{\"data\":{\"idempotencyKey\":\""
+                        + idempotencyKey + "\",\"status\":\"ACCEPTED\"}}");
+            });
             server.createContext("/actuator/health", exchange -> {
                 if (blockProbe.compareAndSet(true, false)) {
                     probeBlocked.countDown();

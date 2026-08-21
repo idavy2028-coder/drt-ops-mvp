@@ -19,8 +19,12 @@ final class InMemoryAlarmStore implements AlarmStore {
         return bindingsAccepted || historicalBindingValidUntil != null
                 && !gatewayReceivedAt.isAfter(historicalBindingValidUntil);
     }
-    @Override public Optional<AlarmStore.LocationReference> findLocation(UUID positionIdempotencyKey) {
+    @Override public Optional<AlarmStore.LocationReference> findLocation(
+            UUID positionIdempotencyKey, UUID terminalId, UUID vehicleId) {
         return Optional.ofNullable(positions.get(positionIdempotencyKey));
+    }
+    @Override public boolean hasLocationDependency(UUID positionIdempotencyKey) {
+        return positions.containsKey(positionIdempotencyKey);
     }
     @Override public Optional<VehicleAlarm> findByDeduplicationKey(String key) {
         return facts.stream().filter(fact -> fact.getDeduplicationKey().equals(key)).findFirst();
@@ -32,6 +36,13 @@ final class InMemoryAlarmStore implements AlarmStore {
                 && value.getAlarmTypeCode() == fact.typeCode()
                 && value.getTerminalAlarmId() == fact.terminalAlarmId()
                 && value.getEndedAt() == null).findFirst();
+    }
+    @Override public Optional<VehicleAlarm> findStart(VehicleAlarmIngressService.AlarmFact fact) {
+        return facts.stream().filter(value -> value.getTerminalId().equals(fact.terminalId())
+                && value.getVehicleId().equals(fact.vehicleId())
+                && value.getStandard().equals(fact.standard()) && value.getModule().equals(fact.module())
+                && value.getAlarmTypeCode() == fact.typeCode()
+                && value.getTerminalAlarmId() == fact.terminalAlarmId()).findFirst();
     }
     @Override public VehicleAlarm save(VehicleAlarm alarm) { if (!facts.contains(alarm)) facts.add(alarm); return alarm; }
     @Override public void appendOutbox(VehicleAlarm alarm, String eventType) { outbox.add(new OutboxRecord(alarm.getId(), eventType)); }
