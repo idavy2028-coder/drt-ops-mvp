@@ -136,6 +136,15 @@ public class JtTerminal {
         touch();
     }
 
+    public void recordSuccessfulAuthentication(OffsetDateTime authenticatedAt) {
+        requireMutable();
+        if (status != Status.ACTIVE || lastRegisteredAt == null) {
+            throw new IllegalStateException("terminal must be active and registered before authentication");
+        }
+        this.lastAuthenticatedAt = Objects.requireNonNull(authenticatedAt, "authenticatedAt");
+        touch();
+    }
+
     public void configureCapabilities(
             String activeSafetyStandard, String activeSafetyModules, boolean jt1078Enabled) {
         requireMutable();

@@ -352,6 +352,34 @@ class TerminalApiTest {
     }
 
     @Test
+    void recordsTheSuccessfulAuthenticationTime() throws Exception {
+        JtTerminal terminal = registerBindAndActivate("T-AUTH-TIME", "PHONE-AUTH-TIME");
+
+        internalPost("/internal/jt-gateway/authentications/verify", """
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(terminal.getId(), TOKEN_HASH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true));
+
+        assertThat(terminalRepository.findById(terminal.getId()).orElseThrow().getLastAuthenticatedAt())
+                .isEqualTo(OffsetDateTime.parse("2026-08-12T09:00:00Z"));
+    }
+
+    @Test
+    void leavesAuthenticationTimeEmptyWhenTheTokenIsRejected() throws Exception {
+        JtTerminal terminal = registerBindAndActivate("T-AUTH-REJECT", "PHONE-AUTH-REJECT");
+
+        internalPost("/internal/jt-gateway/authentications/verify", """
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(terminal.getId(), sha256(UUID.randomUUID().toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(false));
+
+        assertThat(terminalRepository.findById(terminal.getId()).orElseThrow().getLastAuthenticatedAt())
+                .isNull();
+    }
+
+    @Test
     void acceptsThenReplaysTheSameGatewayAuditIdempotencyKeyWithoutEchoingTerminalIdentity() throws Exception {
         JtTerminal terminal = presetAndBind("T-API-003", "PHONE-9003");
         UUID idempotencyKey = UUID.randomUUID();

@@ -189,7 +189,7 @@ public class TerminalManagementService {
                 : RegistrationDecision.rejected();
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public AuthenticationDecision verifyAuthentication(
             UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
         if (gatewayInstance == null || gatewayInstance.isBlank()) {
@@ -208,9 +208,12 @@ public class TerminalManagementService {
         }
         byte[] expected = terminal.getAuthTokenHash().getBytes(StandardCharsets.US_ASCII);
         byte[] presented = tokenSha256.getBytes(StandardCharsets.US_ASCII);
-        return MessageDigest.isEqual(expected, presented)
-                ? new AuthenticationDecision(true, null)
-                : AuthenticationDecision.rejected();
+        if (!MessageDigest.isEqual(expected, presented)) {
+            return AuthenticationDecision.rejected();
+        }
+        terminal.recordSuccessfulAuthentication(OffsetDateTime.now(clock));
+        terminalRepository.saveAndFlush(terminal);
+        return new AuthenticationDecision(true, null);
     }
 
     public GatewayAuditResult recordGatewayAudit(JtGatewayAuditEvent event) {
