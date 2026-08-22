@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.JtGatewayIngressReceiptRepository;
@@ -32,6 +34,7 @@ import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import com.idavy.drtops.jtsimulator.SimulatedTerminal;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
@@ -56,7 +59,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,7 +71,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -86,6 +87,8 @@ import org.springframework.web.client.RestClient;
 })
 @Import(JtGatewayApiContractEndToEndTest.TestBeans.class)
 class JtGatewayApiContractEndToEndTest {
+    private static final int ONE_MIB = 1_048_576;
+    private static final int MAX_INGRESS_STRING_LENGTH = 262_144;
     private static final String SERVICE_CREDENTIAL = "synthetic-jt-api-contract-credential";
     private static final String TERMINAL_IDENTITY = "000000000001";
     private static final String TERMINAL_CODE = "SIM0001";
@@ -232,6 +235,115 @@ class JtGatewayApiContractEndToEndTest {
         }
     }
 
+    @Test
+    void rejectsAnOversizedContentLengthIngressBeforeJacksonOrBusinessWrites() throws Exception {
+        String body = ingressWithPayload(UUID.randomUUID(), "x".repeat(ONE_MIB));
+
+        HttpResponse<String> response = postGateway(
+                "/internal/jt-gateway/ingress", HttpRequest.BodyPublishers.ofString(body));
+
+        assertThat(response.statusCode()).isEqualTo(413);
+        assertNoIngressWrites();
+    }
+
+    @Test
+    void rejectsAnOversizedChunkedIngressBeforeJacksonOrBusinessWrites() throws Exception {
+        byte[] body = ingressWithPayload(UUID.randomUUID(), "x".repeat(ONE_MIB))
+                .getBytes(StandardCharsets.UTF_8);
+        HttpRequest.BodyPublisher chunked = HttpRequest.BodyPublishers.ofInputStream(
+                () -> new ByteArrayInputStream(body));
+        assertThat(chunked.contentLength()).isEqualTo(-1);
+
+        HttpResponse<String> response = postGateway("/internal/jt-gateway/ingress", chunked);
+
+        assertThat(response.statusCode()).isEqualTo(413);
+        assertNoIngressWrites();
+    }
+
+    @Test
+    void rejectsExcessiveIngressJsonNestingBeforeBusinessWrites() throws Exception {
+        UUID key = UUID.randomUUID();
+        String nested = "[".repeat(40) + "0" + "]".repeat(40);
+        String body = """
+                [{"schemaVersion":1,"idempotencyKey":"%s","kind":"UNKNOWN",
+                  "gatewayReceivedAt":"2026-01-15T02:00:00Z","payloadJson":"{}","extra":%s}]
+                """.formatted(key, nested);
+
+        HttpResponse<String> response = postGateway(
+                "/internal/jt-gateway/ingress", HttpRequest.BodyPublishers.ofString(body));
+
+        assertThat(response.statusCode()).isEqualTo(413);
+        assertNoIngressWrites();
+    }
+
+    @Test
+    void rejectsAnExcessiveIngressJsonStringBeforeBusinessWrites() throws Exception {
+        String body = ingressWithPayload(
+                UUID.randomUUID(), "x".repeat(MAX_INGRESS_STRING_LENGTH + 1));
+
+        HttpResponse<String> response = postGateway(
+                "/internal/jt-gateway/ingress", HttpRequest.BodyPublishers.ofString(body));
+
+        assertThat(response.statusCode()).isEqualTo(413);
+        assertNoIngressWrites();
+    }
+
+    @Test
+    void acceptsAnIngressJsonStringAtTheConfiguredBoundary() throws Exception {
+        UUID key = UUID.randomUUID();
+        String body = ingressWithPayload(key, "x".repeat(MAX_INGRESS_STRING_LENGTH));
+
+        HttpResponse<String> response = postGateway(
+                "/internal/jt-gateway/ingress", HttpRequest.BodyPublishers.ofString(body));
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(receipts.findById(key)).isPresent().get()
+                .extracting(com.idavy.drtops.domain.location.JtGatewayIngressReceipt::getFinalStatus)
+                .isEqualTo("REJECTED");
+    }
+
+    @Test
+    void acceptsAWithinBudgetFiftyItemIngressBatch() throws Exception {
+        com.fasterxml.jackson.databind.node.ArrayNode batch = objectMapper.createArrayNode();
+        for (int index = 0; index < 50; index++) {
+            com.fasterxml.jackson.databind.node.ObjectNode item = objectMapper.createObjectNode();
+            item.put("schemaVersion", 1);
+            item.put("idempotencyKey", UUID.randomUUID().toString());
+            item.put("kind", "ATTACHMENT_METADATA");
+            item.put("gatewayReceivedAt", GATEWAY_TIME.toString());
+            item.put("payloadJson", "{}");
+            batch.add(item);
+        }
+
+        HttpResponse<String> response = postGateway(
+                "/internal/jt-gateway/ingress",
+                HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(batch)));
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        JsonNode data = objectMapper.readTree(response.body()).required("data");
+        assertThat(data).hasSize(50);
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.required("status").asText()).toList())
+                .containsOnly("REJECTED");
+        assertThat(receipts.findAll()).hasSize(50);
+    }
+
+    @Test
+    void doesNotApplyIngressStringLimitsToAnotherGatewayApi() throws Exception {
+        UUID key = UUID.randomUUID();
+        String body = """
+                {"idempotencyKey":"%s","eventType":"OFFLINE","result":"APPLIED",
+                 "occurredAt":"2026-01-15T02:00:00Z","gatewayInstance":"synthetic-budget-test",
+                 "padding":"%s"}
+                """.formatted(key, "x".repeat(MAX_INGRESS_STRING_LENGTH + 1));
+
+        HttpResponse<String> response = postGateway(
+                "/internal/jt-gateway/audit-events", HttpRequest.BodyPublishers.ofString(body));
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(audits.findByIdempotencyKey(key)).isPresent();
+    }
+
     private SimulatedTerminal registerAndAuthenticate(GatewayRig rig) {
         SimulatedTerminal simulator = new SimulatedTerminal(
                 TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, VEHICLE_PLATE);
@@ -262,6 +374,32 @@ class JtGatewayApiContractEndToEndTest {
 
     private URI apiBaseUri() {
         return URI.create("http://127.0.0.1:" + apiPort);
+    }
+
+    private HttpResponse<String> postGateway(String path, HttpRequest.BodyPublisher body) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(apiBaseUri().resolve(path))
+                .version(HttpClient.Version.HTTP_1_1)
+                .header("Authorization", "Bearer " + SERVICE_CREDENTIAL)
+                .header("X-Service-Credential-Version", "1")
+                .header("Content-Type", "application/json")
+                .POST(body)
+                .build();
+        return HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static String ingressWithPayload(UUID key, String payload) {
+        return """
+                [{"schemaVersion":1,"idempotencyKey":"%s","kind":"UNKNOWN",
+                  "gatewayReceivedAt":"2026-01-15T02:00:00Z","payloadJson":"%s"}]
+                """.formatted(key, payload);
+    }
+
+    private void assertNoIngressWrites() {
+        assertThat(receipts.findAll()).isEmpty();
+        assertThat(audits.findAll()).isEmpty();
+        assertThat(locations.findAll()).isEmpty();
+        assertThat(apiJdbc.queryForObject("select count(*) from vehicle_alarms", Integer.class)).isZero();
+        assertThat(apiJdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
     }
 
     private List<java.util.Map<String, Object>> apiReceiptRows() {
@@ -312,7 +450,7 @@ class JtGatewayApiContractEndToEndTest {
 
     static final class GatewayRig implements AutoCloseable {
         final MutableClock clock = new MutableClock(GATEWAY_TIME);
-        final DataSource dataSource;
+        final HikariDataSource dataSource;
         final JdbcTemplate jdbc;
         final GatewayOutboxRepository repository;
         final GatewayIngressBuffer buffer;
@@ -324,8 +462,15 @@ class JtGatewayApiContractEndToEndTest {
             Files.createDirectories(dataDirectory);
             String databasePath = dataDirectory.resolve("gateway-outbox").toAbsolutePath()
                     .toString().replace('\\', '/');
-            dataSource = new DriverManagerDataSource(
-                    "jdbc:h2:file:" + databasePath + ";MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE", "sa", "");
+            HikariConfig dataSourceConfiguration = new HikariConfig();
+            dataSourceConfiguration.setJdbcUrl(
+                    "jdbc:h2:file:" + databasePath + ";MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE");
+            dataSourceConfiguration.setUsername("sa");
+            dataSourceConfiguration.setPassword("");
+            dataSourceConfiguration.setMinimumIdle(1);
+            dataSourceConfiguration.setMaximumPoolSize(2);
+            dataSourceConfiguration.setPoolName("jt-api-contract-" + UUID.randomUUID());
+            dataSource = new HikariDataSource(dataSourceConfiguration);
             Path migrationDirectory = Path.of(System.getProperty("user.dir"))
                     .resolve("../jt-gateway/src/main/resources/db/migration")
                     .normalize().toAbsolutePath();
@@ -387,7 +532,11 @@ class JtGatewayApiContractEndToEndTest {
 
         @Override
         public void close() {
-            server.close();
+            try {
+                server.close();
+            } finally {
+                dataSource.close();
+            }
         }
     }
 

@@ -39,6 +39,7 @@ import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.CanonicalPositionIngress;
 import com.idavy.drtops.domain.location.GatewayIngressEnvelope;
+import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBinding;
@@ -47,6 +48,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -75,6 +80,7 @@ import org.springframework.test.context.DynamicPropertySource;
         "drt.auth.jwt-secret=alarm-event-stream-test-secret-123456789"
 })
 @AutoConfigureMockMvc
+@Import(AlarmEventStreamIntegrationTest.LocationCheckerConfiguration.class)
 class AlarmEventStreamIntegrationTest {
     private static final String GATEWAY_CREDENTIAL = "alarm-event-stream-gateway-credential";
 
@@ -412,7 +418,7 @@ class AlarmEventStreamIntegrationTest {
         for (int index = 0; index < 20; index++) {
             String identifier = "P95-" + index + "-" + UUID.randomUUID();
             Instant receivedAt = Instant.now();
-            GatewayIngressEnvelope position = rejectedPositionEnvelope(terminalId, vehicleId, receivedAt);
+            GatewayIngressEnvelope position = acceptedPositionEnvelope(terminalId, vehicleId, receivedAt);
             GatewayIngressEnvelope alarm = alarmEnvelope(terminalId, vehicleId, position.idempotencyKey(), identifier, index, receivedAt);
             long started = System.nanoTime();
             mockMvc.perform(post("/internal/jt-gateway/ingress")
@@ -506,10 +512,10 @@ class AlarmEventStreamIntegrationTest {
                 new AlarmStore.LocationReference(UUID.randomUUID(), "GOOD", "[]"));
     }
 
-    private GatewayIngressEnvelope rejectedPositionEnvelope(UUID terminalId, UUID vehicleId, Instant receivedAt) throws Exception {
+    private GatewayIngressEnvelope acceptedPositionEnvelope(UUID terminalId, UUID vehicleId, Instant receivedAt) throws Exception {
         CanonicalPositionIngress position = new CanonicalPositionIngress(terminalId, vehicleId, "JT808-2019", 1,
-                new BigDecimal("181.0000000"), new BigDecimal("35.2103000"), "WGS84", receivedAt, receivedAt,
-                0L, 0L, new BigDecimal("60.00"), 90, 0, 8, "a".repeat(64));
+                new BigDecimal("105.2384988"), new BigDecimal("35.2103000"), "WGS84", receivedAt, receivedAt,
+                0L, 0x02L, new BigDecimal("60.00"), 90, 0, 8, "a".repeat(64));
         return new GatewayIngressEnvelope(1, UUID.randomUUID(), "POSITION", receivedAt,
                 objectMapper.writeValueAsString(position));
     }
@@ -729,6 +735,14 @@ class AlarmEventStreamIntegrationTest {
 
         Throwable error() {
             return error;
+        }
+    }
+
+    @TestConfiguration
+    static class LocationCheckerConfiguration {
+        @Bean @Primary
+        ServiceAreaLocationChecker alarmIngressAreaChecker() {
+            return (longitude, latitude) -> true;
         }
     }
 }

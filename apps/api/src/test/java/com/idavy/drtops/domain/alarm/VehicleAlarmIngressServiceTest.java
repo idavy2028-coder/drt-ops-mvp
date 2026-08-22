@@ -58,20 +58,19 @@ class VehicleAlarmIngressServiceTest {
     }
 
     @Test
-    void preservesTheAlarmWithRejectedQualityWhenItsPositionHasNoTrustedEvent() {
+    void rejectsAnAlarmWhosePositionReceiptWasRejected() {
         InMemoryAlarmStore store = new InMemoryAlarmStore();
         VehicleAlarmIngressService service = new VehicleAlarmIngressService(store);
 
         UUID rejectedPositionKey = UUID.fromString("55555555-5555-5555-5555-555555555555");
         store.rejectedPosition(rejectedPositionKey);
-        service.ingest(List.of(start("ADAS", 1, "FORWARD_COLLISION").atPosition(rejectedPositionKey)));
+        assertThatThrownBy(() -> service.ingest(List.of(
+                start("ADAS", 1, "FORWARD_COLLISION").atPosition(rejectedPositionKey))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("position ingress is not settled");
 
-        assertThat(store.facts()).singleElement().satisfies(alarm -> {
-            assertThat(alarm.getLocationEventId()).isNull();
-            assertThat(alarm.getLocationQualityStatus()).isEqualTo("REJECTED");
-            assertThat(alarm.getLocationQualityReasons()).contains("INVALID_COORDINATE");
-        });
-        assertThat(store.outbox()).hasSize(1);
+        assertThat(store.facts()).isEmpty();
+        assertThat(store.outbox()).isEmpty();
     }
 
     @Test

@@ -11,6 +11,7 @@ final class InMemoryAlarmStore implements AlarmStore {
     private final List<VehicleAlarm> facts = new ArrayList<>();
     private final List<OutboxRecord> outbox = new ArrayList<>();
     private final java.util.Map<UUID, AlarmStore.LocationReference> positions = new java.util.HashMap<>();
+    private final java.util.Set<UUID> untrustedPositions = new java.util.HashSet<>();
     private boolean bindingsAccepted = true;
     private Instant historicalBindingValidUntil;
 
@@ -24,7 +25,7 @@ final class InMemoryAlarmStore implements AlarmStore {
         return Optional.ofNullable(positions.get(positionIdempotencyKey));
     }
     @Override public boolean hasLocationDependency(UUID positionIdempotencyKey) {
-        return positions.containsKey(positionIdempotencyKey);
+        return positions.containsKey(positionIdempotencyKey) || untrustedPositions.contains(positionIdempotencyKey);
     }
     @Override public Optional<VehicleAlarm> findByDeduplicationKey(String key) {
         return facts.stream().filter(fact -> fact.getDeduplicationKey().equals(key)).findFirst();
@@ -42,7 +43,8 @@ final class InMemoryAlarmStore implements AlarmStore {
                 && value.getVehicleId().equals(fact.vehicleId())
                 && value.getStandard().equals(fact.standard()) && value.getModule().equals(fact.module())
                 && value.getAlarmTypeCode() == fact.typeCode()
-                && value.getTerminalAlarmId() == fact.terminalAlarmId()).findFirst();
+                && value.getTerminalAlarmId() == fact.terminalAlarmId())
+                .max(java.util.Comparator.comparing(VehicleAlarm::getOccurredAt));
     }
     @Override public VehicleAlarm save(VehicleAlarm alarm) { if (!facts.contains(alarm)) facts.add(alarm); return alarm; }
     @Override public void appendOutbox(VehicleAlarm alarm, String eventType) { outbox.add(new OutboxRecord(alarm.getId(), eventType)); }
@@ -56,7 +58,7 @@ final class InMemoryAlarmStore implements AlarmStore {
         positions.put(key, new AlarmStore.LocationReference(eventId, qualityStatus, qualityReasons));
     }
     void rejectedPosition(UUID key) {
-        positions.put(key, new AlarmStore.LocationReference(null, "REJECTED", "[\"INVALID_COORDINATE\"]"));
+        untrustedPositions.add(key);
     }
     void rejectBindings() { bindingsAccepted = false; }
     void acceptHistoricalBindingUntil(Instant validUntil) {

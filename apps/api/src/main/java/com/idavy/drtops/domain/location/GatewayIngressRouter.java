@@ -1,5 +1,6 @@
 package com.idavy.drtops.domain.location;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.alarm.VehicleAlarmIngressService;
 import java.math.BigDecimal;
@@ -102,7 +103,7 @@ public class GatewayIngressRouter {
         final VehicleAlarmIngressService.AlarmFact fact;
         try {
             fact = decodeAlarm(envelope);
-        } catch (IllegalArgumentException malformed) {
+        } catch (InvalidIngressPayloadException malformed) {
             return gpsService.rejectStable(envelope, "INVALID_PAYLOAD");
         }
         VehicleAlarmIngressService.Result result = alarmService.ingest(envelope.idempotencyKey(), fact);
@@ -114,7 +115,7 @@ public class GatewayIngressRouter {
         final ProtocolAuditIngressService.ProtocolAuditFact fact;
         try {
             fact = decodeAudit(envelope);
-        } catch (IllegalArgumentException malformed) {
+        } catch (InvalidIngressPayloadException malformed) {
             return gpsService.rejectStable(envelope, "INVALID_PAYLOAD");
         }
         ProtocolAuditIngressService.Result result = protocolAuditService.ingest(fact);
@@ -131,33 +132,51 @@ public class GatewayIngressRouter {
     }
 
     private ProtocolAuditIngressService.ProtocolAuditFact decodeAudit(GatewayIngressEnvelope envelope) {
-        if (envelope.schemaVersion() != 1 || envelope.idempotencyKey() == null || envelope.gatewayReceivedAt() == null) {
-            throw new IllegalArgumentException("invalid protocol audit envelope");
+        if (envelope.schemaVersion() != 1 || envelope.idempotencyKey() == null
+                || envelope.gatewayReceivedAt() == null || envelope.payloadJson() == null) {
+            throw new InvalidIngressPayloadException("invalid protocol audit envelope");
         }
         try {
             ProtocolAuditPayload payload = objectMapper.readValue(envelope.payloadJson(), ProtocolAuditPayload.class);
+            if (payload == null) {
+                throw new InvalidIngressPayloadException("invalid protocol audit payload");
+            }
             return new ProtocolAuditIngressService.ProtocolAuditFact(
                     envelope.idempotencyKey(), payload.terminalId(), payload.vehicleId(), payload.reasonCode(),
                     payload.protocolVersion(), payload.messageId(), payload.payloadDigest(), envelope.gatewayReceivedAt());
-        } catch (Exception malformed) {
-            throw new IllegalArgumentException("invalid protocol audit payload", malformed);
+        } catch (JsonProcessingException malformed) {
+            throw new InvalidIngressPayloadException("invalid protocol audit payload", malformed);
         }
     }
 
     private VehicleAlarmIngressService.AlarmFact decodeAlarm(GatewayIngressEnvelope envelope) {
-        if (envelope.schemaVersion() != 1 || envelope.idempotencyKey() == null || envelope.gatewayReceivedAt() == null) {
-            throw new IllegalArgumentException("invalid alarm envelope");
+        if (envelope.schemaVersion() != 1 || envelope.idempotencyKey() == null
+                || envelope.gatewayReceivedAt() == null || envelope.payloadJson() == null) {
+            throw new InvalidIngressPayloadException("invalid alarm envelope");
         }
         try {
             AlarmPayload payload = objectMapper.readValue(envelope.payloadJson(), AlarmPayload.class);
+            if (payload == null) {
+                throw new InvalidIngressPayloadException("invalid alarm payload");
+            }
             return new VehicleAlarmIngressService.AlarmFact(payload.terminalId(), payload.vehicleId(), payload.standard(),
                     payload.module(), payload.typeCode(), payload.alarmType(), payload.terminalAlarmId(),
                     payload.state(), payload.level(),
                     payload.terminalAlarmIdentifier(), payload.occurredAt(), envelope.gatewayReceivedAt(),
                     payload.longitude(), payload.latitude(), payload.speedKph(), payload.positionIdempotencyKey(),
                     payload.locationQualityStatus(), payload.extensionPayloadDigest());
-        } catch (Exception malformed) {
-            throw new IllegalArgumentException("invalid alarm payload", malformed);
+        } catch (JsonProcessingException malformed) {
+            throw new InvalidIngressPayloadException("invalid alarm payload", malformed);
+        }
+    }
+
+    private static final class InvalidIngressPayloadException extends IllegalArgumentException {
+        private InvalidIngressPayloadException(String message) {
+            super(message);
+        }
+
+        private InvalidIngressPayloadException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 

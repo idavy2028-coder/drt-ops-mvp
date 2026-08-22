@@ -1,7 +1,5 @@
 package com.idavy.drtops.domain.alarm;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.location.JtGatewayIngressReceiptRepository;
 import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.location.VehicleLocationEvent;
@@ -19,20 +17,17 @@ class JpaAlarmStore implements AlarmStore {
     private final VehicleLocationEventRepository locations;
     private final JtGatewayIngressReceiptRepository receipts;
     private final JdbcTemplate jdbc;
-    private final ObjectMapper objectMapper;
     JpaAlarmStore(
             VehicleAlarmRepository alarms,
             VehicleAlarmOutboxRepository outbox,
             VehicleLocationEventRepository locations,
             JtGatewayIngressReceiptRepository receipts,
-            JdbcTemplate jdbc,
-            ObjectMapper objectMapper) {
+            JdbcTemplate jdbc) {
         this.alarms = alarms;
         this.outbox = outbox;
         this.locations = locations;
         this.receipts = receipts;
         this.jdbc = jdbc;
-        this.objectMapper = objectMapper;
     }
     @Override public void lockTerminal(UUID terminalId) {
         jdbc.queryForObject("select id from jt_terminals where id = ? for update", UUID.class, terminalId);
@@ -49,31 +44,23 @@ class JpaAlarmStore implements AlarmStore {
     }
     @Override public Optional<LocationReference> findLocation(
             UUID positionIdempotencyKey, UUID terminalId, UUID vehicleId) {
-        Optional<VehicleLocationEvent> event = locations.findByIdempotencyKey(positionIdempotencyKey)
+        if (receipts.findById(positionIdempotencyKey)
+                .filter(receipt -> receipt.isAcceptedLocationFor(terminalId, vehicleId))
+                .isEmpty()) {
+            return Optional.empty();
+        }
+        return locations.findByIdempotencyKey(positionIdempotencyKey)
                 .filter(location -> location.getSource() == LocationSource.GPS_DEVICE
                         && terminalId.equals(location.getTerminalId())
-                        && vehicleId.equals(location.getVehicleId()));
-        if (event.isPresent()) {
-            return Optional.of(new LocationReference(
-                    event.get().getId(), event.get().getQualityStatus().name(), event.get().getQualityReasons()));
-        }
-        return receipts.findById(positionIdempotencyKey)
-                .filter(receipt -> "REJECTED".equals(receipt.getFinalStatus()))
-                .filter(receipt -> receipt.matchesLocationIdentity(terminalId, vehicleId))
-                .map(receipt -> new LocationReference(null, "REJECTED", serializeReasons(receipt.getReasonCodes())));
+                        && vehicleId.equals(location.getVehicleId()))
+                .map(event -> new LocationReference(
+                        event.getId(), event.getQualityStatus().name(), event.getQualityReasons()));
     }
     @Override public boolean hasLocationDependency(UUID positionIdempotencyKey) {
         return locations.findByIdempotencyKey(positionIdempotencyKey).isPresent()
                 || receipts.findById(positionIdempotencyKey)
                         .filter(receipt -> "REJECTED".equals(receipt.getFinalStatus()))
                         .isPresent();
-    }
-    private String serializeReasons(java.util.List<String> reasons) {
-        try {
-            return objectMapper.writeValueAsString(reasons);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("cannot serialize location quality reasons", exception);
-        }
     }
     @Override public Optional<VehicleAlarm> findByDeduplicationKey(String key) { return alarms.findByDeduplicationKey(key); }
     @Override public Optional<VehicleAlarm> findOpenStart(VehicleAlarmIngressService.AlarmFact fact) {
@@ -82,7 +69,7 @@ class JpaAlarmStore implements AlarmStore {
                 fact.terminalAlarmId());
     }
     @Override public Optional<VehicleAlarm> findStart(VehicleAlarmIngressService.AlarmFact fact) {
-        return alarms.findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmId(
+        return alarms.findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdOrderByOccurredAtDesc(
                 fact.terminalId(), fact.vehicleId(), fact.standard(), fact.module(), fact.typeCode(),
                 fact.terminalAlarmId());
     }

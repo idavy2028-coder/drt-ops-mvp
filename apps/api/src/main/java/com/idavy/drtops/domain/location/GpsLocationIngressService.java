@@ -1,5 +1,6 @@
 package com.idavy.drtops.domain.location;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
@@ -52,22 +53,21 @@ public class GpsLocationIngressService {
         return results;
     }
     public Result reject(GatewayIngressEnvelope envelope, String reason) {
-        return reject(envelope, reason, false);
+        return rejectInTransaction(envelope, reason);
     }
     public Result rejectStable(GatewayIngressEnvelope envelope, String reason) {
-        return reject(envelope, reason, true);
+        return rejectInTransaction(envelope, reason);
     }
-    private Result reject(GatewayIngressEnvelope envelope, String reason, boolean stableRejection) {
+    private Result rejectInTransaction(GatewayIngressEnvelope envelope, String reason) {
         if (envelope == null || envelope.idempotencyKey() == null || reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("rejected ingress item must be correlatable");
         }
-        return itemTransaction.execute(status -> rejectClaimed(envelope, reason, stableRejection));
+        return itemTransaction.execute(status -> rejectClaimed(envelope, reason));
     }
-    private Result rejectClaimed(GatewayIngressEnvelope envelope, String reason, boolean stableRejection) {
+    private Result rejectClaimed(GatewayIngressEnvelope envelope, String reason) {
         if (receiptClaimer.claim(envelope.idempotencyKey()) == 0) {
             JtGatewayIngressReceipt receipt = receiptRepository.findById(envelope.idempotencyKey()).orElseThrow();
-            return new Result(envelope.idempotencyKey(), stableRejection ? "REJECTED" : "REPLAYED",
-                    receipt.getReasonCodes());
+            return repeatedResult(envelope.idempotencyKey(), receipt);
         }
         Result result = rejectAudit(envelope, null, reason);
         JtGatewayIngressReceipt receipt = receiptRepository.findById(envelope.idempotencyKey()).orElseThrow();
@@ -83,55 +83,65 @@ public class GpsLocationIngressService {
         }
         if (receiptClaimer.claim(envelope.idempotencyKey()) == 0) {
             JtGatewayIngressReceipt receipt = receiptRepository.findById(envelope.idempotencyKey()).orElseThrow();
-            return new Result(envelope.idempotencyKey(), "REPLAYED", receipt.getReasonCodes());
+            return repeatedResult(envelope.idempotencyKey(), receipt);
         }
         Result result = ingestOne(envelope);
         JtGatewayIngressReceipt receipt = receiptRepository.findById(envelope.idempotencyKey()).orElseThrow();
         receipt.complete(result.status(), result.reasonCodes(), OffsetDateTime.now(ZoneOffset.UTC));
         return result;
     }
+    private static Result repeatedResult(java.util.UUID idempotencyKey, JtGatewayIngressReceipt receipt) {
+        return switch (receipt.getFinalStatus()) {
+            case "ACCEPTED" -> new Result(idempotencyKey, "REPLAYED", receipt.getReasonCodes());
+            case "REJECTED" -> new Result(idempotencyKey, "REJECTED", receipt.getReasonCodes());
+            default -> throw new IllegalStateException("ingress receipt is not finalized");
+        };
+    }
     private Result ingestOne(GatewayIngressEnvelope envelope) {
         if (envelope.schemaVersion()!=1
                 || !("POSITION".equals(envelope.kind()) || "LOCATION".equals(envelope.kind()))
                 || envelope.idempotencyKey()==null) return rejectAudit(envelope, null, "UNSUPPORTED_ENVELOPE");
+        if (envelope.payloadJson() == null) return rejectAudit(envelope, null, "INVALID_PAYLOAD");
         final CanonicalPositionIngress ingress;
         try { ingress = mapper.readValue(envelope.payloadJson(), CanonicalPositionIngress.class); }
-        catch (Exception malformed) { return rejectAudit(envelope, null, "INVALID_PAYLOAD"); }
+        catch (JsonProcessingException malformed) { return rejectAudit(envelope, null, "INVALID_PAYLOAD"); }
         if (ingress == null) return rejectAudit(envelope, null, "INVALID_PAYLOAD");
         receiptRepository.findById(envelope.idempotencyKey())
                 .ifPresent(receipt -> receipt.identify(
                         envelope.kind(), ingress.terminalId(), ingress.vehicleId()));
-        try {
-            if (!valid(ingress, envelope)) return rejectAudit(envelope, ingress, "INVALID_PAYLOAD");
-            JtTerminalVehicleBinding binding = bindingRepository.findByTerminalIdAndStatus(ingress.terminalId(), JtTerminalVehicleBinding.Status.ACTIVE).orElse(null);
-            if (binding == null || !binding.getVehicleId().equals(ingress.vehicleId())) return rejectAudit(envelope, ingress, "TERMINAL_BINDING_MISMATCH");
-            Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(binding.getVehicleId()).orElse(null);
-            if (vehicle == null) return rejectAudit(envelope, ingress, "TERMINAL_BINDING_MISMATCH");
-            LocationQualityDecision rawDecision = evaluate(ingress, envelope, vehicle, ingress.rawLongitude(), ingress.rawLatitude(), true, null, 0);
-            if (!rawDecision.persistEvent()) return rejectAudit(envelope, ingress, rawDecision.reasons());
-            CoordinateTransformer.StandardizedCoordinate coordinate;
-            try { coordinate = transformer.transform(ingress.rawLongitude(), ingress.rawLatitude(), ingress.rawCoordinateSystem()); }
-            catch (IllegalArgumentException invalidCoordinate) {
-                Set<LocationQualityReason> reasons = java.util.EnumSet.noneOf(LocationQualityReason.class);
-                reasons.addAll(rawDecision.reasons());
-                reasons.add(LocationQualityReason.INVALID_COORDINATE);
-                return rejectAudit(envelope, ingress, reasons);
-            }
-            boolean inside = areaChecker.isInsideEnabledArea(coordinate.longitude(), coordinate.latitude());
-            Double impliedSpeed = impliedSpeedKph(vehicle, coordinate, ingress);
-            LocationQualityDecision decision = evaluate(ingress, envelope, vehicle,
-                    coordinate.longitude(), coordinate.latitude(), inside, impliedSpeed, 0);
-            if (decision.status() == LocationQualityStatus.QUARANTINED) {
-                int consecutive = consecutiveQuarantines(binding.getVehicleId()) + 1;
-                decision = evaluate(ingress, envelope, vehicle,
-                        coordinate.longitude(), coordinate.latitude(), inside, impliedSpeed, consecutive);
-            }
-            if (!decision.persistEvent()) return rejectAudit(envelope, ingress, decision.reasons());
-            VehicleLocationEvent event = VehicleLocationEvent.recordGps(binding.getVehicleId(), ingress.terminalId(), ingress, coordinate, decision,
-                    envelope.idempotencyKey(), ingress.payloadDigest(), OffsetDateTime.now(ZoneOffset.UTC), envelope.gatewayReceivedAt(), !inside);
-            eventRepository.save(event); if (decision.applySnapshot()) vehicle.applyGpsLocationSnapshot(event);
-            return new Result(envelope.idempotencyKey(), "ACCEPTED", decision.reasons().stream().map(Enum::name).sorted().toList());
-        } catch (Exception exception) { throw exception; }
+        if (!valid(ingress, envelope)) return rejectAudit(envelope, ingress, "INVALID_PAYLOAD");
+        JtTerminalVehicleBinding binding = bindingRepository.findByTerminalIdAndStatus(
+                ingress.terminalId(), JtTerminalVehicleBinding.Status.ACTIVE).orElse(null);
+        if (binding == null || !binding.getVehicleId().equals(ingress.vehicleId())) {
+            return rejectAudit(envelope, ingress, "TERMINAL_BINDING_MISMATCH");
+        }
+        Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(binding.getVehicleId()).orElse(null);
+        if (vehicle == null) return rejectAudit(envelope, ingress, "TERMINAL_BINDING_MISMATCH");
+        LocationQualityDecision rawDecision = evaluate(
+                ingress, envelope, vehicle, ingress.rawLongitude(), ingress.rawLatitude(), true, null, 0);
+        if (!rawDecision.persistEvent()) return rejectAudit(envelope, ingress, rawDecision.reasons());
+        CoordinateTransformer.StandardizedCoordinate coordinate;
+        try { coordinate = transformer.transform(ingress.rawLongitude(), ingress.rawLatitude(), ingress.rawCoordinateSystem()); }
+        catch (IllegalArgumentException invalidCoordinate) {
+            Set<LocationQualityReason> reasons = java.util.EnumSet.noneOf(LocationQualityReason.class);
+            reasons.addAll(rawDecision.reasons());
+            reasons.add(LocationQualityReason.INVALID_COORDINATE);
+            return rejectAudit(envelope, ingress, reasons);
+        }
+        boolean inside = areaChecker.isInsideEnabledArea(coordinate.longitude(), coordinate.latitude());
+        Double impliedSpeed = impliedSpeedKph(vehicle, coordinate, ingress);
+        LocationQualityDecision decision = evaluate(ingress, envelope, vehicle,
+                coordinate.longitude(), coordinate.latitude(), inside, impliedSpeed, 0);
+        if (decision.status() == LocationQualityStatus.QUARANTINED) {
+            int consecutive = consecutiveQuarantines(binding.getVehicleId()) + 1;
+            decision = evaluate(ingress, envelope, vehicle,
+                    coordinate.longitude(), coordinate.latitude(), inside, impliedSpeed, consecutive);
+        }
+        if (!decision.persistEvent()) return rejectAudit(envelope, ingress, decision.reasons());
+        VehicleLocationEvent event = VehicleLocationEvent.recordGps(binding.getVehicleId(), ingress.terminalId(), ingress, coordinate, decision,
+                envelope.idempotencyKey(), ingress.payloadDigest(), OffsetDateTime.now(ZoneOffset.UTC), envelope.gatewayReceivedAt(), !inside);
+        eventRepository.save(event); if (decision.applySnapshot()) vehicle.applyGpsLocationSnapshot(event);
+        return new Result(envelope.idempotencyKey(), "ACCEPTED", decision.reasons().stream().map(Enum::name).sorted().toList());
     }
     private Result rejectAudit(GatewayIngressEnvelope envelope, CanonicalPositionIngress ingress, String reason) {
         auditRepository.save(JtGatewayAuditEvent.record(gatewayAuditKey(envelope), null, null,

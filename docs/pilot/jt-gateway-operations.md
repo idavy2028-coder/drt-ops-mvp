@@ -22,8 +22,10 @@ API 只接收凭证版本和摘要；明文只进入网关容器。H2 文件保�
 
 `POST /internal/jt-gateway/ingress` 只接受 1 至 50 条的 JSON 数组。每个可关联输入都必须按原顺序返回一条结果，`idempotencyKey` 与输入 UUID 完全相同，`status` 只能是 `ACCEPTED`、`REPLAYED` 或 `REJECTED`，`reasonCodes` 是稳定有序的数组。缺失 key、重复 key 或 null envelope 无法形成无歧义关联，API 会在写入任何一项前返回 400；有 key 的坏 schema、时间、payload 或业务事实只拒绝自身，不遮蔽同批邻项。
 
+该单一路由在服务凭证校验后、MVC 将请求物化为 `JsonNode` 前执行有界读取和 streaming JSON 检查。默认请求体上限为 1 MiB、JSON 最大嵌套深度为 32、单个字段名或字符串值最大长度为 262144；分别可由 `JT_GATEWAY_INGRESS_MAX_REQUEST_BYTES`、`JT_GATEWAY_INGRESS_MAX_JSON_NESTING_DEPTH`、`JT_GATEWAY_INGRESS_MAX_JSON_STRING_LENGTH` 配置。带 `Content-Length` 和 chunked/未知长度请求都受同一字节上限约束，超过任一资源上限返回 413，且不创建 ingress receipt、audit、位置、告警事实或 outbox。正常 50 项批次不受影响；这些限制不应用到 `/internal/jt-gateway` 的其他 API。未经容量和安全复核不得在部署时调高。
+
 - `LOCATION` 使用既有 GPS 质量和幂等语义；历史 `POSITION` 别名仍兼容，但 gateway 生产投递使用 `LOCATION`。
-- `ALARM` 新 START/END 事实及其 outbox 同事务返回 `ACCEPTED`；只有已接受的 ingress receipt 或既有业务事实重放返回 `REPLAYED`；绑定、位置依赖、字段或状态非法及其同 key 重投都返回稳定 `REJECTED`。告警位置依赖必须是同 terminal、同 vehicle 的 GPS `LOCATION/POSITION` 事件或可证明归属的已拒绝位置 receipt，人工位置、其他车辆或其他 kind 的 receipt 均不可复用。
+- `ALARM` 新 START/END 事实及其 outbox 同事务返回 `ACCEPTED`；只有已接受的 ingress receipt 或既有业务事实重放返回 `REPLAYED`；绑定、位置依赖、字段或状态非法及其同 key 重投都返回稳定 `REJECTED`。每个 START/END 在任何新建、结束、去重或历史重放分支前，都必须同时找到已完成且 `ACCEPTED` 的 `LOCATION/POSITION` receipt，以及同 key、同 terminal、同 vehicle 的 GPS event；已拒绝位置、人工位置、其他车辆、其他 kind、仅有 receipt 或仅有 event 均不可复用。END 早于对应 open 或最新历史 START 时固定返回 `ALARM_STATE_INVALID`，只有时间合法的重复 END 才返回 `REPLAYED`。
 - `PROTOCOL_AUDIT` 首次持久化返回 `ACCEPTED`，同 receipt 重投返回 `REPLAYED`，非法输入返回 `REJECTED`。
 - `ATTACHMENT_METADATA` 的运营映射仍未授权；首次和每次重投都固定返回 `REJECTED` 与 `ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE`，不写 GPS、告警附件或媒体业务表。
 

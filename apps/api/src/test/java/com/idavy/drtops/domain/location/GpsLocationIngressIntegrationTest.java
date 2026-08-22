@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
@@ -19,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -29,6 +31,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
@@ -66,6 +69,8 @@ class GpsLocationIngressIntegrationTest {
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired JdbcTemplate jdbc;
     @Autowired TestServiceAreaLocationChecker locationChecker;
+    @Autowired GatewayIngressRouter ingressRouter;
+    @Autowired FaultInjectingObjectMapper faultInjectingObjectMapper;
 
     @DynamicPropertySource
     static void credential(DynamicPropertyRegistry registry) {
@@ -123,7 +128,7 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
-    void preservesAlarmFactsWithRejectedQualityWhenThePositionCannotBePersisted() throws Exception {
+    void rejectsAnAlarmWhenItsPositionCannotBePersisted() throws Exception {
         UUID positionKey = UUID.randomUUID();
         Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
         GatewayIngressEnvelope rejected = envelopeAt(positionKey, VEHICLE_ID, 0x02,
@@ -132,16 +137,13 @@ class GpsLocationIngressIntegrationTest {
                 receivedAt, receivedAt);
 
         postIngress(List.of(rejected, alarm)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("REJECTED"));
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"));
 
         assertThat(eventRepository.findByIdempotencyKey(positionKey)).isEmpty();
-        assertThat(jdbc.queryForObject("select location_event_id from vehicle_alarms", UUID.class)).isNull();
-        assertThat(jdbc.queryForObject("select location_quality_status from vehicle_alarms", String.class))
-                .isEqualTo("REJECTED");
-        assertThat(jdbc.queryForObject(
-                "select cast(location_quality_reasons as varchar) from vehicle_alarms", String.class))
-                .contains("INVALID_COORDINATE");
-        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(1);
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
     }
 
     @Test
@@ -364,6 +366,127 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
+    void rejectsSameVehicleRejectedAndMissingPositionsBeforeCreatingAnAlarm() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID rejectedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope rejectedPosition = envelopeAt(
+                rejectedPositionKey, VEHICLE_ID, 0x02, "181", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope rejectedDependency = alarmEnvelope(
+                rejectedPositionKey, "ADAS", 11, "FORWARD_COLLISION", "1".repeat(64), receivedAt, receivedAt);
+        GatewayIngressEnvelope missingDependency = alarmEnvelope(
+                UUID.randomUUID(), "DMS", 12, "PHONE", "2".repeat(64), receivedAt, receivedAt);
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(rejectedPosition, rejectedDependency, missingDependency, neighbor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].reasonCodes[0]").value("POSITION_INGRESS_NOT_SETTLED"))
+                .andExpect(jsonPath("$.data[3].status").value("ACCEPTED"));
+
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsEveryUntrustedPositionBeforeEndingAnOpenAlarm() throws Exception {
+        JtTerminal otherTerminal = terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", UUID.randomUUID()));
+        JtTerminalVehicleBinding otherBinding = JtTerminalVehicleBinding.bind(
+                otherTerminal, OTHER_VEHICLE_ID, "测试绑定2", UUID.randomUUID());
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                otherBinding, "validFrom", OffsetDateTime.parse("2026-08-12T00:00:00Z"));
+        bindingRepository.save(otherBinding);
+
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID trustedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope trustedPosition = envelopeAt(
+                trustedPositionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        UUID rejectedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope rejectedPosition = envelopeAt(
+                rejectedPositionKey, VEHICLE_ID, 0x02, "181", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        UUID crossVehiclePositionKey = UUID.randomUUID();
+        CanonicalPositionIngress crossVehiclePayload = identityAndTimes(
+                payload(OTHER_VEHICLE_ID, Instant.parse("2026-08-12T08:59:50Z")),
+                OTHER_TERMINAL_ID, OTHER_VEHICLE_ID,
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope crossVehiclePosition = new GatewayIngressEnvelope(
+                1, crossVehiclePositionKey, "POSITION", receivedAt,
+                objectMapper.writeValueAsString(crossVehiclePayload));
+        UUID manualPositionKey = UUID.randomUUID();
+        OffsetDateTime manualAt = OffsetDateTime.parse("2026-08-12T08:59:50Z");
+        VehicleLocationEvent manual = VehicleLocationEvent.record(
+                VEHICLE_ID, null, null, null, LocationEventType.MANUAL_REPORT,
+                LocationSource.MANUAL_DISPATCHER,
+                "POINT(105.2384988 35.2109657)", new BigDecimal("105.2384988"),
+                new BigDecimal("35.2109657"), "GCJ02", "人工测试位置", manualAt,
+                manualAt.plusSeconds(1), UUID.randomUUID(), "测试", null, null,
+                manualPositionKey, "e".repeat(64), true, false);
+        org.springframework.test.util.ReflectionTestUtils.setField(manual, "terminalId", TERMINAL_ID);
+        eventRepository.saveAndFlush(manual);
+        UUID wrongKindKey = UUID.randomUUID();
+        GatewayIngressEnvelope wrongKind = new GatewayIngressEnvelope(
+                1, wrongKindKey, "ATTACHMENT_METADATA", receivedAt, "{}");
+
+        GatewayIngressEnvelope start = alarmEnvelope(
+                trustedPositionKey, "ADAS", 21, "FORWARD_COLLISION", "3".repeat(64),
+                receivedAt, receivedAt);
+        postIngress(List.of(trustedPosition, rejectedPosition, crossVehiclePosition, wrongKind, start))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[3].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[4].status").value("ACCEPTED"));
+        JtGatewayIngressReceipt wrongKindReceipt = receiptRepository.findById(wrongKindKey).orElseThrow();
+        wrongKindReceipt.identify("ATTACHMENT_METADATA", TERMINAL_ID, VEHICLE_ID);
+        receiptRepository.saveAndFlush(wrongKindReceipt);
+
+        List<UUID> untrustedPositions = List.of(
+                rejectedPositionKey, crossVehiclePositionKey, manualPositionKey,
+                wrongKindKey, UUID.randomUUID());
+        List<GatewayIngressEnvelope> ends = new ArrayList<>();
+        for (int index = 0; index < untrustedPositions.size(); index++) {
+            com.fasterxml.jackson.databind.node.ObjectNode payload =
+                    (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(start.payloadJson());
+            payload.put("state", "END");
+            payload.put("occurredAt", receivedAt.plusSeconds(index + 1).toString());
+            payload.put("positionIdempotencyKey", untrustedPositions.get(index).toString());
+            payload.put("extensionPayloadDigest", Integer.toString(index + 4).repeat(64));
+            ends.add(new GatewayIngressEnvelope(
+                    1, UUID.randomUUID(), "ALARM", receivedAt.plusSeconds(index + 1),
+                    objectMapper.writeValueAsString(payload)));
+        }
+
+        var response = postIngress(ends).andExpect(status().isOk()).andReturn();
+        var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED");
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("reasonCodes").get(0).asText()).toList())
+                .containsExactly(
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_INGRESS_NOT_SETTLED");
+        assertThat(apiAlarmCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select ended_at from vehicle_alarms", OffsetDateTime.class)).isNull();
+    }
+
+    @Test
     void rejectsAnEndBeforeItsStartWithoutHidingTheNextValidItem() throws Exception {
         Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
         UUID positionKey = UUID.randomUUID();
@@ -397,6 +520,56 @@ class GpsLocationIngressIntegrationTest {
         assertThat(jdbc.queryForObject(
                 "select ended_at from vehicle_alarms", OffsetDateTime.class)).isNull();
         assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsAnEarlyEndAfterTheLifecycleClosedAndOnlyReplaysALegalEnd() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        Instant actualStartAt = Instant.parse("2026-08-12T08:59:50Z");
+        Instant endAt = receivedAt.plusSeconds(10);
+        UUID positionKey = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelopeAt(
+                positionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope start = alarmEnvelope(
+                positionKey, "ADAS", 31, "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
+        com.fasterxml.jackson.databind.node.ObjectNode endPayload =
+                (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(start.payloadJson());
+        endPayload.put("state", "END");
+        endPayload.put("occurredAt", endAt.toString());
+        endPayload.put("extensionPayloadDigest", "b".repeat(64));
+        GatewayIngressEnvelope end = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", endAt, objectMapper.writeValueAsString(endPayload));
+        postIngress(List.of(position, start, end)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[2].status").value("ACCEPTED"));
+
+        com.fasterxml.jackson.databind.node.ObjectNode earlyPayload = endPayload.deepCopy();
+        earlyPayload.put("occurredAt", actualStartAt.minusSeconds(1).toString());
+        earlyPayload.put("extensionPayloadDigest", "c".repeat(64));
+        GatewayIngressEnvelope earlyEnd = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", endAt.plusSeconds(1),
+                objectMapper.writeValueAsString(earlyPayload));
+        com.fasterxml.jackson.databind.node.ObjectNode replayPayload = endPayload.deepCopy();
+        replayPayload.put("occurredAt", endAt.plusSeconds(1).toString());
+        replayPayload.put("extensionPayloadDigest", "d".repeat(64));
+        GatewayIngressEnvelope legalReplay = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", endAt.plusSeconds(2),
+                objectMapper.writeValueAsString(replayPayload));
+
+        postIngress(List.of(earlyEnd, legalReplay)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"))
+                .andExpect(jsonPath("$.data[1].status").value("REPLAYED"));
+        postIngress(List.of(earlyEnd)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"));
+
+        assertThat(apiAlarmCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select ended_at from vehicle_alarms", OffsetDateTime.class))
+                .isEqualTo(endAt.atOffset(ZoneOffset.UTC));
     }
 
     @Test
@@ -580,19 +753,50 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
-    void replaysRejectedIngressAcrossRequestsWithoutWritingAnotherAudit() throws Exception {
-        UUID idempotencyKey = UUID.randomUUID();
-        GatewayIngressEnvelope rejected = new GatewayIngressEnvelope(1, idempotencyKey, "UNKNOWN", Instant.parse("2026-08-12T09:00:00Z"), "{}");
+    void keepsEveryRejectedLocationAndOrdinaryItemRejectedAcrossRetries() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        GatewayIngressEnvelope invalidCoordinate = envelopeAt(
+                UUID.randomUUID(), VEHICLE_ID, 0x02, "181", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope unsupportedSchema = new GatewayIngressEnvelope(
+                2, UUID.randomUUID(), "POSITION", receivedAt, "{}");
+        GatewayIngressEnvelope malformedPayload = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "POSITION", receivedAt, "{not-json");
+        GatewayIngressEnvelope unknownKind = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "UNKNOWN", receivedAt, "{}");
+        GatewayIngressEnvelope bindingMismatch = envelopeAt(
+                UUID.randomUUID(), OTHER_VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope rejectedQuality = envelopeAt(
+                UUID.randomUUID(), VEHICLE_ID, 0, "0", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        List<GatewayIngressEnvelope> rejected = List.of(
+                invalidCoordinate, unsupportedSchema, malformedPayload,
+                unknownKind, bindingMismatch, rejectedQuality);
 
-        postIngress(List.of(rejected)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("UNSUPPORTED_ENVELOPE"));
-        postIngress(List.of(rejected)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"))
-                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("UNSUPPORTED_ENVELOPE"));
+        var firstResponse = postIngress(rejected).andExpect(status().isOk()).andReturn();
+        var retryResponse = postIngress(rejected).andExpect(status().isOk()).andReturn();
+        var first = objectMapper.readTree(firstResponse.getResponse().getContentAsString()).path("data");
+        var retry = objectMapper.readTree(retryResponse.getResponse().getContentAsString()).path("data");
 
-        assertThat(gatewayAuditRepository.findAll()).singleElement()
-                .satisfies(audit -> assertThat(audit.getReasonCode()).isEqualTo("UNSUPPORTED_ENVELOPE"));
+        assertThat(java.util.stream.StreamSupport.stream(first.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED");
+        assertThat(java.util.stream.StreamSupport.stream(retry.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED");
+        assertThat(retry).isEqualTo(first);
+        assertThat(java.util.stream.StreamSupport.stream(retry.spliterator(), false)
+                .map(item -> item.path("reasonCodes").toString()).toList())
+                .containsExactly(
+                        "[\"INVALID_COORDINATE\"]",
+                        "[\"UNSUPPORTED_ENVELOPE\"]",
+                        "[\"INVALID_PAYLOAD\"]",
+                        "[\"UNSUPPORTED_ENVELOPE\"]",
+                        "[\"TERMINAL_BINDING_MISMATCH\"]",
+                        "[\"INVALID_COORDINATE\",\"POSITION_INVALID\"]");
+        assertThat(eventRepository.findAll()).isEmpty();
+        assertThat(gatewayAuditRepository.findAll()).hasSize(6);
     }
 
     @Test
@@ -626,6 +830,46 @@ class GpsLocationIngressIntegrationTest {
                 .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
         assertThat(receiptRepository.findById(idempotencyKey)).isPresent();
         assertThat(eventRepository.findByIdempotencyKey(idempotencyKey)).isPresent();
+    }
+
+    @Test
+    void propagatesAnUnknownLocationDecoderFailureAndRollsBackTheClaim() throws Exception {
+        UUID idempotencyKey = UUID.randomUUID();
+        GatewayIngressEnvelope location = envelope(
+                idempotencyKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+        IllegalStateException failure = new IllegalStateException("forced location decoder failure");
+        faultInjectingObjectMapper.failReading(location.payloadJson(), failure);
+
+        try {
+            assertThatThrownBy(() -> ingressRouter.ingest(List.of(location))).isSameAs(failure);
+        } finally {
+            faultInjectingObjectMapper.resetFailure();
+        }
+
+        assertThat(receiptRepository.findById(idempotencyKey)).isEmpty();
+        assertThat(eventRepository.findByIdempotencyKey(idempotencyKey)).isEmpty();
+        assertThat(gatewayAuditRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void propagatesAnUnknownAlarmDecoderFailureWithoutWritingARejectedReceipt() throws Exception {
+        GatewayIngressEnvelope alarm = alarmEnvelope(
+                UUID.randomUUID(), "ADAS", 41, "FORWARD_COLLISION", "f".repeat(64),
+                Instant.parse("2026-08-12T09:00:00Z"), Instant.parse("2026-08-12T09:00:00Z"));
+        IllegalArgumentException failure = new IllegalArgumentException("forced alarm decoder failure");
+        faultInjectingObjectMapper.failReading(alarm.payloadJson(), failure);
+
+        try {
+            assertThatThrownBy(() -> ingressRouter.ingest(List.of(alarm))).isSameAs(failure);
+        } finally {
+            faultInjectingObjectMapper.resetFailure();
+        }
+
+        assertThat(receiptRepository.findById(alarm.idempotencyKey())).isEmpty();
+        assertThat(gatewayAuditRepository.findAll()).isEmpty();
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
     }
 
     @Test
@@ -741,6 +985,16 @@ class GpsLocationIngressIntegrationTest {
             assertThat(audit.getTerminalId()).isNull();
             assertThat(audit.getVehicleId()).isNull();
         });
+    }
+
+    @Test
+    void rejectsALiteralNullAlarmPayloadWithoutHidingItsNeighbor() throws Exception {
+        assertLiteralNullStructuredPayloadRejected("ALARM");
+    }
+
+    @Test
+    void rejectsALiteralNullProtocolAuditPayloadWithoutHidingItsNeighbor() throws Exception {
+        assertLiteralNullStructuredPayloadRejected("PROTOCOL_AUDIT");
     }
 
     @Test
@@ -1007,6 +1261,27 @@ class GpsLocationIngressIntegrationTest {
     }
 
     private org.springframework.test.web.servlet.ResultActions postIngress(List<GatewayIngressEnvelope> batch) throws Exception { return internalPost(objectMapper.writeValueAsString(batch)); }
+    private void assertLiteralNullStructuredPayloadRejected(String kind) throws Exception {
+        UUID rejectedKey = UUID.randomUUID();
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope literalNull = new GatewayIngressEnvelope(
+                1, rejectedKey, kind, Instant.parse("2026-08-12T09:00:00Z"), "null");
+        GatewayIngressEnvelope neighbor = envelope(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+
+        postIngress(List.of(literalNull, neighbor)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+
+        assertThat(receiptRepository.findById(rejectedKey).orElseThrow()).satisfies(receipt -> {
+            assertThat(receipt.getFinalStatus()).isEqualTo("REJECTED");
+            assertThat(receipt.getReasonCodes()).containsExactly("INVALID_PAYLOAD");
+        });
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+        assertThat(apiAlarmCount()).isZero();
+    }
     private GatewayIngressEnvelope alarmEnvelope(
             UUID positionKey,
             String module,
@@ -1137,8 +1412,37 @@ class GpsLocationIngressIntegrationTest {
 
     @TestConfiguration
     static class LocationCheckerConfiguration {
+        @Bean @Primary FaultInjectingObjectMapper objectMapper(Jackson2ObjectMapperBuilder builder) {
+            FaultInjectingObjectMapper objectMapper = new FaultInjectingObjectMapper();
+            builder.configure(objectMapper);
+            return objectMapper;
+        }
+
         @Bean @Primary TestServiceAreaLocationChecker gpsIngressAreaChecker() {
             return new TestServiceAreaLocationChecker();
+        }
+    }
+
+    static final class FaultInjectingObjectMapper extends ObjectMapper {
+        private String failingPayload;
+        private RuntimeException failure;
+
+        void failReading(String payload, RuntimeException failure) {
+            this.failingPayload = payload;
+            this.failure = failure;
+        }
+
+        void resetFailure() {
+            failingPayload = null;
+            failure = null;
+        }
+
+        @Override
+        public <T> T readValue(String content, Class<T> valueType) throws JsonProcessingException {
+            if (failure != null && java.util.Objects.equals(failingPayload, content)) {
+                throw failure;
+            }
+            return super.readValue(content, valueType);
         }
     }
 

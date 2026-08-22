@@ -60,6 +60,12 @@ public class JtGatewayIngressReceipt {
                 && terminalId.equals(this.terminalId) && vehicleId.equals(this.vehicleId);
     }
 
+    public boolean isAcceptedLocationFor(UUID terminalId, UUID vehicleId) {
+        return completedAt != null
+                && "ACCEPTED".equals(finalStatus)
+                && matchesLocationIdentity(terminalId, vehicleId);
+    }
+
     public UUID getIdempotencyKey() {
         return idempotencyKey;
     }

@@ -101,6 +101,14 @@ public class VehicleAlarmIngressService {
         if (!store.matchesBindingAt(fact.terminalId(), fact.vehicleId(), fact.gatewayReceivedAt())) {
             return Result.rejected(idempotencyKey, "TERMINAL_BINDING_MISMATCH");
         }
+        AlarmStore.LocationReference location = store.findLocation(
+                fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId()).orElse(null);
+        if (location == null) {
+            return Result.rejected(idempotencyKey,
+                    store.hasLocationDependency(fact.positionIdempotencyKey())
+                            ? "POSITION_DEPENDENCY_MISMATCH"
+                            : "POSITION_INGRESS_NOT_SETTLED");
+        }
         if ("END".equals(fact.state())) {
             var open = store.findOpenStart(fact);
             if (open.isPresent()) {
@@ -111,37 +119,35 @@ public class VehicleAlarmIngressService {
                 store.appendOutbox(open.get(), "ALARM_ENDED");
                 return Result.accepted(idempotencyKey);
             }
-            return store.findStart(fact).isPresent()
-                    ? Result.replayed(idempotencyKey)
-                    : Result.rejected(idempotencyKey, "ALARM_STATE_INVALID");
+            var historical = store.findStart(fact);
+            if (historical.isEmpty() || fact.occurredAt().isBefore(historical.get().getOccurredAt())) {
+                return Result.rejected(idempotencyKey, "ALARM_STATE_INVALID");
+            }
+            return Result.replayed(idempotencyKey);
         }
         String key = keyFor(fact);
         if (store.findByDeduplicationKey(key).isPresent() || store.findOpenStart(fact).isPresent()) {
             return Result.replayed(idempotencyKey);
-        }
-        AlarmStore.LocationReference location = store.findLocation(
-                fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId()).orElse(null);
-        if (location == null) {
-            return Result.rejected(idempotencyKey,
-                    store.hasLocationDependency(fact.positionIdempotencyKey())
-                            ? "POSITION_DEPENDENCY_MISMATCH"
-                            : "POSITION_INGRESS_NOT_SETTLED");
         }
         VehicleAlarm alarm = store.save(VehicleAlarm.start(fact, key, location));
         store.appendOutbox(alarm, "ALARM_CREATED");
         return Result.accepted(idempotencyKey);
     }
     private void ingestValidated(AlarmFact fact) {
+        AlarmStore.LocationReference location = store.findLocation(
+                        fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId())
+                .orElseThrow(() -> new IllegalStateException("position ingress is not settled"));
         if ("END".equals(fact.state())) {
-            store.findOpenStart(fact).ifPresent(start -> { store.end(start, fact.occurredAt()); store.appendOutbox(start, "ALARM_ENDED"); });
+            var open = store.findOpenStart(fact);
+            if (open.isPresent() && !fact.occurredAt().isBefore(open.get().getOccurredAt())) {
+                store.end(open.get(), fact.occurredAt());
+                store.appendOutbox(open.get(), "ALARM_ENDED");
+            }
             return;
         }
         String key = keyFor(fact);
         if (store.findByDeduplicationKey(key).isPresent()) return;
         if (store.findOpenStart(fact).isPresent()) return;
-        AlarmStore.LocationReference location = store.findLocation(
-                        fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId())
-                .orElseThrow(() -> new IllegalStateException("position ingress is not settled"));
         VehicleAlarm alarm = store.save(VehicleAlarm.start(fact, key, location));
         store.appendOutbox(alarm, "ALARM_CREATED");
     }
