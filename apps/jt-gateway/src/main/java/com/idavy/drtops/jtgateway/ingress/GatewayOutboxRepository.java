@@ -80,7 +80,7 @@ public final class GatewayOutboxRepository {
                 return List.of();
             }
             String kindPredicate = priority == Priority.HIGH
-                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'SESSION_AUDIT', 'ATTACHMENT_METADATA', 'ATTACHMENT_CONTROL') "
+                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_METADATA', 'ATTACHMENT_CONTROL') "
                             + "AND (dependency_idempotency_key IS NULL OR dependency_idempotency_key IN "
                             + "(SELECT idempotency_key FROM gateway_outbox dependency WHERE dependency.status = 'DELIVERED'))"
                     : "kind = 'LOCATION'";
@@ -108,6 +108,35 @@ public final class GatewayOutboxRepository {
                         UPDATE gateway_dispatch_state SET next_batch_at = ?
                         WHERE lane = 'LOCATION'
                         """, atOffset(now.plus(LOCATION_BATCH_INTERVAL)));
+            }
+            return List.copyOf(claimed);
+        });
+    }
+
+    public List<OutboxEntry> claimSessionAudits(Instant now, int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        return transactions.execute(status -> {
+            recoverExpiredClaims(now);
+            List<OutboxEntry> selected = jdbc.query("""
+                    SELECT idempotency_key, kind, schema_version, payload_json, status,
+                           attempt_count, next_attempt_at, created_at, delivered_at, last_error_code,
+                           dependency_idempotency_key
+                    FROM gateway_outbox
+                    WHERE status = 'PENDING' AND next_attempt_at <= ? AND kind = 'SESSION_AUDIT'
+                    ORDER BY created_at, idempotency_key
+                    LIMIT %d
+                    FOR UPDATE
+                    """.formatted(limit), ENTRY_MAPPER, atOffset(now));
+            List<OutboxEntry> claimed = new ArrayList<>(selected.size());
+            for (OutboxEntry entry : selected) {
+                int updated = jdbc.update("""
+                        UPDATE gateway_outbox SET status = 'DELIVERING', next_attempt_at = ?
+                        WHERE idempotency_key = ? AND status = 'PENDING'
+                        """, atOffset(now.plus(DELIVERY_LEASE)), entry.idempotencyKey());
+                requireSingleStateTransition(updated);
+                claimed.add(entry.claimedUntil(now.plus(DELIVERY_LEASE)));
             }
             return List.copyOf(claimed);
         });

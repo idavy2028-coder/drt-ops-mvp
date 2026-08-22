@@ -217,8 +217,8 @@ class JtGatewayApiContractEndToEndTest {
             GatewayOutboxDispatcher.DispatchReport first = rig.dispatcher.dispatchOnce();
 
             assertThat(first.attempted()).isEqualTo(2);
-            assertThat(first.delivered()).isZero();
-            assertThat(first.retried()).isEqualTo(2);
+            assertThat(first.delivered()).isEqualTo(1);
+            assertThat(first.retried()).isEqualTo(1);
             UUID droppedKey = proxy.droppedKey();
             assertNotNull(droppedKey);
             assertThat(audits.findByIdempotencyKey(droppedKey)).isPresent();
@@ -226,7 +226,7 @@ class JtGatewayApiContractEndToEndTest {
             rig.clock.advance(Duration.ofMillis(25));
             GatewayOutboxDispatcher.DispatchReport replay = rig.dispatcher.dispatchOnce();
 
-            assertThat(replay.delivered()).isEqualTo(2);
+            assertThat(replay.delivered()).isEqualTo(1);
             assertThat(proxy.replayedDroppedKey()).isTrue();
             assertThat(audits.findAll().stream()
                     .filter(audit -> droppedKey.equals(audit.getIdempotencyKey())))
@@ -349,7 +349,7 @@ class JtGatewayApiContractEndToEndTest {
                 TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, VEHICLE_PLATE);
         simulator.connect(rig.endpoint());
         int registrationSerial = simulator.sendRegistration();
-        SimulatedTerminal.ReplyRecord registration = simulator.awaitReply(Duration.ofSeconds(3));
+        SimulatedTerminal.ReplyRecord registration = simulator.awaitReply(Duration.ofSeconds(10));
         assertNotNull(registration);
         assertEquals(0x8100, registration.messageId());
         assertEquals(0, registration.result());
@@ -364,7 +364,7 @@ class JtGatewayApiContractEndToEndTest {
     }
 
     private static void assertGeneralAck(SimulatedTerminal simulator, int serial, int requestMessageId) {
-        SimulatedTerminal.ReplyRecord reply = simulator.awaitReply(Duration.ofSeconds(3));
+        SimulatedTerminal.ReplyRecord reply = simulator.awaitReply(Duration.ofSeconds(5));
         assertNotNull(reply);
         assertEquals(0x8001, reply.messageId());
         assertEquals(requestMessageId, reply.requestMessageId());

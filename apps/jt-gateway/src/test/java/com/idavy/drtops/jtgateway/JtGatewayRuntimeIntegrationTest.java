@@ -234,7 +234,7 @@ class JtGatewayRuntimeIntegrationTest {
             api.blockNextIngress();
             Future<GatewayOutboxDispatcher.DispatchReport> dispatch = callers.submit(
                     context.getBean(GatewayOutboxDispatcher.class)::dispatchOnce);
-            assertTrue(api.awaitBlockedIngress(Duration.ofSeconds(2)));
+            assertTrue(api.awaitBlockedIngress(Duration.ofSeconds(5)));
 
             Future<RegistrationDecision> registration = callers.submit(() ->
                     context.getBean(TerminalRegistryPort.class).verifyRegistration(

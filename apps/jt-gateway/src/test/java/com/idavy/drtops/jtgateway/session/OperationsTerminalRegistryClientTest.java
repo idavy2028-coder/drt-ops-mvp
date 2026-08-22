@@ -60,9 +60,10 @@ class OperationsTerminalRegistryClientTest {
                 "****9012", "198.51.100.10:1234", "TOKEN_MISMATCH", NOW));
 
         assertEquals(1, repository.pendingCount());
+        assertTrue(repository.claimEligible(NOW, GatewayOutboxRepository.Priority.HIGH, 1).isEmpty(),
+                "session audits must not share the ordinary high-priority ingress lane");
         GatewayOutboxRepository.OutboxEntry pending = repository.find(
-                repository.claimEligible(NOW, GatewayOutboxRepository.Priority.HIGH, 1)
-                        .getFirst().idempotencyKey()).orElseThrow();
+                repository.claimSessionAudits(NOW, 1).getFirst().idempotencyKey()).orElseThrow();
         assertEquals(IngressKind.SESSION_AUDIT, pending.kind());
         assertEquals(pending.idempotencyKey().toString(),
                 mapper.readTree(pending.payloadJson()).required("idempotencyKey").asText());

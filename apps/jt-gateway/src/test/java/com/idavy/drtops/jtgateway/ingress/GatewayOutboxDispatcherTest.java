@@ -39,6 +39,8 @@ class GatewayOutboxDispatcherTest {
     private static final Instant NOW = Instant.parse("2026-08-12T05:00:00Z");
     private static final URI OPERATIONS_ENDPOINT =
             URI.create("http://operations.invalid/internal/v1/jt/ingress");
+    private static final URI AUDIT_ENDPOINT =
+            URI.create("http://operations.invalid/internal/v1/jt/audit-events");
     private static final String TEST_CREDENTIAL = "test-credential-not-a-secret";
 
     @Test
@@ -412,6 +414,53 @@ class GatewayOutboxDispatcherTest {
                 fixture.repository.find(first.idempotencyKey()).orElseThrow().lastErrorCode());
         assertTrue(client.operationsApiReachable());
         assertFalse(client.lastDeliverySuccessful());
+        server.verify();
+    }
+
+    @Test
+    void deliversSessionAuditIndependentlyWhenAttachmentMetadataIsRejected() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder)
+                .ignoreExpectOrder(true)
+                .build();
+        OperationsApiClient client = new OperationsApiClient(
+                builder, OPERATIONS_ENDPOINT, AUDIT_ENDPOINT, () -> TEST_CREDENTIAL, 1,
+                new OperationsApiStatus(Clock.fixed(NOW, ZoneOffset.UTC)));
+        var fixture = fixture(8, client);
+        GatewayIngressEnvelope attachment = envelope(4_102, IngressKind.ATTACHMENT_METADATA);
+        UUID auditKey = envelopeKey(4_103);
+        GatewayIngressEnvelope audit = new GatewayIngressEnvelope(
+                1, auditKey, IngressKind.SESSION_AUDIT, NOW.plusMillis(4_103),
+                "{\"eventType\":\"AUTHENTICATED\",\"result\":\"ACCEPTED\","
+                        + "\"reasonCode\":\"APPROVED\",\"occurredAt\":\"2026-08-12T05:00:00Z\","
+                        + "\"gatewayInstance\":\"gateway-test\"}");
+        fixture.buffer.append(attachment);
+        fixture.buffer.append(audit);
+        server.expect(requestTo(AUDIT_ENDPOINT.toString()))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.idempotencyKey").value(auditKey.toString()))
+                .andExpect(jsonPath("$.eventType").value("AUTHENTICATED"))
+                .andRespond(withSuccess("""
+                        {"data":{"idempotencyKey":"%s","status":"ACCEPTED"}}
+                        """.formatted(auditKey), org.springframework.http.MediaType.APPLICATION_JSON));
+        server.expect(requestTo(OPERATIONS_ENDPOINT.toString()))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$[0].idempotencyKey").value(attachment.idempotencyKey().toString()))
+                .andRespond(withSuccess("""
+                        {"data":[{"idempotencyKey":"%s","status":"REJECTED",
+                        "reasonCodes":["ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE"]}]}
+                        """.formatted(attachment.idempotencyKey()),
+                        org.springframework.http.MediaType.APPLICATION_JSON));
+
+        GatewayOutboxDispatcher.DispatchReport report = fixture.dispatcher.dispatchOnce();
+
+        assertEquals(2, report.attempted());
+        assertEquals(1, report.delivered());
+        assertEquals(1, report.retried());
+        assertEquals(GatewayOutboxRepository.DeliveryStatus.DELIVERED,
+                fixture.repository.find(auditKey).orElseThrow().status());
+        assertPending(fixture.repository, attachment.idempotencyKey(), 1,
+                NOW.plusSeconds(1), "API_ITEM_REJECTED");
         server.verify();
     }
 
