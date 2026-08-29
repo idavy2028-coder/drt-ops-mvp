@@ -22,6 +22,8 @@ import org.testcontainers.utility.DockerImageName;
 class DatabaseMigrationTest {
 
     private static final String POSTGIS_INTEGRATION_PROPERTY = "drt.integration.postgis";
+    private static final String COMPOSITE_ONBOARD_INTEGRATION_PROPERTY =
+            "drt.integration.composite-onboard";
     private static final Path MIGRATION_DIR = Path.of("src/main/resources/db/migration");
 
     @Test
@@ -138,6 +140,26 @@ class DatabaseMigrationTest {
         }
     }
 
+    @Test
+    void migrationsCreateCompositeOnboardTablesOnExplicitExternalPostgres() throws Exception {
+        Assumptions.assumeTrue(Boolean.getBoolean(COMPOSITE_ONBOARD_INTEGRATION_PROPERTY),
+                "composite onboard migration verification was not enabled");
+        String jdbcUrl = System.getProperty(
+                "drt.integration.composite-onboard.jdbc-url", "");
+        String username = System.getProperty(
+                "drt.integration.composite-onboard.username", "");
+        String password = System.getProperty(
+                "drt.integration.composite-onboard.password", "");
+        Assumptions.assumeTrue(
+                Boolean.getBoolean("drt.integration.composite-onboard.external-ephemeral")
+                        && "composite".equals(username)
+                        && jdbcUrl.matches(
+                                "jdbc:postgresql://(?:127\\.0\\.0\\.1|localhost):\\d+/composite_onboard"),
+                "requires an explicit empty loopback composite_onboard PostgreSQL database");
+
+        verifyMigrations(jdbcUrl, username, password);
+    }
+
     private static void verifyMigrations(String jdbcUrl, String username, String password) throws Exception {
         Flyway.configure()
                 .dataSource(jdbcUrl, username, password)
@@ -167,7 +189,13 @@ class DatabaseMigrationTest {
                 "roles",
                 "user_roles",
                 "refresh_tokens",
-                "vehicle_location_events");
+                "vehicle_location_events",
+                "onboard_systems",
+                "onboard_system_runtime_state",
+                "onboard_device_memberships",
+                "onboard_device_capabilities",
+                "onboard_device_protocol_profiles",
+                "onboard_device_role_assignments");
 
         Integer areaCount = jdbcTemplate.queryForObject("select count(*) from service_areas", Integer.class);
         Integer stopCount = jdbcTemplate.queryForObject("select count(*) from virtual_stops", Integer.class);
@@ -192,12 +220,12 @@ class DatabaseMigrationTest {
                     "coordinate_system", "standardized_address", "driver_reported_at",
                     "recorded_at", "recorded_by", "note", "correction_reason",
                     "corrects_event_id", "idempotency_key", "request_fingerprint", "snapshot_applied",
-                    "outside_service_area");
+                    "outside_service_area", "onboard_system_id", "source_role");
             assertColumns(connection, "vehicles",
                     "current_location_address", "current_location_source",
                     "current_location_coordinate_system", "current_location_reported_at",
                     "current_location_recorded_at", "current_location_event_id",
-                    "current_location_task_id");
+                    "current_location_task_id", "current_location_onboard_system_id");
             assertColumns(connection, "virtual_stops",
                     "address", "area_name", "coordinate_system", "source",
                     "verified_at", "verified_by", "updated_at");
