@@ -8,6 +8,7 @@ playwright-report/
 .venv/
 .pytest_cache/
 .tools/
+.tmp/
 __pycache__/
 
 # Local deployment and real-terminal material must never enter Git.
