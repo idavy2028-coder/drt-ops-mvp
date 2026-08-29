@@ -20,6 +20,10 @@ jt:
     service-credential:
       version: ${JT_GATEWAY_SERVICE_CREDENTIAL_VERSION:0}
       plaintext: ${JT_GATEWAY_SERVICE_CREDENTIAL_PLAINTEXT:}
+    registration-authentication:
+      compatibility-models: ${JT_GATEWAY_REGISTRATION_AUTHENTICATION_COMPATIBILITY_MODELS:}
+    registration-body-layout:
+      legacy-jt808-2019-identities-sha256: ${JT_GATEWAY_LEGACY_JT808_2019_REGISTRATION_IDENTITIES_SHA256:}
     http:
       connect-timeout-ms: ${JT_GATEWAY_HTTP_CONNECT_TIMEOUT_MS:2000}
       read-timeout-ms: ${JT_GATEWAY_HTTP_READ_TIMEOUT_MS:5000}

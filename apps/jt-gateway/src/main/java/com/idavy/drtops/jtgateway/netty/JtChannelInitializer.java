@@ -4,6 +4,9 @@ import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
 import com.idavy.drtops.jt.protocol.codec.Jt808FrameDecoder;
 import com.idavy.drtops.jt.protocol.codec.Jt808FrameEncoder;
 import com.idavy.drtops.jtgateway.session.RegistrationAuthenticationHandler;
+import com.idavy.drtops.jtgateway.session.RegistrationMaintenancePolicy;
+import com.idavy.drtops.jtgateway.session.PrivateVehicleIdentifierCapture;
+import com.idavy.drtops.jtgateway.session.RegistrationBodyLayoutPolicy;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.channel.Channel;
@@ -28,6 +31,9 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
     private final Duration maximumCongestion;
     private final ProtocolModuleRegistry protocolModuleRegistry;
     private final ChannelGroup acceptedChannels;
+    private final RegistrationMaintenancePolicy maintenancePolicy;
+    private final PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture;
+    private final RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy;
 
     public JtChannelInitializer(
             ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
@@ -50,7 +56,10 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                 lowWatermark,
                 maximumCongestion,
                 null,
-                null);
+                null,
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
     }
 
     public JtChannelInitializer(
@@ -75,7 +84,10 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                 lowWatermark,
                 maximumCongestion,
                 protocolModuleRegistry,
-                null);
+                null,
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
     }
 
     JtChannelInitializer(
@@ -90,6 +102,78 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
             Duration maximumCongestion,
             ProtocolModuleRegistry protocolModuleRegistry,
             ChannelGroup acceptedChannels) {
+        this(
+                admissionTracker,
+                registryPort,
+                sessionRegistry,
+                businessWorkers,
+                queuePressure,
+                clock,
+                highWatermark,
+                lowWatermark,
+                maximumCongestion,
+                protocolModuleRegistry,
+                acceptedChannels,
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    JtChannelInitializer(
+            ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            EventExecutorGroup businessWorkers,
+            IntSupplier queuePressure,
+            Clock clock,
+            int highWatermark,
+            int lowWatermark,
+            Duration maximumCongestion,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            ChannelGroup acceptedChannels,
+            RegistrationMaintenancePolicy maintenancePolicy) {
+        this(
+                admissionTracker, registryPort, sessionRegistry, businessWorkers, queuePressure,
+                clock, highWatermark, lowWatermark, maximumCongestion, protocolModuleRegistry,
+                acceptedChannels, maintenancePolicy, PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    JtChannelInitializer(
+            ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            EventExecutorGroup businessWorkers,
+            IntSupplier queuePressure,
+            Clock clock,
+            int highWatermark,
+            int lowWatermark,
+            Duration maximumCongestion,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            ChannelGroup acceptedChannels,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture) {
+        this(admissionTracker, registryPort, sessionRegistry, businessWorkers, queuePressure,
+                clock, highWatermark, lowWatermark, maximumCongestion, protocolModuleRegistry,
+                acceptedChannels, maintenancePolicy, privateVehicleIdentifierCapture,
+                RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    JtChannelInitializer(
+            ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            EventExecutorGroup businessWorkers,
+            IntSupplier queuePressure,
+            Clock clock,
+            int highWatermark,
+            int lowWatermark,
+            Duration maximumCongestion,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            ChannelGroup acceptedChannels,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
+            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy) {
         this.admissionTracker = java.util.Objects.requireNonNull(admissionTracker, "admissionTracker");
         this.registryPort = java.util.Objects.requireNonNull(registryPort, "registryPort");
         this.sessionRegistry = java.util.Objects.requireNonNull(sessionRegistry, "sessionRegistry");
@@ -101,6 +185,11 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
         this.maximumCongestion = java.util.Objects.requireNonNull(maximumCongestion, "maximumCongestion");
         this.protocolModuleRegistry = protocolModuleRegistry;
         this.acceptedChannels = acceptedChannels;
+        this.maintenancePolicy = java.util.Objects.requireNonNull(maintenancePolicy, "maintenancePolicy");
+        this.privateVehicleIdentifierCapture = java.util.Objects.requireNonNull(
+                privateVehicleIdentifierCapture, "privateVehicleIdentifierCapture");
+        this.registrationBodyLayoutPolicy = java.util.Objects.requireNonNull(
+                registrationBodyLayoutPolicy, "registrationBodyLayoutPolicy");
     }
 
     @Override
@@ -120,7 +209,8 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                         System::nanoTime));
         RegistrationAuthenticationHandler registrationAuthentication =
                 new RegistrationAuthenticationHandler(
-                        registryPort, sessionRegistry, clock, Duration.ofSeconds(30));
+                        registryPort, sessionRegistry, clock, Duration.ofSeconds(30), maintenancePolicy,
+                        privateVehicleIdentifierCapture, registrationBodyLayoutPolicy);
         channel.pipeline().addLast(
                 businessWorkers,
                 "registrationAuthentication",

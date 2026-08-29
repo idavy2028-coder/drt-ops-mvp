@@ -11,7 +11,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.ZoneOffset;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
@@ -19,6 +18,7 @@ import java.util.UUID;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 /** HTTP adapter for the operations API terminal registry; all decisions fail closed. */
 public final class OperationsTerminalRegistryClient implements TerminalRegistryPort {
@@ -29,6 +29,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     private final int credentialVersion;
     private final String gatewayInstance;
     private final SecureRandom secureRandom;
+    private final RegistrationAuthenticationTokenPolicy authenticationTokens;
     private final OperationsApiStatus apiStatus;
     private final GatewayIngressBuffer auditBuffer;
     private final ObjectMapper objectMapper;
@@ -43,6 +44,22 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             OperationsApiStatus apiStatus,
             GatewayIngressBuffer auditBuffer,
             ObjectMapper objectMapper) {
+        this(builder, baseUrl, credential, credentialVersion, gatewayInstance, secureRandom,
+                apiStatus, auditBuffer, objectMapper,
+                RegistrationAuthenticationTokenPolicy.fromCommaSeparated(""));
+    }
+
+    public OperationsTerminalRegistryClient(
+            RestClient.Builder builder,
+            String baseUrl,
+            String credential,
+            int credentialVersion,
+            String gatewayInstance,
+            SecureRandom secureRandom,
+            OperationsApiStatus apiStatus,
+            GatewayIngressBuffer auditBuffer,
+            ObjectMapper objectMapper,
+            RegistrationAuthenticationTokenPolicy authenticationTokens) {
         this.client = Objects.requireNonNull(builder, "builder").baseUrl(baseUrl).build();
         this.credential = requireText(credential, "credential");
         if (credentialVersion < 1) {
@@ -51,6 +68,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
         this.credentialVersion = credentialVersion;
         this.gatewayInstance = requireText(gatewayInstance, "gatewayInstance");
         this.secureRandom = Objects.requireNonNull(secureRandom, "secureRandom");
+        this.authenticationTokens = Objects.requireNonNull(authenticationTokens, "authenticationTokens");
         this.apiStatus = Objects.requireNonNull(apiStatus, "apiStatus");
         this.auditBuffer = Objects.requireNonNull(auditBuffer, "auditBuffer");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
@@ -59,6 +77,7 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     @Override
     public RegistrationDecision verifyRegistration(TerminalRegistrationIdentity identity) {
         Objects.requireNonNull(identity, "identity");
+        RegistrationStage stage = RegistrationStage.VERIFY;
         try {
             RegistrationResponse response = authenticatedPost("/internal/jt-gateway/registrations/verify")
                     .body(new RegistrationRequest(
@@ -74,15 +93,14 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                 } else {
                     apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
                 }
-                return RegistrationDecision.rejected(RegistrationRejection.NOT_PREPROVISIONED);
+                return RegistrationDecision.rejected(RegistrationRejection.fromReasonCode(
+                        approved == null ? null : approved.reasonCode()));
             }
             apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
-            byte[] entropy = new byte[32];
-            secureRandom.nextBytes(entropy);
-            byte[] token = Base64.getUrlEncoder().withoutPadding().encode(entropy);
-            Arrays.fill(entropy, (byte) 0);
+            byte[] token = authenticationTokens.issue(identity.model(), secureRandom);
             String digest = sha256(token);
             try {
+                stage = RegistrationStage.COMPLETE;
                 authenticatedPost("/internal/jt-gateway/registrations/{terminalId}/complete", approved.terminalId())
                         .body(new RegistrationCompletionRequest(
                                 approved.tokenVersion(), digest, gatewayInstance))
@@ -96,10 +114,52 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             } finally {
                 Arrays.fill(token, (byte) 0);
             }
-        } catch (RestClientException | IllegalArgumentException unavailable) {
+        } catch (RestClientResponseException responseFailure) {
+            apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_" + stage.name());
+            return RegistrationDecision.rejected(classifyRegistrationHttpFailure(
+                    stage, responseFailure.getStatusCode().value()));
+        } catch (RestClientException unavailable) {
+            apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "REGISTRATION");
+            return RegistrationDecision.rejected(registrationUnavailable(stage));
+        } catch (IllegalArgumentException invalidResponse) {
             apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "REGISTRATION");
             return RegistrationDecision.rejected(RegistrationRejection.NOT_PREPROVISIONED);
         }
+    }
+
+    private static RegistrationRejection classifyRegistrationHttpFailure(
+            RegistrationStage stage, int statusCode) {
+        if (stage == RegistrationStage.VERIFY && statusCode == 400) {
+            return RegistrationRejection.REGISTRATION_VERIFY_BAD_REQUEST;
+        }
+        if (stage == RegistrationStage.VERIFY && (statusCode == 401 || statusCode == 403)) {
+            return RegistrationRejection.REGISTRATION_VERIFY_UNAUTHORIZED;
+        }
+        if (stage == RegistrationStage.VERIFY && statusCode == 409) {
+            return RegistrationRejection.REGISTRATION_VERIFY_CONFLICT;
+        }
+        if (stage == RegistrationStage.VERIFY && statusCode >= 500) {
+            return RegistrationRejection.REGISTRATION_VERIFY_UNAVAILABLE;
+        }
+        if (stage == RegistrationStage.COMPLETE && statusCode == 400) {
+            return RegistrationRejection.REGISTRATION_COMPLETE_BAD_REQUEST;
+        }
+        if (stage == RegistrationStage.COMPLETE && (statusCode == 401 || statusCode == 403)) {
+            return RegistrationRejection.REGISTRATION_COMPLETE_UNAUTHORIZED;
+        }
+        if (stage == RegistrationStage.COMPLETE && statusCode == 409) {
+            return RegistrationRejection.REGISTRATION_COMPLETE_CONFLICT;
+        }
+        if (stage == RegistrationStage.COMPLETE && statusCode >= 500) {
+            return RegistrationRejection.REGISTRATION_COMPLETE_UNAVAILABLE;
+        }
+        return RegistrationRejection.NOT_PREPROVISIONED;
+    }
+
+    private static RegistrationRejection registrationUnavailable(RegistrationStage stage) {
+        return stage == RegistrationStage.VERIFY
+                ? RegistrationRejection.REGISTRATION_VERIFY_UNAVAILABLE
+                : RegistrationRejection.REGISTRATION_COMPLETE_UNAVAILABLE;
     }
 
     @Override
@@ -212,4 +272,9 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             java.time.OffsetDateTime occurredAt, String gatewayInstance) { }
 
     private record AuditMapping(String eventType, String result) { }
+
+    private enum RegistrationStage {
+        VERIFY,
+        COMPLETE
+    }
 }

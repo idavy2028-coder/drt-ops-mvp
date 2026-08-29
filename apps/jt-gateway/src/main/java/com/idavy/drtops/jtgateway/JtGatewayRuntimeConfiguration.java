@@ -12,6 +12,10 @@ import com.idavy.drtops.jtgateway.ingress.OperationsApiHealthProbe;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiStatus;
 import com.idavy.drtops.jtgateway.netty.JtGatewayServer;
 import com.idavy.drtops.jtgateway.session.OperationsTerminalRegistryClient;
+import com.idavy.drtops.jtgateway.session.RegistrationAuthenticationTokenPolicy;
+import com.idavy.drtops.jtgateway.session.RegistrationBodyLayoutPolicy;
+import com.idavy.drtops.jtgateway.session.RegistrationMaintenancePolicy;
+import com.idavy.drtops.jtgateway.session.PrivateVehicleIdentifierCapture;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.micrometer.core.instrument.Gauge;
@@ -21,10 +25,12 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.net.http.HttpClient;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.Locale;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
@@ -48,6 +54,67 @@ public class JtGatewayRuntimeConfiguration {
     @Bean
     Clock gatewayClock() {
         return Clock.systemUTC();
+    }
+
+    @Bean
+    RegistrationAuthenticationTokenPolicy registrationAuthenticationTokenPolicy(
+            Environment environment) {
+        return RegistrationAuthenticationTokenPolicy.fromCommaSeparated(environment.getProperty(
+                "jt.gateway.registration-authentication.compatibility-models", ""));
+    }
+
+    @Bean
+    RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy(Environment environment) {
+        return RegistrationBodyLayoutPolicy.fromCommaSeparated(environment.getProperty(
+                "jt.gateway.registration-body-layout.legacy-jt808-2019-identities-sha256", ""));
+    }
+
+    @Bean
+    RegistrationMaintenancePolicy registrationMaintenancePolicy(
+            Environment environment, Clock gatewayClock) {
+        boolean enabled = environment.getProperty(
+                "jt.gateway.registration-maintenance.enabled", Boolean.class, false);
+        if (!enabled) {
+            return RegistrationMaintenancePolicy.disabled();
+        }
+        String expiresAt = requiredMaintenanceProperty(
+                environment, "jt.gateway.registration-maintenance.expires-at");
+        Instant expiry;
+        try {
+            expiry = Instant.parse(expiresAt);
+        } catch (DateTimeParseException malformed) {
+            throw new IllegalArgumentException("registration maintenance expiry is invalid", malformed);
+        }
+        return RegistrationMaintenancePolicy.enabled(
+                requiredMaintenanceProperty(
+                        environment, "jt.gateway.registration-maintenance.allowed-identity-sha256"),
+                environment.getProperty(
+                        "jt.gateway.registration-maintenance.known-identity-fingerprints", ""),
+                expiry,
+                Duration.ofSeconds(integer(
+                        environment,
+                        "jt.gateway.registration-maintenance.audit-interval-seconds",
+                        60)),
+                gatewayClock);
+    }
+
+    @Bean
+    PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture(Environment environment) {
+        boolean enabled = environment.getProperty(
+                "jt.gateway.private-vehicle-identifier-capture.enabled", Boolean.class, false);
+        if (!enabled) {
+            return PrivateVehicleIdentifierCapture.disabled();
+        }
+        if (!environment.getProperty(
+                "jt.gateway.registration-maintenance.enabled", Boolean.class, false)) {
+            throw new IllegalArgumentException(
+                    "private vehicle identifier capture requires registration maintenance");
+        }
+        Path root = Path.of(requiredProperty(
+                environment, "jt.gateway.private-vehicle-identifier-capture.root"));
+        Path output = Path.of(requiredProperty(
+                environment, "jt.gateway.private-vehicle-identifier-capture.path"));
+        return PrivateVehicleIdentifierCapture.enabled(root, output);
     }
 
     @Bean
@@ -103,11 +170,12 @@ public class JtGatewayRuntimeConfiguration {
             HttpTimeoutConfiguration timeouts,
             OperationsApiStatus apiStatus,
             GatewayIngressBuffer auditBuffer,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            RegistrationAuthenticationTokenPolicy authenticationTokens) {
         return new OperationsTerminalRegistryClient(
                 boundedBuilder(builder, timeouts), service.baseUrl().toString(), service.credential(),
                 service.credentialVersion(), service.gatewayInstance(), new SecureRandom(), apiStatus,
-                auditBuffer, objectMapper);
+                auditBuffer, objectMapper, authenticationTokens);
     }
 
     @Bean
@@ -179,6 +247,9 @@ public class JtGatewayRuntimeConfiguration {
             TerminalRegistryPort registryPort,
             TerminalSessionRegistry sessions,
             ProtocolModuleRegistry protocolModules,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
+            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy,
             Environment environment) {
         try {
             InetAddress address = InetAddress.getByName(
@@ -193,7 +264,9 @@ public class JtGatewayRuntimeConfiguration {
                     integer(environment, "jt.gateway.tcp.business-queue-low-watermark", 400),
                     Duration.ofMillis(integer(
                             environment, "jt.gateway.tcp.maximum-congestion-ms", 5000)));
-            return new JtGatewayServer(configuration, registryPort, sessions, protocolModules);
+            return new JtGatewayServer(
+                    configuration, registryPort, sessions, protocolModules, maintenancePolicy,
+                    privateVehicleIdentifierCapture, registrationBodyLayoutPolicy);
         } catch (UnknownHostException exception) {
             throw new IllegalArgumentException("JT gateway bind address is invalid", exception);
         }
@@ -228,6 +301,8 @@ public class JtGatewayRuntimeConfiguration {
             ObjectProvider<OperationsApiClient> apiClient,
             OperationsApiStatus apiStatus,
             Clock gatewayClock,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
             Environment environment) {
         return () -> {
             boolean enabled = environment.getProperty(
@@ -256,8 +331,12 @@ public class JtGatewayRuntimeConfiguration {
                     : operations == null || !operations.deliveryAttempted() ? "UNKNOWN"
                     : operations.lastDeliverySuccessful();
             int maximumAge = integer(environment, "jt.gateway.health.max-unresolved-age-seconds", 300);
+            RegistrationMaintenancePolicy.Snapshot maintenance = maintenancePolicy.snapshot();
+            PrivateVehicleIdentifierCapture.Snapshot privateCapture =
+                    privateVehicleIdentifierCapture.snapshot();
             boolean up = writable
                     && (!enabled || tcpListening && api.state() == OperationsApiStatus.State.UP)
+                    && !maintenance.expired()
                     && outbox.deadLetter() == 0
                     && outbox.oldestUnresolvedAgeSeconds() <= maximumAge;
             Health.Builder health = up ? Health.up() : Health.down();
@@ -278,6 +357,25 @@ public class JtGatewayRuntimeConfiguration {
                     .withDetail("outboxDelivering", outbox.delivering())
                     .withDetail("outboxDeadLetter", outbox.deadLetter())
                     .withDetail("oldestUnresolvedAgeSeconds", outbox.oldestUnresolvedAgeSeconds())
+                    .withDetail("registrationMaintenanceEnabled", maintenance.enabled())
+                    .withDetail("registrationMaintenanceExpired", maintenance.expired())
+                    .withDetail("registrationMaintenanceAllowedAttemptCount",
+                            maintenance.allowedAttemptCount())
+                    .withDetail("registrationMaintenanceBlockedAttemptCount",
+                            maintenance.blockedAttemptCount())
+                    .withDetail("registrationMaintenanceBlockedIdentityCount",
+                            maintenance.blockedIdentityCount())
+                    .withDetail("registrationMaintenanceSuppressedAuditCount",
+                            maintenance.suppressedAuditCount())
+                    .withDetail("registrationMaintenanceFingerprintObservations",
+                            maintenance.fingerprintObservations())
+                    .withDetail("privateVehicleIdentifierCaptureEnabled", privateCapture.enabled())
+                    .withDetail("privateVehicleIdentifierCaptured", privateCapture.captured())
+                    .withDetail("privateVehicleIdentifierCaptureAlias", privateCapture.alias())
+                    .withDetail("privateVehicleIdentifierCharacterCount",
+                            privateCapture.characterCount())
+                    .withDetail("privateVehicleIdentifierGbkByteCount",
+                            privateCapture.gbkByteCount())
                     .build();
         };
     }
@@ -413,6 +511,22 @@ public class JtGatewayRuntimeConfiguration {
         Integer value = environment.getProperty(name, Integer.class, defaultValue);
         if (value == null || value < 0) {
             throw new IllegalArgumentException(name + " must be non-negative");
+        }
+        return value;
+    }
+
+    private static String requiredMaintenanceProperty(Environment environment, String name) {
+        String value = environment.getProperty(name);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " must be configured when maintenance is enabled");
+        }
+        return value;
+    }
+
+    private static String requiredProperty(Environment environment, String name) {
+        String value = environment.getProperty(name);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " must be configured");
         }
         return value;
     }

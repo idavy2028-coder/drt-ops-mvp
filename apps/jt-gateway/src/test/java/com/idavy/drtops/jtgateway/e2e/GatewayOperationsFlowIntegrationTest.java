@@ -48,6 +48,8 @@ class GatewayOperationsFlowIntegrationTest {
     @Test
     void deliversFullJourneyWithAlarmsAndAttachmentMetadataAheadOfLocationBacklog() throws Exception {
         try (GatewayTestRig rig = new GatewayTestRig(tempDir, true)) {
+            // Dedicated performance gates own production P95/P99; this functional E2E gives
+            // Windows file-backed H2 scheduling room while still failing missing/error replies within 5s.
             ScenarioReport report = ScenarioRunner.run(Scenario.parse("""
                     {
                       "scenario": "gateway-full-journey",
@@ -56,10 +58,10 @@ class GatewayOperationsFlowIntegrationTest {
                         {"action": "connect"},
                         {"action": "register"},
                         {"action": "authenticate"},
-                        {"action": "burst", "message": "position", "count": 20, "intervalMillis": 2},
-                        {"action": "activeSafetyAlarm", "sampleId": "S01"},
-                        {"action": "attachmentInfo", "sampleId": "M01"},
-                        {"action": "fileUploadCompleteNotification", "sampleId": "A06"},
+                        {"action": "burst", "message": "position", "count": 20, "intervalMillis": 2, "timeoutMillis": 5000},
+                        {"action": "activeSafetyAlarm", "sampleId": "S01", "timeoutMillis": 5000},
+                        {"action": "attachmentInfo", "sampleId": "M01", "timeoutMillis": 5000},
+                        {"action": "fileUploadCompleteNotification", "sampleId": "A06", "timeoutMillis": 5000},
                         {"action": "disconnect"}
                       ]
                     }

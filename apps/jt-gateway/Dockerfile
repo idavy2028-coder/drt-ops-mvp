@@ -7,7 +7,6 @@ COPY libs/jt-protocol/pom.xml libs/jt-protocol/pom.xml
 COPY apps/jt-gateway/pom.xml apps/jt-gateway/pom.xml
 COPY apps/api/pom.xml apps/api/pom.xml
 COPY tools/jt-terminal-simulator/pom.xml tools/jt-terminal-simulator/pom.xml
-RUN mvn -q -pl apps/jt-gateway -am dependency:go-offline
 
 COPY libs/jt-protocol/src libs/jt-protocol/src
 COPY apps/jt-gateway/src apps/jt-gateway/src

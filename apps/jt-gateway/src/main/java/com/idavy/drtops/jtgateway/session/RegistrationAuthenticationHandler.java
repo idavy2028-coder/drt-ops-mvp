@@ -25,12 +25,17 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
     private static final int REGISTRATION_MESSAGE_ID = 0x0100;
     private static final int AUTHENTICATION_MESSAGE_ID = 0x0102;
     private static final int HEARTBEAT_MESSAGE_ID = 0x0002;
+    private static final String PRIVATE_CAPTURE_CONFIGURATION_INVALID_REASON =
+            "PRIVATE_CAPTURE_CONFIGURATION_INVALID";
     private static final AtomicInteger PLATFORM_SERIAL = new AtomicInteger();
 
     private final TerminalRegistryPort registryPort;
     private final TerminalSessionRegistry sessionRegistry;
     private final Clock clock;
     private final Duration authenticationWindow;
+    private final RegistrationMaintenancePolicy maintenancePolicy;
+    private final PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture;
+    private final RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy;
     private TerminalSession session;
     private String observedTerminalAlias = "unknown";
 
@@ -39,10 +44,51 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             TerminalSessionRegistry sessionRegistry,
             Clock clock,
             Duration authenticationWindow) {
+        this(registryPort, sessionRegistry, clock, authenticationWindow,
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    public RegistrationAuthenticationHandler(
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            Clock clock,
+            Duration authenticationWindow,
+            RegistrationMaintenancePolicy maintenancePolicy) {
+        this(registryPort, sessionRegistry, clock, authenticationWindow, maintenancePolicy,
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    public RegistrationAuthenticationHandler(
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            Clock clock,
+            Duration authenticationWindow,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture) {
+        this(registryPort, sessionRegistry, clock, authenticationWindow, maintenancePolicy,
+                privateVehicleIdentifierCapture, RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    public RegistrationAuthenticationHandler(
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            Clock clock,
+            Duration authenticationWindow,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
+            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy) {
         this.registryPort = java.util.Objects.requireNonNull(registryPort, "registryPort");
         this.sessionRegistry = java.util.Objects.requireNonNull(sessionRegistry, "sessionRegistry");
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
         this.authenticationWindow = java.util.Objects.requireNonNull(authenticationWindow, "authenticationWindow");
+        this.maintenancePolicy = java.util.Objects.requireNonNull(maintenancePolicy, "maintenancePolicy");
+        this.privateVehicleIdentifierCapture = java.util.Objects.requireNonNull(
+                privateVehicleIdentifierCapture, "privateVehicleIdentifierCapture");
+        this.registrationBodyLayoutPolicy = java.util.Objects.requireNonNull(
+                registrationBodyLayoutPolicy, "registrationBodyLayoutPolicy");
     }
 
     @Override
@@ -132,26 +178,136 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
     }
 
     private void handleRegistration(ChannelHandlerContext context, Jt808Frame frame) {
-        RegistrationDecision decision;
-        try {
-            decision = registryPort.verifyRegistration(parseRegistration(frame));
-        } catch (IllegalArgumentException exception) {
-            decision = RegistrationDecision.rejected(RegistrationRejection.MALFORMED_REGISTRATION);
-        }
-        if (!decision.approved()) {
-            writeRegistrationReply(context, frame.header(), decision.rejection().protocolResult(), null);
+        RegistrationMaintenancePolicy.Evaluation maintenance = maintenancePolicy.evaluate(
+                frame.header().protocolVersion(), frame.header().terminalIdentity());
+        if (!maintenance.allowed()) {
+            if (maintenance.auditPending()) {
+                release(frame);
+                session.close();
+                return;
+            }
+            try {
+                if (maintenance.auditRequired()) {
+                    audit(context, SessionAuditType.REGISTRATION_REJECTED, maintenance.reasonCode());
+                    maintenancePolicy.auditPersisted(maintenance);
+                }
+            } catch (RuntimeException exception) {
+                maintenancePolicy.auditPersistenceFailed(maintenance);
+                release(frame);
+                session.close();
+                throw exception;
+            }
+            writeRegistrationReply(context, frame.header(), 1, null);
             release(frame);
-            audit(context, SessionAuditType.REGISTRATION_REJECTED, decision.rejection().name());
             session.close();
             return;
         }
+        TerminalRegistrationIdentity identity;
+        try {
+            identity = parseRegistration(frame);
+        } catch (RegistrationBodyTooShortException exception) {
+            rejectRegistration(
+                    context,
+                    frame,
+                    RegistrationRejection.MALFORMED_REGISTRATION,
+                    exception.safeReasonCode());
+            return;
+        } catch (IllegalArgumentException exception) {
+            rejectRegistration(
+                    context,
+                    frame,
+                    RegistrationRejection.MALFORMED_REGISTRATION,
+                    null);
+            return;
+        }
 
+        RegistrationRejection invalidField = invalidRegistrationField(identity);
+        if (invalidField != null) {
+            rejectRegistration(context, frame, invalidField, null);
+            return;
+        }
+
+        RegistrationDecision decision;
+        try {
+            decision = registryPort.verifyRegistration(identity);
+        } catch (RuntimeException exception) {
+            throw closeOnRegistrationInfrastructureFailure(frame, exception);
+        }
+        if (decision.approved()
+                || decision.rejection() == RegistrationRejection.VEHICLE_IDENTIFIER_MISMATCH) {
+            try {
+                privateVehicleIdentifierCapture.capture(
+                        maintenance.alias(), identity.vehicleIdentifier());
+            } catch (IllegalArgumentException exception) {
+                rejectRegistration(
+                        context,
+                        frame,
+                        RegistrationRejection.MALFORMED_REGISTRATION,
+                        PRIVATE_CAPTURE_CONFIGURATION_INVALID_REASON);
+                return;
+            } catch (RuntimeException exception) {
+                throw closeOnRegistrationInfrastructureFailure(frame, exception);
+            }
+        }
+        if (!decision.approved()) {
+            rejectRegistration(context, frame, decision.rejection(), null);
+            return;
+        }
+
+        try {
+            audit(context, SessionAuditType.REGISTRATION_ACCEPTED, "APPROVED",
+                    decision.terminalId(), observedTerminalAlias);
+        } catch (RuntimeException exception) {
+            throw closeOnRegistrationInfrastructureFailure(frame, exception);
+        }
         session.registrationAccepted(
                 decision.terminalId(), decision.vehicleId(), decision.sourceCoordinateSystem(), decision.tokenVersion(),
                 frame.header().terminalIdentity(), decision.activeSafetyStandard(), decision.activeSafetyModules());
         writeRegistrationReply(context, frame.header(), 0, decision.authenticationToken());
         release(frame);
-        audit(context, SessionAuditType.REGISTRATION_ACCEPTED, "APPROVED");
+    }
+
+    private void rejectRegistration(
+            ChannelHandlerContext context,
+            Jt808Frame frame,
+            RegistrationRejection rejection,
+            String auditReasonOverride) {
+        try {
+            audit(context, SessionAuditType.REGISTRATION_REJECTED,
+                    auditReasonOverride == null ? rejection.name() : auditReasonOverride);
+        } catch (RuntimeException exception) {
+            throw closeOnRegistrationInfrastructureFailure(frame, exception);
+        }
+        writeRegistrationReply(context, frame.header(), rejection.protocolResult(), null);
+        release(frame);
+        session.close();
+    }
+
+    private RuntimeException closeOnRegistrationInfrastructureFailure(
+            Jt808Frame frame,
+            RuntimeException exception) {
+        release(frame);
+        session.close();
+        return exception;
+    }
+
+    private static RegistrationRejection invalidRegistrationField(TerminalRegistrationIdentity identity) {
+        if (identity.terminalNumber().isBlank()) {
+            return RegistrationRejection.REGISTRATION_TERMINAL_PHONE_EMPTY;
+        }
+        if (identity.manufacturerId().isBlank()) {
+            return RegistrationRejection.REGISTRATION_MANUFACTURER_EMPTY;
+        }
+        if (identity.model().isBlank()) {
+            return RegistrationRejection.REGISTRATION_MODEL_EMPTY;
+        }
+        if (identity.terminalCode().isBlank()) {
+            return RegistrationRejection.REGISTRATION_TERMINAL_CODE_EMPTY;
+        }
+        if (identity.vehicleIdentifier().isBlank()) {
+            return RegistrationRejection.REGISTRATION_VEHICLE_IDENTIFIER_EMPTY;
+        }
+        return null;
     }
 
     private void handleAuthentication(ChannelHandlerContext context, Jt808Frame frame) {
@@ -163,30 +319,47 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             try {
                 decision = registryPort.verifyAuthentication(
                         session.terminalId(), session.tokenVersion(), sha256(token));
+            } catch (RuntimeException exception) {
+                throw closeOnAuthenticationInfrastructureFailure(frame, exception);
             } finally {
                 java.util.Arrays.fill(token, (byte) 0);
             }
         }
 
         if (!decision.approved()) {
+            int nextFailureCount = session.authenticationFailures() + 1;
+            try {
+                audit(context, SessionAuditType.AUTHENTICATION_REJECTED, decision.rejection().name());
+                if (nextFailureCount >= 3) {
+                    audit(context, SessionAuditType.AUTHENTICATION_LOCKED, "THREE_CONSECUTIVE_FAILURES");
+                }
+            } catch (RuntimeException exception) {
+                throw closeOnAuthenticationInfrastructureFailure(frame, exception);
+            }
             int failures = session.recordAuthenticationFailure();
             writeGeneralReply(context, frame.header(), 1);
             release(frame);
-            audit(context, SessionAuditType.AUTHENTICATION_REJECTED, decision.rejection().name());
             if (failures >= 3) {
-                audit(context, SessionAuditType.AUTHENTICATION_LOCKED, "THREE_CONSECUTIVE_FAILURES");
                 session.close();
             }
             return;
         }
 
+        try {
+            audit(context, SessionAuditType.AUTHENTICATION_ACCEPTED, "APPROVED");
+        } catch (RuntimeException exception) {
+            throw closeOnAuthenticationInfrastructureFailure(frame, exception);
+        }
         session.authenticated(clock.instant());
+        try {
+            sessionRegistry.claim(session, previous ->
+                    audit(context, SessionAuditType.SESSION_TAKEN_OVER,
+                            "PREVIOUS_CONNECTION_REPLACED"));
+        } catch (RuntimeException exception) {
+            throw closeOnAuthenticationInfrastructureFailure(frame, exception);
+        }
         writeGeneralReply(context, frame.header(), 0);
         release(frame);
-        sessionRegistry.claim(session).ifPresent(previous ->
-                audit(context, SessionAuditType.SESSION_TAKEN_OVER,
-                        "PREVIOUS_CONNECTION_REPLACED"));
-        audit(context, SessionAuditType.AUTHENTICATION_ACCEPTED, "APPROVED");
     }
 
     private void handleAuthenticated(ChannelHandlerContext context, Jt808Frame frame) {
@@ -221,7 +394,16 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         int terminalCodeLength = version2019 ? 30 : 7;
         int minimum = 4 + manufacturerLength + modelLength + terminalCodeLength + 1;
         if (body.readableBytes() < minimum) {
-            throw new IllegalArgumentException("registration body is too short");
+            int legacyMinimum = 4 + 5 + 20 + 7 + 1;
+            if (!version2019 || body.readableBytes() < legacyMinimum
+                    || !registrationBodyLayoutPolicy.allowsLegacy2013Widths(
+                    frame.header().protocolVersion(), frame.header().terminalIdentity())) {
+                throw new RegistrationBodyTooShortException(
+                        frame.header().protocolVersion(), body.readableBytes());
+            }
+            manufacturerLength = 5;
+            modelLength = 20;
+            terminalCodeLength = 7;
         }
         body.skipBytes(4);
         String manufacturer = readFixed(body, manufacturerLength, StandardCharsets.US_ASCII);
@@ -232,6 +414,23 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         return new TerminalRegistrationIdentity(
                 frame.header().protocolVersion(), frame.header().terminalIdentity(), manufacturer,
                 model, terminalCode, vehicleIdentifier);
+    }
+
+    private static final class RegistrationBodyTooShortException extends IllegalArgumentException {
+        private final ProtocolVersion protocolVersion;
+        private final int bodyLength;
+
+        private RegistrationBodyTooShortException(
+                ProtocolVersion protocolVersion, int bodyLength) {
+            super("registration body is too short");
+            this.protocolVersion = protocolVersion;
+            this.bodyLength = bodyLength;
+        }
+
+        private String safeReasonCode() {
+            return "MALFORMED_REGISTRATION_BODY_TOO_SHORT_"
+                    + protocolVersion.name() + "_" + bodyLength;
+        }
     }
 
     private byte[] parseAuthenticationToken(Jt808Frame frame) {
@@ -286,6 +485,15 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         String terminalAlias = terminalId == null
                 ? observedTerminalAlias
                 : session.terminalAlias();
+        audit(context, type, reason, terminalId, terminalAlias);
+    }
+
+    private void audit(
+            ChannelHandlerContext context,
+            SessionAuditType type,
+            String reason,
+            UUID terminalId,
+            String terminalAlias) {
         registryPort.recordSessionAudit(new SessionAuditIngress(
                 type,
                 terminalId,
@@ -293,6 +501,15 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
                 remoteAddress(context),
                 reason,
                 clock.instant()));
+    }
+
+    private RuntimeException closeOnAuthenticationInfrastructureFailure(
+            Jt808Frame frame,
+            RuntimeException exception) {
+        release(frame);
+        sessionRegistry.remove(session);
+        session.close();
+        return exception;
     }
 
     private static String readFixed(ByteBuf body, int length, Charset charset) {

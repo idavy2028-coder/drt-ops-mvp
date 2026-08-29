@@ -2,6 +2,9 @@ package com.idavy.drtops.jtgateway.netty;
 
 import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
+import com.idavy.drtops.jtgateway.session.RegistrationMaintenancePolicy;
+import com.idavy.drtops.jtgateway.session.PrivateVehicleIdentifierCapture;
+import com.idavy.drtops.jtgateway.session.RegistrationBodyLayoutPolicy;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -36,6 +39,9 @@ public final class JtGatewayServer implements AutoCloseable {
     private final TerminalRegistryPort registryPort;
     private final TerminalSessionRegistry sessionRegistry;
     private final ProtocolModuleRegistry protocolModuleRegistry;
+    private final RegistrationMaintenancePolicy maintenancePolicy;
+    private final PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture;
+    private final RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy;
     private EventLoopGroup bossGroup;
     private EventLoopGroup ioGroup;
     private DefaultEventExecutorGroup businessWorkers;
@@ -46,7 +52,10 @@ public final class JtGatewayServer implements AutoCloseable {
             Configuration configuration,
             TerminalRegistryPort registryPort,
             TerminalSessionRegistry sessionRegistry) {
-        this(configuration, registryPort, sessionRegistry, null);
+        this(configuration, registryPort, sessionRegistry, null,
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
     }
 
     public JtGatewayServer(
@@ -54,10 +63,51 @@ public final class JtGatewayServer implements AutoCloseable {
             TerminalRegistryPort registryPort,
             TerminalSessionRegistry sessionRegistry,
             ProtocolModuleRegistry protocolModuleRegistry) {
+        this(configuration, registryPort, sessionRegistry, protocolModuleRegistry,
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    public JtGatewayServer(
+            Configuration configuration,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            RegistrationMaintenancePolicy maintenancePolicy) {
+        this(configuration, registryPort, sessionRegistry, protocolModuleRegistry,
+                maintenancePolicy, PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    public JtGatewayServer(
+            Configuration configuration,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture) {
+        this(configuration, registryPort, sessionRegistry, protocolModuleRegistry, maintenancePolicy,
+                privateVehicleIdentifierCapture, RegistrationBodyLayoutPolicy.disabled());
+    }
+
+    public JtGatewayServer(
+            Configuration configuration,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
+            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         this.registryPort = Objects.requireNonNull(registryPort, "registryPort");
         this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
         this.protocolModuleRegistry = protocolModuleRegistry;
+        this.maintenancePolicy = Objects.requireNonNull(maintenancePolicy, "maintenancePolicy");
+        this.privateVehicleIdentifierCapture = Objects.requireNonNull(
+                privateVehicleIdentifierCapture, "privateVehicleIdentifierCapture");
+        this.registrationBodyLayoutPolicy = Objects.requireNonNull(
+                registrationBodyLayoutPolicy, "registrationBodyLayoutPolicy");
     }
 
     public synchronized int start() {
@@ -86,7 +136,10 @@ public final class JtGatewayServer implements AutoCloseable {
                 configuration.businessQueueLowWatermark(),
                 configuration.maximumCongestion(),
                 protocolModuleRegistry,
-                acceptedChannels);
+                acceptedChannels,
+                maintenancePolicy,
+                privateVehicleIdentifierCapture,
+                registrationBodyLayoutPolicy);
         try {
             serverChannel = new ServerBootstrap()
                     .group(bossGroup, ioGroup)
