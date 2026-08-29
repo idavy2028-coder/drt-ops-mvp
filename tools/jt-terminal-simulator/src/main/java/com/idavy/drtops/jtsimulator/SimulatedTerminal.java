@@ -35,6 +35,9 @@ public final class SimulatedTerminal implements AutoCloseable {
     private final String identity;
     private final ProtocolVersion protocolVersion;
     private final String plateNumber;
+    private final String manufacturerId;
+    private final String model;
+    private final String terminalCode;
     private final String maskedAlias;
     private final AtomicInteger serialNumbers = new AtomicInteger();
     private final BlockingQueue<ReplyRecord> replies = new LinkedBlockingQueue<>();
@@ -46,12 +49,25 @@ public final class SimulatedTerminal implements AutoCloseable {
     private volatile byte[] registrationToken = new byte[0];
 
     public SimulatedTerminal(String identity, ProtocolVersion protocolVersion, String plateNumber) {
+        this(identity, protocolVersion, plateNumber, "SIMMF", "SIM-MODEL", "SIM0001");
+    }
+
+    public SimulatedTerminal(
+            String identity,
+            ProtocolVersion protocolVersion,
+            String plateNumber,
+            String manufacturerId,
+            String model,
+            String terminalCode) {
         if (identity == null || identity.isBlank()) {
             throw new IllegalArgumentException("identity is required");
         }
         this.identity = identity;
         this.protocolVersion = Objects.requireNonNull(protocolVersion, "protocolVersion");
         this.plateNumber = plateNumber == null ? "SIM-PLATE" : plateNumber;
+        this.manufacturerId = Objects.requireNonNull(manufacturerId, "manufacturerId");
+        this.model = Objects.requireNonNull(model, "model");
+        this.terminalCode = Objects.requireNonNull(terminalCode, "terminalCode");
         int visible = Math.min(4, identity.length());
         this.maskedAlias = "****" + identity.substring(identity.length() - visible);
     }
@@ -85,9 +101,9 @@ public final class SimulatedTerminal implements AutoCloseable {
         boolean versioned = protocolVersion.versionedHeader();
         ByteBuf body = Unpooled.buffer();
         body.writeShort(32).writeShort(1);
-        writeFixed(body, "SIMMF", versioned ? 11 : 5, StandardCharsets.US_ASCII);
-        writeFixed(body, "SIM-MODEL", versioned ? 30 : 20, StandardCharsets.US_ASCII);
-        writeFixed(body, "SIM0001", versioned ? 30 : 7, StandardCharsets.US_ASCII);
+        writeFixed(body, manufacturerId, versioned ? 11 : 5, StandardCharsets.US_ASCII);
+        writeFixed(body, model, versioned ? 30 : 20, StandardCharsets.US_ASCII);
+        writeFixed(body, terminalCode, versioned ? 30 : 7, StandardCharsets.US_ASCII);
         body.writeByte(1);
         body.writeCharSequence(plateNumber, Charset.forName("GBK"));
         byte[] bytes = new byte[body.readableBytes()];

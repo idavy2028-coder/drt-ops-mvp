@@ -109,7 +109,10 @@ public final class ScenarioRunner {
         SimulatedTerminal terminal = new SimulatedTerminal(
                 scenario.terminal().identity(),
                 scenario.terminal().protocolVersion(),
-                scenario.terminal().plateNumber());
+                scenario.terminal().plateNumber(),
+                scenario.terminal().manufacturerId(),
+                scenario.terminal().model(),
+                scenario.terminal().terminalCode());
         try {
             terminal.connect(endpoint);
         } catch (RuntimeException unreachable) {

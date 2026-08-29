@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.jt.protocol.codec.Jt808Frame;
 import com.idavy.drtops.jt.protocol.codec.Jt808FrameDecoder;
 import com.idavy.drtops.jt.protocol.codec.Jt808FrameEncoder;
@@ -36,6 +38,78 @@ import org.junit.jupiter.api.Test;
 class ScenarioRunnerTest {
     private static final String IDENTITY = "000000000001";
     private static final String MASKED_ALIAS = "****0001";
+
+    @Test
+    void parsesConfiguredRegistrationIdentityFields() {
+        Scenario scenario = Scenario.parse("""
+                {
+                  "scenario": "configured-registration-identity",
+                  "terminal": {
+                    "identity": "000000000002",
+                    "manufacturerId": "MFG02",
+                    "model": "MODEL-BETA",
+                    "terminalCode": "SIM0002"
+                  },
+                  "steps": [{"action": "connect"}]
+                }
+                """);
+
+        JsonNode terminal = new ObjectMapper().valueToTree(scenario.terminal());
+
+        assertEquals("MFG02", terminal.path("manufacturerId").asText());
+        assertEquals("MODEL-BETA", terminal.path("model").asText());
+        assertEquals("SIM0002", terminal.path("terminalCode").asText());
+    }
+
+    @Test
+    void emitsConfiguredRegistrationIdentityFieldsInReal0100Frame() throws Exception {
+        try (FakePlatform platform = new FakePlatform()) {
+            ScenarioReport report = ScenarioRunner.run(Scenario.parse("""
+                    {
+                      "scenario": "configured-registration-frame",
+                      "terminal": {
+                        "identity": "000000000002",
+                        "manufacturerId": "MFG02",
+                        "model": "MODEL-BETA",
+                        "terminalCode": "SIM0002",
+                        "plateNumber": "SIM-B02"
+                      },
+                      "steps": [
+                        {"action": "connect"},
+                        {"action": "register"},
+                        {"action": "disconnect"}
+                      ]
+                    }
+                    """), platform.endpoint());
+
+            assertTrue(report.allPassed(), report::asText);
+            assertEquals(
+                    List.of(new RegistrationIdentity("MFG02", "MODEL-BETA", "SIM0002")),
+                    platform.registrationIdentities());
+        }
+    }
+
+    @Test
+    void keepsLegacyRegistrationIdentityDefaultsWhenFieldsAreAbsent() throws Exception {
+        try (FakePlatform platform = new FakePlatform()) {
+            ScenarioReport report = ScenarioRunner.run(Scenario.parse("""
+                    {
+                      "scenario": "legacy-registration-defaults",
+                      "terminal": {"identity": "000000000001"},
+                      "steps": [
+                        {"action": "connect"},
+                        {"action": "register"},
+                        {"action": "disconnect"}
+                      ]
+                    }
+                    """), platform.endpoint());
+
+            assertTrue(report.allPassed(), report::asText);
+            assertEquals(
+                    List.of(new RegistrationIdentity("SIMMF", "SIM-MODEL", "SIM0001")),
+                    platform.registrationIdentities());
+        }
+    }
 
     @Test
     void runsFullProtocolJourneyAndMasksTerminalIdentity() throws Exception {
@@ -262,6 +336,7 @@ class ScenarioRunnerTest {
         private final ServerSocket serverSocket;
         private final ExecutorService threads = Executors.newCachedThreadPool();
         private final List<Integer> received = new CopyOnWriteArrayList<>();
+        private final List<RegistrationIdentity> registrationIdentities = new CopyOnWriteArrayList<>();
         private final List<String> events = new CopyOnWriteArrayList<>();
         private final AtomicInteger platformSerial = new AtomicInteger();
 
@@ -276,6 +351,10 @@ class ScenarioRunnerTest {
 
         List<Integer> receivedMessageIds() {
             return List.copyOf(received);
+        }
+
+        List<RegistrationIdentity> registrationIdentities() {
+            return List.copyOf(registrationIdentities);
         }
 
         List<String> events() {
@@ -307,6 +386,9 @@ class ScenarioRunnerTest {
                         Jt808Frame frame = (Jt808Frame) decoded;
                         try {
                             received.add(frame.header().messageId());
+                            if (frame.header().messageId() == 0x0100) {
+                                registrationIdentities.add(readRegistrationIdentity(frame));
+                            }
                             reply(socket, encoder, frame);
                         } finally {
                             if (frame.body().refCnt() > 0) {
@@ -322,6 +404,25 @@ class ScenarioRunnerTest {
                 decoder.finishAndReleaseAll();
                 encoder.finishAndReleaseAll();
             }
+        }
+
+        private RegistrationIdentity readRegistrationIdentity(Jt808Frame frame) {
+            ByteBuf body = frame.body().duplicate();
+            body.skipBytes(4);
+            return new RegistrationIdentity(
+                    readFixedAscii(body, 5),
+                    readFixedAscii(body, 20),
+                    readFixedAscii(body, 7));
+        }
+
+        private String readFixedAscii(ByteBuf body, int length) {
+            byte[] bytes = new byte[length];
+            body.readBytes(bytes);
+            int end = bytes.length;
+            while (end > 0 && bytes[end - 1] == 0) {
+                end--;
+            }
+            return new String(bytes, 0, end, StandardCharsets.US_ASCII);
         }
 
         private void reply(Socket socket, EmbeddedChannel encoder, Jt808Frame request) throws IOException {
@@ -377,5 +478,8 @@ class ScenarioRunnerTest {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    private record RegistrationIdentity(String manufacturerId, String model, String terminalCode) {
     }
 }

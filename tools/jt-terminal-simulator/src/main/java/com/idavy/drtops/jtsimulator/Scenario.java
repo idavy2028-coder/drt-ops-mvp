@@ -74,7 +74,10 @@ public final class Scenario {
                 ? "SIM-PLATE"
                 : terminalNode.get("plateNumber").asText();
         TerminalSpec terminal = new TerminalSpec(
-                terminalNode.get("identity").asText(), version, plate);
+                terminalNode.get("identity").asText(), version, plate,
+                textOrDefault(terminalNode, "manufacturerId", "SIMMF"),
+                textOrDefault(terminalNode, "model", "SIM-MODEL"),
+                textOrDefault(terminalNode, "terminalCode", "SIM0001"));
 
         List<Step> steps = new ArrayList<>(stepsNode.size());
         for (JsonNode stepNode : stepsNode) {
@@ -147,6 +150,11 @@ public final class Scenario {
         return value == null || value.isNull() ? null : value.asText();
     }
 
+    private static String textOrDefault(JsonNode node, String field, String defaultValue) {
+        String value = text(node, field);
+        return value == null ? defaultValue : value;
+    }
+
     private static Integer integer(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value == null || !value.isInt() ? null : value.intValue();
@@ -178,7 +186,13 @@ public final class Scenario {
         return List.copyOf(values);
     }
 
-    public record TerminalSpec(String identity, ProtocolVersion protocolVersion, String plateNumber) { }
+    public record TerminalSpec(
+            String identity,
+            ProtocolVersion protocolVersion,
+            String plateNumber,
+            String manufacturerId,
+            String model,
+            String terminalCode) { }
 
     public record Step(
             String action,
