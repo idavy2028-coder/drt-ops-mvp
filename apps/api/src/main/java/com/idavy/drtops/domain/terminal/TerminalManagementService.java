@@ -2,6 +2,7 @@ package com.idavy.drtops.domain.terminal;
 
 import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
+import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -103,7 +104,7 @@ public class TerminalManagementService {
         requireReason(command.reason());
         JtTerminal terminal = terminalRepository.saveAndFlush(JtTerminal.preset(
                 UUID.randomUUID(), command.terminalPhone(), command.terminalCode(),
-                command.manufacturerId(), command.model(), command.protocolVersion(),
+                command.manufacturerId(), command.model(), requireCanonicalProtocolVersion(command.protocolVersion()),
                 command.sourceCoordinateSystem(), command.actorId()));
         audit(terminal, "JT_TERMINAL_PRESET", command.actorId(), command.reason());
         return terminal;
@@ -136,6 +137,90 @@ public class TerminalManagementService {
     }
 
     @Transactional
+    public IdentityCorrectionResult correctIdentity(
+            String currentTerminalCode,
+            long expectedVersion,
+            IdentityCorrectionCommand command,
+            UUID actorId,
+            String reason) {
+        requireReason(reason);
+        JtTerminal terminal = requireVersion(currentTerminalCode, expectedVersion);
+        JtTerminalVehicleBinding binding = bindingRepository
+                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
+                .orElseThrow(() -> new TerminalConflictException("active terminal binding is required"));
+        Vehicle vehicle = vehicleRepository.findByIdForAssignment(binding.getVehicleId())
+                .orElseThrow(() -> new TerminalConflictException("bound vehicle is unavailable"));
+        String canonicalProtocol = requireCanonicalProtocolVersion(command.protocolVersion());
+        requireIdentityCorrectionEligible(terminal, vehicle);
+
+        List<String> changedFields = identityCorrectionChangedFields(
+                terminal, vehicle, command, canonicalProtocol);
+        requireIdentityCorrectionConflictsAbsent(
+                terminal, vehicle, command, canonicalProtocol, changedFields);
+        if (changedFields.isEmpty()) {
+            return new IdentityCorrectionResult(List.of(), terminal.getVersion());
+        }
+
+        String correctedPhone = correctedIdentityValue(
+                changedFields, "terminalPhone", terminal.getTerminalPhone(), command.terminalPhone());
+        String correctedCode = correctedIdentityValue(
+                changedFields, "terminalCode", terminal.getTerminalCode(), command.terminalCode());
+        String correctedManufacturer = correctedIdentityValue(
+                changedFields, "manufacturerId", terminal.getManufacturerId(), command.manufacturerId());
+        String correctedModel = correctedIdentityValue(
+                changedFields, "model", terminal.getModel(), command.model());
+        String correctedProtocol = correctedIdentityValue(
+                changedFields, "protocolVersion", terminal.getProtocolVersion(), canonicalProtocol);
+        String correctedCoordinateSystem = correctedIdentityValue(
+                changedFields, "sourceCoordinateSystem",
+                terminal.getSourceCoordinateSystem(), command.sourceCoordinateSystem());
+        String correctedVehicleIdentifier = correctedIdentityValue(
+                changedFields, "vehicleIdentifier", vehicle.getPlateNumber(), command.vehicleIdentifier());
+
+        try {
+            terminal.correctIdentity(
+                    correctedPhone, correctedCode, correctedManufacturer, correctedModel,
+                    correctedProtocol, correctedCoordinateSystem);
+            if (changedFields.contains("vehicleIdentifier")) {
+                vehicle.correctIdentifier(correctedVehicleIdentifier);
+            }
+        } catch (IllegalStateException exception) {
+            throw new TerminalConflictException(exception.getMessage());
+        }
+        vehicleRepository.saveAndFlush(vehicle);
+        terminal = terminalRepository.saveAndFlush(terminal);
+
+        String metadata = identityCorrectionMetadata(changedFields, terminal.getVersion());
+        audit(terminal, "JT_TERMINAL_IDENTITY_CORRECTED", actorId, reason, metadata);
+        if (changedFields.contains("vehicleIdentifier")) {
+            auditLogRepository.save(AuditLog.record(
+                    "VEHICLE", vehicle.getId(), "VEHICLE_IDENTIFIER_CORRECTED",
+                    "USER", actorId.toString(), reason, metadata));
+        }
+        return new IdentityCorrectionResult(changedFields, terminal.getVersion());
+    }
+
+    @Transactional(readOnly = true)
+    public IdentityCorrectionResult previewIdentityCorrection(
+            String currentTerminalCode,
+            long expectedVersion,
+            IdentityCorrectionCommand command) {
+        JtTerminal terminal = requireVersion(currentTerminalCode, expectedVersion);
+        JtTerminalVehicleBinding binding = bindingRepository
+                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
+                .orElseThrow(() -> new TerminalConflictException("active terminal binding is required"));
+        Vehicle vehicle = vehicleRepository.findById(binding.getVehicleId())
+                .orElseThrow(() -> new TerminalConflictException("bound vehicle is unavailable"));
+        String canonicalProtocol = requireCanonicalProtocolVersion(command.protocolVersion());
+        requireIdentityCorrectionEligible(terminal, vehicle);
+        List<String> changedFields = identityCorrectionChangedFields(
+                terminal, vehicle, command, canonicalProtocol);
+        requireIdentityCorrectionConflictsAbsent(
+                terminal, vehicle, command, canonicalProtocol, changedFields);
+        return new IdentityCorrectionResult(changedFields, terminal.getVersion());
+    }
+
+    @Transactional
     public JtTerminal completeRegistration(
             UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
         if (gatewayInstance == null || gatewayInstance.isBlank()) {
@@ -165,19 +250,33 @@ public class TerminalManagementService {
             String vehicleIdentifier,
             String protocolVersion) {
         JtTerminal terminal = terminalRepository.findByTerminalCode(terminalCode).orElse(null);
-        if (terminal == null || !registrationPending(terminal)
-                || terminal.getLastRegisteredAt() != null
-                || !secureEquals(terminal.getTerminalPhone(), terminalPhone)
-                || !secureEquals(terminal.getManufacturerId(), manufacturerId)
-                || !secureEquals(terminal.getModel(), model)
-                || !secureEquals(terminal.getProtocolVersion(), protocolVersion)) {
-            return RegistrationDecision.rejected();
+        if (terminal == null) {
+            return RegistrationDecision.rejected("TERMINAL_CODE_NOT_FOUND");
+        }
+        if (!registrationPending(terminal)) {
+            return RegistrationDecision.rejected("TERMINAL_STATE_INVALID");
+        }
+        if (terminal.getLastRegisteredAt() != null) {
+            return RegistrationDecision.rejected("TERMINAL_ALREADY_REGISTERED");
+        }
+        if (!terminalPhonesMatch(
+                terminal.getTerminalPhone(), terminalPhone, terminal.getProtocolVersion())) {
+            return RegistrationDecision.rejected("TERMINAL_PHONE_MISMATCH");
+        }
+        if (!secureEquals(terminal.getManufacturerId(), manufacturerId)) {
+            return RegistrationDecision.rejected("MANUFACTURER_MISMATCH");
+        }
+        if (!secureEquals(terminal.getModel(), model)) {
+            return RegistrationDecision.rejected("MODEL_MISMATCH");
+        }
+        if (!protocolVersionsMatch(terminal.getProtocolVersion(), protocolVersion)) {
+            return RegistrationDecision.rejected("PROTOCOL_VERSION_MISMATCH");
         }
         JtTerminalVehicleBinding binding = bindingRepository
                 .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
                 .orElse(null);
         if (binding == null) {
-            return RegistrationDecision.rejected();
+            return RegistrationDecision.rejected("BINDING_MISSING");
         }
         boolean vehicleMatches = vehicleRepository.findById(binding.getVehicleId())
                 .map(vehicle -> secureEquals(vehicle.getPlateNumber(), vehicleIdentifier))
@@ -186,7 +285,7 @@ public class TerminalManagementService {
                 ? new RegistrationDecision(true, terminal.getId(), binding.getVehicleId(),
                         terminal.getSourceCoordinateSystem(), terminal.getActiveSafetyStandard(),
                         parseActiveSafetyModules(terminal.getActiveSafetyModules()), terminal.getAuthTokenVersion(), null)
-                : RegistrationDecision.rejected();
+                : RegistrationDecision.rejected("VEHICLE_IDENTIFIER_MISMATCH");
     }
 
     @Transactional
@@ -462,6 +561,124 @@ public class TerminalManagementService {
                 presented.getBytes(StandardCharsets.UTF_8));
     }
 
+    private static boolean terminalPhonesMatch(
+            String stored, String presented, String storedProtocolVersion) {
+        return TerminalPhoneIdentity.matches(stored, presented, storedProtocolVersion);
+    }
+
+    private static void rejectTerminalIdentityConflict(JtTerminal existing, UUID currentId) {
+        if (existing != null && !existing.getId().equals(currentId)) {
+            throw new TerminalConflictException("terminal identity is already in use");
+        }
+    }
+
+    private static void requireIdentityCorrectionEligible(JtTerminal terminal, Vehicle vehicle) {
+        if (terminal.getStatus() != JtTerminal.Status.PENDING
+                || terminal.getLastRegisteredAt() != null
+                || terminal.getLastAuthenticatedAt() != null) {
+            throw new TerminalConflictException("terminal identity correction requires unregistered pending state");
+        }
+        if (vehicle.isDispatchable() || !"IDLE".equals(vehicle.getCurrentStatus())) {
+            throw new TerminalConflictException("vehicle identity correction requires idle non-dispatchable vehicle");
+        }
+    }
+
+    private List<String> identityCorrectionChangedFields(
+            JtTerminal terminal,
+            Vehicle vehicle,
+            IdentityCorrectionCommand command,
+            String canonicalProtocol) {
+        List<String> changedFields = new java.util.ArrayList<>();
+        if (!terminalPhonesMatch(
+                terminal.getTerminalPhone(), command.terminalPhone(), terminal.getProtocolVersion())) {
+            changedFields.add("terminalPhone");
+        }
+        addChangedField(changedFields, "terminalCode", terminal.getTerminalCode(), command.terminalCode());
+        addChangedField(changedFields, "manufacturerId", terminal.getManufacturerId(), command.manufacturerId());
+        addChangedField(changedFields, "model", terminal.getModel(), command.model());
+        if (!protocolVersionsMatch(terminal.getProtocolVersion(), canonicalProtocol)) {
+            changedFields.add("protocolVersion");
+        }
+        addChangedField(changedFields, "sourceCoordinateSystem",
+                terminal.getSourceCoordinateSystem(), command.sourceCoordinateSystem());
+        addChangedField(changedFields, "vehicleIdentifier", vehicle.getPlateNumber(), command.vehicleIdentifier());
+        return changedFields;
+    }
+
+    private void requireIdentityCorrectionConflictsAbsent(
+            JtTerminal terminal,
+            Vehicle vehicle,
+            IdentityCorrectionCommand command,
+            String canonicalProtocol,
+            List<String> changedFields) {
+        if (changedFields.contains("terminalCode")) {
+            rejectTerminalIdentityConflict(
+                    terminalRepository.findByTerminalCode(command.terminalCode()).orElse(null), terminal.getId());
+        }
+        String requestedIdentity = TerminalPhoneIdentity.canonicalForPersistence(
+                command.terminalPhone(), canonicalProtocol);
+        if (!secureEquals(terminal.persistentTerminalPhoneIdentity(), requestedIdentity)) {
+            terminalRepository.findAll().stream()
+                    .filter(existing -> !existing.getId().equals(terminal.getId()))
+                    .filter(existing -> secureEquals(
+                            existing.persistentTerminalPhoneIdentity(),
+                            requestedIdentity))
+                    .findFirst()
+                    .ifPresent(existing -> rejectTerminalIdentityConflict(existing, terminal.getId()));
+        }
+        if (changedFields.contains("vehicleIdentifier")) {
+            Vehicle conflictingVehicle = vehicleRepository
+                    .findByPlateNumber(command.vehicleIdentifier()).orElse(null);
+            if (conflictingVehicle != null && !conflictingVehicle.getId().equals(vehicle.getId())) {
+                throw new TerminalConflictException("vehicle identifier is already in use");
+            }
+        }
+    }
+
+    private static String correctedIdentityValue(
+            List<String> changedFields,
+            String field,
+            String current,
+            String requested) {
+        return changedFields.contains(field) ? requested : current;
+    }
+
+    private static void addChangedField(List<String> fields, String field, String before, String after) {
+        if (!secureEquals(before, after)) {
+            fields.add(field);
+        }
+    }
+
+    private String identityCorrectionMetadata(List<String> changedFields, long version) {
+        try {
+            java.util.Map<String, Object> metadata = new java.util.LinkedHashMap<>();
+            metadata.put("changedFields", changedFields);
+            metadata.put("version", version);
+            return objectMapper.writeValueAsString(metadata);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to encode identity correction audit", exception);
+        }
+    }
+
+    private static String requireCanonicalProtocolVersion(String value) {
+        String canonical = canonicalProtocolVersion(value);
+        if (canonical == null) {
+            throw new IllegalArgumentException("unsupported terminal protocol version");
+        }
+        return canonical;
+    }
+
+    private static boolean protocolVersionsMatch(String stored, String presented) {
+        String canonicalStored = canonicalProtocolVersion(stored);
+        String canonicalPresented = canonicalProtocolVersion(presented);
+        return canonicalStored != null && canonicalPresented != null
+                && secureEquals(canonicalStored, canonicalPresented);
+    }
+
+    private static String canonicalProtocolVersion(String value) {
+        return TerminalPhoneIdentity.canonicalProtocolVersion(value);
+    }
+
     private static boolean registrationPending(JtTerminal terminal) {
         return terminal.getStatus() == JtTerminal.Status.PENDING
                 || terminal.getStatus() == JtTerminal.Status.SUSPENDED
@@ -485,6 +702,22 @@ public class TerminalManagementService {
             String sourceCoordinateSystem,
             UUID actorId,
             String reason) {
+    }
+
+    public record IdentityCorrectionCommand(
+            String terminalPhone,
+            String terminalCode,
+            String manufacturerId,
+            String model,
+            String protocolVersion,
+            String sourceCoordinateSystem,
+            String vehicleIdentifier) {
+    }
+
+    public record IdentityCorrectionResult(List<String> changedFields, long version) {
+        public IdentityCorrectionResult {
+            changedFields = changedFields == null ? List.of() : List.copyOf(changedFields);
+        }
     }
 
     private record CapabilityProfile(
@@ -548,8 +781,11 @@ public class TerminalManagementService {
             activeSafetyModules = activeSafetyModules == null ? List.of() : List.copyOf(activeSafetyModules);
         }
 
-        static RegistrationDecision rejected() {
-            return new RegistrationDecision(false, null, null, null, null, List.of(), 0, "REGISTRATION_REJECTED");
+        static RegistrationDecision rejected(String reasonCode) {
+            if (reasonCode == null || !reasonCode.matches("[A-Z][A-Z0-9_]{2,79}")) {
+                throw new IllegalArgumentException("registration reason code is invalid");
+            }
+            return new RegistrationDecision(false, null, null, null, null, List.of(), 0, reasonCode);
         }
     }
 

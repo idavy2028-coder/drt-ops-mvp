@@ -10,6 +10,8 @@ import org.springframework.data.repository.query.Param;
 
 public interface VehicleRepository extends JpaRepository<Vehicle, UUID> {
 
+    Optional<Vehicle> findByPlateNumber(String plateNumber);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select vehicle from Vehicle vehicle where vehicle.id = :id")
     Optional<Vehicle> findByIdForLocationUpdate(@Param("id") UUID id);

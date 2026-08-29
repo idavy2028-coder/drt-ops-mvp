@@ -1,8 +1,10 @@
 package com.idavy.drtops.domain.terminal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
@@ -18,6 +20,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -38,6 +41,7 @@ class TerminalManagementServiceTest {
     private static final UUID ACTOR_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final UUID SECOND_VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final UUID CORRECTION_VEHICLE_ID = UUID.fromString("55555555-5555-5555-5555-555555555555");
     private static final String INITIAL_HASH = sha256(UUID.randomUUID().toString());
     private static final String ROTATED_HASH = sha256(UUID.randomUUID().toString());
 
@@ -84,6 +88,9 @@ class TerminalManagementServiceTest {
         vehicleRepository.save(Vehicle.create(
                 SECOND_VEHICLE_ID, "浙A10002", "Microbus", 8, "IDLE",
                 "POINT(120.155 30.274)", "测试车队", true));
+        vehicleRepository.save(Vehicle.create(
+                CORRECTION_VEHICLE_ID, "浙A10003", "Microbus", 8, "IDLE",
+                "POINT(120.155 30.274)", "P6-2 REAL TERMINAL ACCEPTANCE", false));
     }
 
     @Test
@@ -341,6 +348,380 @@ class TerminalManagementServiceTest {
         assertThat(service.verifyRegistration(
                 "PHONE-007", "T-007", "MFG01", "MODEL-X", "浙A10001", "JT808_2019").approved())
                 .isFalse();
+    }
+
+    @Test
+    void acceptsFixedWidthBcdHeaderPhoneFor2019Registration() {
+        JtTerminal terminal = preset("T-BCD-2019", "013800000001");
+        service.bind(terminal.getTerminalCode(), VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
+
+        TerminalManagementService.RegistrationDecision decision = service.verifyRegistration(
+                "00000000013800000001", "T-BCD-2019", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019");
+
+        assertThat(decision.approved()).isTrue();
+        assertThat(decision.reasonCode()).isNull();
+    }
+
+    @Test
+    void acceptsFixedWidthBcdHeaderPhoneFor2013Registration() {
+        JtTerminal terminal = service.preset(new TerminalManagementService.PresetCommand(
+                "13800000001", "T-BCD-2013", "MFG01", "MODEL-X",
+                "JT808_2013", "GCJ02", ACTOR_ID, "设备预置"));
+        service.bind(terminal.getTerminalCode(), VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
+
+        TerminalManagementService.RegistrationDecision decision = service.verifyRegistration(
+                "013800000001", "T-BCD-2013", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2013");
+
+        assertThat(decision.approved()).isTrue();
+        assertThat(decision.reasonCode()).isNull();
+    }
+
+    @Test
+    void rejectsDifferentNonBcdOrOverwidthHeaderPhones() {
+        JtTerminal terminal = preset("T-BCD-REJECT", "013800000001");
+        service.bind(terminal.getTerminalCode(), VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
+
+        assertThat(service.verifyRegistration(
+                "00000000013800000002", "T-BCD-REJECT", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("TERMINAL_PHONE_MISMATCH");
+        assertThat(service.verifyRegistration(
+                "0000000001380000000A", "T-BCD-REJECT", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("TERMINAL_PHONE_MISMATCH");
+        assertThat(service.verifyRegistration(
+                "000000000013800000001", "T-BCD-REJECT", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("TERMINAL_PHONE_MISMATCH");
+    }
+
+    @Test
+    void normalizesDescriptiveProtocolVersionWhenPresettingANewTerminal() {
+        JtTerminal terminal = service.preset(new TerminalManagementService.PresetCommand(
+                "PHONE-PROTOCOL-NEW", "T-PROTOCOL-NEW", "MFG01", "MODEL-X",
+                "JT/T 808-2019", "GCJ02", ACTOR_ID, "设备预置"));
+
+        assertThat(terminal.getProtocolVersion()).isEqualTo("JT808_2019");
+    }
+
+    @Test
+    void acceptsCanonicalGatewayVersionAgainstLegacyDescriptiveStoredVersion() {
+        JtTerminal legacy = terminalRepository.saveAndFlush(JtTerminal.preset(
+                UUID.fromString("44444444-4444-4444-4444-444444444444"),
+                "PHONE-PROTOCOL-LEGACY", "T-PROTOCOL-LEGACY", "MFG01", "MODEL-X",
+                "JT/T 808-2019", "GCJ02", ACTOR_ID));
+        service.bind(legacy.getTerminalCode(), VEHICLE_ID, legacy.getVersion(), "首配车辆", ACTOR_ID);
+
+        assertThat(service.verifyRegistration(
+                "PHONE-PROTOCOL-LEGACY", "T-PROTOCOL-LEGACY", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").approved()).isTrue();
+    }
+
+    @Test
+    void returnsSafeFieldSpecificRegistrationRejectionCodes() {
+        JtTerminal terminal = preset("T-REG-REASON", "PHONE-REG-REASON");
+
+        assertThat(service.verifyRegistration(
+                "PHONE-REG-REASON", "T-MISSING", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("TERMINAL_CODE_NOT_FOUND");
+        assertThat(service.verifyRegistration(
+                "PHONE-REG-REASON", "T-REG-REASON", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("BINDING_MISSING");
+
+        service.bind("T-REG-REASON", VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
+
+        assertThat(service.verifyRegistration(
+                "WRONG-PHONE", "T-REG-REASON", "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("TERMINAL_PHONE_MISMATCH");
+        assertThat(service.verifyRegistration(
+                "PHONE-REG-REASON", "T-REG-REASON", "WRONG-MFG", "MODEL-X",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("MANUFACTURER_MISMATCH");
+        assertThat(service.verifyRegistration(
+                "PHONE-REG-REASON", "T-REG-REASON", "MFG01", "WRONG-MODEL",
+                "浙A10001", "JT808_2019").reasonCode())
+                .isEqualTo("MODEL_MISMATCH");
+        assertThat(service.verifyRegistration(
+                "PHONE-REG-REASON", "T-REG-REASON", "MFG01", "MODEL-X",
+                "浙A10001", "UNKNOWN").reasonCode())
+                .isEqualTo("PROTOCOL_VERSION_MISMATCH");
+        assertThat(service.verifyRegistration(
+                "PHONE-REG-REASON", "T-REG-REASON", "MFG01", "MODEL-X",
+                "浙A10002", "JT808_2019").reasonCode())
+                .isEqualTo("VEHICLE_IDENTIFIER_MISMATCH");
+    }
+
+    @Test
+    void correctsPendingIdentityAndBoundVehicleWithoutChangingSecurityOrBinding() throws Exception {
+        JtTerminal terminal = preset("T-CORRECT-OLD", "PHONE-CORRECT-OLD");
+        service.configureCapabilities(
+                terminal.getTerminalCode(), terminal.getVersion(), "T/JSATL12-2017",
+                List.of("ADAS", "DMS"), true, "配置能力", ACTOR_ID);
+        terminal = terminalRepository.findById(terminal.getId()).orElseThrow();
+        service.bind(terminal.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                terminal.getVersion(), "首配车辆", ACTOR_ID);
+        terminal = terminalRepository.findById(terminal.getId()).orElseThrow();
+        JtTerminalVehicleBinding binding = bindingRepository
+                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
+                .orElseThrow();
+        UUID terminalId = terminal.getId();
+        UUID bindingId = binding.getId();
+        String authenticationHash = terminal.getAuthTokenHash();
+        int authenticationVersion = terminal.getAuthTokenVersion();
+
+        TerminalManagementService.IdentityCorrectionResult result = service.correctIdentity(
+                "T-CORRECT-OLD", terminal.getVersion(),
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        "00000000000000000001", "T-CORRECT-NEW", "MFG-NEW", "MODEL-NEW",
+                        "JT/T 808-2019", "WGS84", "浙A10003-NEW"),
+                ACTOR_ID, "PRE_ACCEPTANCE_IDENTITY_CORRECTION");
+
+        JtTerminal corrected = terminalRepository.findByTerminalCode("T-CORRECT-NEW").orElseThrow();
+        JtTerminalVehicleBinding correctedBinding = bindingRepository
+                .findByTerminalIdAndStatus(terminalId, JtTerminalVehicleBinding.Status.ACTIVE)
+                .orElseThrow();
+        assertThat(result.changedFields()).containsExactlyInAnyOrder(
+                "terminalPhone", "terminalCode", "manufacturerId", "model",
+                "sourceCoordinateSystem", "vehicleIdentifier");
+        assertThat(corrected.getId()).isEqualTo(terminalId);
+        assertThat(corrected.getStatus()).isEqualTo(JtTerminal.Status.PENDING);
+        assertThat(corrected.getLastRegisteredAt()).isNull();
+        assertThat(corrected.getLastAuthenticatedAt()).isNull();
+        assertThat(corrected.getAuthTokenHash()).isEqualTo(authenticationHash);
+        assertThat(corrected.getAuthTokenVersion()).isEqualTo(authenticationVersion);
+        assertThat(corrected.getActiveSafetyStandard()).isEqualTo("T/JSATL12-2017");
+        assertThat(corrected.getActiveSafetyModules()).contains("ADAS", "DMS");
+        assertThat(corrected.isJt1078Enabled()).isTrue();
+        assertThat(correctedBinding.getId()).isEqualTo(bindingId);
+        assertThat(correctedBinding.getVehicleId()).isEqualTo(CORRECTION_VEHICLE_ID);
+        assertThat(vehicleRepository.findById(CORRECTION_VEHICLE_ID).orElseThrow().getPlateNumber())
+                .isEqualTo("浙A10003-NEW");
+        assertThat(auditActions()).endsWith(
+                "JT_TERMINAL_IDENTITY_CORRECTED", "VEHICLE_IDENTIFIER_CORRECTED");
+        var correctionAudits = auditLogRepository.findAllByOrderByCreatedAtAsc().stream()
+                .filter(audit -> java.util.Set.of(
+                        "JT_TERMINAL_IDENTITY_CORRECTED", "VEHICLE_IDENTIFIER_CORRECTED")
+                        .contains(audit.getAction()))
+                .toList();
+        assertThat(correctionAudits).hasSize(2);
+        for (var audit : correctionAudits) {
+            var metadata = new ObjectMapper().readTree(audit.getMetadataJson());
+            List<String> auditedChangedFields = new java.util.ArrayList<>();
+            metadata.path("changedFields").forEach(field -> auditedChangedFields.add(field.asText()));
+
+            assertThat(metadata.size()).isEqualTo(2);
+            assertThat(auditedChangedFields).containsExactlyInAnyOrderElementsOf(result.changedFields());
+            assertThat(metadata.path("version").asLong()).isEqualTo(corrected.getVersion());
+            assertThat(audit.getActorType()).isEqualTo("USER");
+            assertThat(audit.getActorId()).isEqualTo(ACTOR_ID.toString());
+            assertThat(audit.getReason()).isEqualTo("PRE_ACCEPTANCE_IDENTITY_CORRECTION");
+            assertThat(audit.getCreatedAt()).isNotNull();
+            assertThat(audit.getMetadataJson())
+                    .doesNotContain("beforeDigest", "afterDigest", "PHONE-CORRECT-OLD",
+                            "00000000000000000001", "T-CORRECT-OLD", "T-CORRECT-NEW",
+                            "MFG-NEW", "MODEL-NEW", "浙A10003", "浙A10003-NEW");
+        }
+        assertThat(correctionAudits.stream()
+                .filter(audit -> "JT_TERMINAL_IDENTITY_CORRECTED".equals(audit.getAction()))
+                .findFirst().orElseThrow().getEntityId()).isEqualTo(terminalId);
+        assertThat(correctionAudits.stream()
+                .filter(audit -> "VEHICLE_IDENTIFIER_CORRECTED".equals(audit.getAction()))
+                .findFirst().orElseThrow().getEntityId()).isEqualTo(CORRECTION_VEHICLE_ID);
+    }
+
+    @Test
+    void rejectsIdentityCorrectionForRegisteredStaleOrDuplicateTerminal() {
+        JtTerminal target = preset("T-CORRECT-TARGET", "PHONE-CORRECT-TARGET");
+        service.bind(target.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                target.getVersion(), "首配车辆", ACTOR_ID);
+        target = terminalRepository.findById(target.getId()).orElseThrow();
+        JtTerminal duplicate = preset("T-CORRECT-DUP", "PHONE-CORRECT-DUP");
+
+        long currentVersion = target.getVersion();
+        assertThatThrownBy(() -> service.correctIdentity(
+                "T-CORRECT-TARGET", currentVersion - 1,
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        "PHONE-NEW", "T-NEW", "MFG01", "MODEL-X",
+                        "JT808_2019", "GCJ02", "浙A10003-NEW"),
+                ACTOR_ID, "身份纠正"))
+                .isInstanceOf(TerminalConflictException.class);
+        assertThatThrownBy(() -> service.correctIdentity(
+                "T-CORRECT-TARGET", currentVersion,
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        duplicate.getTerminalPhone(), duplicate.getTerminalCode(), "MFG01", "MODEL-X",
+                        "JT808_2019", "GCJ02", "浙A10003-NEW"),
+                ACTOR_ID, "身份纠正"))
+                .isInstanceOf(TerminalConflictException.class);
+
+        service.completeRegistration(target.getId(), target.getAuthTokenVersion(), INITIAL_HASH, "gateway-a");
+        JtTerminal registered = terminalRepository.findById(target.getId()).orElseThrow();
+        assertThatThrownBy(() -> service.correctIdentity(
+                registered.getTerminalCode(), registered.getVersion(),
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        "PHONE-NEW", "T-NEW", "MFG01", "MODEL-X",
+                        "JT808_2019", "GCJ02", "浙A10003-NEW"),
+                ACTOR_ID, "身份纠正"))
+                .isInstanceOf(TerminalConflictException.class);
+    }
+
+    @Test
+    void previewsIdentityCorrectionWithoutWritingStateOrAudit() {
+        JtTerminal terminal = preset("T-PREVIEW-OLD", "PHONE-PREVIEW-OLD");
+        service.bind(terminal.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                terminal.getVersion(), "首配车辆", ACTOR_ID);
+        terminal = terminalRepository.findById(terminal.getId()).orElseThrow();
+        int auditCount = auditLogRepository.findAll().size();
+
+        TerminalManagementService.IdentityCorrectionResult preview = service.previewIdentityCorrection(
+                terminal.getTerminalCode(), terminal.getVersion(),
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        "PHONE-PREVIEW-NEW", "T-PREVIEW-NEW", "MFG01", "MODEL-X",
+                        "JT808_2019", "GCJ02", "浙A10003-NEW"));
+
+        assertThat(preview.changedFields()).containsExactly(
+                "terminalPhone", "terminalCode", "vehicleIdentifier");
+        assertThat(terminalRepository.findByTerminalCode("T-PREVIEW-OLD")).isPresent();
+        assertThat(terminalRepository.findByTerminalCode("T-PREVIEW-NEW")).isEmpty();
+        assertThat(vehicleRepository.findById(CORRECTION_VEHICLE_ID).orElseThrow().getPlateNumber())
+                .isEqualTo("浙A10003");
+        assertThat(auditLogRepository.findAll()).hasSize(auditCount);
+    }
+
+    @Test
+    void keepsIdentityCorrectionPreviewConsistentWithRegistrationVerification() {
+        JtTerminal terminal = preset("T-CONSISTENCY", "013800000001");
+        service.bind(terminal.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                terminal.getVersion(), "首配车辆", ACTOR_ID);
+        terminal = terminalRepository.findById(terminal.getId()).orElseThrow();
+        long versionBeforeCorrection = terminal.getVersion();
+        String fixedWidthHeaderPhone = "00000000013800000001";
+        TerminalManagementService.IdentityCorrectionCommand correction =
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        fixedWidthHeaderPhone, terminal.getTerminalCode(), terminal.getManufacturerId(),
+                        terminal.getModel(), terminal.getProtocolVersion(), terminal.getSourceCoordinateSystem(),
+                        "浙A10003-NEW");
+
+        TerminalManagementService.IdentityCorrectionResult preview = service.previewIdentityCorrection(
+                terminal.getTerminalCode(), terminal.getVersion(), correction);
+        TerminalManagementService.RegistrationDecision before = service.verifyRegistration(
+                fixedWidthHeaderPhone, terminal.getTerminalCode(), terminal.getManufacturerId(), terminal.getModel(),
+                "浙A10003-NEW", terminal.getProtocolVersion());
+
+        assertThat(preview.changedFields()).containsExactly("vehicleIdentifier");
+        assertThat(before.approved()).isFalse();
+        assertThat(before.reasonCode()).isEqualTo("VEHICLE_IDENTIFIER_MISMATCH");
+
+        TerminalManagementService.IdentityCorrectionResult applied = service.correctIdentity(
+                terminal.getTerminalCode(), terminal.getVersion(), correction,
+                ACTOR_ID, "PRE_ACCEPTANCE_IDENTITY_CORRECTION");
+        JtTerminal corrected = terminalRepository.findById(terminal.getId()).orElseThrow();
+        TerminalManagementService.RegistrationDecision after = service.verifyRegistration(
+                fixedWidthHeaderPhone, corrected.getTerminalCode(), corrected.getManufacturerId(), corrected.getModel(),
+                "浙A10003-NEW", corrected.getProtocolVersion());
+
+        assertThat(applied.changedFields()).containsExactly("vehicleIdentifier");
+        assertThat(corrected.getTerminalPhone()).isEqualTo("013800000001");
+        assertThat(corrected.getProtocolVersion()).isEqualTo("JT808_2019");
+        assertThat(corrected.getVersion()).isEqualTo(versionBeforeCorrection + 1);
+        assertThat(after.approved()).isTrue();
+        assertThat(after.reasonCode()).isNull();
+    }
+
+    @Test
+    void rejectsSemanticallyEquivalentFixedWidthPhoneConflictDuringIdentityCorrection() {
+        JtTerminal target = preset("T-SEMANTIC-TARGET", "013800000001");
+        service.bind(target.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                target.getVersion(), "首配车辆", ACTOR_ID);
+        target = terminalRepository.findById(target.getId()).orElseThrow();
+        preset("T-SEMANTIC-DUPLICATE", "013800000002");
+        TerminalManagementService.IdentityCorrectionCommand conflictingCorrection =
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        "00000000013800000002", target.getTerminalCode(), target.getManufacturerId(),
+                        target.getModel(), target.getProtocolVersion(), target.getSourceCoordinateSystem(),
+                        "浙A10003");
+        long expectedVersion = target.getVersion();
+
+        assertThatThrownBy(() -> service.previewIdentityCorrection(
+                "T-SEMANTIC-TARGET", expectedVersion, conflictingCorrection))
+                .isInstanceOf(TerminalConflictException.class);
+        assertThatThrownBy(() -> service.correctIdentity(
+                "T-SEMANTIC-TARGET", expectedVersion, conflictingCorrection,
+                ACTOR_ID, "PRE_ACCEPTANCE_IDENTITY_CORRECTION"))
+                .isInstanceOf(TerminalConflictException.class);
+
+        assertThat(terminalRepository.findByTerminalCode("T-SEMANTIC-TARGET").orElseThrow()
+                .getTerminalPhone()).isEqualTo("013800000001");
+        assertThat(auditActions()).doesNotContain("JT_TERMINAL_IDENTITY_CORRECTED");
+    }
+
+    @Test
+    void rejectsProtocolOnlyCorrectionWhenItWouldCanonicalizeToAnotherTerminalPhoneIdentity() {
+        JtTerminal legacyTarget = terminalRepository.saveAndFlush(JtTerminal.preset(
+                UUID.fromString("77777777-7777-7777-7777-777777777777"),
+                "123", "T-PROTOCOL-ONLY-TARGET", "MFG01", "MODEL-X",
+                "LEGACY_UNKNOWN", "GCJ02", ACTOR_ID));
+        service.bind(legacyTarget.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                legacyTarget.getVersion(), "首配车辆", ACTOR_ID);
+        preset("T-PROTOCOL-ONLY-DUPLICATE", "00000000000000000123");
+        legacyTarget = terminalRepository.findById(legacyTarget.getId()).orElseThrow();
+        TerminalManagementService.IdentityCorrectionCommand correction =
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        legacyTarget.getTerminalPhone(), legacyTarget.getTerminalCode(),
+                        legacyTarget.getManufacturerId(), legacyTarget.getModel(),
+                        "JT808_2019", legacyTarget.getSourceCoordinateSystem(), "浙A10003");
+        String targetCode = legacyTarget.getTerminalCode();
+        long targetVersion = legacyTarget.getVersion();
+
+        assertThatThrownBy(() -> service.previewIdentityCorrection(
+                targetCode, targetVersion, correction))
+                .isInstanceOf(TerminalConflictException.class)
+                .hasMessage("terminal identity is already in use");
+        assertThatThrownBy(() -> service.correctIdentity(
+                targetCode, targetVersion, correction,
+                ACTOR_ID, "PRE_ACCEPTANCE_IDENTITY_CORRECTION"))
+                .isInstanceOf(TerminalConflictException.class)
+                .hasMessage("terminal identity is already in use");
+    }
+
+    @Test
+    void allowsOpaqueLegacyPhoneWhenPersistentCanonicalIdentitiesDiffer() {
+        JtTerminal target = preset("T-OPAQUE-TARGET", "013800000001");
+        service.bind(target.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                target.getVersion(), "首配车辆", ACTOR_ID);
+        target = terminalRepository.findById(target.getId()).orElseThrow();
+        terminalRepository.saveAndFlush(JtTerminal.preset(
+                UUID.fromString("66666666-6666-6666-6666-666666666666"),
+                "123", "T-OPAQUE-LEGACY", "MFG01", "MODEL-X",
+                "LEGACY_UNKNOWN", "GCJ02", ACTOR_ID));
+        TerminalManagementService.IdentityCorrectionCommand correction =
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        "00000000000000000123", target.getTerminalCode(), target.getManufacturerId(),
+                        target.getModel(), target.getProtocolVersion(), target.getSourceCoordinateSystem(),
+                        "浙A10003");
+        String targetCode = target.getTerminalCode();
+        long targetVersion = target.getVersion();
+
+        assertThatCode(() -> service.previewIdentityCorrection(
+                targetCode, targetVersion, correction))
+                .doesNotThrowAnyException();
+        TerminalManagementService.IdentityCorrectionResult preview = service.previewIdentityCorrection(
+                targetCode, targetVersion, correction);
+
+        assertThat(preview.changedFields()).containsExactly("terminalPhone");
+    }
+
+    @Test
+    void enforcesSemanticPhoneUniquenessAtThePersistenceBoundary() {
+        preset("T-PERSISTED-PHONE-SHORT", "013800000002");
+
+        assertThatThrownBy(() -> preset(
+                "T-PERSISTED-PHONE-FIXED-WIDTH", "00000000013800000002"))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test

@@ -35,6 +35,7 @@ class DatabaseMigrationTest {
         String deferredTaskStopSequence = readMigration("V12__defer_task_stop_sequence_constraint.sql");
         String gpsLocationQuality = readMigration("V14__extend_gps_location_quality.sql");
         String gatewayAuditIdempotency = readMigration("V17__add_jt_gateway_audit_idempotency.sql");
+        String terminalPhoneIdentity = readMigration("V18__add_jt_terminal_phone_identity.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -112,6 +113,13 @@ class DatabaseMigrationTest {
                 "ADD COLUMN terminal_id UUID",
                 "ADD COLUMN vehicle_id UUID",
                 "ADD COLUMN ingress_kind VARCHAR(32)");
+
+        assertThat(terminalPhoneIdentity).contains(
+                "ADD COLUMN terminal_phone_identity VARCHAR(30)",
+                "LPAD(terminal_phone, 20, '0')",
+                "ALTER COLUMN terminal_phone_identity SET NOT NULL",
+                "ADD CONSTRAINT uq_jt_terminals_terminal_phone_identity",
+                "UNIQUE (terminal_phone_identity)");
     }
 
     @Test

@@ -69,6 +69,7 @@ import reactor.core.publisher.Mono;
 class TerminalApiTest {
 
     private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID CORRECTION_VEHICLE_ID = UUID.fromString("55555555-5555-5555-5555-555555555555");
     private static final String SERVICE_CREDENTIAL = UUID.randomUUID().toString();
     private static final String TOKEN_HASH = sha256(UUID.randomUUID().toString());
 
@@ -114,6 +115,45 @@ class TerminalApiTest {
         vehicleRepository.save(Vehicle.create(
                 VEHICLE_ID, "浙A20001", "Microbus", 8, "IDLE",
                 "POINT(120.155 30.274)", "测试车队", true));
+        vehicleRepository.save(Vehicle.create(
+                CORRECTION_VEHICLE_ID, "浙A20002", "Microbus", 8, "IDLE",
+                "POINT(120.155 30.274)", "P6-2 REAL TERMINAL ACCEPTANCE", false));
+    }
+
+    @Test
+    void correctsIdentityThroughAWriteOnlyApiWithoutReturningSensitiveValues() throws Exception {
+        JtTerminal terminal = service.preset(new TerminalManagementService.PresetCommand(
+                "PHONE-API-OLD", "T-API-OLD", "MFG01", "MODEL-X",
+                "JT808_2019", "GCJ02", UUID.fromString("11111111-1111-1111-1111-111111111111"), "设备预置"));
+        service.bind(terminal.getTerminalCode(), CORRECTION_VEHICLE_ID,
+                terminal.getVersion(), "首配车辆", UUID.fromString("11111111-1111-1111-1111-111111111111"));
+        terminal = terminalRepository.findById(terminal.getId()).orElseThrow();
+
+        String request = """
+                {"expectedVersion":%d,"terminalPhone":"00000000000000000001",
+                 "terminalCode":"T-API-NEW","manufacturerId":"MFG-NEW",
+                 "model":"MODEL-NEW","protocolVersion":"JT/T 808-2019",
+                 "sourceCoordinateSystem":"WGS84","vehicleIdentifier":"浙A20002-NEW",
+                 "reason":"PRE_ACCEPTANCE_IDENTITY_CORRECTION"}
+                """.formatted(terminal.getVersion());
+
+        mockMvc.perform(post("/api/terminals/T-API-OLD/identity-correction/preview")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.changedFields").isArray())
+                .andExpect(jsonPath("$.data.version").value(terminal.getVersion()));
+        assertThat(terminalRepository.findByTerminalCode("T-API-OLD")).isPresent();
+
+        mockMvc.perform(post("/api/terminals/T-API-OLD/identity-correction")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.changedFields").isArray())
+                .andExpect(jsonPath("$.data.version").isNumber())
+                .andExpect(jsonPath("$.data", not(hasKey("terminalPhone"))))
+                .andExpect(jsonPath("$.data", not(hasKey("terminalCode"))))
+                .andExpect(jsonPath("$.data", not(hasKey("vehicleIdentifier"))));
     }
 
     @Test

@@ -144,6 +144,16 @@ public class Vehicle {
         return dispatchable;
     }
 
+    public void correctIdentifier(String plateNumber) {
+        if (dispatchable || !"IDLE".equals(currentStatus)) {
+            throw new IllegalStateException("vehicle identifier correction requires idle non-dispatchable vehicle");
+        }
+        if (plateNumber == null || plateNumber.isBlank()) {
+            throw new IllegalArgumentException("plateNumber must not be blank");
+        }
+        this.plateNumber = plateNumber;
+    }
+
     public void reserveForDispatch() {
         if (!dispatchable) {
             throw new IllegalStateException("Vehicle is not dispatchable");

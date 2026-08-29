@@ -6,6 +6,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import jakarta.persistence.Version;
 import java.time.OffsetDateTime;
 import java.security.SecureRandom;
@@ -16,7 +17,9 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 @Entity
-@Table(name = "jt_terminals")
+@Table(name = "jt_terminals", uniqueConstraints = @UniqueConstraint(
+        name = "uq_jt_terminals_terminal_phone_identity",
+        columnNames = "terminal_phone_identity"))
 public class JtTerminal {
 
     public enum Status { PENDING, ACTIVE, SUSPENDED, RETIRED }
@@ -28,6 +31,9 @@ public class JtTerminal {
 
     @Column(nullable = false, unique = true, length = 30)
     private String terminalPhone;
+
+    @Column(name = "terminal_phone_identity", nullable = false, length = 30)
+    private String terminalPhoneIdentity;
 
     @Column(nullable = false, unique = true, length = 80)
     private String terminalCode;
@@ -102,6 +108,8 @@ public class JtTerminal {
         this.manufacturerId = requireText(manufacturerId, "manufacturerId");
         this.model = requireText(model, "model");
         this.protocolVersion = requireText(protocolVersion, "protocolVersion");
+        this.terminalPhoneIdentity = TerminalPhoneIdentity.canonicalForPersistence(
+                this.terminalPhone, this.protocolVersion);
         this.sourceCoordinateSystem = requireCoordinateSystem(sourceCoordinateSystem);
         this.activeSafetyModules = "[]";
         this.status = Status.PENDING;
@@ -154,6 +162,28 @@ public class JtTerminal {
         this.activeSafetyStandard = activeSafetyStandard;
         this.activeSafetyModules = Objects.requireNonNull(activeSafetyModules, "activeSafetyModules");
         this.jt1078Enabled = jt1078Enabled;
+        touch();
+    }
+
+    public void correctIdentity(
+            String terminalPhone,
+            String terminalCode,
+            String manufacturerId,
+            String model,
+            String protocolVersion,
+            String sourceCoordinateSystem) {
+        requireMutable();
+        if (status != Status.PENDING || lastRegisteredAt != null || lastAuthenticatedAt != null) {
+            throw new IllegalStateException("terminal identity correction requires unregistered pending state");
+        }
+        this.terminalPhone = requireText(terminalPhone, "terminalPhone");
+        this.terminalCode = requireText(terminalCode, "terminalCode");
+        this.manufacturerId = requireText(manufacturerId, "manufacturerId");
+        this.model = requireText(model, "model");
+        this.protocolVersion = requireText(protocolVersion, "protocolVersion");
+        this.terminalPhoneIdentity = TerminalPhoneIdentity.canonicalForPersistence(
+                this.terminalPhone, this.protocolVersion);
+        this.sourceCoordinateSystem = requireCoordinateSystem(sourceCoordinateSystem);
         touch();
     }
 
@@ -221,6 +251,7 @@ public class JtTerminal {
 
     public UUID getId() { return id; }
     public String getTerminalPhone() { return terminalPhone; }
+    String persistentTerminalPhoneIdentity() { return terminalPhoneIdentity; }
     public String getTerminalCode() { return terminalCode; }
     public String getManufacturerId() { return manufacturerId; }
     public String getModel() { return model; }
