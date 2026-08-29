@@ -14,7 +14,45 @@
 4. `JT_GATEWAY_SERVICE_CREDENTIAL_VERSION` 使用正整数；`JT_GATEWAY_INSTANCE` 使用脱敏实例别名。
 5. 核对 `JT_GATEWAY_OPERATIONS_API_BASE_URL` 指向受控运营 API。缺少地址、凭证明文、版本或实例标识时，启用 TCP 的网关会拒绝启动。
 
+### 型号级鉴权码兼容
+
+`JT_GATEWAY_REGISTRATION_AUTHENTICATION_COMPATIBILITY_MODELS` 默认必须留空。默认注册鉴权码继续使用 32 字节随机熵，经无填充 Base64URL 编码为 43 个字符。只有完成真实设备证据复核的型号，才允许在私密环境文件中以逗号分隔配置；匹配大小写敏感，命中后使用 16 字节随机熵，编码为 22 个字符，仍保留 128 位随机强度。
+
+不得把真实型号清单、鉴权码、鉴权码摘要写入基础 Compose、公开报告、日志、健康详情或 Outbox。变更该列表后必须轮换目标终端认证状态并重新执行注册、鉴权真实验收；未命中型号的令牌长度必须保持 43 个字符。
+
 API 只接收凭证版本和摘要；明文只进入网关容器。H2 文件保存在独立 `jt-gateway-data` 卷，API 容器没有该卷的挂载权限。
+
+## 临时注册维护白名单
+
+真实终端无法断网、但只允许单台进入详细注册诊断时，可以启用临时注册维护白名单。该模式只保证非目标终端不会改变云端终端状态、鉴权令牌、车辆绑定、位置或报警；非目标终端会收到 `0x8100` 失败响应、断开并按设备策略继续重试，因此不等于维持成功的平台会话。
+
+维护模式默认关闭。启用时必须通过 Git 忽略的私密环境文件同时提供：
+
+```text
+JT_GATEWAY_REGISTRATION_MAINTENANCE_ENABLED=true
+JT_GATEWAY_REGISTRATION_MAINTENANCE_ALLOWED_IDENTITY_SHA256=<私密摘要>
+JT_GATEWAY_REGISTRATION_MAINTENANCE_EXPIRES_AT=<UTC ISO-8601 时间>
+JT_GATEWAY_REGISTRATION_MAINTENANCE_AUDIT_INTERVAL_SECONDS=60
+```
+
+摘要规范固定为 `SHA-256(protocolVersion + NUL + terminalIdentity)`。只能使用 `.private/cloud-deployment/.../cloud-registration-maintenance-lib.ps1` 从私密资料在本机生成；终端身份和摘要都不得写入控制台、公开报告、基础 Compose 文件或 Git。`Write-CloudRegistrationMaintenanceArtifacts` 会生成 `.env.registration-maintenance` 和只引用环境变量的 `docker-compose.registration-maintenance.yml`；上传服务器后两者必须为 mode `600`。
+
+网关在收到 `0x0100` 并读出 JT808 消息头身份后、解析注册体和调用 API 前执行常量时间摘要比较：
+
+- 目标终端进入完整字段解析、运营 API verify 和 complete 流程。
+- 非目标终端不调用注册 API，返回失败并以 `REGISTERED/REJECTED + TEMPORARILY_BLOCKED_FOR_MAINTENANCE` 记录首次及每 60 秒一次的持久审计；其余重试只增加内存聚合计数。
+- 维护窗口在启动时已过期、摘要非法或配置缺失时，gateway 拒绝启动；运行中到期后拒绝全部新注册并使 readiness 降级，绝不自动放开全部终端。
+
+健康详情只公开 `registrationMaintenanceEnabled`、`registrationMaintenanceExpired`、允许/拦截尝试数、拦截身份数和审计抑制数，不公开身份或摘要。详细注册失败只记录固定字段空值码、既有身份不匹配码，或 `REGISTRATION_VERIFY_*` / `REGISTRATION_COMPLETE_*` 阶段分类；禁止记录 API 响应正文和异常消息。
+
+启停必须遵循以下顺序：
+
+1. 保持 gateway 停止，生成并校验私密环境文件与维护 override。
+2. 使用基础 Compose、已部署版本 override 和维护 override 执行 `config --quiet`，不得执行会展开秘密变量的普通 `config`。
+3. 先启动观察器，再启动 gateway；诊断窗口最长 10 分钟，目标终端出现首个明确结果后停止。
+4. 停止 gateway 并确认 7611 无监听后，才允许移除维护 override。其他终端仍在线时，禁止在运行中关闭维护模式。
+
+本模式不修改附件边界；`0x9208`、`0x1210`、`0x1206` 仍不纳入 P6-2 基础链路验收。
 
 ## API 交付合同
 
