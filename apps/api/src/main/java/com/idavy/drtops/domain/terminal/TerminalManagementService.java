@@ -4,6 +4,7 @@ import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,6 +39,7 @@ public class TerminalManagementService {
     private final TransactionTemplate committedStateTransaction;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final OnboardSystemConfigurationService onboardConfigurationService;
 
     public TerminalManagementService(
             JtTerminalRepository terminalRepository,
@@ -48,7 +50,8 @@ public class TerminalManagementService {
             JtGatewayControlClient controlClient,
             PlatformTransactionManager transactionManager,
             ObjectMapper objectMapper,
-            ObjectProvider<Clock> clocks) {
+            ObjectProvider<Clock> clocks,
+            OnboardSystemConfigurationService onboardConfigurationService) {
         this.terminalRepository = terminalRepository;
         this.bindingRepository = bindingRepository;
         this.vehicleRepository = vehicleRepository;
@@ -59,6 +62,7 @@ public class TerminalManagementService {
         this.committedStateTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.objectMapper = objectMapper;
         this.clock = clocks.getIfAvailable(Clock::systemUTC);
+        this.onboardConfigurationService = onboardConfigurationService;
     }
 
     @Transactional(readOnly = true)
@@ -345,6 +349,11 @@ public class TerminalManagementService {
         if (bindingRepository.findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE).isPresent()
                 || bindingRepository.findByVehicleIdAndStatus(vehicleId, JtTerminalVehicleBinding.Status.ACTIVE).isPresent()) {
             throw new TerminalConflictException("terminal or vehicle already has an active binding");
+        }
+        onboardConfigurationService.bindLegacyTerminal(
+                vehicleId, terminal, reason, actorId);
+        if (terminal.getVersion() != expectedVersion) {
+            throw new TerminalConflictException("terminal version conflict");
         }
         bindingRepository.save(JtTerminalVehicleBinding.bind(terminal, vehicleId, reason, actorId));
         terminal.touch();
