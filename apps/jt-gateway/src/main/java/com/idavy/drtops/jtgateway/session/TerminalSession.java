@@ -8,6 +8,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 public final class TerminalSession {
@@ -15,6 +16,7 @@ public final class TerminalSession {
     private final Channel channel;
     private final Instant connectedAt;
     private volatile TerminalSessionState state = TerminalSessionState.CONNECTED_UNAUTHENTICATED;
+    private TerminalSessionContext context;
     private UUID terminalId;
     private UUID vehicleId;
     private String sourceCoordinateSystem;
@@ -30,6 +32,31 @@ public final class TerminalSession {
         this.channel = Objects.requireNonNull(channel, "channel");
         this.connectedAt = Objects.requireNonNull(connectedAt, "connectedAt");
         this.lastValidMessageAt = connectedAt;
+    }
+
+    public void registrationAccepted(
+            TerminalSessionContext context,
+            String terminalIdentity) {
+        requireState(TerminalSessionState.CONNECTED_UNAUTHENTICATED);
+        installContext(context, terminalIdentity);
+    }
+
+    public void restoreAuthenticatedIdentity(
+            TerminalSessionContext context,
+            String terminalIdentity) {
+        requireState(TerminalSessionState.CONNECTED_UNAUTHENTICATED);
+        installContext(context, terminalIdentity);
+    }
+
+    public void refreshAuthenticationContext(TerminalSessionContext context) {
+        requireState(TerminalSessionState.CONNECTED_UNAUTHENTICATED);
+        TerminalSessionContext current = Objects.requireNonNull(context, "context");
+        if (terminalId == null
+                || !terminalId.equals(current.terminalId())
+                || tokenVersion != current.tokenVersion()) {
+            throw new IllegalStateException("authentication context is inconsistent");
+        }
+        applyContext(current);
     }
 
     public void registrationAccepted(
@@ -111,6 +138,10 @@ public final class TerminalSession {
         return terminalId;
     }
 
+    public UUID onboardSystemId() {
+        return context == null ? null : context.onboardSystemId();
+    }
+
     public UUID vehicleId() {
         return vehicleId;
     }
@@ -126,6 +157,14 @@ public final class TerminalSession {
     public String activeSafetyStandard() { return activeSafetyStandard; }
 
     public List<String> activeSafetyModules() { return activeSafetyModules; }
+
+    public Set<String> roles() {
+        return context == null ? Set.of() : context.roles();
+    }
+
+    public TerminalSessionContext context() {
+        return context;
+    }
 
 
     public String terminalAlias() {
@@ -150,6 +189,36 @@ public final class TerminalSession {
         if (state != expected) {
             throw new IllegalStateException("session transition is not allowed from " + state);
         }
+    }
+
+    private void installContext(
+            TerminalSessionContext context,
+            String terminalIdentity) {
+        TerminalSessionContext accepted = Objects.requireNonNull(context, "context");
+        String identity = Objects.requireNonNull(terminalIdentity, "terminalIdentity");
+        byte[] identityDigest = identityDigest(identity);
+        int visible = Math.min(4, identity.length());
+        String terminalAlias = "****" + identity.substring(identity.length() - visible);
+        applyContext(accepted);
+        this.terminalIdentityDigest = identityDigest;
+        this.terminalAlias = terminalAlias;
+    }
+
+    private void applyContext(TerminalSessionContext accepted) {
+        this.context = accepted;
+        this.terminalId = accepted.terminalId();
+        this.vehicleId = accepted.vehicleId();
+        this.sourceCoordinateSystem = accepted.sourceCoordinateSystem();
+        this.tokenVersion = accepted.tokenVersion();
+        this.activeSafetyStandard = accepted.activeSafetyStandard();
+        this.activeSafetyModules = accepted.activeSafetyModules();
+    }
+
+    private void installTerminalIdentity(String terminalIdentity) {
+        String identity = Objects.requireNonNull(terminalIdentity, "terminalIdentity");
+        this.terminalIdentityDigest = identityDigest(identity);
+        int visible = Math.min(4, identity.length());
+        this.terminalAlias = "****" + identity.substring(identity.length() - visible);
     }
 
     private static byte[] identityDigest(String terminalIdentity) {

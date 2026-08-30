@@ -5,6 +5,8 @@ import com.idavy.drtops.jt.protocol.codec.Jt808MessageHeader;
 import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jtgateway.netty.JtFrameOwnershipHandler;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.buffer.UnpooledHeapByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.ChannelHandlerContext;
@@ -25,6 +27,8 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -33,12 +37,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class RegistrationAuthenticationHandlerTest {
     private static final UUID TERMINAL_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID PEER_TERMINAL_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final UUID ONBOARD_SYSTEM_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
     private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final String TERMINAL_NUMBER = "123456789012";
     private static final String JT808_2019_TERMINAL_NUMBER = "00000000123456789012";
@@ -608,6 +615,7 @@ class RegistrationAuthenticationHandlerTest {
                     "authoritative registry verification must precede private capture");
             assertEquals(0, registrySpy.auditCount(),
                     "RED: capture infrastructure failure must not create a terminal-input audit");
+            assertIssuedRegistrationTokenDestroyed(registrySpy);
             assertEquals(0, registration.body().refCnt(),
                     "RED: handler must release the inbound frame before propagating capture failure");
             assertFalse(channel.isActive(),
@@ -683,10 +691,58 @@ class RegistrationAuthenticationHandlerTest {
         assertEquals(0, registration.body().refCnt());
         assertFalse(channel.isActive());
         assertEquals(TerminalSessionState.CLOSED, handler.session().state());
+        assertIssuedRegistrationTokenDestroyed(port);
         assertNull(handler.session().terminalId(),
                 "registration identity must not become session-visible before audit persistence");
         assertTrue(sessions.current(TERMINAL_ID).isEmpty());
         assertNull(channel.readOutbound(), "a non-durable registration success must not be acknowledged");
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void registrationSessionInstallFailureDestroysIssuedTokenAndClosesTheChannel() {
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        RegistrationAuthenticationHandler handler = handler(
+                port, new TerminalSessionRegistry(), new MutableClock());
+        port.beforeRegistrationApproval(() -> handler.session().markClosed());
+        EmbeddedChannel channel = channel(handler);
+        Jt808Frame registration = registrationFrame();
+
+        IllegalStateException thrown = assertThrows(
+                IllegalStateException.class,
+                () -> channel.writeInbound(registration));
+
+        assertTrue(thrown.getMessage().contains("session transition"));
+        assertIssuedRegistrationTokenDestroyed(port);
+        assertEquals(0, registration.body().refCnt());
+        assertEquals(TerminalSessionState.CLOSED, handler.session().state());
+        assertFalse(channel.isActive());
+        assertNull(channel.readOutbound());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void registrationReplyWriteFailureDestroysIssuedTokenAndCleansTheSession() {
+        IllegalStateException writeFailure = new IllegalStateException(
+                "synthetic registration reply write failure");
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        RegistrationAuthenticationHandler handler = handler(
+                port, sessions, new MutableClock());
+        EmbeddedChannel channel = new EmbeddedChannel(
+                new OutboundResponseCopy(),
+                new RegistrationReplyFailure(writeFailure),
+                new JtFrameOwnershipHandler(),
+                handler);
+        Jt808Frame registration = registrationFrame();
+
+        assertDoesNotThrow(() -> channel.writeInbound(registration));
+        channel.runPendingTasks();
+        assertIssuedRegistrationTokenDestroyed(port);
+        assertEquals(0, registration.body().refCnt());
+        assertEquals(TerminalSessionState.CLOSED, handler.session().state());
+        assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        assertFalse(channel.isActive());
         channel.finishAndReleaseAll();
     }
 
@@ -869,6 +925,310 @@ class RegistrationAuthenticationHandlerTest {
     }
 
     @Test
+    void twoPhysicalTerminalsForOneVehicleCoexistAndTakeoverOnlyTheirOwnIdentity() {
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        EmbeddedChannel dispatchChannel = new EmbeddedChannel();
+        EmbeddedChannel recorderChannel = new EmbeddedChannel();
+        EmbeddedChannel replacementChannel = new EmbeddedChannel();
+        TerminalSession dispatch = authenticatedSession(
+                dispatchChannel,
+                terminalContext(TERMINAL_ID, Set.of("DISPATCH", "LOCATION_PRIMARY")),
+                TERMINAL_NUMBER);
+        TerminalSession recorder = authenticatedSession(
+                recorderChannel,
+                terminalContext(PEER_TERMINAL_ID,
+                        Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO")),
+                "999999999999");
+        TerminalSession replacement = authenticatedSession(
+                replacementChannel,
+                terminalContext(TERMINAL_ID, Set.of("DISPATCH", "LOCATION_PRIMARY")),
+                TERMINAL_NUMBER);
+
+        assertTrue(sessions.claim(dispatch).isEmpty());
+        assertTrue(sessions.claim(recorder).isEmpty());
+        assertSame(dispatch, sessions.current(TERMINAL_ID).orElseThrow());
+        assertSame(recorder, sessions.current(PEER_TERMINAL_ID).orElseThrow());
+        assertEquals(ONBOARD_SYSTEM_ID, dispatch.onboardSystemId());
+        assertEquals(ONBOARD_SYSTEM_ID, recorder.onboardSystemId());
+        assertEquals(VEHICLE_ID, dispatch.vehicleId());
+        assertEquals(VEHICLE_ID, recorder.vehicleId());
+
+        assertSame(dispatch, sessions.claim(replacement).orElseThrow());
+
+        assertFalse(dispatchChannel.isActive());
+        assertTrue(recorderChannel.isActive());
+        assertTrue(replacementChannel.isActive());
+        assertSame(replacement, sessions.current(TERMINAL_ID).orElseThrow());
+        assertSame(recorder, sessions.current(PEER_TERMINAL_ID).orElseThrow());
+        assertThrows(UnsupportedOperationException.class,
+                () -> recorder.roles().add("WAN_UPLINK"));
+        dispatchChannel.finishAndReleaseAll();
+        recorderChannel.finishAndReleaseAll();
+        replacementChannel.finishAndReleaseAll();
+    }
+
+    @Test
+    void failedIdentityRestoreLeavesTheUnauthenticatedSessionCompletelyUnbound() {
+        EmbeddedChannel channel = new EmbeddedChannel();
+        TerminalSession session = new TerminalSession(
+                channel, Instant.parse("2026-08-12T00:00:00Z"));
+
+        assertThrows(NullPointerException.class, () -> session.restoreAuthenticatedIdentity(
+                terminalContext(TERMINAL_ID, Set.of("LOCATION_PRIMARY")), null));
+
+        assertEquals(TerminalSessionState.CONNECTED_UNAUTHENTICATED, session.state());
+        assertNull(session.context());
+        assertNull(session.terminalId());
+        assertNull(session.onboardSystemId());
+        assertNull(session.vehicleId());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void freshJt8082019AuthenticationRestoresFullPhysicalContextAndIdentityIsolation()
+            throws Exception {
+        MutableClock clock = new MutableClock();
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        TerminalSessionContext context = terminalContext(
+                PEER_TERMINAL_ID,
+                Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO"));
+        port.approveIdentity(JT808_2019_TERMINAL_NUMBER, context);
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        RegistrationAuthenticationHandler handler = handler(port, sessions, clock);
+        EmbeddedChannel channel = channel(handler);
+        byte[] token = AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII);
+        byte[] body = new byte[token.length + 1];
+        body[0] = (byte) token.length;
+        System.arraycopy(token, 0, body, 1, token.length);
+
+        assertFalse(channel.writeInbound(jt8082019Frame(0x0102, body)));
+        release(channel.readOutbound());
+
+        assertEquals(TerminalSessionState.AUTHENTICATED, handler.session().state());
+        assertEquals(PEER_TERMINAL_ID, handler.session().terminalId());
+        assertEquals(ONBOARD_SYSTEM_ID, handler.session().onboardSystemId());
+        assertEquals(VEHICLE_ID, handler.session().vehicleId());
+        assertEquals(Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO"),
+                handler.session().roles());
+        assertEquals("WGS84", handler.session().sourceCoordinateSystem());
+        assertEquals("T/JSATL12-2017", handler.session().activeSafetyStandard());
+        assertEquals(List.of("ADAS", "DMS"), handler.session().activeSafetyModules());
+        assertEquals(5, handler.session().tokenVersion());
+        assertSame(handler.session(), sessions.current(PEER_TERMINAL_ID).orElseThrow());
+        assertEquals(ProtocolVersion.JT808_2019, port.lastIdentityProtocol());
+        assertEquals(JT808_2019_TERMINAL_NUMBER, port.lastIdentityPhone());
+        assertEquals(sha256(token), port.lastIdentityDigest());
+        assertNotEquals(AUTHENTICATION_TOKEN, port.lastIdentityDigest());
+
+        Jt808Frame changedIdentity = frame(0x0200, new byte[] {1}, "777777777777");
+        assertFalse(channel.writeInbound(changedIdentity));
+        assertFalse(channel.isActive());
+        assertTrue(sessions.current(PEER_TERMINAL_ID).isEmpty());
+        assertEquals(SessionAuditType.SESSION_IDENTITY_MISMATCH, port.lastAudit().type());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void crossConnectionBusinessRejectionInstallsNoContextAndLeaksNoIdentity() {
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        port.rejectIdentity(AuthenticationRejection.TOKEN_MISMATCH);
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        RegistrationAuthenticationHandler handler = handler(port, sessions, new MutableClock());
+        EmbeddedChannel channel = channel(handler);
+        Jt808Frame authentication = authenticationFrame("SYNTHETIC-SECRET-TOKEN");
+
+        assertFalse(channel.writeInbound(authentication));
+
+        assertTrue(channel.isActive());
+        assertNull(handler.session().terminalId());
+        assertNull(handler.session().context());
+        assertEquals(1, handler.session().authenticationFailures());
+        assertEquals(SessionAuditType.AUTHENTICATION_REJECTED, port.lastAudit().type());
+        assertEquals(AuthenticationRejection.TOKEN_MISMATCH.name(),
+                port.lastAudit().reasonCode());
+        assertNull(port.lastAudit().terminalId());
+        assertEquals(TERMINAL_NUMBER, port.lastIdentityPhone());
+        assertFalse(port.lastAudit().terminalAlias().contains(TERMINAL_NUMBER));
+        assertFalse(port.lastAudit().toString().contains("SYNTHETIC-SECRET-TOKEN"));
+        assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        release(channel.readOutbound());
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void identityClientFailureClearsTokenReleasesFrameAndClosesOnlyFailingDevice() {
+        IllegalStateException failure = new IllegalStateException("synthetic identity client failure");
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        port.failIdentityAuthentication(failure);
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        EmbeddedChannel peerChannel = new EmbeddedChannel();
+        TerminalSession peer = authenticatedSession(
+                peerChannel,
+                terminalContext(PEER_TERMINAL_ID, Set.of("LOCATION_BACKUP")),
+                "999999999999");
+        sessions.claim(peer);
+        RegistrationAuthenticationHandler handler = handler(port, sessions, new MutableClock());
+        EmbeddedChannel failing = channel(handler);
+        CapturingAuthenticationBody body = new CapturingAuthenticationBody(
+                AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII));
+        Jt808Frame authentication = frame(0x0102, body, TERMINAL_NUMBER);
+
+        IllegalStateException thrown = assertThrows(
+                IllegalStateException.class,
+                () -> failing.writeInbound(authentication));
+
+        assertSame(failure, thrown);
+        assertEquals(0, authentication.body().refCnt());
+        assertEquals(1, body.deallocations());
+        assertNotNull(body.capturedDestination());
+        assertArrayEquals(new byte[AUTHENTICATION_TOKEN.length()], body.capturedDestination());
+        assertFalse(failing.isActive());
+        assertEquals(TerminalSessionState.CLOSED, handler.session().state());
+        assertTrue(peerChannel.isActive());
+        assertSame(peer, sessions.current(PEER_TERMINAL_ID).orElseThrow());
+        assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        failing.finishAndReleaseAll();
+        peerChannel.finishAndReleaseAll();
+    }
+
+    @Test
+    void auditAndTakeoverFailuresAfterIdentityRestoreLeaveNoPartialSession() {
+        for (SessionAuditType failedAudit : List.of(
+                SessionAuditType.AUTHENTICATION_ACCEPTED,
+                SessionAuditType.SESSION_TAKEN_OVER)) {
+            IllegalStateException failure = new IllegalStateException(
+                    "synthetic " + failedAudit + " failure");
+            FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+            port.approveIdentity(TERMINAL_NUMBER,
+                    terminalContext(TERMINAL_ID, Set.of("DISPATCH", "LOCATION_PRIMARY")));
+            port.failAudit(failedAudit, failure);
+            TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+            EmbeddedChannel currentChannel = new EmbeddedChannel();
+            TerminalSession current = authenticatedSession(
+                    currentChannel,
+                    terminalContext(TERMINAL_ID, Set.of("DISPATCH", "LOCATION_PRIMARY")),
+                    TERMINAL_NUMBER);
+            if (failedAudit == SessionAuditType.SESSION_TAKEN_OVER) {
+                sessions.claim(current);
+            }
+            EmbeddedChannel peerChannel = new EmbeddedChannel();
+            TerminalSession peer = authenticatedSession(
+                    peerChannel,
+                    terminalContext(PEER_TERMINAL_ID, Set.of("LOCATION_BACKUP")),
+                    "999999999999");
+            sessions.claim(peer);
+            RegistrationAuthenticationHandler handler = handler(
+                    port, sessions, new MutableClock());
+            EmbeddedChannel failing = channel(handler);
+            Jt808Frame authentication = authenticationFrame(AUTHENTICATION_TOKEN);
+
+            IllegalStateException thrown = assertThrows(
+                    IllegalStateException.class,
+                    () -> failing.writeInbound(authentication));
+
+            assertSame(failure, thrown);
+            assertEquals(0, authentication.body().refCnt());
+            assertFalse(failing.isActive());
+            assertEquals(TerminalSessionState.CLOSED, handler.session().state());
+            assertSame(peer, sessions.current(PEER_TERMINAL_ID).orElseThrow());
+            assertTrue(peerChannel.isActive());
+            if (failedAudit == SessionAuditType.SESSION_TAKEN_OVER) {
+                assertSame(current, sessions.current(TERMINAL_ID).orElseThrow());
+                assertTrue(currentChannel.isActive());
+            } else {
+                assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+            }
+            failing.finishAndReleaseAll();
+            currentChannel.finishAndReleaseAll();
+            peerChannel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void terminalAuthenticationAtomicallyReplacesTheRegistrationAuthorizationSnapshot() {
+        UUID currentSystemId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        UUID currentVehicleId = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        TerminalSessionContext authenticatedContext = new TerminalSessionContext(
+                TERMINAL_ID,
+                currentSystemId,
+                currentVehicleId,
+                Set.of("LOCATION_BACKUP", "VIDEO"),
+                "GCJ02",
+                "T/GD-ACTIVE-SAFETY",
+                List.of("BSD"),
+                5);
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        port.approveTerminalAuthentication(authenticatedContext);
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        EmbeddedChannel peerChannel = new EmbeddedChannel();
+        TerminalSession peer = authenticatedSession(
+                peerChannel,
+                terminalContext(PEER_TERMINAL_ID, Set.of("LOCATION_BACKUP")),
+                "999999999999");
+        sessions.claim(peer);
+        RegistrationAuthenticationHandler handler = handler(
+                port, sessions, new MutableClock());
+        EmbeddedChannel channel = channel(handler);
+        channel.writeInbound(registrationFrame());
+        release(channel.readOutbound());
+        assertEquals(ONBOARD_SYSTEM_ID, handler.session().onboardSystemId());
+        assertEquals(VEHICLE_ID, handler.session().vehicleId());
+        assertEquals(Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY"),
+                handler.session().roles());
+
+        channel.writeInbound(authenticationFrame(AUTHENTICATION_TOKEN));
+        release(channel.readOutbound());
+
+        assertEquals(TerminalSessionState.AUTHENTICATED, handler.session().state());
+        assertEquals(authenticatedContext, handler.session().context());
+        assertEquals(currentSystemId, handler.session().onboardSystemId());
+        assertEquals(currentVehicleId, handler.session().vehicleId());
+        assertEquals(Set.of("LOCATION_BACKUP", "VIDEO"), handler.session().roles());
+        assertEquals("GCJ02", handler.session().sourceCoordinateSystem());
+        assertEquals("T/GD-ACTIVE-SAFETY", handler.session().activeSafetyStandard());
+        assertEquals(List.of("BSD"), handler.session().activeSafetyModules());
+        assertSame(peer, sessions.current(PEER_TERMINAL_ID).orElseThrow());
+        assertTrue(peerChannel.isActive());
+        channel.finishAndReleaseAll();
+        peerChannel.finishAndReleaseAll();
+    }
+
+    @Test
+    void inconsistentTerminalAuthenticationContextCleansOnlyTheFailingConnection() {
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        port.approveTerminalAuthentication(terminalContext(
+                UUID.fromString("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+                Set.of("LOCATION_PRIMARY")));
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        EmbeddedChannel peerChannel = new EmbeddedChannel();
+        TerminalSession peer = authenticatedSession(
+                peerChannel,
+                terminalContext(PEER_TERMINAL_ID, Set.of("LOCATION_BACKUP")),
+                "999999999999");
+        sessions.claim(peer);
+        RegistrationAuthenticationHandler handler = handler(
+                port, sessions, new MutableClock());
+        EmbeddedChannel failing = channel(handler);
+        failing.writeInbound(registrationFrame());
+        release(failing.readOutbound());
+        Jt808Frame authentication = authenticationFrame(AUTHENTICATION_TOKEN);
+
+        IllegalStateException thrown = assertThrows(
+                IllegalStateException.class,
+                () -> failing.writeInbound(authentication));
+
+        assertEquals("authentication context is inconsistent", thrown.getMessage());
+        assertEquals(0, authentication.body().refCnt());
+        assertFalse(failing.isActive());
+        assertEquals(TerminalSessionState.CLOSED, handler.session().state());
+        assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        assertSame(peer, sessions.current(PEER_TERMINAL_ID).orElseThrow());
+        assertTrue(peerChannel.isActive());
+        failing.finishAndReleaseAll();
+        peerChannel.finishAndReleaseAll();
+    }
+
+    @Test
     void registersAuthenticatesRefreshesHeartbeatAndRejectsUnauthenticatedLocation() {
         MutableClock clock = new MutableClock();
         FakeTerminalRegistry port = FakeTerminalRegistry.approved();
@@ -882,8 +1242,13 @@ class RegistrationAuthenticationHandlerTest {
         assertTrue(registrationReply.body().toString(StandardCharsets.US_ASCII).contains(AUTHENTICATION_TOKEN));
         release(registrationReply);
         assertEquals(TerminalSessionState.CONNECTED_UNAUTHENTICATED, handler.session().state());
+        assertEquals(ONBOARD_SYSTEM_ID, handler.session().onboardSystemId());
+        assertEquals(VEHICLE_ID, handler.session().vehicleId());
+        assertEquals(Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY"),
+                handler.session().roles());
         assertEquals("T/JSATL12-2017", handler.session().activeSafetyStandard());
         assertEquals(List.of("ADAS", "DMS"), handler.session().activeSafetyModules());
+        assertIssuedRegistrationTokenDestroyed(port);
 
         assertFalse(channel.writeInbound(authenticationFrame(AUTHENTICATION_TOKEN)));
         release(channel.readOutbound());
@@ -1001,12 +1366,21 @@ class RegistrationAuthenticationHandlerTest {
     @Test
     void issuesHighEntropyTokenAndRedactsItFromDiagnosticText() throws Exception {
         RegistrationDecision decision = RegistrationDecision.issue(
-                TERMINAL_ID, VEHICLE_ID, "WGS84", 7, new SecureRandom());
-        byte[] token = decision.authenticationToken();
-
-        assertTrue(token.length >= 43);
-        assertEquals(sha256(token), decision.authenticationTokenSha256());
-        assertFalse(decision.toString().contains(new String(token, StandardCharsets.US_ASCII)));
+                terminalContext(TERMINAL_ID, Set.of("LOCATION_PRIMARY")),
+                new SecureRandom());
+        byte[] token = decision.consumeAuthenticationToken();
+        try {
+            assertTrue(token.length >= 43);
+            assertEquals(sha256(token), decision.authenticationTokenSha256());
+            assertFalse(decision.toString().contains(
+                    new String(token, StandardCharsets.US_ASCII)));
+            assertFalse(decision.hasAvailableAuthenticationToken());
+            assertThrows(IllegalStateException.class, decision::consumeAuthenticationToken);
+        } finally {
+            java.util.Arrays.fill(token, (byte) 0);
+            decision.destroyAuthenticationToken();
+        }
+        assertTrue(decision.authenticationTokenDestroyed());
     }
 
     @Test
@@ -1062,6 +1436,38 @@ class RegistrationAuthenticationHandlerTest {
     private static RegistrationAuthenticationHandler handler(
             TerminalRegistryPort port, TerminalSessionRegistry sessions, Clock clock) {
         return new RegistrationAuthenticationHandler(port, sessions, clock, Duration.ofSeconds(30));
+    }
+
+    private static TerminalSessionContext terminalContext(
+            UUID terminalId, Set<String> roles) {
+        return new TerminalSessionContext(
+                terminalId,
+                ONBOARD_SYSTEM_ID,
+                VEHICLE_ID,
+                roles,
+                "WGS84",
+                "T/JSATL12-2017",
+                List.of("ADAS", "DMS"),
+                5);
+    }
+
+    private static TerminalSession authenticatedSession(
+            EmbeddedChannel channel,
+            TerminalSessionContext context,
+            String terminalIdentity) {
+        TerminalSession session = new TerminalSession(
+                channel, Instant.parse("2026-08-12T00:00:00Z"));
+        session.restoreAuthenticatedIdentity(context, terminalIdentity);
+        session.authenticated(Instant.parse("2026-08-12T00:00:01Z"));
+        return session;
+    }
+
+    private static void assertIssuedRegistrationTokenDestroyed(FakeTerminalRegistry registry) {
+        RegistrationDecision decision = registry.lastRegistrationDecision();
+        assertNotNull(decision);
+        assertFalse(decision.hasAvailableAuthenticationToken());
+        assertTrue(decision.authenticationTokenDestroyed());
+        assertThrows(IllegalStateException.class, decision::consumeAuthenticationToken);
     }
 
     private static void authenticate(EmbeddedChannel channel) {
@@ -1235,6 +1641,14 @@ class RegistrationAuthenticationHandlerTest {
         return new Jt808Frame(header, Unpooled.wrappedBuffer(body), (byte) 0);
     }
 
+    private static Jt808Frame frame(
+            int messageId, ByteBuf body, String terminalNumber) {
+        Jt808MessageHeader header = new Jt808MessageHeader(
+                messageId, body.readableBytes(), body.readableBytes(), 0, false,
+                ProtocolVersion.JT808_2013, 0, terminalNumber, 9, null, null);
+        return new Jt808Frame(header, body, (byte) 0);
+    }
+
     private static void writeFixedAscii(ByteBuf target, String value, int length) {
         byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
         target.writeBytes(bytes);
@@ -1288,6 +1702,36 @@ class RegistrationAuthenticationHandlerTest {
         }
     }
 
+    private static final class CapturingAuthenticationBody extends UnpooledHeapByteBuf {
+        private final AtomicReference<byte[]> capturedDestination = new AtomicReference<>();
+        private final AtomicInteger deallocations = new AtomicInteger();
+
+        private CapturingAuthenticationBody(byte[] token) {
+            super(UnpooledByteBufAllocator.DEFAULT, token.length, token.length);
+            writeBytes(token);
+        }
+
+        @Override
+        public ByteBuf getBytes(int index, byte[] destination, int destinationIndex, int length) {
+            capturedDestination.compareAndSet(null, destination);
+            return super.getBytes(index, destination, destinationIndex, length);
+        }
+
+        @Override
+        protected void deallocate() {
+            deallocations.incrementAndGet();
+            super.deallocate();
+        }
+
+        byte[] capturedDestination() {
+            return capturedDestination.get();
+        }
+
+        int deallocations() {
+            return deallocations.get();
+        }
+    }
+
     private static final class FakeTerminalRegistry implements TerminalRegistryPort {
         private final RegistrationRejection registrationRejection;
         private final String activeSafetyStandard;
@@ -1295,13 +1739,22 @@ class RegistrationAuthenticationHandlerTest {
         private final List<SessionAuditIngress> audits = new ArrayList<>();
         private RuntimeException registrationFailure;
         private RuntimeException authenticationFailure;
+        private TerminalSessionContext terminalAuthenticationContext;
+        private RuntimeException identityAuthenticationFailure;
+        private AuthenticationRejection identityRejection;
+        private Map<String, TerminalSessionContext> identityContexts = Map.of();
         private RuntimeException nextAuditFailure;
         private SessionAuditType auditFailureType;
         private int registrationAttempts;
         private int auditAttempts;
         private TerminalRegistrationIdentity lastRegistrationIdentity;
+        private RegistrationDecision lastRegistrationDecision;
+        private Runnable beforeRegistrationApproval;
         private Path observedCapturePath;
         private boolean captureExistedDuringVerification;
+        private ProtocolVersion lastIdentityProtocol;
+        private String lastIdentityPhone;
+        private String lastIdentityDigest;
         private volatile AuditBlock auditBlock;
 
         private FakeTerminalRegistry(
@@ -1347,6 +1800,28 @@ class RegistrationAuthenticationHandlerTest {
             nextAuditFailure = failure;
         }
 
+        void approveIdentity(String terminalPhone, TerminalSessionContext context) {
+            identityContexts = Map.of(terminalPhone, context);
+            identityRejection = null;
+        }
+
+        void rejectIdentity(AuthenticationRejection rejection) {
+            identityContexts = Map.of();
+            identityRejection = rejection;
+        }
+
+        void failIdentityAuthentication(RuntimeException failure) {
+            identityAuthenticationFailure = failure;
+        }
+
+        void approveTerminalAuthentication(TerminalSessionContext context) {
+            terminalAuthenticationContext = context;
+        }
+
+        void beforeRegistrationApproval(Runnable action) {
+            beforeRegistrationApproval = action;
+        }
+
         void observeCapturePath(Path output) {
             observedCapturePath = output;
         }
@@ -1377,15 +1852,23 @@ class RegistrationAuthenticationHandlerTest {
             assertEquals("PILOT-MODEL", identity.model());
             assertEquals("TERM001", identity.terminalCode());
             assertEquals("PILOT-A", identity.vehicleIdentifier());
-            return RegistrationDecision.approved(
-                    TERMINAL_ID,
-                    VEHICLE_ID,
-                    "WGS84",
-                    activeSafetyStandard,
-                    activeSafetyModules,
-                    5,
+            RegistrationDecision decision = RegistrationDecision.approved(
+                    new TerminalSessionContext(
+                            TERMINAL_ID,
+                            ONBOARD_SYSTEM_ID,
+                            VEHICLE_ID,
+                            Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY"),
+                            "WGS84",
+                            activeSafetyStandard,
+                            activeSafetyModules,
+                            5),
                     AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII),
                     uncheckedSha256(AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII)));
+            lastRegistrationDecision = decision;
+            if (beforeRegistrationApproval != null) {
+                beforeRegistrationApproval.run();
+            }
+            return decision;
         }
 
         @Override
@@ -1396,8 +1879,36 @@ class RegistrationAuthenticationHandlerTest {
             }
             return uncheckedSha256(AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII))
                     .equals(presentedTokenSha256)
-                    ? AuthenticationDecision.allow()
+                    ? AuthenticationDecision.allow(
+                            terminalAuthenticationContext == null
+                                    ? terminalContext(
+                                            terminalId,
+                                            Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY"))
+                                    : terminalAuthenticationContext)
                     : AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+        }
+
+        @Override
+        public AuthenticationDecision verifyAuthenticationByIdentity(
+                ProtocolVersion protocolVersion,
+                String terminalPhone,
+                String presentedTokenSha256) {
+            lastIdentityProtocol = protocolVersion;
+            lastIdentityPhone = terminalPhone;
+            lastIdentityDigest = presentedTokenSha256;
+            if (identityAuthenticationFailure != null) {
+                throw identityAuthenticationFailure;
+            }
+            if (identityRejection != null) {
+                return AuthenticationDecision.rejected(identityRejection);
+            }
+            TerminalSessionContext context = identityContexts.get(terminalPhone);
+            if (context == null || !uncheckedSha256(
+                    AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII))
+                    .equals(presentedTokenSha256)) {
+                return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+            }
+            return AuthenticationDecision.allow(context);
         }
 
         @Override
@@ -1443,6 +1954,22 @@ class RegistrationAuthenticationHandlerTest {
 
         TerminalRegistrationIdentity lastRegistrationIdentity() {
             return lastRegistrationIdentity;
+        }
+
+        RegistrationDecision lastRegistrationDecision() {
+            return lastRegistrationDecision;
+        }
+
+        ProtocolVersion lastIdentityProtocol() {
+            return lastIdentityProtocol;
+        }
+
+        String lastIdentityPhone() {
+            return lastIdentityPhone;
+        }
+
+        String lastIdentityDigest() {
+            return lastIdentityDigest;
         }
 
         private static String uncheckedSha256(byte[] value) {
@@ -1508,6 +2035,27 @@ class RegistrationAuthenticationHandlerTest {
             if (message instanceof Jt808Frame frame) {
                 context.write(new Jt808Frame(
                         frame.header(), frame.body().copy(), frame.checksum()), promise);
+                return;
+            }
+            context.write(message, promise);
+        }
+    }
+
+    private static final class RegistrationReplyFailure extends ChannelOutboundHandlerAdapter {
+        private final RuntimeException failure;
+
+        private RegistrationReplyFailure(RuntimeException failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public void write(
+                ChannelHandlerContext context,
+                Object message,
+                ChannelPromise promise) {
+            if (message instanceof Jt808Frame frame
+                    && frame.header().messageId() == 0x8100) {
+                promise.setFailure(failure);
                 return;
             }
             context.write(message, promise);

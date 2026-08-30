@@ -12,6 +12,9 @@ import com.idavy.drtops.jtgateway.session.RegistrationDecision;
 import com.idavy.drtops.jtgateway.session.SessionAuditIngress;
 import com.idavy.drtops.jtgateway.session.TerminalRegistrationIdentity;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
+import com.idavy.drtops.jtgateway.session.TerminalSession;
+import com.idavy.drtops.jtgateway.session.TerminalSessionContext;
+import com.idavy.drtops.jtgateway.session.TerminalSessionState;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -30,6 +33,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CompletableFuture;
@@ -42,6 +47,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class JtGatewayServerIntegrationTest {
     private static final UUID TERMINAL_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID PEER_TERMINAL_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final UUID ONBOARD_SYSTEM_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
+    private static final UUID VEHICLE_ID = UUID.fromString("55555555-5555-5555-5555-555555555555");
+    private static final String AUTHENTICATION_TOKEN = "PIPELINE-TEST-TOKEN";
 
     @Test
     void buildsHandlersInSecurityAndProtocolOrderWithReaderIdleTimeout() {
@@ -202,6 +211,59 @@ class JtGatewayServerIntegrationTest {
     }
 
     @Test
+    void keepsTwoPhysicalSessionsForOneVehicleAndTakesOverOnlyTheSameTerminal()
+            throws Exception {
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        DualIdentityRegistry registry = new DualIdentityRegistry();
+        try (JtGatewayServer server = new JtGatewayServer(
+                configuration(4, 100), registry, sessions)) {
+            int port = server.start();
+            try (Socket dispatch = socket(port);
+                    Socket recorder = socket(port);
+                    Socket dispatchReplacement = socket(port)) {
+                dispatch.getOutputStream().write(authenticationPacket(
+                        "123456789012", AUTHENTICATION_TOKEN));
+                dispatch.getOutputStream().flush();
+                recorder.getOutputStream().write(authenticationPacket(
+                        "999999999999", AUTHENTICATION_TOKEN));
+                recorder.getOutputStream().flush();
+                await(() -> sessions.current(TERMINAL_ID).isPresent()
+                                && sessions.current(PEER_TERMINAL_ID).isPresent(),
+                        Duration.ofSeconds(3));
+
+                TerminalSession firstDispatch = sessions.current(TERMINAL_ID).orElseThrow();
+                TerminalSession recorderSession = sessions.current(PEER_TERMINAL_ID).orElseThrow();
+                assertEquals(TerminalSessionState.AUTHENTICATED, firstDispatch.state());
+                assertEquals(TerminalSessionState.AUTHENTICATED, recorderSession.state());
+                assertEquals(ONBOARD_SYSTEM_ID, firstDispatch.onboardSystemId());
+                assertEquals(ONBOARD_SYSTEM_ID, recorderSession.onboardSystemId());
+                assertEquals(VEHICLE_ID, firstDispatch.vehicleId());
+                assertEquals(VEHICLE_ID, recorderSession.vehicleId());
+                assertEquals(Set.of("DISPATCH", "LOCATION_PRIMARY"), firstDispatch.roles());
+                assertEquals(Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO"),
+                        recorderSession.roles());
+
+                dispatchReplacement.getOutputStream().write(authenticationPacket(
+                        "123456789012", AUTHENTICATION_TOKEN));
+                dispatchReplacement.getOutputStream().flush();
+                await(() -> sessions.current(TERMINAL_ID)
+                                .filter(current -> current != firstDispatch)
+                                .isPresent(),
+                        Duration.ofSeconds(3));
+                await(() -> !firstDispatch.channel().isActive(), Duration.ofSeconds(3));
+
+                TerminalSession replacement = sessions.current(TERMINAL_ID).orElseThrow();
+                assertEquals(TerminalSessionState.CLOSED, firstDispatch.state());
+                assertFalse(firstDispatch.channel().isActive());
+                assertEquals(TerminalSessionState.AUTHENTICATED, replacement.state());
+                assertTrue(replacement.channel().isActive());
+                assertSame(recorderSession, sessions.current(PEER_TERMINAL_ID).orElseThrow());
+                assertTrue(recorderSession.channel().isActive());
+            }
+        }
+    }
+
+    @Test
     void closesAcceptedConnectionsBeforeWorkerExecutors() throws Exception {
         Logger nettyContextLogger = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
         ListAppender<ILoggingEvent> warnings = new ListAppender<>();
@@ -343,6 +405,42 @@ class JtGatewayServerIntegrationTest {
         }
     }
 
+    private static byte[] authenticationPacket(String terminalIdentity, String token) {
+        byte[] tokenBytes = token.getBytes(StandardCharsets.US_ASCII);
+        Jt808Frame frame = new Jt808Frame(new Jt808MessageHeader(
+                0x0102, tokenBytes.length, tokenBytes.length, 0, false,
+                ProtocolVersion.JT808_2013, 0, terminalIdentity, 1, null, null),
+                Unpooled.wrappedBuffer(tokenBytes), (byte) 0);
+        EmbeddedChannel encoder = new EmbeddedChannel(new Jt808FrameEncoder());
+        try {
+            assertTrue(encoder.writeOutbound(frame));
+            ByteBuf encoded = encoder.readOutbound();
+            try {
+                byte[] packet = new byte[encoded.readableBytes()];
+                encoded.readBytes(packet);
+                return packet;
+            } finally {
+                encoded.release();
+            }
+        } finally {
+            release(frame);
+            encoder.finishAndReleaseAll();
+        }
+    }
+
+    private static TerminalSessionContext context(
+            UUID terminalId, Set<String> roles) {
+        return new TerminalSessionContext(
+                terminalId,
+                ONBOARD_SYSTEM_ID,
+                VEHICLE_ID,
+                roles,
+                "WGS84",
+                "T/JSATL12-2017",
+                List.of("ADAS", "DMS"),
+                5);
+    }
+
     private static void writeFixedAscii(ByteBuf target, String value, int length) {
         byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
         target.writeBytes(bytes);
@@ -379,10 +477,7 @@ class JtGatewayServerIntegrationTest {
         public RegistrationDecision verifyRegistration(TerminalRegistrationIdentity identity) {
             byte[] token = "PIPELINE-TEST-TOKEN".getBytes(StandardCharsets.US_ASCII);
             return RegistrationDecision.approved(
-                    TERMINAL_ID,
-                    UUID.fromString("33333333-3333-3333-3333-333333333333"),
-                    "WGS84",
-                    1,
+                    context(TERMINAL_ID, Set.of("LOCATION_PRIMARY")),
                     token,
                     sha256(token));
         }
@@ -390,11 +485,37 @@ class JtGatewayServerIntegrationTest {
         @Override
         public AuthenticationDecision verifyAuthentication(
                 UUID terminalId, int tokenVersion, String presentedTokenSha256) {
-            return AuthenticationDecision.allow();
+            return AuthenticationDecision.allow(
+                    context(terminalId, Set.of("LOCATION_PRIMARY")));
         }
 
         @Override
         public void recordSessionAudit(SessionAuditIngress event) {
+        }
+    }
+
+    private static final class DualIdentityRegistry extends ApprovingRegistry {
+        private final Map<String, TerminalSessionContext> contexts = Map.of(
+                "123456789012",
+                context(TERMINAL_ID, Set.of("DISPATCH", "LOCATION_PRIMARY")),
+                "999999999999",
+                context(PEER_TERMINAL_ID,
+                        Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO")));
+
+        @Override
+        public AuthenticationDecision verifyAuthenticationByIdentity(
+                ProtocolVersion protocolVersion,
+                String terminalPhone,
+                String presentedTokenSha256) {
+            TerminalSessionContext context = contexts.get(terminalPhone);
+            if (protocolVersion != ProtocolVersion.JT808_2013
+                    || context == null
+                    || !sha256(AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII))
+                            .equals(presentedTokenSha256)) {
+                return AuthenticationDecision.rejected(
+                        com.idavy.drtops.jtgateway.session.AuthenticationRejection.TOKEN_MISMATCH);
+            }
+            return AuthenticationDecision.allow(context);
         }
     }
 

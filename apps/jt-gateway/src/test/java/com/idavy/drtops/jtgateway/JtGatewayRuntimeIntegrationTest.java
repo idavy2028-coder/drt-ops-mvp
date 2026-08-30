@@ -819,14 +819,7 @@ class JtGatewayRuntimeIntegrationTest {
         private OperationsApiStub() throws IOException {
             server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
             server.createContext("/internal/jt-gateway/registrations/verify", exchange -> respond(
-                    exchange, 200, """
-                            {"data":{"approved":true,
-                            "terminalId":"44444444-4444-4444-4444-444444444444",
-                            "vehicleId":"55555555-5555-5555-5555-555555555555",
-                            "sourceCoordinateSystem":"WGS84",
-                            "activeSafetyStandard":"T/JSATL12-2017",
-                            "activeSafetyModules":["ADAS"],"tokenVersion":3,"reasonCode":null}}
-                            """));
+                    exchange, 200, approvedRegistrationResponse()));
             server.createContext("/internal/jt-gateway/registrations/", exchange -> {
                 JsonNode request = read(exchange);
                 registeredTokenDigest = request.required("tokenSha256").asText();
@@ -835,9 +828,10 @@ class JtGatewayRuntimeIntegrationTest {
             server.createContext("/internal/jt-gateway/authentications/verify", exchange -> {
                 JsonNode request = read(exchange);
                 boolean approved = registeredTokenDigest != null
-                        && registeredTokenDigest.equals(request.required("tokenSha256").asText());
-                respond(exchange, 200, "{\"data\":{\"approved\":" + approved
-                        + ",\"reasonCode\":" + (approved ? "null" : "\"AUTHENTICATION_REJECTED\"") + "}}");
+                        && registeredTokenDigest.equals(request.required("tokenSha256").asText())
+                        && TERMINAL_ID.toString().equals(request.required("terminalId").asText())
+                        && request.required("tokenVersion").asInt() == 3;
+                respond(exchange, 200, authenticationResponse(approved));
             });
             server.createContext("/internal/jt-gateway/audit-events", exchange -> {
                 JsonNode request = read(exchange);
@@ -883,6 +877,46 @@ class JtGatewayRuntimeIntegrationTest {
             });
             server.setExecutor(httpWorkers);
             server.start();
+        }
+
+        private static String approvedRegistrationResponse() {
+            return """
+                    {"data":{"approved":true,
+                     "terminalId":"44444444-4444-4444-4444-444444444444",
+                     "onboardSystemId":"66666666-6666-6666-6666-666666666666",
+                     "vehicleId":"55555555-5555-5555-5555-555555555555",
+                     "roles":["LOCATION_PRIMARY","ACTIVE_SAFETY"],
+                     "sourceCoordinateSystem":"WGS84",
+                     "activeSafetyStandard":"T/JSATL12-2017",
+                     "activeSafetyModules":["ADAS"],"tokenVersion":3,
+                     "context":{"terminalId":"44444444-4444-4444-4444-444444444444",
+                      "onboardSystemId":"66666666-6666-6666-6666-666666666666",
+                      "vehicleId":"55555555-5555-5555-5555-555555555555",
+                      "roles":["LOCATION_PRIMARY","ACTIVE_SAFETY"],
+                      "sourceCoordinateSystem":"WGS84",
+                      "activeSafetyStandard":"T/JSATL12-2017",
+                      "activeSafetyModules":["ADAS"],"tokenVersion":3},
+                     "warnings":[],"reasonCode":null}}
+                    """;
+        }
+
+        private static String authenticationResponse(boolean approved) {
+            if (!approved) {
+                return "{\"data\":{\"approved\":false,"
+                        + "\"context\":null,"
+                        + "\"reasonCode\":\"AUTHENTICATION_REJECTED\"}}";
+            }
+            return """
+                    {"data":{"approved":true,
+                     "context":{"terminalId":"44444444-4444-4444-4444-444444444444",
+                      "onboardSystemId":"66666666-6666-6666-6666-666666666666",
+                      "vehicleId":"55555555-5555-5555-5555-555555555555",
+                      "roles":["LOCATION_PRIMARY","ACTIVE_SAFETY"],
+                      "sourceCoordinateSystem":"WGS84",
+                      "activeSafetyStandard":"T/JSATL12-2017",
+                      "activeSafetyModules":["ADAS"],"tokenVersion":3},
+                     "reasonCode":null}}
+                    """;
         }
 
         private String baseUrl() {

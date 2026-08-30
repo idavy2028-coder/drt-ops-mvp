@@ -5,6 +5,7 @@ import com.idavy.drtops.jt.protocol.codec.Jt808MessageHeader;
 import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.timeout.IdleState;
@@ -233,8 +234,34 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         } catch (RuntimeException exception) {
             throw closeOnRegistrationInfrastructureFailure(frame, exception);
         }
-        if (decision.approved()
-                || decision.rejection() == RegistrationRejection.VEHICLE_IDENTIFIER_MISMATCH) {
+        if (!decision.approved()) {
+            if (decision.rejection() == RegistrationRejection.VEHICLE_IDENTIFIER_MISMATCH) {
+                try {
+                    privateVehicleIdentifierCapture.capture(
+                            maintenance.alias(), identity.vehicleIdentifier());
+                } catch (IllegalArgumentException exception) {
+                    rejectRegistration(
+                            context,
+                            frame,
+                            RegistrationRejection.MALFORMED_REGISTRATION,
+                            PRIVATE_CAPTURE_CONFIGURATION_INVALID_REASON);
+                    return;
+                } catch (RuntimeException exception) {
+                    throw closeOnRegistrationInfrastructureFailure(frame, exception);
+                }
+            }
+            rejectRegistration(context, frame, decision.rejection(), null);
+            return;
+        }
+
+        byte[] authenticationToken;
+        try {
+            authenticationToken = decision.consumeAuthenticationToken();
+        } catch (RuntimeException exception) {
+            decision.destroyAuthenticationToken();
+            throw closeOnRegistrationInfrastructureFailure(frame, exception);
+        }
+        try {
             try {
                 privateVehicleIdentifierCapture.capture(
                         maintenance.alias(), identity.vehicleIdentifier());
@@ -248,23 +275,28 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             } catch (RuntimeException exception) {
                 throw closeOnRegistrationInfrastructureFailure(frame, exception);
             }
-        }
-        if (!decision.approved()) {
-            rejectRegistration(context, frame, decision.rejection(), null);
-            return;
-        }
 
-        try {
-            audit(context, SessionAuditType.REGISTRATION_ACCEPTED, "APPROVED",
-                    decision.terminalId(), observedTerminalAlias);
-        } catch (RuntimeException exception) {
-            throw closeOnRegistrationInfrastructureFailure(frame, exception);
+            try {
+                audit(context, SessionAuditType.REGISTRATION_ACCEPTED, "APPROVED",
+                        decision.terminalId(), observedTerminalAlias);
+                session.registrationAccepted(
+                        decision.context(), frame.header().terminalIdentity());
+                ChannelFuture reply = writeRegistrationReply(
+                        context, frame.header(), 0, authenticationToken);
+                reply.addListener(completed -> {
+                    if (!completed.isSuccess()) {
+                        sessionRegistry.remove(session);
+                        session.close();
+                    }
+                });
+                release(frame);
+            } catch (RuntimeException exception) {
+                throw closeOnRegistrationInfrastructureFailure(frame, exception);
+            }
+        } finally {
+            java.util.Arrays.fill(authenticationToken, (byte) 0);
+            decision.destroyAuthenticationToken();
         }
-        session.registrationAccepted(
-                decision.terminalId(), decision.vehicleId(), decision.sourceCoordinateSystem(), decision.tokenVersion(),
-                frame.header().terminalIdentity(), decision.activeSafetyStandard(), decision.activeSafetyModules());
-        writeRegistrationReply(context, frame.header(), 0, decision.authenticationToken());
-        release(frame);
     }
 
     private void rejectRegistration(
@@ -311,19 +343,27 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
     }
 
     private void handleAuthentication(ChannelHandlerContext context, Jt808Frame frame) {
+        boolean restoreIdentity = session.terminalId() == null;
         AuthenticationDecision decision;
-        if (session.terminalId() == null) {
-            decision = AuthenticationDecision.rejected(AuthenticationRejection.REGISTRATION_REQUIRED);
-        } else {
-            byte[] token = parseAuthenticationToken(frame);
-            try {
-                decision = registryPort.verifyAuthentication(
-                        session.terminalId(), session.tokenVersion(), sha256(token));
-            } catch (RuntimeException exception) {
-                throw closeOnAuthenticationInfrastructureFailure(frame, exception);
-            } finally {
-                java.util.Arrays.fill(token, (byte) 0);
-            }
+        byte[] token;
+        try {
+            token = parseAuthenticationToken(frame);
+        } catch (RuntimeException exception) {
+            throw closeOnAuthenticationInfrastructureFailure(frame, exception);
+        }
+        try {
+            String digest = sha256(token);
+            decision = restoreIdentity
+                    ? registryPort.verifyAuthenticationByIdentity(
+                            frame.header().protocolVersion(),
+                            frame.header().terminalIdentity(),
+                            digest)
+                    : registryPort.verifyAuthentication(
+                            session.terminalId(), session.tokenVersion(), digest);
+        } catch (RuntimeException exception) {
+            throw closeOnAuthenticationInfrastructureFailure(frame, exception);
+        } finally {
+            java.util.Arrays.fill(token, (byte) 0);
         }
 
         if (!decision.approved()) {
@@ -346,12 +386,14 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         }
 
         try {
+            if (restoreIdentity) {
+                session.restoreAuthenticatedIdentity(
+                        decision.context(), frame.header().terminalIdentity());
+            } else {
+                session.refreshAuthenticationContext(decision.context());
+            }
             audit(context, SessionAuditType.AUTHENTICATION_ACCEPTED, "APPROVED");
-        } catch (RuntimeException exception) {
-            throw closeOnAuthenticationInfrastructureFailure(frame, exception);
-        }
-        session.authenticated(clock.instant());
-        try {
+            session.authenticated(clock.instant());
             sessionRegistry.claim(session, previous ->
                     audit(context, SessionAuditType.SESSION_TAKEN_OVER,
                             "PREVIOUS_CONNECTION_REPLACED"));
@@ -452,14 +494,14 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         return token;
     }
 
-    private void writeRegistrationReply(
+    private ChannelFuture writeRegistrationReply(
             ChannelHandlerContext context, Jt808MessageHeader request, int result, byte[] token) {
         ByteBuf body = Unpooled.buffer();
         body.writeShort(request.serialNumber()).writeByte(result);
         if (result == 0 && token != null) {
             body.writeBytes(token);
         }
-        context.writeAndFlush(responseFrame(0x8100, request, body));
+        return context.writeAndFlush(responseFrame(0x8100, request, body));
     }
 
     private void writeGeneralReply(ChannelHandlerContext context, Jt808MessageHeader request, int result) {

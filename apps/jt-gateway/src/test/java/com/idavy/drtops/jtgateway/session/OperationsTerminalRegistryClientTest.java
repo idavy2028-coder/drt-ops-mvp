@@ -2,6 +2,8 @@ package com.idavy.drtops.jtgateway.session;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
@@ -24,6 +26,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
@@ -40,6 +47,229 @@ class OperationsTerminalRegistryClientTest {
     private static final String CREDENTIAL = "synthetic-audit-service-credential";
     private static final URI INGRESS = URI.create("http://operations.invalid/internal/jt-gateway/ingress");
     private static final URI AUDIT = URI.create("http://operations.invalid/internal/jt-gateway/audit-events");
+    private static final UUID TERMINAL_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID SYSTEM_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final String PRESENTED_DIGEST = "c".repeat(64);
+
+    @Test
+    void validatesAndDefensivelyCopiesTheImmutableTerminalSessionContext() {
+        Set<String> roles = new HashSet<>(Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY"));
+        List<String> modules = new ArrayList<>(List.of("ADAS", "DMS"));
+
+        TerminalSessionContext context = new TerminalSessionContext(
+                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, roles, "WGS84",
+                "T/JSATL12-2017", modules, 7);
+        roles.clear();
+        modules.clear();
+
+        assertEquals(Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY"), context.roles());
+        assertEquals(List.of("ADAS", "DMS"), context.activeSafetyModules());
+        assertThrows(UnsupportedOperationException.class, () -> context.roles().add("VIDEO"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> context.activeSafetyModules().add("BSD"));
+        assertThrows(NullPointerException.class, () -> new TerminalSessionContext(
+                null, SYSTEM_ID, VEHICLE_ID, Set.of("VIDEO"), "WGS84",
+                null, List.of(), 1));
+        assertThrows(IllegalArgumentException.class, () -> new TerminalSessionContext(
+                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, Set.of(" "), "WGS84",
+                null, List.of(), 1));
+        assertThrows(IllegalArgumentException.class, () -> new TerminalSessionContext(
+                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, Set.of("VIDEO"), "EPSG:4326",
+                null, List.of(), 1));
+        assertThrows(IllegalArgumentException.class, () -> new TerminalSessionContext(
+                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, Set.of("VIDEO"), "GCJ02",
+                null, List.of(), 0));
+    }
+
+    @Test
+    void mapsNestedRegistrationContextBeforeIssuingAndCompletingTheToken() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(builder, "nested_registration_context");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/registrations/verify"))
+                .andRespond(withSuccess(approvedRegistrationJson(TERMINAL_ID),
+                        MediaType.APPLICATION_JSON));
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/registrations/"
+                                + TERMINAL_ID + "/complete"))
+                .andExpect(jsonPath("$.tokenVersion").value(7))
+                .andExpect(jsonPath("$.tokenSha256").isString())
+                .andExpect(jsonPath("$.gatewayInstance").value("gateway-registration-test"))
+                .andRespond(withSuccess());
+
+        RegistrationDecision decision = registry.verifyRegistration(syntheticIdentity());
+
+        assertTrue(decision.approved());
+        assertEquals(new TerminalSessionContext(
+                        TERMINAL_ID, SYSTEM_ID, VEHICLE_ID,
+                        Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO"),
+                        "WGS84", "T/JSATL12-2017", List.of("ADAS", "DMS"), 7),
+                decision.context());
+        assertEquals(TERMINAL_ID, decision.terminalId());
+        assertEquals(VEHICLE_ID, decision.vehicleId());
+        byte[] issuedToken = decision.consumeAuthenticationToken();
+        try {
+            assertTrue(issuedToken.length > 0);
+            assertFalse(decision.hasAvailableAuthenticationToken());
+            assertThrows(IllegalStateException.class, decision::consumeAuthenticationToken);
+        } finally {
+            Arrays.fill(issuedToken, (byte) 0);
+            decision.destroyAuthenticationToken();
+        }
+        assertTrue(decision.authenticationTokenDestroyed());
+        server.verify();
+    }
+
+    @Test
+    void rejectsMissingOrInconsistentRegistrationContextBeforeTokenCompletion() {
+        for (String response : List.of(
+                """
+                {"data":{"approved":true,
+                 "terminalId":"11111111-1111-1111-1111-111111111111",
+                 "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                 "vehicleId":"33333333-3333-3333-3333-333333333333",
+                 "sourceCoordinateSystem":"WGS84","tokenVersion":7}}
+                """,
+                approvedRegistrationJson(
+                        UUID.fromString("44444444-4444-4444-4444-444444444444")))) {
+            RestClient.Builder builder = RestClient.builder();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+            OperationsTerminalRegistryClient registry = newRegistry(
+                    builder, "invalid_registration_context_" + UUID.randomUUID());
+            server.expect(requestTo(
+                            "http://operations.invalid/internal/jt-gateway/registrations/verify"))
+                    .andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
+
+            RegistrationDecision decision = registry.verifyRegistration(syntheticIdentity());
+
+            assertFalse(decision.approved());
+            assertEquals(RegistrationRejection.NOT_PREPROVISIONED, decision.rejection());
+            assertNull(decision.context());
+            assertFalse(decision.hasAvailableAuthenticationToken());
+            assertTrue(decision.authenticationTokenDestroyed());
+            server.verify();
+        }
+    }
+
+    @Test
+    void mapsEquivalentTerminalAndIdentityAuthenticationContextsWithoutSendingUuid() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(builder, "identity_authentication_context");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/authentications/verify"))
+                .andExpect(jsonPath("$.terminalId").value(TERMINAL_ID.toString()))
+                .andExpect(jsonPath("$.tokenVersion").value(7))
+                .andRespond(withSuccess(approvedAuthenticationJson(), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/authentications/verify-by-identity"))
+                .andExpect(jsonPath("$.protocolVersion").value("JT808_2019"))
+                .andExpect(jsonPath("$.terminalPhone").value("00000000000000000001"))
+                .andExpect(jsonPath("$.tokenSha256").value(PRESENTED_DIGEST))
+                .andExpect(jsonPath("$.gatewayInstance").value("gateway-registration-test"))
+                .andExpect(jsonPath("$.terminalId").doesNotExist())
+                .andRespond(withSuccess(approvedAuthenticationJson(), MediaType.APPLICATION_JSON));
+
+        AuthenticationDecision byTerminal = registry.verifyAuthentication(
+                TERMINAL_ID, 7, PRESENTED_DIGEST);
+        AuthenticationDecision byIdentity = registry.verifyAuthenticationByIdentity(
+                com.idavy.drtops.jt.protocol.codec.ProtocolVersion.JT808_2019,
+                "00000000000000000001", PRESENTED_DIGEST);
+
+        assertTrue(byTerminal.approved());
+        assertTrue(byIdentity.approved());
+        assertEquals(byTerminal.context(), byIdentity.context());
+        assertEquals(SYSTEM_ID, byIdentity.context().onboardSystemId());
+        server.verify();
+    }
+
+    @Test
+    void rejectsApprovedAuthenticationWithoutAValidContext() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(builder, "missing_authentication_context");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/authentications/verify"))
+                .andRespond(withSuccess(
+                        "{\"data\":{\"approved\":true}}", MediaType.APPLICATION_JSON));
+
+        AuthenticationDecision decision = registry.verifyAuthentication(
+                TERMINAL_ID, 7, PRESENTED_DIGEST);
+
+        assertFalse(decision.approved());
+        assertNull(decision.context());
+        assertEquals(AuthenticationRejection.TOKEN_MISMATCH, decision.rejection());
+        server.verify();
+    }
+
+    @Test
+    void rejectsApprovedRegistrationWithAReasonBeforeIssuingOrCompletingToken() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(
+                builder, "registration_approved_with_reason");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/registrations/verify"))
+                .andRespond(withSuccess("""
+                        {"data":{"approved":true,
+                         "terminalId":"11111111-1111-1111-1111-111111111111",
+                         "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                         "vehicleId":"33333333-3333-3333-3333-333333333333",
+                         "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
+                         "sourceCoordinateSystem":"WGS84",
+                         "activeSafetyStandard":"T/JSATL12-2017",
+                         "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7,
+                         "context":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                          "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                          "vehicleId":"33333333-3333-3333-3333-333333333333",
+                          "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
+                          "sourceCoordinateSystem":"WGS84",
+                          "activeSafetyStandard":"T/JSATL12-2017",
+                          "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7},
+                         "warnings":[],"reasonCode":"SHOULD_NOT_COEXIST"}}
+                        """, MediaType.APPLICATION_JSON));
+
+        RegistrationDecision decision = registry.verifyRegistration(syntheticIdentity());
+
+        assertFalse(decision.approved());
+        assertEquals(RegistrationRejection.NOT_PREPROVISIONED, decision.rejection());
+        assertFalse(decision.hasAvailableAuthenticationToken());
+        assertTrue(decision.authenticationTokenDestroyed());
+        assertFalse(decision.toString().contains("SHOULD_NOT_COEXIST"));
+        server.verify();
+    }
+
+    @Test
+    void rejectsApprovedAuthenticationWithAReasonDespiteAValidContext() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(
+                builder, "authentication_approved_with_reason");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/authentications/verify"))
+                .andRespond(withSuccess("""
+                        {"data":{"approved":true,
+                         "context":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                          "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                          "vehicleId":"33333333-3333-3333-3333-333333333333",
+                          "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
+                          "sourceCoordinateSystem":"WGS84",
+                          "activeSafetyStandard":"T/JSATL12-2017",
+                          "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7},
+                         "reasonCode":"SHOULD_NOT_COEXIST"}}
+                        """, MediaType.APPLICATION_JSON));
+
+        AuthenticationDecision decision = registry.verifyAuthentication(
+                TERMINAL_ID, 7, PRESENTED_DIGEST);
+
+        assertFalse(decision.approved());
+        assertNull(decision.context());
+        assertEquals(AuthenticationRejection.TOKEN_MISMATCH, decision.rejection());
+        assertFalse(decision.toString().contains("SHOULD_NOT_COEXIST"));
+        server.verify();
+    }
 
     @Test
     void preservesSafeFieldSpecificRegistrationRejectionFromOperationsApi() {
@@ -121,15 +351,8 @@ class OperationsTerminalRegistryClientTest {
                 mapper);
         server.expect(requestTo(
                         "http://operations.invalid/internal/jt-gateway/registrations/verify"))
-                .andRespond(withSuccess("""
-                        {"data":{"approved":true,
-                         "terminalId":"11111111-1111-1111-1111-111111111111",
-                         "vehicleId":"22222222-2222-2222-2222-222222222222",
-                         "sourceCoordinateSystem":"GCJ02",
-                         "activeSafetyStandard":"T/JSATL12-2017",
-                         "activeSafetyModules":["ADAS"],
-                         "tokenVersion":1}}
-                        """, MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(
+                        approvedRegistrationJson(TERMINAL_ID), MediaType.APPLICATION_JSON));
         server.expect(requestTo(
                         "http://operations.invalid/internal/jt-gateway/registrations/11111111-1111-1111-1111-111111111111/complete"))
                 .andRespond(withStatus(HttpStatus.CONFLICT));
@@ -329,15 +552,8 @@ class OperationsTerminalRegistryClientTest {
                 builder, "registration_complete_" + status.value() + "_" + UUID.randomUUID());
         server.expect(requestTo(
                         "http://operations.invalid/internal/jt-gateway/registrations/verify"))
-                .andRespond(withSuccess("""
-                        {"data":{"approved":true,
-                         "terminalId":"11111111-1111-1111-1111-111111111111",
-                         "vehicleId":"22222222-2222-2222-2222-222222222222",
-                         "sourceCoordinateSystem":"GCJ02",
-                         "activeSafetyStandard":"T/JSATL12-2017",
-                         "activeSafetyModules":["ADAS"],
-                         "tokenVersion":1}}
-                        """, MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(
+                        approvedRegistrationJson(TERMINAL_ID), MediaType.APPLICATION_JSON));
         server.expect(requestTo(
                         "http://operations.invalid/internal/jt-gateway/registrations/11111111-1111-1111-1111-111111111111/complete"))
                 .andRespond(withStatus(status));
@@ -363,6 +579,40 @@ class OperationsTerminalRegistryClientTest {
                 new GatewayIngressBuffer(
                         new GatewayOutboxRepository(dataSource), mapper, Clock.systemUTC()),
                 mapper);
+    }
+
+    private static String approvedRegistrationJson(UUID nestedTerminalId) {
+        return """
+                {"data":{"approved":true,
+                 "terminalId":"11111111-1111-1111-1111-111111111111",
+                 "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                 "vehicleId":"33333333-3333-3333-3333-333333333333",
+                 "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
+                 "sourceCoordinateSystem":"WGS84",
+                 "activeSafetyStandard":"T/JSATL12-2017",
+                 "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7,
+                 "context":{"terminalId":"%s",
+                  "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                  "vehicleId":"33333333-3333-3333-3333-333333333333",
+                  "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
+                  "sourceCoordinateSystem":"WGS84",
+                  "activeSafetyStandard":"T/JSATL12-2017",
+                  "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7},
+                 "warnings":[]}}
+                """.formatted(nestedTerminalId);
+    }
+
+    private static String approvedAuthenticationJson() {
+        return """
+                {"data":{"approved":true,
+                 "context":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                  "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                  "vehicleId":"33333333-3333-3333-3333-333333333333",
+                  "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
+                  "sourceCoordinateSystem":"WGS84",
+                  "activeSafetyStandard":"T/JSATL12-2017",
+                  "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7}}}
+                """;
     }
 
     private static TerminalRegistrationIdentity syntheticIdentity() {

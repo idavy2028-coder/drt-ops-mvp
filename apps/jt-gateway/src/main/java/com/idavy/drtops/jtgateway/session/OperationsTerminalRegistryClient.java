@@ -2,6 +2,7 @@ package com.idavy.drtops.jtgateway.session;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressEnvelope;
 import com.idavy.drtops.jtgateway.ingress.IngressKind;
@@ -14,6 +15,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.client.RestClient;
@@ -86,8 +88,9 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                     .retrieve()
                     .body(RegistrationResponse.class);
             RegistrationPayload approved = response == null ? null : response.data();
-            if (approved == null || !approved.approved() || approved.terminalId() == null
-                    || approved.vehicleId() == null || approved.tokenVersion() < 1) {
+            TerminalSessionContext context = approved == null ? null : approved.context();
+            if (approved == null || !approved.approved()
+                    || !registrationContextIsConsistent(approved, context)) {
                 if (approved == null) {
                     apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
                 } else {
@@ -98,19 +101,19 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             }
             apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
             byte[] token = authenticationTokens.issue(identity.model(), secureRandom);
-            String digest = sha256(token);
             try {
+                String digest = sha256(token);
                 stage = RegistrationStage.COMPLETE;
-                authenticatedPost("/internal/jt-gateway/registrations/{terminalId}/complete", approved.terminalId())
+                authenticatedPost(
+                                "/internal/jt-gateway/registrations/{terminalId}/complete",
+                                context.terminalId())
                         .body(new RegistrationCompletionRequest(
-                                approved.tokenVersion(), digest, gatewayInstance))
+                                context.tokenVersion(), digest, gatewayInstance))
                         .retrieve()
                         .toBodilessEntity();
                 apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_COMPLETE");
                 return RegistrationDecision.approved(
-                        approved.terminalId(), approved.vehicleId(), approved.sourceCoordinateSystem(),
-                        approved.activeSafetyStandard(), approved.activeSafetyModules(),
-                        approved.tokenVersion(), token, digest);
+                        context, token, digest);
             } finally {
                 Arrays.fill(token, (byte) 0);
             }
@@ -165,11 +168,34 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     @Override
     public AuthenticationDecision verifyAuthentication(
             UUID terminalId, int tokenVersion, String presentedTokenSha256) {
+        AuthenticationDecision decision = verifyAuthentication(
+                "/internal/jt-gateway/authentications/verify",
+                new AuthenticationRequest(
+                        terminalId, tokenVersion, presentedTokenSha256, gatewayInstance));
+        return decision.approved()
+                        && (!decision.context().terminalId().equals(terminalId)
+                                || decision.context().tokenVersion() != tokenVersion)
+                ? AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH)
+                : decision;
+    }
+
+    @Override
+    public AuthenticationDecision verifyAuthenticationByIdentity(
+            ProtocolVersion protocolVersion,
+            String terminalPhone,
+            String presentedTokenSha256) {
+        Objects.requireNonNull(protocolVersion, "protocolVersion");
+        return verifyAuthentication(
+                "/internal/jt-gateway/authentications/verify-by-identity",
+                new IdentityAuthenticationRequest(
+                        protocolVersion.name(), requireText(terminalPhone, "terminalPhone"),
+                        presentedTokenSha256, gatewayInstance));
+    }
+
+    private AuthenticationDecision verifyAuthentication(String path, Object request) {
         try {
-            AuthenticationResponse response = authenticatedPost(
-                            "/internal/jt-gateway/authentications/verify")
-                    .body(new AuthenticationRequest(
-                            terminalId, tokenVersion, presentedTokenSha256, gatewayInstance))
+            AuthenticationResponse response = authenticatedPost(path)
+                    .body(request)
                     .retrieve()
                     .body(AuthenticationResponse.class);
             if (response == null || response.data() == null) {
@@ -177,10 +203,17 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             } else {
                 apiStatus.success(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             }
-            return response != null && response.data() != null && response.data().approved()
-                    ? AuthenticationDecision.allow()
+            AuthenticationPayload payload = response == null ? null : response.data();
+            return payload != null
+                            && payload.approved()
+                            && payload.context() != null
+                            && payload.reasonCode() == null
+                    ? AuthenticationDecision.allow(payload.context())
                     : AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         } catch (RestClientException unavailable) {
+            apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
+            return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+        } catch (IllegalArgumentException invalidResponse) {
             apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         }
@@ -215,6 +248,23 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                 .uri(path, variables)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + credential)
                 .header(VERSION_HEADER, Integer.toString(credentialVersion));
+    }
+
+    private static boolean registrationContextIsConsistent(
+            RegistrationPayload payload, TerminalSessionContext context) {
+        return context != null
+                && payload.reasonCode() == null
+                && Objects.equals(payload.terminalId(), context.terminalId())
+                && Objects.equals(payload.onboardSystemId(), context.onboardSystemId())
+                && Objects.equals(payload.vehicleId(), context.vehicleId())
+                && Objects.equals(payload.roles(), context.roles())
+                && Objects.equals(
+                        payload.sourceCoordinateSystem(), context.sourceCoordinateSystem())
+                && Objects.equals(
+                        payload.activeSafetyStandard(), context.activeSafetyStandard())
+                && Objects.equals(
+                        payload.activeSafetyModules(), context.activeSafetyModules())
+                && payload.tokenVersion() == context.tokenVersion();
     }
 
     private static AuditMapping auditMapping(SessionAuditType type) {
@@ -255,16 +305,33 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     private record RegistrationResponse(RegistrationPayload data) { }
 
     private record RegistrationPayload(
-            boolean approved, UUID terminalId, UUID vehicleId, String sourceCoordinateSystem,
-            String activeSafetyStandard, List<String> activeSafetyModules, int tokenVersion,
+            boolean approved,
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            Set<String> roles,
+            String sourceCoordinateSystem,
+            String activeSafetyStandard,
+            List<String> activeSafetyModules,
+            int tokenVersion,
+            TerminalSessionContext context,
             String reasonCode) { }
 
     private record AuthenticationRequest(
             UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) { }
 
+    private record IdentityAuthenticationRequest(
+            String protocolVersion,
+            String terminalPhone,
+            String tokenSha256,
+            String gatewayInstance) { }
+
     private record AuthenticationResponse(AuthenticationPayload data) { }
 
-    private record AuthenticationPayload(boolean approved, String reasonCode) { }
+    private record AuthenticationPayload(
+            boolean approved,
+            TerminalSessionContext context,
+            String reasonCode) { }
 
     private record AuditRequest(
             UUID idempotencyKey, UUID terminalId, UUID vehicleId, String eventType, String result, String reasonCode,
