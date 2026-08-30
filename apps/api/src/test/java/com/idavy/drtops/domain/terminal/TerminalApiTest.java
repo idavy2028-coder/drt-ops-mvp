@@ -12,6 +12,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardTestFixtures;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import com.jayway.jsonpath.JsonPath;
 import java.nio.charset.StandardCharsets;
@@ -21,9 +23,10 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.UUID;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -65,7 +68,7 @@ import reactor.core.publisher.Mono;
 @AutoConfigureMockMvc(print = MockMvcPrint.NONE, printOnlyOnFailure = false)
 @WithMockUser(username = "11111111-1111-1111-1111-111111111111",
         authorities = {"TERMINAL_READ", "TERMINAL_MANAGE"})
-@Import(TerminalApiTest.ControlClientConfiguration.class)
+@Import({TerminalApiTest.ControlClientConfiguration.class, OnboardTestFixtures.class})
 class TerminalApiTest {
 
     private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
@@ -95,7 +98,16 @@ class TerminalApiTest {
     VehicleRepository vehicleRepository;
 
     @Autowired
+    OnboardDeviceMembershipRepository onboardMembershipRepository;
+
+    @Autowired
+    OnboardTestFixtures onboardFixtures;
+
+    @Autowired
     FakeControlClient controlClient;
+
+    @Autowired
+    Clock terminalClock;
 
     @DynamicPropertySource
     static void gatewayCredential(DynamicPropertyRegistry registry) {
@@ -106,10 +118,7 @@ class TerminalApiTest {
     @BeforeEach
     void setUp() {
         gatewayAuditRepository.deleteAll();
-        auditLogRepository.deleteAll();
-        bindingRepository.deleteAll();
-        terminalRepository.deleteAll();
-        vehicleRepository.deleteAll();
+        onboardFixtures.clear();
         controlClient.available = true;
         controlClient.requests.clear();
         vehicleRepository.save(Vehicle.create(
@@ -118,6 +127,20 @@ class TerminalApiTest {
         vehicleRepository.save(Vehicle.create(
                 CORRECTION_VEHICLE_ID, "浙A20002", "Microbus", 8, "IDLE",
                 "POINT(120.155 30.274)", "P6-2 REAL TERMINAL ACCEPTANCE", false));
+    }
+
+    @Test
+    void keepsInjectedClockAfterFixtureWritesWithinABoundedPositiveOffset() {
+        onboardFixtures.configureRecorderSystem("clock-relative", "CLOCK-RELATIVE");
+        JtTerminal terminal = terminalRepository.findByTerminalCode("clock-relative")
+                .orElseThrow();
+        assertThat(onboardMembershipRepository.findActiveByTerminalId(terminal.getId()))
+                .isPresent();
+        Instant fixtureFinishedAt = Instant.now();
+
+        assertThat(terminalClock.instant())
+                .isAfterOrEqualTo(fixtureFinishedAt)
+                .isBeforeOrEqualTo(fixtureFinishedAt.plus(Duration.ofMinutes(10)));
     }
 
     @Test
@@ -392,17 +415,158 @@ class TerminalApiTest {
     }
 
     @Test
+    void verifiesAndCompletesTwoCompositeDevicesWithoutLegacyBindings() throws Exception {
+        onboardFixtures.configureDualDeviceSystem(
+                "dispatch-01", "recorder-01", "VEHICLE-COMPOSITE");
+
+        String dispatchBody = internalPost("/internal/jt-gateway/registrations/verify", """
+                {"terminalPhone":"PHONE-DISPATCH","terminalCode":"dispatch-01",
+                 "manufacturerId":"SYNTH","model":"SYNTHETIC",
+                 "vehicleIdentifier":"VEHICLE-COMPOSITE","protocolVersion":"JT808_2019"}
+                """)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.terminalId").isNotEmpty())
+                .andExpect(jsonPath("$.data.vehicleId").isNotEmpty())
+                .andExpect(jsonPath("$.data.onboardSystemId").isNotEmpty())
+                .andExpect(jsonPath("$.data.context.roles").isArray())
+                .andReturn().getResponse().getContentAsString();
+        String recorderBody = internalPost("/internal/jt-gateway/registrations/verify", """
+                {"terminalPhone":"PHONE-RECORDER","terminalCode":"recorder-01",
+                 "manufacturerId":"SYNTH","model":"SYNTHETIC",
+                 "vehicleIdentifier":"VEHICLE-COMPOSITE","protocolVersion":"JT808_2019"}
+                """)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.terminalId").isNotEmpty())
+                .andExpect(jsonPath("$.data.onboardSystemId").isNotEmpty())
+                .andExpect(jsonPath("$.data.context.roles").isArray())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(JsonPath.read(dispatchBody, "$.data.onboardSystemId").toString())
+                .isEqualTo(JsonPath.read(recorderBody, "$.data.onboardSystemId").toString());
+        assertThat(JsonPath.read(dispatchBody, "$.data.terminalId").toString())
+                .isNotEqualTo(JsonPath.read(recorderBody, "$.data.terminalId").toString());
+        assertThat(dispatchBody).doesNotContain(
+                "PHONE-DISPATCH", "dispatch-01", "VEHICLE-COMPOSITE", "SYNTHETIC");
+        assertThat(recorderBody).doesNotContain(
+                "PHONE-RECORDER", "recorder-01", "VEHICLE-COMPOSITE", "SYNTHETIC");
+
+        UUID recorderId = UUID.fromString(JsonPath.read(recorderBody, "$.data.terminalId"));
+        internalPost("/internal/jt-gateway/registrations/" + recorderId + "/complete", """
+                {"tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(TOKEN_HASH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.completed").value(true))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString(TOKEN_HASH))));
+        assertThat(terminalRepository.findById(recorderId).orElseThrow().getLastRegisteredAt())
+                .isNotNull();
+        assertThat(bindingRepository.findByTerminalIdAndStatus(
+                recorderId, JtTerminalVehicleBinding.Status.ACTIVE)).isEmpty();
+    }
+
+    @Test
+    void identityAndTerminalIdAuthenticationReturnEquivalentCompositeContext() throws Exception {
+        onboardFixtures.configureRecorderSystem("recorder-01", "VEHICLE-AUTH-CONTEXT");
+        JtTerminal terminal = terminalRepository.findByTerminalCode("recorder-01").orElseThrow();
+        terminal.completeRegistration(1, TOKEN_HASH);
+        terminal.activate(true);
+        terminalRepository.saveAndFlush(terminal);
+
+        String byId = internalPost("/internal/jt-gateway/authentications/verify", """
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s",
+                 "gatewayInstance":"gateway-a"}
+                """.formatted(terminal.getId(), TOKEN_HASH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.context.onboardSystemId").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+        String byIdentity = internalPost(
+                        "/internal/jt-gateway/authentications/verify-by-identity", """
+                {"protocolVersion":"JT808_2019","terminalPhone":"PHONE-RECORDER",
+                 "tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(TOKEN_HASH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.context.onboardSystemId").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(JsonPath.read(byId, "$.data.context").toString())
+                .isEqualTo(JsonPath.read(byIdentity, "$.data.context").toString());
+        assertThat(byId).doesNotContain(TOKEN_HASH, "PHONE-RECORDER", "recorder-01", "SYNTHETIC");
+        assertThat(byIdentity).doesNotContain(
+                TOKEN_HASH, "PHONE-RECORDER", "recorder-01", "SYNTHETIC");
+    }
+
+    @Test
+    void rejectsIdentityMismatchAndFailedAuthenticationWithoutEchoingSecretsOrUpdatingTime()
+            throws Exception {
+        onboardFixtures.configureDualDeviceSystem(
+                "dispatch-01", "recorder-01", "VEHICLE-SECRET");
+        String mismatch = internalPost("/internal/jt-gateway/registrations/verify", """
+                {"terminalPhone":"PHONE-RECORDER","terminalCode":"dispatch-01",
+                 "manufacturerId":"SYNTH","model":"SYNTHETIC",
+                 "vehicleIdentifier":"VEHICLE-SECRET","protocolVersion":"JT808_2019"}
+                """)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(false))
+                .andExpect(jsonPath("$.data.reasonCode").value("TERMINAL_IDENTITY_MISMATCH"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(mismatch).doesNotContain(
+                "PHONE-RECORDER", "dispatch-01", "VEHICLE-SECRET", "SYNTHETIC");
+
+        JtTerminal recorder = terminalRepository.findByTerminalCode("recorder-01").orElseThrow();
+        recorder.completeRegistration(1, TOKEN_HASH);
+        recorder.activate(true);
+        terminalRepository.saveAndFlush(recorder);
+        String rejected = internalPost(
+                        "/internal/jt-gateway/authentications/verify-by-identity", """
+                {"protocolVersion":"JT808_2019","terminalPhone":"PHONE-RECORDER",
+                 "tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                """.formatted(sha256("wrong-secret")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(false))
+                .andExpect(jsonPath("$.data.context").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(rejected).doesNotContain(
+                "wrong-secret", "PHONE-RECORDER", "recorder-01",
+                recorder.getId().toString(), "SYNTHETIC");
+        assertThat(terminalRepository.findById(recorder.getId()).orElseThrow()
+                .getLastAuthenticatedAt()).isNull();
+
+        var membership = onboardMembershipRepository.findActiveByTerminalId(recorder.getId())
+                .orElseThrow();
+        membership.remove("test membership removal",
+                UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                membership.getValidFrom().plusSeconds(1));
+        onboardMembershipRepository.saveAndFlush(membership);
+        internalPost("/internal/jt-gateway/authentications/verify", """
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s",
+                 "gatewayInstance":"gateway-a"}
+                """.formatted(recorder.getId(), TOKEN_HASH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approved").value(false));
+        assertThat(terminalRepository.findById(recorder.getId()).orElseThrow()
+                .getLastAuthenticatedAt()).isNull();
+    }
+
+    @Test
     void recordsTheSuccessfulAuthenticationTime() throws Exception {
         JtTerminal terminal = registerBindAndActivate("T-AUTH-TIME", "PHONE-AUTH-TIME");
+        Instant beforeAuthentication = terminalClock.instant();
 
         internalPost("/internal/jt-gateway/authentications/verify", """
                 {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
                 """.formatted(terminal.getId(), TOKEN_HASH))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(true));
+        Instant afterAuthentication = terminalClock.instant();
 
         assertThat(terminalRepository.findById(terminal.getId()).orElseThrow().getLastAuthenticatedAt())
-                .isEqualTo(OffsetDateTime.parse("2026-08-12T09:00:00Z"));
+                .satisfies(authenticatedAt -> assertThat(authenticatedAt.toInstant())
+                        .isAfterOrEqualTo(beforeAuthentication)
+                        .isBeforeOrEqualTo(afterAuthentication));
     }
 
     @Test
@@ -644,17 +808,24 @@ class TerminalApiTest {
     @Test
     void reportsOnlineBoundaryAndOnlyExposesOfflineTimeWhenOffline() throws Exception {
         JtTerminal terminal = presetAndBind("T-DETAIL-CLOCK", "PHONE-CLOCK");
-        org.springframework.test.util.ReflectionTestUtils.setField(terminal, "lastSeenAt", OffsetDateTime.parse("2026-08-12T08:57:00Z"));
+        OffsetDateTime onlineSeenAt = OffsetDateTime.now(terminalClock).minusMinutes(2);
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                terminal, "lastSeenAt", onlineSeenAt);
         terminalRepository.saveAndFlush(terminal);
         mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.onlineStatus").value("ONLINE"))
                 .andExpect(jsonPath("$.data.offlineAt").doesNotExist());
         terminal = terminalRepository.findByTerminalCode("T-DETAIL-CLOCK").orElseThrow();
-        org.springframework.test.util.ReflectionTestUtils.setField(terminal, "lastSeenAt", OffsetDateTime.parse("2026-08-12T08:56:59Z"));
+        OffsetDateTime offlineSeenAt = OffsetDateTime.now(terminalClock)
+                .minusMinutes(4)
+                .truncatedTo(ChronoUnit.MICROS);
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                terminal, "lastSeenAt", offlineSeenAt);
         terminalRepository.saveAndFlush(terminal);
         mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.onlineStatus").value("OFFLINE"))
-                .andExpect(jsonPath("$.data.offlineAt").value("2026-08-12T08:59:59Z"));
+                .andExpect(jsonPath("$.data.offlineAt")
+                        .value(offlineSeenAt.plusMinutes(3).toString()));
     }
 
     @Test
@@ -827,7 +998,7 @@ class TerminalApiTest {
 
         @Bean
         Clock terminalClock() {
-            return Clock.fixed(Instant.parse("2026-08-12T09:00:00Z"), ZoneOffset.UTC);
+            return Clock.offset(Clock.systemUTC(), Duration.ofMinutes(5));
         }
     }
 

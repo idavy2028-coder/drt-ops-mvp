@@ -5,6 +5,7 @@ import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService;
+import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,6 +41,7 @@ public class TerminalManagementService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final OnboardSystemConfigurationService onboardConfigurationService;
+    private final OnboardRegistrationResolver onboardRegistrationResolver;
 
     public TerminalManagementService(
             JtTerminalRepository terminalRepository,
@@ -51,7 +53,8 @@ public class TerminalManagementService {
             PlatformTransactionManager transactionManager,
             ObjectMapper objectMapper,
             ObjectProvider<Clock> clocks,
-            OnboardSystemConfigurationService onboardConfigurationService) {
+            OnboardSystemConfigurationService onboardConfigurationService,
+            OnboardRegistrationResolver onboardRegistrationResolver) {
         this.terminalRepository = terminalRepository;
         this.bindingRepository = bindingRepository;
         this.vehicleRepository = vehicleRepository;
@@ -63,6 +66,7 @@ public class TerminalManagementService {
         this.objectMapper = objectMapper;
         this.clock = clocks.getIfAvailable(Clock::systemUTC);
         this.onboardConfigurationService = onboardConfigurationService;
+        this.onboardRegistrationResolver = onboardRegistrationResolver;
     }
 
     @Transactional(readOnly = true)
@@ -317,6 +321,40 @@ public class TerminalManagementService {
         terminal.recordSuccessfulAuthentication(OffsetDateTime.now(clock));
         terminalRepository.saveAndFlush(terminal);
         return new AuthenticationDecision(true, null);
+    }
+
+    public OnboardRegistrationResolver.RegistrationDecision verifyCompositeRegistration(
+            String terminalPhone,
+            String terminalCode,
+            String manufacturerId,
+            String model,
+            String vehicleIdentifier,
+            String protocolVersion) {
+        return onboardRegistrationResolver.verify(
+                new OnboardRegistrationResolver.RegistrationRequest(
+                        terminalPhone, terminalCode, manufacturerId, model,
+                        vehicleIdentifier, protocolVersion));
+    }
+
+    public JtTerminal completeCompositeRegistration(
+            UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
+        return onboardRegistrationResolver.completeRegistration(
+                terminalId, tokenVersion, tokenSha256, gatewayInstance);
+    }
+
+    public OnboardRegistrationResolver.AuthenticationDecision verifyCompositeAuthentication(
+            UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
+        return onboardRegistrationResolver.authenticateByTerminalId(
+                terminalId, tokenVersion, tokenSha256, gatewayInstance);
+    }
+
+    public OnboardRegistrationResolver.AuthenticationDecision verifyCompositeAuthenticationByIdentity(
+            String protocolVersion,
+            String terminalPhone,
+            String tokenSha256,
+            String gatewayInstance) {
+        return onboardRegistrationResolver.authenticateByIdentity(
+                protocolVersion, terminalPhone, tokenSha256, gatewayInstance);
     }
 
     public GatewayAuditResult recordGatewayAudit(JtGatewayAuditEvent event) {

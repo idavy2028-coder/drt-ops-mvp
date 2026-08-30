@@ -1,12 +1,16 @@
 package com.idavy.drtops.domain.terminal;
 
 import com.idavy.drtops.common.ApiResponse;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
+import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import java.time.OffsetDateTime;
 import java.util.Map;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -25,25 +29,35 @@ public class GatewayRegistryController {
     }
 
     @PostMapping("/registrations/verify")
-    ApiResponse<TerminalManagementService.RegistrationDecision> verifyRegistration(
+    ApiResponse<RegistrationVerificationResponse> verifyRegistration(
             @Valid @RequestBody RegistrationVerificationRequest request) {
-        return ApiResponse.ok(service.verifyRegistration(
-                request.terminalPhone(), request.terminalCode(), request.manufacturerId(), request.model(),
-                request.vehicleIdentifier(), request.protocolVersion()));
+        return ApiResponse.ok(RegistrationVerificationResponse.from(
+                service.verifyCompositeRegistration(
+                        request.terminalPhone(), request.terminalCode(),
+                        request.manufacturerId(), request.model(),
+                        request.vehicleIdentifier(), request.protocolVersion())));
     }
 
     @PostMapping("/authentications/verify")
-    ApiResponse<TerminalManagementService.AuthenticationDecision> verifyAuthentication(
+    ApiResponse<OnboardRegistrationResolver.AuthenticationDecision> verifyAuthentication(
             @Valid @RequestBody AuthenticationVerificationRequest request) {
-        return ApiResponse.ok(service.verifyAuthentication(
+        return ApiResponse.ok(service.verifyCompositeAuthentication(
                 request.terminalId(), request.tokenVersion(), request.tokenSha256(), request.gatewayInstance()));
+    }
+
+    @PostMapping("/authentications/verify-by-identity")
+    ApiResponse<OnboardRegistrationResolver.AuthenticationDecision> verifyAuthenticationByIdentity(
+            @Valid @RequestBody IdentityAuthenticationVerificationRequest request) {
+        return ApiResponse.ok(service.verifyCompositeAuthenticationByIdentity(
+                request.protocolVersion(), request.terminalPhone(),
+                request.tokenSha256(), request.gatewayInstance()));
     }
 
     @PostMapping("/registrations/{terminalId}/complete")
     ApiResponse<Map<String, Boolean>> completeRegistration(
             @PathVariable UUID terminalId,
             @Valid @RequestBody RegistrationCompletionRequest request) {
-        service.completeRegistration(
+        service.completeCompositeRegistration(
                 terminalId, request.tokenVersion(), request.tokenSha256(), request.gatewayInstance());
         return ApiResponse.ok(Map.of("completed", true));
     }
@@ -71,6 +85,45 @@ public class GatewayRegistryController {
             @Positive int tokenVersion,
             @NotBlank String tokenSha256,
             @NotBlank String gatewayInstance) {
+    }
+
+    public record IdentityAuthenticationVerificationRequest(
+            @NotBlank String protocolVersion,
+            @NotBlank String terminalPhone,
+            @NotBlank String tokenSha256,
+            @NotBlank String gatewayInstance) {
+    }
+
+    public record RegistrationVerificationResponse(
+            boolean approved,
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            Set<Role> roles,
+            String sourceCoordinateSystem,
+            String activeSafetyStandard,
+            List<String> activeSafetyModules,
+            int tokenVersion,
+            OnboardRegistrationResolver.TerminalSessionContext context,
+            List<String> warnings,
+            String reasonCode) {
+        static RegistrationVerificationResponse from(
+                OnboardRegistrationResolver.RegistrationDecision decision) {
+            OnboardRegistrationResolver.TerminalSessionContext context = decision.context();
+            return new RegistrationVerificationResponse(
+                    decision.approved(),
+                    context == null ? null : context.terminalId(),
+                    context == null ? null : context.onboardSystemId(),
+                    context == null ? null : context.vehicleId(),
+                    context == null ? Set.of() : context.roles(),
+                    context == null ? null : context.sourceCoordinateSystem(),
+                    context == null ? null : context.activeSafetyStandard(),
+                    context == null ? List.of() : context.activeSafetyModules(),
+                    context == null ? 0 : context.tokenVersion(),
+                    context,
+                    decision.warnings(),
+                    decision.reasonCode());
+        }
     }
 
     public record RegistrationCompletionRequest(
