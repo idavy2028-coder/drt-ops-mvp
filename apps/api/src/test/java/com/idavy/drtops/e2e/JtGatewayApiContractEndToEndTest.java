@@ -13,6 +13,16 @@ import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.JtGatewayIngressReceiptRepository;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapabilityRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystem;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeState;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeStateRepository;
 import com.idavy.drtops.domain.terminal.JtGatewayAuditEventRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
@@ -113,6 +123,11 @@ class JtGatewayApiContractEndToEndTest {
     @Autowired JtGatewayAuditEventRepository audits;
     @Autowired TerminalManagementService terminalManagement;
     @Autowired JdbcTemplate apiJdbc;
+    @Autowired OnboardSystemRepository onboardSystems;
+    @Autowired OnboardSystemRuntimeStateRepository onboardRuntime;
+    @Autowired OnboardDeviceMembershipRepository memberships;
+    @Autowired OnboardDeviceCapabilityRepository capabilities;
+    @Autowired OnboardDeviceRoleAssignmentRepository roles;
 
     @DynamicPropertySource
     static void gatewayCredential(DynamicPropertyRegistry registry) {
@@ -128,10 +143,15 @@ class JtGatewayApiContractEndToEndTest {
         receipts.deleteAll();
         audits.deleteAll();
         locations.deleteAll();
+        roles.deleteAll();
+        capabilities.deleteAll();
+        memberships.deleteAll();
+        onboardRuntime.deleteAll();
+        apiJdbc.update("delete from audit_logs");
+        onboardSystems.deleteAll();
         bindings.deleteAll();
         terminals.deleteAll();
         vehicles.deleteAll();
-        apiJdbc.update("delete from audit_logs");
 
         vehicles.saveAndFlush(Vehicle.create(
                 VEHICLE_ID, VEHICLE_PLATE, "Synthetic bus", 8, "IDLE",
@@ -146,6 +166,48 @@ class JtGatewayApiContractEndToEndTest {
         ReflectionTestUtils.setField(
                 binding, "validFrom", GATEWAY_TIME.minusSeconds(60).atOffset(ZoneOffset.UTC));
         bindings.saveAndFlush(binding);
+        java.time.OffsetDateTime configuredAt =
+                GATEWAY_TIME.minusSeconds(60).atOffset(ZoneOffset.UTC);
+        OnboardSystem onboardSystem = onboardSystems.saveAndFlush(OnboardSystem.create(
+                VEHICLE_ID,
+                OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                ACTOR_ID,
+                configuredAt));
+        onboardRuntime.saveAndFlush(OnboardSystemRuntimeState.initialize(
+                onboardSystem.getId(), configuredAt));
+        memberships.saveAndFlush(OnboardDeviceMembership.join(
+                onboardSystem.getId(),
+                TERMINAL_ID,
+                OnboardDeviceMembership.NetworkMode.DIRECT_CELLULAR,
+                "synthetic API contract membership",
+                ACTOR_ID,
+                configuredAt));
+        for (OnboardDeviceCapability.Capability capability : List.of(
+                OnboardDeviceCapability.Capability.JT808_LOCATION,
+                OnboardDeviceCapability.Capability.ADAS,
+                OnboardDeviceCapability.Capability.DMS,
+                OnboardDeviceCapability.Capability.VIDEO)) {
+            OnboardDeviceCapability fact = OnboardDeviceCapability.declare(
+                    TERMINAL_ID, capability, "synthetic API contract declaration", configuredAt);
+            fact.verify(
+                    "synthetic-api-contract-evidence",
+                    ACTOR_ID,
+                    "synthetic API contract verification",
+                    configuredAt);
+            capabilities.saveAndFlush(fact);
+        }
+        for (OnboardDeviceRoleAssignment.Role role : List.of(
+                OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY,
+                OnboardDeviceRoleAssignment.Role.ACTIVE_SAFETY,
+                OnboardDeviceRoleAssignment.Role.VIDEO)) {
+            roles.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                    onboardSystem.getId(),
+                    TERMINAL_ID,
+                    role,
+                    "synthetic API contract role",
+                    ACTOR_ID,
+                    configuredAt));
+        }
     }
 
     @Test

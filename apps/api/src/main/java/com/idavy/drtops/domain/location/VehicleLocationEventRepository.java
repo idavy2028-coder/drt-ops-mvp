@@ -10,6 +10,8 @@ public interface VehicleLocationEventRepository extends JpaRepository<VehicleLoc
 
     Optional<VehicleLocationEvent> findByIdempotencyKey(UUID idempotencyKey);
 
+    List<VehicleLocationEvent> findAllByOrderByDriverReportedAtAsc();
+
     List<VehicleLocationEvent> findByVehicleIdOrderByDriverReportedAtDesc(UUID vehicleId);
 
     List<VehicleLocationEvent> findTop3ByVehicleIdAndGatewayReceivedAtIsNotNullOrderByGatewayReceivedAtDescIdDesc(

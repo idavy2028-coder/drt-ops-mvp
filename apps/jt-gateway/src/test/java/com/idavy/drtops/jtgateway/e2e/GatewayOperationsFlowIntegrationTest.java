@@ -202,7 +202,7 @@ class GatewayOperationsFlowIntegrationTest {
     }
 
     @Test
-    void attachmentSignalingRequiresDeclaredActiveSafetyCapability() throws Exception {
+    void attachmentSignalingWithoutVideoRoleProducesOneSafeAudit() throws Exception {
         try (GatewayTestRig rig = new GatewayTestRig(tempDir, false)) {
             ScenarioReport report = ScenarioRunner.run(Scenario.parse("""
                     {
@@ -224,7 +224,7 @@ class GatewayOperationsFlowIntegrationTest {
             assertEquals(0, rig.api.receivedOfKind("ATTACHMENT_METADATA").size());
             List<GatewayTestRig.ReceivedEnvelope> audits = rig.api.receivedOfKind("PROTOCOL_AUDIT");
             assertEquals(1, audits.size());
-            assertEquals("ACTIVE_SAFETY_ATTACHMENT_NOT_CAPABLE",
+            assertEquals("DEVICE_ROLE_VIOLATION",
                     rig.objectMapper.readTree(audits.get(0).payloadJson()).required("reasonCode").asText());
         }
     }

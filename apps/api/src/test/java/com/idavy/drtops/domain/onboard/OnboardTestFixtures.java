@@ -250,9 +250,16 @@ public class OnboardTestFixtures {
 
     private void makeLocationCurrent(UUID vehicleId, String terminalCode) {
         JtTerminal terminal = terminal(terminalCode);
+        OnboardSystem system = systemRepository.findActiveByVehicleId(vehicleId).orElseThrow();
+        Role sourceRole = roleRepository.findActiveByTerminalIdOrderByValidFromAsc(terminal.getId()).stream()
+                .filter(assignment -> assignment.getOnboardSystemId().equals(system.getId()))
+                .map(OnboardDeviceRoleAssignment::getRole)
+                .filter(role -> role == Role.LOCATION_PRIMARY || role == Role.LOCATION_BACKUP)
+                .findFirst()
+                .orElseThrow();
         Instant now = Instant.now();
         CanonicalPositionIngress ingress = new CanonicalPositionIngress(
-                terminal.getId(), vehicleId, "JT808_2019", 1,
+                terminal.getId(), system.getId(), vehicleId, sourceRole.name(), "JT808_2019", 1,
                 new BigDecimal("120.155"), new BigDecimal("30.274"), "GCJ02",
                 now, now, 0L, 0L, BigDecimal.ZERO, 0, 0, 8, "b".repeat(64));
         VehicleLocationEvent event = VehicleLocationEvent.recordGps(
@@ -267,7 +274,6 @@ public class OnboardTestFixtures {
         Vehicle vehicle = vehicleRepository.findById(vehicleId).orElseThrow();
         vehicle.applyGpsLocationSnapshot(event);
         vehicleRepository.saveAndFlush(vehicle);
-        OnboardSystem system = systemRepository.findActiveByVehicleId(vehicleId).orElseThrow();
         OnboardSystemRuntimeState runtime = runtimeStateRepository.findById(system.getId()).orElseThrow();
         runtime.selectLocationSource(terminal.getId(), OffsetDateTime.now());
         runtimeStateRepository.saveAndFlush(runtime);

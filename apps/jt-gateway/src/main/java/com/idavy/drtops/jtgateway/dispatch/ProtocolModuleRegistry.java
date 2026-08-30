@@ -102,11 +102,17 @@ public final class ProtocolModuleRegistry {
             unknownMessageCount.incrementAndGet();
             return DispatchResult.MAY_ACKNOWLEDGE_SUCCESS;
         }
+        String sourceRole = locationSourceRole(session);
+        if (session.onboardSystemId() == null || sourceRole == null) {
+            return DispatchResult.REJECTED;
+        }
             LocationReport report = coreModule.decodeLocation(frame.header(), frame.body());
             Instant gatewayReceivedAt = clock.instant();
             CanonicalPositionIngress ingress = new CanonicalPositionIngress(
                     session.terminalId(),
+                    session.onboardSystemId(),
                     session.vehicleId(),
+                    sourceRole,
                     frame.header().protocolVersion().name(),
                     frame.header().serialNumber(),
                     report.longitude(),
@@ -114,8 +120,8 @@ public final class ProtocolModuleRegistry {
                     session.sourceCoordinateSystem(),
                     report.locatedAt(),
                     gatewayReceivedAt,
-                    report.alarmBits(),
-                    report.statusBits(),
+                    Integer.toUnsignedLong(report.alarmBits()),
+                    Integer.toUnsignedLong(report.statusBits()),
                     report.speedKph(),
                     report.directionDegrees(),
                     report.altitudeMeters(),
@@ -125,6 +131,11 @@ public final class ProtocolModuleRegistry {
         if (result != GatewayIngressBuffer.WriteResult.STORED && result != GatewayIngressBuffer.WriteResult.DUPLICATE) {
             return DispatchResult.REJECTED;
         }
+        if (hasActiveSafetyItem(report) && !session.roles().contains("ACTIVE_SAFETY")) {
+            appendProtocolAudit(
+                    session, frame, gatewayReceivedAt, "DEVICE_ROLE_VIOLATION");
+            return DispatchResult.MAY_ACKNOWLEDGE_SUCCESS;
+        }
         return appendActiveSafetyAlarms(session, report, ingress, gatewayReceivedAt)
                 ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS : DispatchResult.REJECTED;
     }
@@ -133,6 +144,10 @@ public final class ProtocolModuleRegistry {
         Instant receivedAt = clock.instant();
         if (gatewayBuffer == null) {
             return DispatchResult.REJECTED;
+        }
+        if (!session.roles().contains("VIDEO")) {
+            return appendProtocolAudit(
+                    session, frame, receivedAt, "DEVICE_ROLE_VIOLATION");
         }
         if (!ATTACHMENT_SIGNALING_STANDARD.equals(session.activeSafetyStandard())
                 || session.activeSafetyModules().isEmpty()) {
@@ -185,10 +200,13 @@ public final class ProtocolModuleRegistry {
 
     private DispatchResult appendProtocolAudit(
             TerminalSession session, Jt808Frame frame, Instant receivedAt, String reasonCode) {
-        CanonicalProtocolAudit audit = new CanonicalProtocolAudit(
-                session.terminalId(), session.vehicleId(), reasonCode,
-                frame.header().protocolVersion().name(), frame.header().messageId(), digest(frame));
+        if (gatewayBuffer == null || objectMapper == null) {
+            return DispatchResult.REJECTED;
+        }
         try {
+            CanonicalProtocolAudit audit = new CanonicalProtocolAudit(
+                    session.terminalId(), session.vehicleId(), reasonCode,
+                    frame.header().protocolVersion().name(), frame.header().messageId(), digest(frame));
             UUID key = UUID.nameUUIDFromBytes(String.join("|",
                     session.terminalId().toString(),
                     Integer.toString(frame.header().messageId()),
@@ -199,7 +217,7 @@ public final class ProtocolModuleRegistry {
                     1, key, IngressKind.PROTOCOL_AUDIT, receivedAt,
                     objectMapper.writeValueAsString(audit)));
             return durable(result);
-        } catch (JsonProcessingException serializationFailure) {
+        } catch (JsonProcessingException | RuntimeException auditFailure) {
             return DispatchResult.REJECTED;
         }
     }
@@ -209,6 +227,20 @@ public final class ProtocolModuleRegistry {
                         || result == GatewayIngressBuffer.WriteResult.DUPLICATE
                 ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS
                 : DispatchResult.REJECTED;
+    }
+
+    private static String locationSourceRole(TerminalSession session) {
+        boolean primary = session.roles().contains("LOCATION_PRIMARY");
+        boolean backup = session.roles().contains("LOCATION_BACKUP");
+        if (primary == backup) {
+            return null;
+        }
+        return primary ? "LOCATION_PRIMARY" : "LOCATION_BACKUP";
+    }
+
+    private static boolean hasActiveSafetyItem(LocationReport report) {
+        return report.additionalItems().stream()
+                .anyMatch(item -> item.id() == 0x64 || item.id() == 0x65);
     }
 
     public long unknownMessageCount() {

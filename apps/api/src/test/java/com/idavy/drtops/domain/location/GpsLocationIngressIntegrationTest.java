@@ -10,6 +10,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystem;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
 import com.idavy.drtops.domain.terminal.JtGatewayAuditEventRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
@@ -55,6 +61,10 @@ class GpsLocationIngressIntegrationTest {
     private static final UUID OTHER_VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000002");
     private static final UUID TERMINAL_ID = UUID.fromString("bb000000-0000-0000-0000-000000000001");
     private static final UUID OTHER_TERMINAL_ID = UUID.fromString("bb000000-0000-0000-0000-000000000002");
+    private static final UUID CONFIGURATION_ACTOR_ID =
+            UUID.fromString("cc000000-0000-0000-0000-000000000001");
+    private static final OffsetDateTime CONFIGURED_AT =
+            OffsetDateTime.parse("2026-08-12T00:00:00Z");
     private static final Instant POSTGRES_TIMESTAMPTZ_MIN = Instant.ofEpochSecond(-210_866_803_200L);
     private static final Instant POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE = Instant.ofEpochSecond(9_224_318_016_000L);
     @Autowired MockMvc mockMvc;
@@ -63,6 +73,9 @@ class GpsLocationIngressIntegrationTest {
     @Autowired VehicleLocationEventRepository eventRepository;
     @Autowired JtTerminalRepository terminalRepository;
     @Autowired JtTerminalVehicleBindingRepository bindingRepository;
+    @Autowired OnboardSystemRepository onboardSystemRepository;
+    @Autowired OnboardDeviceMembershipRepository membershipRepository;
+    @Autowired OnboardDeviceRoleAssignmentRepository roleRepository;
     @Autowired JtGatewayAuditEventRepository gatewayAuditRepository;
     @Autowired JtGatewayIngressReceiptRepository receiptRepository;
     @Autowired VehicleLocationSnapshotService snapshotService;
@@ -71,6 +84,7 @@ class GpsLocationIngressIntegrationTest {
     @Autowired TestServiceAreaLocationChecker locationChecker;
     @Autowired GatewayIngressRouter ingressRouter;
     @Autowired FaultInjectingObjectMapper faultInjectingObjectMapper;
+    private UUID onboardSystemId;
 
     @DynamicPropertySource
     static void credential(DynamicPropertyRegistry registry) {
@@ -83,7 +97,9 @@ class GpsLocationIngressIntegrationTest {
         locationChecker.reset();
         jdbc.update("delete from vehicle_alarm_outbox");
         jdbc.update("delete from vehicle_alarms");
-        receiptRepository.deleteAll(); gatewayAuditRepository.deleteAll(); eventRepository.deleteAll(); bindingRepository.deleteAll(); terminalRepository.deleteAll(); vehicleRepository.deleteAll();
+        receiptRepository.deleteAll(); gatewayAuditRepository.deleteAll(); eventRepository.deleteAll();
+        roleRepository.deleteAll(); membershipRepository.deleteAll(); onboardSystemRepository.deleteAll();
+        bindingRepository.deleteAll(); terminalRepository.deleteAll(); vehicleRepository.deleteAll();
         vehicleRepository.save(Vehicle.create(VEHICLE_ID, "甘G001", "Microbus", 8, "IDLE", "POINT(105.2421 35.2103)", "测试", true));
         vehicleRepository.save(Vehicle.create(OTHER_VEHICLE_ID, "甘G002", "Microbus", 8, "IDLE", "POINT(105.2421 35.2103)", "测试", true));
         JtTerminal terminal = terminalRepository.save(JtTerminal.preset(TERMINAL_ID, "GPS-PHONE", "GPS-001", "MFG", "M", "JT808_2019", "WGS84", UUID.randomUUID()));
@@ -92,6 +108,178 @@ class GpsLocationIngressIntegrationTest {
         org.springframework.test.util.ReflectionTestUtils.setField(
                 binding, "validFrom", OffsetDateTime.parse("2026-08-12T00:00:00Z"));
         bindingRepository.save(binding);
+        OnboardSystem system = onboardSystemRepository.save(OnboardSystem.create(
+                VEHICLE_ID, OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                CONFIGURATION_ACTOR_ID, CONFIGURED_AT));
+        onboardSystemId = system.getId();
+        addLocationMember(
+                onboardSystemId, TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+    }
+
+    @Test
+    void storesBothDeviceEventsWithTheirOnboardSourceRoles() throws Exception {
+        terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", CONFIGURATION_ACTOR_ID));
+        addLocationMember(
+                onboardSystemId, OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP);
+
+        UUID primaryKey = UUID.randomUUID();
+        UUID backupKey = UUID.randomUUID();
+        CanonicalPositionIngress primary = provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"), "1".repeat(64));
+        CanonicalPositionIngress backup = provenancePayload(
+                OTHER_TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_BACKUP",
+                Instant.parse("2026-08-12T08:59:51Z"), "2".repeat(64));
+
+        postIngress(List.of(envelope(primaryKey, primary), envelope(backupKey, backup)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+
+        List<VehicleLocationEvent> events = eventRepository.findAllByOrderByDriverReportedAtAsc();
+        assertThat(events).extracting(VehicleLocationEvent::getTerminalId)
+                .containsExactly(TERMINAL_ID, OTHER_TERMINAL_ID);
+        assertThat(events).extracting(VehicleLocationEvent::getOnboardSystemId)
+                .containsOnly(onboardSystemId);
+        assertThat(events).extracting(VehicleLocationEvent::getVehicleId)
+                .containsOnly(VEHICLE_ID);
+        assertThat(events).extracting(VehicleLocationEvent::getSourceRole)
+                .containsExactly("LOCATION_PRIMARY", "LOCATION_BACKUP");
+    }
+
+    @Test
+    void replayKeepsOneEventWithItsOriginalProvenance() throws Exception {
+        UUID key = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelope(key, provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"), "3".repeat(64)));
+
+        postIngress(List.of(position)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        postIngress(List.of(position)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"));
+
+        assertThat(eventRepository.findAll()).singleElement().satisfies(event -> {
+            assertThat(event.getTerminalId()).isEqualTo(TERMINAL_ID);
+            assertThat(event.getOnboardSystemId()).isEqualTo(onboardSystemId);
+            assertThat(event.getVehicleId()).isEqualTo(VEHICLE_ID);
+            assertThat(event.getSourceRole()).isEqualTo("LOCATION_PRIMARY");
+        });
+    }
+
+    @Test
+    void persistsNullableAlarmAndStatusBitsWithoutLosingProvenance() throws Exception {
+        CanonicalPositionIngress base = provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"), "9".repeat(64));
+        CanonicalPositionIngress nullableBits = new CanonicalPositionIngress(
+                base.terminalId(),
+                base.onboardSystemId(),
+                base.vehicleId(),
+                base.sourceRole(),
+                base.protocolVersion(),
+                base.messageSerialNo(),
+                base.rawLongitude(),
+                base.rawLatitude(),
+                base.rawCoordinateSystem(),
+                base.terminalLocatedAt(),
+                base.gatewayReceivedAt(),
+                null,
+                null,
+                base.speedKph(),
+                base.directionDegrees(),
+                base.altitudeMeters(),
+                base.satelliteCount(),
+                base.payloadDigest());
+
+        postIngress(List.of(envelope(UUID.randomUUID(), nullableBits)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        java.util.Map<String, Object> stored = jdbc.queryForMap(
+                "select onboard_system_id, source_role, alarm_bits, status_bits "
+                        + "from vehicle_location_events");
+        assertThat(stored.get("ONBOARD_SYSTEM_ID")).isEqualTo(onboardSystemId);
+        assertThat(stored.get("SOURCE_ROLE")).isEqualTo("LOCATION_PRIMARY");
+        assertThat(stored.get("ALARM_BITS")).isNull();
+        assertThat(stored.get("STATUS_BITS")).isNull();
+    }
+
+    @Test
+    void rejectsWrongSystemVehicleAndRoleClaimsWithoutWritingLocationState() throws Exception {
+        List<GatewayIngressEnvelope> spoofed = List.of(
+                envelope(UUID.randomUUID(), provenancePayload(
+                        TERMINAL_ID, UUID.randomUUID(), VEHICLE_ID, "LOCATION_PRIMARY",
+                        Instant.parse("2026-08-12T08:59:50Z"), "4".repeat(64))),
+                envelope(UUID.randomUUID(), provenancePayload(
+                        TERMINAL_ID, onboardSystemId, OTHER_VEHICLE_ID, "LOCATION_PRIMARY",
+                        Instant.parse("2026-08-12T08:59:51Z"), "5".repeat(64))),
+                envelope(UUID.randomUUID(), provenancePayload(
+                        TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_BACKUP",
+                        Instant.parse("2026-08-12T08:59:52Z"), "6".repeat(64))));
+
+        postIngress(spoofed).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+    }
+
+    @Test
+    void rejectsLocationRoleOwnedByTheOtherPhysicalDevice() throws Exception {
+        terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", CONFIGURATION_ACTOR_ID));
+        addLocationMember(
+                onboardSystemId, OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP);
+
+        GatewayIngressEnvelope spoofed = envelope(UUID.randomUUID(), provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_BACKUP",
+                Instant.parse("2026-08-12T08:59:50Z"), "7".repeat(64)));
+
+        postIngress(List.of(spoofed)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+        assertNoLocationStateWasWritten();
+    }
+
+    @Test
+    void rejectsRemovedMembershipBeforeWritingLocationState() throws Exception {
+        OnboardDeviceMembership membership = membershipRepository.findActiveByTerminalId(TERMINAL_ID)
+                .orElseThrow();
+        membership.remove(
+                "remove GPS member", CONFIGURATION_ACTOR_ID, CONFIGURED_AT.plusMinutes(1));
+        membershipRepository.saveAndFlush(membership);
+
+        assertCompositeAuthorityRejected();
+    }
+
+    @Test
+    void rejectsInactiveSystemBeforeWritingLocationState() throws Exception {
+        OnboardSystem system = onboardSystemRepository.findById(onboardSystemId).orElseThrow();
+        system.suspend(CONFIGURATION_ACTOR_ID, CONFIGURED_AT.plusMinutes(1));
+        onboardSystemRepository.saveAndFlush(system);
+
+        assertCompositeAuthorityRejected();
+    }
+
+    @Test
+    void rejectsCompositeMemberWithoutAnActiveLocationRole() throws Exception {
+        OnboardDeviceRoleAssignment role = roleRepository.findActiveByOnboardSystemIdAndRole(
+                onboardSystemId, OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY).orElseThrow();
+        role.revoke("remove location role", CONFIGURATION_ACTOR_ID, CONFIGURED_AT.plusMinutes(1));
+        roleRepository.saveAndFlush(role);
+
+        assertCompositeAuthorityRejected();
     }
 
     @Test
@@ -405,6 +593,14 @@ class GpsLocationIngressIntegrationTest {
         org.springframework.test.util.ReflectionTestUtils.setField(
                 otherBinding, "validFrom", OffsetDateTime.parse("2026-08-12T00:00:00Z"));
         bindingRepository.save(otherBinding);
+        OnboardSystem otherSystem = onboardSystemRepository.save(OnboardSystem.create(
+                OTHER_VEHICLE_ID,
+                OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+        addLocationMember(
+                otherSystem.getId(), OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
 
         Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
         UUID trustedPositionKey = UUID.randomUUID();
@@ -416,10 +612,13 @@ class GpsLocationIngressIntegrationTest {
                 rejectedPositionKey, VEHICLE_ID, 0x02, "181", "35.2109657",
                 Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
         UUID crossVehiclePositionKey = UUID.randomUUID();
-        CanonicalPositionIngress crossVehiclePayload = identityAndTimes(
-                payload(OTHER_VEHICLE_ID, Instant.parse("2026-08-12T08:59:50Z")),
-                OTHER_TERMINAL_ID, OTHER_VEHICLE_ID,
-                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        CanonicalPositionIngress crossVehiclePayload = provenancePayload(
+                OTHER_TERMINAL_ID,
+                otherSystem.getId(),
+                OTHER_VEHICLE_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"),
+                "a".repeat(64));
         GatewayIngressEnvelope crossVehiclePosition = new GatewayIngressEnvelope(
                 1, crossVehiclePositionKey, "POSITION", receivedAt,
                 objectMapper.writeValueAsString(crossVehiclePayload));
@@ -733,7 +932,7 @@ class GpsLocationIngressIntegrationTest {
     void rejectsVehicleClaimThatDoesNotMatchCurrentTerminalBindingAndRejectsInvalidBatchShapes() throws Exception {
         postIngress(List.of(envelope(UUID.randomUUID(), OTHER_VEHICLE_ID, 0x02, "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("TERMINAL_BINDING_MISMATCH"));
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
         internalPost("[]").andExpect(status().isBadRequest());
         internalPost("{}").andExpect(status().isBadRequest());
         internalPost("{]").andExpect(status().isBadRequest());
@@ -793,7 +992,7 @@ class GpsLocationIngressIntegrationTest {
                         "[\"UNSUPPORTED_ENVELOPE\"]",
                         "[\"INVALID_PAYLOAD\"]",
                         "[\"UNSUPPORTED_ENVELOPE\"]",
-                        "[\"TERMINAL_BINDING_MISMATCH\"]",
+                        "[\"ONBOARD_PROVENANCE_MISMATCH\"]",
                         "[\"INVALID_COORDINATE\",\"POSITION_INVALID\"]");
         assertThat(eventRepository.findAll()).isEmpty();
         assertThat(gatewayAuditRepository.findAll()).hasSize(6);
@@ -884,7 +1083,7 @@ class GpsLocationIngressIntegrationTest {
                 .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
                 .andExpect(jsonPath("$.data[0].reasonCodes").isEmpty())
                 .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("TERMINAL_BINDING_MISMATCH"));
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("INVALID_PAYLOAD"));
         assertThat(eventRepository.findByIdempotencyKey(acceptedKey)).isPresent();
         assertThat(eventRepository.findByIdempotencyKey(rejectedKey)).isEmpty();
     }
@@ -1047,12 +1246,14 @@ class GpsLocationIngressIntegrationTest {
         GatewayIngressEnvelope invalidDirection = envelope(UUID.randomUUID(), copy(base, base.terminalLocatedAt(), base.speedKph(), 360, base.payloadDigest()));
         GatewayIngressEnvelope invalidDigest = envelope(UUID.randomUUID(), copy(base, base.terminalLocatedAt(), base.speedKph(), base.directionDegrees(), "invalid"));
         GatewayIngressEnvelope missingProtocol = envelope(UUID.randomUUID(), new CanonicalPositionIngress(
-                base.terminalId(), base.vehicleId(), null, base.messageSerialNo(), base.rawLongitude(), base.rawLatitude(),
+                base.terminalId(), base.onboardSystemId(), base.vehicleId(), base.sourceRole(),
+                null, base.messageSerialNo(), base.rawLongitude(), base.rawLatitude(),
                 base.rawCoordinateSystem(), base.terminalLocatedAt(), base.gatewayReceivedAt(), base.alarmBits(),
                 base.statusBits(), base.speedKph(), base.directionDegrees(), base.altitudeMeters(),
                 base.satelliteCount(), base.payloadDigest()));
         GatewayIngressEnvelope missingAltitude = envelope(UUID.randomUUID(), new CanonicalPositionIngress(
-                base.terminalId(), base.vehicleId(), base.protocolVersion(), base.messageSerialNo(), base.rawLongitude(),
+                base.terminalId(), base.onboardSystemId(), base.vehicleId(), base.sourceRole(),
+                base.protocolVersion(), base.messageSerialNo(), base.rawLongitude(),
                 base.rawLatitude(), base.rawCoordinateSystem(), base.terminalLocatedAt(), base.gatewayReceivedAt(),
                 base.alarmBits(), base.statusBits(), base.speedKph(), base.directionDegrees(), null,
                 base.satelliteCount(), base.payloadDigest()));
@@ -1233,8 +1434,8 @@ class GpsLocationIngressIntegrationTest {
 
         var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
         assertThat(data).hasSize(batch.size());
-        assertThat(data.get(0).path("reasonCodes").get(0).asText()).isEqualTo("TERMINAL_BINDING_MISMATCH");
-        assertThat(data.get(1).path("reasonCodes").get(0).asText()).isEqualTo("TERMINAL_BINDING_MISMATCH");
+        assertThat(data.get(0).path("reasonCodes").get(0).asText()).isEqualTo("ONBOARD_PROVENANCE_MISMATCH");
+        assertThat(data.get(1).path("reasonCodes").get(0).asText()).isEqualTo("ONBOARD_PROVENANCE_MISMATCH");
         for (int index = 2; index < rejectedKeys.size(); index++) {
             assertThat(data.get(index).path("reasonCodes").get(0).asText()).isEqualTo("INVALID_PAYLOAD");
         }
@@ -1258,6 +1459,74 @@ class GpsLocationIngressIntegrationTest {
         assertThat(receiptRepository.findAll()).hasSize(batch.size()).noneSatisfy(receipt ->
                 assertThat(receipt.getFinalStatus()).isEqualTo("PROCESSING"));
         assertThat(eventRepository.findAll()).hasSize(acceptedKeys.size());
+    }
+
+    private void addLocationMember(
+            UUID systemId,
+            UUID terminalId,
+            OnboardDeviceRoleAssignment.Role role) {
+        membershipRepository.save(OnboardDeviceMembership.join(
+                systemId,
+                terminalId,
+                OnboardDeviceMembership.NetworkMode.DIRECT_CELLULAR,
+                "configure GPS member",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+        roleRepository.save(OnboardDeviceRoleAssignment.assign(
+                systemId,
+                terminalId,
+                role,
+                "configure GPS role",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+    }
+
+    private void assertCompositeAuthorityRejected() throws Exception {
+        GatewayIngressEnvelope position = envelope(UUID.randomUUID(), provenancePayload(
+                TERMINAL_ID,
+                onboardSystemId,
+                VEHICLE_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"),
+                "8".repeat(64)));
+        postIngress(List.of(position)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+        assertNoLocationStateWasWritten();
+    }
+
+    private void assertNoLocationStateWasWritten() {
+        assertThat(eventRepository.count()).isZero();
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isNull();
+    }
+
+    private CanonicalPositionIngress provenancePayload(
+            UUID terminalId,
+            UUID systemId,
+            UUID vehicleId,
+            String sourceRole,
+            Instant locatedAt,
+            String digest) {
+        return new CanonicalPositionIngress(
+                terminalId,
+                systemId,
+                vehicleId,
+                sourceRole,
+                "JT808_2019",
+                7,
+                new BigDecimal("105.2384988"),
+                new BigDecimal("35.2109657"),
+                "WGS84",
+                locatedAt,
+                locatedAt.plusSeconds(10),
+                0L,
+                0x02L,
+                new BigDecimal("50"),
+                90,
+                10,
+                8,
+                digest);
     }
 
     private org.springframework.test.web.servlet.ResultActions postIngress(List<GatewayIngressEnvelope> batch) throws Exception { return internalPost(objectMapper.writeValueAsString(batch)); }
@@ -1376,12 +1645,16 @@ class GpsLocationIngressIntegrationTest {
         return payload(vehicleId, locatedAt, 0x02, new BigDecimal("105.2384988"), new BigDecimal("35.2109657"));
     }
     private CanonicalPositionIngress payload(UUID vehicleId, Instant locatedAt, long statusBits, BigDecimal longitude, BigDecimal latitude) {
-        return new CanonicalPositionIngress(TERMINAL_ID, vehicleId, "JT808_2019", 7, longitude, latitude, "WGS84", locatedAt,
+        return new CanonicalPositionIngress(
+                TERMINAL_ID, onboardSystemId, vehicleId, "LOCATION_PRIMARY", "JT808_2019", 7,
+                longitude, latitude, "WGS84", locatedAt,
                 Instant.parse("2026-08-12T09:00:00Z"), 0L, statusBits, new BigDecimal("50"), 90, 10, 8, "a".repeat(64));
     }
     private CanonicalPositionIngress copy(CanonicalPositionIngress source, Instant terminalLocatedAt, BigDecimal speedKph,
             Integer directionDegrees, String payloadDigest) {
-        return new CanonicalPositionIngress(source.terminalId(), source.vehicleId(), source.protocolVersion(), source.messageSerialNo(),
+        return new CanonicalPositionIngress(
+                source.terminalId(), source.onboardSystemId(), source.vehicleId(), source.sourceRole(),
+                source.protocolVersion(), source.messageSerialNo(),
                 source.rawLongitude(), source.rawLatitude(), source.rawCoordinateSystem(), terminalLocatedAt,
                 source.gatewayReceivedAt(), source.alarmBits(), source.statusBits(), speedKph, directionDegrees,
                 source.altitudeMeters(), source.satelliteCount(), payloadDigest);
@@ -1390,14 +1663,17 @@ class GpsLocationIngressIntegrationTest {
             BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem, BigDecimal speedKph,
             int directionDegrees, int altitudeMeters, int satelliteCount, long alarmBits, long statusBits,
             String payloadDigest) {
-        return new CanonicalPositionIngress(source.terminalId(), source.vehicleId(), protocolVersion,
+        return new CanonicalPositionIngress(
+                source.terminalId(), source.onboardSystemId(), source.vehicleId(), source.sourceRole(), protocolVersion,
                 source.messageSerialNo(), rawLongitude, rawLatitude, rawCoordinateSystem, source.terminalLocatedAt(),
                 source.gatewayReceivedAt(), alarmBits, statusBits, speedKph, directionDegrees, altitudeMeters,
                 satelliteCount, payloadDigest);
     }
     private CanonicalPositionIngress identityAndTimes(CanonicalPositionIngress source, UUID terminalId,
             UUID vehicleId, Instant terminalLocatedAt, Instant gatewayReceivedAt) {
-        return new CanonicalPositionIngress(terminalId, vehicleId, source.protocolVersion(), source.messageSerialNo(),
+        return new CanonicalPositionIngress(
+                terminalId, source.onboardSystemId(), vehicleId, source.sourceRole(),
+                source.protocolVersion(), source.messageSerialNo(),
                 source.rawLongitude(), source.rawLatitude(), source.rawCoordinateSystem(), terminalLocatedAt,
                 gatewayReceivedAt, source.alarmBits(), source.statusBits(), source.speedKph(),
                 source.directionDegrees(), source.altitudeMeters(), source.satelliteCount(), source.payloadDigest());

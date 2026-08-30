@@ -40,6 +40,12 @@ import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.CanonicalPositionIngress;
 import com.idavy.drtops.domain.location.GatewayIngressEnvelope;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystem;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBinding;
@@ -125,6 +131,15 @@ class AlarmEventStreamIntegrationTest {
 
     @Autowired
     JtTerminalVehicleBindingRepository bindings;
+
+    @Autowired
+    OnboardSystemRepository onboardSystems;
+
+    @Autowired
+    OnboardDeviceMembershipRepository memberships;
+
+    @Autowired
+    OnboardDeviceRoleAssignmentRepository roles;
 
     @Autowired
     PlatformTransactionManager transactions;
@@ -404,6 +419,27 @@ class AlarmEventStreamIntegrationTest {
                 terminal, vehicleId, "SSE P95 test", UUID.randomUUID());
         org.springframework.test.util.ReflectionTestUtils.setField(binding, "validFrom", OffsetDateTime.now().minusDays(1));
         bindings.saveAndFlush(binding);
+        UUID configurationActor = UUID.randomUUID();
+        OffsetDateTime configuredAt = OffsetDateTime.now().minusDays(1);
+        OnboardSystem onboardSystem = onboardSystems.saveAndFlush(OnboardSystem.create(
+                vehicleId,
+                OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                configurationActor,
+                configuredAt));
+        memberships.saveAndFlush(OnboardDeviceMembership.join(
+                onboardSystem.getId(),
+                terminalId,
+                OnboardDeviceMembership.NetworkMode.DIRECT_CELLULAR,
+                "SSE P95 GPS membership",
+                configurationActor,
+                configuredAt));
+        roles.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                onboardSystem.getId(),
+                terminalId,
+                OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY,
+                "SSE P95 GPS role",
+                configurationActor,
+                configuredAt));
 
         UserAccount operator = UserAccount.create("sse-p95-reader", "SSE P95 reader", "hash");
         operator.assignRoles(Set.of(RoleCode.OPERATOR));
@@ -418,7 +454,8 @@ class AlarmEventStreamIntegrationTest {
         for (int index = 0; index < 20; index++) {
             String identifier = "P95-" + index + "-" + UUID.randomUUID();
             Instant receivedAt = Instant.now();
-            GatewayIngressEnvelope position = acceptedPositionEnvelope(terminalId, vehicleId, receivedAt);
+            GatewayIngressEnvelope position = acceptedPositionEnvelope(
+                    terminalId, onboardSystem.getId(), vehicleId, receivedAt);
             GatewayIngressEnvelope alarm = alarmEnvelope(terminalId, vehicleId, position.idempotencyKey(), identifier, index, receivedAt);
             long started = System.nanoTime();
             mockMvc.perform(post("/internal/jt-gateway/ingress")
@@ -512,8 +549,13 @@ class AlarmEventStreamIntegrationTest {
                 new AlarmStore.LocationReference(UUID.randomUUID(), "GOOD", "[]"));
     }
 
-    private GatewayIngressEnvelope acceptedPositionEnvelope(UUID terminalId, UUID vehicleId, Instant receivedAt) throws Exception {
-        CanonicalPositionIngress position = new CanonicalPositionIngress(terminalId, vehicleId, "JT808-2019", 1,
+    private GatewayIngressEnvelope acceptedPositionEnvelope(
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            Instant receivedAt) throws Exception {
+        CanonicalPositionIngress position = new CanonicalPositionIngress(
+                terminalId, onboardSystemId, vehicleId, "LOCATION_PRIMARY", "JT808-2019", 1,
                 new BigDecimal("105.2384988"), new BigDecimal("35.2103000"), "WGS84", receivedAt, receivedAt,
                 0L, 0x02L, new BigDecimal("60.00"), 90, 0, 8, "a".repeat(64));
         return new GatewayIngressEnvelope(1, UUID.randomUUID(), "POSITION", receivedAt,
