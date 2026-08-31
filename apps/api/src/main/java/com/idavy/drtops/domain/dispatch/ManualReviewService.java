@@ -9,6 +9,7 @@ import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
+import com.idavy.drtops.domain.onboard.OnboardReadinessService;
 import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.TaskStopInsertionPolicy;
 import com.idavy.drtops.domain.task.TaskStatus;
@@ -35,6 +36,7 @@ public class ManualReviewService {
     private final AuditLogRepository auditLogRepository;
     private final DispatchRuleSetRepository ruleSetRepository;
     private final CandidateTaskAssembler candidateTaskAssembler;
+    private final OnboardReadinessService onboardReadinessService;
 
     public ManualReviewService(
             DispatchDecisionRepository dispatchDecisionRepository,
@@ -46,7 +48,8 @@ public class ManualReviewService {
             TaskStopInsertionPolicy taskStopInsertionPolicy,
             AuditLogRepository auditLogRepository,
             DispatchRuleSetRepository ruleSetRepository,
-            CandidateTaskAssembler candidateTaskAssembler) {
+            CandidateTaskAssembler candidateTaskAssembler,
+            OnboardReadinessService onboardReadinessService) {
         this.dispatchDecisionRepository = dispatchDecisionRepository;
         this.rideOrderRepository = rideOrderRepository;
         this.vehicleRepository = vehicleRepository;
@@ -57,6 +60,7 @@ public class ManualReviewService {
         this.auditLogRepository = auditLogRepository;
         this.ruleSetRepository = ruleSetRepository;
         this.candidateTaskAssembler = candidateTaskAssembler;
+        this.onboardReadinessService = onboardReadinessService;
     }
 
     @Transactional
@@ -83,10 +87,11 @@ public class ManualReviewService {
         if (decision.getBestVehicleId() == null) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "人工确认缺少候选车辆");
         }
-        VehicleTask existingTask = decision.getBestTaskId() == null
-                ? null : taskForInsertion(decision.getBestTaskId());
         Vehicle vehicle = vehicleRepository.findById(decision.getBestVehicleId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "候选车辆不存在"));
+        requireCurrentOnboardReadiness(vehicle.getId());
+        VehicleTask existingTask = decision.getBestTaskId() == null
+                ? null : taskForInsertion(decision.getBestTaskId());
 
         int waitMinutes = decision.getEstimatedWaitMinutes() == null ? 0 : decision.getEstimatedWaitMinutes();
         int detourMinutes = decision.getEstimatedDetourMinutes() == null ? 0 : decision.getEstimatedDetourMinutes();
@@ -109,6 +114,14 @@ public class ManualReviewService {
         task.dispatch();
         taskResourceCoordinator.reserve(vehicle.getId(), driver.getId());
         return new TaskApproval(vehicleTaskRepository.save(task), boardingAt, alightingAt);
+    }
+
+    private void requireCurrentOnboardReadiness(UUID vehicleId) {
+        boolean eligible = onboardReadinessService.evaluate(vehicleId).dispatchEligible();
+        if (!eligible) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT, "DISPATCH_ONBOARD_SYSTEM_NOT_READY");
+        }
     }
 
     private VehicleTask taskForInsertion(UUID taskId) {

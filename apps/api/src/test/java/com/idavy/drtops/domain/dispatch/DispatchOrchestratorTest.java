@@ -6,16 +6,19 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Driver;
 import com.idavy.drtops.domain.fleet.DriverRepository;
-import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
-import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.map.Coordinate;
 import com.idavy.drtops.domain.map.DistanceResult;
 import com.idavy.drtops.domain.map.RoutePlanResult;
 import com.idavy.drtops.domain.map.RoutePlanningProvider;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
+import com.idavy.drtops.domain.onboard.OnboardTestFixtures;
 import com.idavy.drtops.domain.order.OrderStatus;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
@@ -26,25 +29,38 @@ import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @SpringBootTest(properties = {
-        "spring.datasource.url=jdbc:h2:mem:dispatch_orchestrator;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+        "spring.datasource.url=jdbc:h2:mem:dispatch_orchestrator;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=250",
         "spring.datasource.username=sa",
         "spring.datasource.password=",
         "spring.datasource.driver-class-name=org.h2.Driver",
@@ -53,6 +69,7 @@ import org.springframework.test.web.servlet.MockMvc;
 })
 @AutoConfigureMockMvc
 @WithMockUser(authorities = "DISPATCH_EXECUTE")
+@Import(OnboardTestFixtures.class)
 class DispatchOrchestratorTest {
 
     private static final UUID RULE_SET_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
@@ -60,8 +77,11 @@ class DispatchOrchestratorTest {
     private static final UUID ALIGHTING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555552");
     private static final UUID INSERTED_BOARDING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555553");
     private static final UUID INSERTED_ALIGHTING_STOP_ID = UUID.fromString("55555555-5555-5555-5555-555555555554");
-    private static final UUID VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333331");
     private static final UUID DRIVER_ID = UUID.fromString("44444444-4444-4444-4444-444444444441");
+    private static final String READINESS_FAILURE_METRIC =
+            "drt.dispatch.onboard.readiness.evaluation.failures";
+
+    private UUID vehicleId;
 
     @Autowired
     DispatchOrchestrator orchestrator;
@@ -93,29 +113,37 @@ class DispatchOrchestratorTest {
     @Autowired
     FakeAlgorithmClient algorithmClient;
 
+    @Autowired
+    OnboardTestFixtures onboardFixtures;
+
+    @Autowired
+    JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    EntityManager entityManager;
+
+    @Autowired
+    OnboardSystemRepository onboardSystemRepository;
+
+    @Autowired
+    PlatformTransactionManager transactionManager;
+
+    @Autowired
+    MeterRegistry meterRegistry;
+
     @BeforeEach
     void setUp() {
         dispatchDecisionRepository.deleteAll();
         auditLogRepository.deleteAll();
         vehicleTaskRepository.deleteAll();
         rideOrderRepository.deleteAll();
-        vehicleRepository.deleteAll();
         driverRepository.deleteAll();
         ruleSetRepository.deleteAll();
+        onboardFixtures.clear();
         algorithmClient.reset();
 
         ruleSetRepository.save(DispatchRuleSet.defaultRules(RULE_SET_ID));
-        Vehicle vehicle = Vehicle.create(
-                VEHICLE_ID,
-                "DRT-201",
-                "Microbus",
-                8,
-                "IDLE",
-                "POINT(120.1550000 30.2741000)",
-                "演示车队",
-                true);
-        applyLocationSnapshot(vehicle);
-        vehicleRepository.save(vehicle);
+        vehicleId = onboardFixtures.readyDispatchSystemVehicleId();
         driverRepository.save(Driver.create(
                 DRIVER_ID,
                 "王师傅",
@@ -130,7 +158,7 @@ class DispatchOrchestratorTest {
     @Test
     void autoDispatchConfirmsOrderAndCreatesVehicleTask() {
         UUID orderId = createPendingOrder();
-        algorithmClient.stubAutoDispatch(VEHICLE_ID);
+        algorithmClient.stubAutoDispatch(vehicleId);
 
         DispatchResult result = orchestrator.dispatchOrder(orderId);
 
@@ -143,10 +171,112 @@ class DispatchOrchestratorTest {
                 .anyMatch(log -> log.getAction().equals("ORDER_AUTO_DISPATCHED"));
         assertThat(algorithmClient.lastRequest().order().orderId()).isEqualTo(orderId);
         assertThat(algorithmClient.lastRequest().candidateTasks()).hasSize(1);
-        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentStatus())
+        assertThat(vehicleRepository.findById(vehicleId).orElseThrow().getCurrentStatus())
                 .isEqualTo("DISPATCHED");
         assertThat(driverRepository.findById(DRIVER_ID).orElseThrow().getCurrentStatus())
                 .isEqualTo("BUSY");
+    }
+
+    @Test
+    void automaticAssemblyExcludesUnreadyIdleVehicleButRetainsReadyNeighbor() {
+        // Mutation caught: filtering only Vehicle.dispatchable leaves an unready idle vehicle in the request.
+        UUID unreadyVehicleId = createStaleOnboardVehicle();
+        driverRepository.save(Driver.create(
+                UUID.randomUUID(),
+                "邻车驾驶员",
+                "13900002002",
+                "QUALIFIED",
+                OffsetDateTime.parse("2026-07-08T08:00:00+08:00"),
+                OffsetDateTime.parse("2026-07-08T18:00:00+08:00"),
+                "AVAILABLE",
+                "演示车队"));
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatch(vehicleId);
+
+        orchestrator.dispatchOrder(orderId);
+
+        assertThat(algorithmClient.lastRequest().candidateTasks())
+                .extracting(DispatchEvaluateRequest.CandidateTask::vehicleId)
+                .containsExactly(vehicleId)
+                .doesNotContain(unreadyVehicleId);
+    }
+
+    @Test
+    void automaticAssemblyExcludesUnreadyExistingTaskVehicleButRetainsReadyNeighbor() {
+        // Mutation caught: filtering only new idle candidates leaves an unready active-task vehicle insertable.
+        UUID unreadyVehicleId = createStaleOnboardVehicle();
+        UUID unreadyTaskId = createInProgressTaskWithOneOrder(unreadyVehicleId, DRIVER_ID);
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatch(vehicleId);
+
+        orchestrator.dispatchOrder(orderId);
+
+        assertThat(algorithmClient.lastRequest().candidateTasks())
+                .extracting(DispatchEvaluateRequest.CandidateTask::vehicleId)
+                .containsExactly(vehicleId)
+                .doesNotContain(unreadyVehicleId);
+        assertThat(algorithmClient.lastRequest().candidateTasks())
+                .extracting(DispatchEvaluateRequest.CandidateTask::taskId)
+                .doesNotContain(unreadyTaskId);
+    }
+
+    @Test
+    void automaticAssemblyObservesLockTimeoutAndRetainsReadyNeighbor() throws Exception {
+        // Mutation caught: silently swallowing an infrastructure failure without a metric or safe log.
+        UUID lockedVehicleId = onboardFixtures.readyDispatchSystemVehicleId();
+        driverRepository.save(Driver.create(
+                UUID.randomUUID(),
+                "锁超时邻车驾驶员",
+                "13900002003",
+                "QUALIFIED",
+                OffsetDateTime.parse("2026-07-08T08:00:00+08:00"),
+                OffsetDateTime.parse("2026-07-08T18:00:00+08:00"),
+                "AVAILABLE",
+                "演示车队"));
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatch(vehicleId);
+        UUID systemId = onboardSystemRepository.findActiveByVehicleId(lockedVehicleId).orElseThrow().getId();
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<?> blocker = executor.submit(() -> new TransactionTemplate(transactionManager)
+                .executeWithoutResult(status -> {
+                    onboardSystemRepository.findLockedById(systemId).orElseThrow();
+                    locked.countDown();
+                    await(release);
+                }));
+        assertThat(locked.await(5, TimeUnit.SECONDS)).isTrue();
+
+        Logger logger = (Logger) LoggerFactory.getLogger(CandidateTaskAssembler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        Counter failureCounter = meterRegistry.counter(READINESS_FAILURE_METRIC);
+        double failuresBefore = failureCounter.count();
+        try {
+            orchestrator.dispatchOrder(orderId);
+        } finally {
+            release.countDown();
+            blocker.get(5, TimeUnit.SECONDS);
+            executor.shutdownNow();
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(algorithmClient.lastRequest().candidateTasks())
+                .extracting(DispatchEvaluateRequest.CandidateTask::vehicleId)
+                .containsExactly(vehicleId)
+                .doesNotContain(lockedVehicleId);
+        assertThat(failureCounter.count()).isEqualTo(failuresBefore + 1D);
+        assertThat(appender.list)
+                .singleElement()
+                .satisfies(event -> {
+                    assertThat(event.getFormattedMessage())
+                            .contains("event=ONBOARD_READINESS_EVALUATION_FAILED")
+                            .contains("failureType=")
+                            .doesNotContain(lockedVehicleId.toString());
+                    assertThat(event.getThrowableProxy()).isNull();
+                });
     }
 
     @Test
@@ -172,7 +302,7 @@ class DispatchOrchestratorTest {
                 .getFirst()
                 .getRideOrderId();
         UUID orderId = createPendingOrder();
-        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, vehicleId);
 
         DispatchResult result = orchestrator.dispatchOrder(orderId);
 
@@ -215,7 +345,7 @@ class DispatchOrchestratorTest {
                 new BigDecimal("30.2741000"),
                 new BigDecimal("120.1688000"),
                 new BigDecimal("30.2799000"));
-        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, vehicleId);
 
         orchestrator.dispatchOrder(orderId);
 
@@ -269,21 +399,9 @@ class DispatchOrchestratorTest {
 
     @Test
     void autoDispatchRejectsInsertWhenExistingTaskHasNoSeats() {
-        vehicleRepository.deleteAll();
-        Vehicle vehicle = Vehicle.create(
-                VEHICLE_ID,
-                "DRT-201",
-                "Microbus",
-                1,
-                "IDLE",
-                "POINT(120.1550000 30.2741000)",
-                "演示车队",
-                true);
-        applyLocationSnapshot(vehicle);
-        vehicleRepository.save(vehicle);
         UUID existingTaskId = createInProgressTaskWithOneOrder();
-        UUID orderId = createPendingOrder();
-        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+        UUID orderId = createPendingOrder(8);
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, vehicleId);
 
         org.junit.jupiter.api.Assertions.assertThrows(
                 org.springframework.web.server.ResponseStatusException.class,
@@ -299,7 +417,7 @@ class DispatchOrchestratorTest {
     void autoDispatchRejectsMissingSelectedExistingTask() {
         UUID missingTaskId = UUID.randomUUID();
         UUID orderId = createPendingOrder();
-        algorithmClient.stubAutoDispatchIntoTask(missingTaskId, VEHICLE_ID);
+        algorithmClient.stubAutoDispatchIntoTask(missingTaskId, vehicleId);
 
         org.junit.jupiter.api.Assertions.assertThrows(
                 org.springframework.web.server.ResponseStatusException.class,
@@ -314,7 +432,7 @@ class DispatchOrchestratorTest {
     void autoDispatchRollsBackWhenSelectedTaskChangesAfterEvaluation() {
         UUID existingTaskId = createInProgressTaskWithOneOrder();
         UUID orderId = createPendingOrder();
-        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, VEHICLE_ID);
+        algorithmClient.stubAutoDispatchIntoTask(existingTaskId, vehicleId);
         algorithmClient.afterEvaluation(() -> vehicleTaskRepository.findById(existingTaskId)
                 .orElseThrow().markException("并发状态变化"));
 
@@ -333,7 +451,7 @@ class DispatchOrchestratorTest {
     @Test
     void manualReviewKeepsOrderPendingManualReview() {
         UUID orderId = createPendingOrder();
-        algorithmClient.stubManualReview(VEHICLE_ID);
+        algorithmClient.stubManualReview(vehicleId);
 
         DispatchResult result = orchestrator.dispatchOrder(orderId);
 
@@ -348,7 +466,7 @@ class DispatchOrchestratorTest {
     void manualReviewPreservesExistingTaskCandidateForApproval() {
         UUID existingTaskId = createInProgressTaskWithOneOrder();
         UUID orderId = createPendingOrder();
-        algorithmClient.stubManualReviewIntoTask(existingTaskId, VEHICLE_ID);
+        algorithmClient.stubManualReviewIntoTask(existingTaskId, vehicleId);
 
         DispatchResult result = orchestrator.dispatchOrder(orderId);
 
@@ -361,7 +479,7 @@ class DispatchOrchestratorTest {
     @Test
     void dispatchApiReturnsDecision() throws Exception {
         UUID orderId = createPendingOrder();
-        algorithmClient.stubManualReview(VEHICLE_ID);
+        algorithmClient.stubManualReview(vehicleId);
 
         mockMvc.perform(post("/api/orders/" + orderId + "/dispatch"))
                 .andExpect(status().isOk())
@@ -423,20 +541,31 @@ class DispatchOrchestratorTest {
         return rideOrderRepository.save(order).getId();
     }
 
-    private void applyLocationSnapshot(Vehicle vehicle) {
-        OffsetDateTime reportedAt = OffsetDateTime.parse("2026-07-08T02:20:00Z");
-        vehicle.applyLocationSnapshot(
-                "POINT(120.1550000 30.2741000)",
-                "测试车辆位置",
-                LocationSource.MANUAL_DISPATCHER,
-                "GCJ-02",
-                reportedAt,
-                reportedAt,
-                UUID.randomUUID(),
-                null);
+    private UUID createInProgressTaskWithOneOrder() {
+        return createInProgressTaskWithOneOrder(vehicleId, DRIVER_ID);
     }
 
-    private UUID createInProgressTaskWithOneOrder() {
+    private UUID createStaleOnboardVehicle() {
+        UUID staleVehicleId = onboardFixtures.readyDispatchSystemVehicleId();
+        jdbcTemplate.update(
+                "update vehicles set current_location_stale = true where id = ?",
+                staleVehicleId);
+        entityManager.clear();
+        return staleVehicleId;
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("timed out waiting for system lock test latch");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("system lock test latch interrupted", interrupted);
+        }
+    }
+
+    private UUID createInProgressTaskWithOneOrder(UUID assignedVehicleId, UUID assignedDriverId) {
         RideOrder order = RideOrder.pendingDispatch(new RideOrder.CreateOrderCommand(
                 "李四",
                 "13800000001",
@@ -456,8 +585,8 @@ class DispatchOrchestratorTest {
         RideOrder savedOrder = rideOrderRepository.save(order);
 
         VehicleTask task = VehicleTask.pendingDeparture(
-                VEHICLE_ID,
-                DRIVER_ID,
+                assignedVehicleId,
+                assignedDriverId,
                 OffsetDateTime.parse("2026-07-08T02:26:00Z"),
                 "ALGORITHM");
         task.addStop(TaskStop.planned(
