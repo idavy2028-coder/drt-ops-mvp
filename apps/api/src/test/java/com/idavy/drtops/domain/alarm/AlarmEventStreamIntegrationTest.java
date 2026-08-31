@@ -40,12 +40,17 @@ import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.CanonicalPositionIngress;
 import com.idavy.drtops.domain.location.GatewayIngressEnvelope;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
 import com.idavy.drtops.domain.onboard.OnboardSystem;
 import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeState;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeStateRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBinding;
@@ -127,6 +132,9 @@ class AlarmEventStreamIntegrationTest {
     VehicleRepository vehicles;
 
     @Autowired
+    VehicleLocationEventRepository locationEvents;
+
+    @Autowired
     JtTerminalRepository terminals;
 
     @Autowired
@@ -139,7 +147,13 @@ class AlarmEventStreamIntegrationTest {
     OnboardDeviceMembershipRepository memberships;
 
     @Autowired
+    OnboardDeviceProtocolProfileRepository protocolProfiles;
+
+    @Autowired
     OnboardDeviceRoleAssignmentRepository roles;
+
+    @Autowired
+    OnboardSystemRuntimeStateRepository onboardRuntime;
 
     @Autowired
     PlatformTransactionManager transactions;
@@ -155,6 +169,15 @@ class AlarmEventStreamIntegrationTest {
         outbox.deleteAll();
         alarms.deleteAll();
         users.deleteAll();
+        locationEvents.deleteAll();
+        roles.deleteAll();
+        protocolProfiles.deleteAll();
+        memberships.deleteAll();
+        onboardRuntime.deleteAll();
+        onboardSystems.deleteAll();
+        bindings.deleteAll();
+        terminals.deleteAll();
+        vehicles.deleteAll();
         SecurityContextHolder.clearContext();
     }
 
@@ -424,6 +447,19 @@ class AlarmEventStreamIntegrationTest {
         OnboardSystem onboardSystem = onboardSystems.saveAndFlush(OnboardSystem.create(
                 vehicleId,
                 OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                configurationActor,
+                configuredAt));
+        onboardRuntime.saveAndFlush(OnboardSystemRuntimeState.initialize(
+                onboardSystem.getId(), configuredAt));
+        protocolProfiles.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                terminalId,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                10,
+                60,
+                "SSE P95 GPS protocol profile",
                 configurationActor,
                 configuredAt));
         memberships.saveAndFlush(OnboardDeviceMembership.join(

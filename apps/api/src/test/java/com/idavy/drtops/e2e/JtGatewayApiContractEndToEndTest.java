@@ -17,6 +17,8 @@ import com.idavy.drtops.domain.onboard.OnboardDeviceCapability;
 import com.idavy.drtops.domain.onboard.OnboardDeviceCapabilityRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
 import com.idavy.drtops.domain.onboard.OnboardSystem;
@@ -126,6 +128,7 @@ class JtGatewayApiContractEndToEndTest {
     @Autowired OnboardSystemRepository onboardSystems;
     @Autowired OnboardSystemRuntimeStateRepository onboardRuntime;
     @Autowired OnboardDeviceMembershipRepository memberships;
+    @Autowired OnboardDeviceProtocolProfileRepository protocolProfiles;
     @Autowired OnboardDeviceCapabilityRepository capabilities;
     @Autowired OnboardDeviceRoleAssignmentRepository roles;
 
@@ -145,6 +148,7 @@ class JtGatewayApiContractEndToEndTest {
         locations.deleteAll();
         roles.deleteAll();
         capabilities.deleteAll();
+        protocolProfiles.deleteAll();
         memberships.deleteAll();
         onboardRuntime.deleteAll();
         apiJdbc.update("delete from audit_logs");
@@ -175,6 +179,17 @@ class JtGatewayApiContractEndToEndTest {
                 configuredAt));
         onboardRuntime.saveAndFlush(OnboardSystemRuntimeState.initialize(
                 onboardSystem.getId(), configuredAt));
+        protocolProfiles.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                TERMINAL_ID,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2013,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.JSATL12_2017,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                10,
+                60,
+                "synthetic API contract protocol profile",
+                ACTOR_ID,
+                configuredAt));
         memberships.saveAndFlush(OnboardDeviceMembership.join(
                 onboardSystem.getId(),
                 TERMINAL_ID,

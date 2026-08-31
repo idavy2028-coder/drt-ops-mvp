@@ -7,20 +7,28 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.domain.audit.AuditLog;
+import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
 import com.idavy.drtops.domain.onboard.OnboardSystem;
 import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeState;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeStateRepository;
 import com.idavy.drtops.domain.terminal.JtGatewayAuditEventRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBinding;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBindingRepository;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -30,9 +38,17 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -75,15 +91,20 @@ class GpsLocationIngressIntegrationTest {
     @Autowired JtTerminalVehicleBindingRepository bindingRepository;
     @Autowired OnboardSystemRepository onboardSystemRepository;
     @Autowired OnboardDeviceMembershipRepository membershipRepository;
+    @Autowired OnboardDeviceProtocolProfileRepository profileRepository;
     @Autowired OnboardDeviceRoleAssignmentRepository roleRepository;
+    @Autowired OnboardSystemRuntimeStateRepository runtimeRepository;
+    @Autowired AuditLogRepository auditLogRepository;
     @Autowired JtGatewayAuditEventRepository gatewayAuditRepository;
     @Autowired JtGatewayIngressReceiptRepository receiptRepository;
     @Autowired VehicleLocationSnapshotService snapshotService;
     @Autowired PlatformTransactionManager transactionManager;
+    @Autowired EntityManager entityManager;
     @Autowired JdbcTemplate jdbc;
     @Autowired TestServiceAreaLocationChecker locationChecker;
     @Autowired GatewayIngressRouter ingressRouter;
     @Autowired FaultInjectingObjectMapper faultInjectingObjectMapper;
+    @Autowired ArbitrationPersistenceFailure arbitrationPersistenceFailure;
     private UUID onboardSystemId;
 
     @DynamicPropertySource
@@ -95,10 +116,13 @@ class GpsLocationIngressIntegrationTest {
     @BeforeEach
     void setUp() {
         locationChecker.reset();
+        arbitrationPersistenceFailure.reset();
         jdbc.update("delete from vehicle_alarm_outbox");
         jdbc.update("delete from vehicle_alarms");
         receiptRepository.deleteAll(); gatewayAuditRepository.deleteAll(); eventRepository.deleteAll();
-        roleRepository.deleteAll(); membershipRepository.deleteAll(); onboardSystemRepository.deleteAll();
+        auditLogRepository.deleteAll();
+        roleRepository.deleteAll(); profileRepository.deleteAll(); membershipRepository.deleteAll();
+        runtimeRepository.deleteAll(); onboardSystemRepository.deleteAll();
         bindingRepository.deleteAll(); terminalRepository.deleteAll(); vehicleRepository.deleteAll();
         vehicleRepository.save(Vehicle.create(VEHICLE_ID, "甘G001", "Microbus", 8, "IDLE", "POINT(105.2421 35.2103)", "测试", true));
         vehicleRepository.save(Vehicle.create(OTHER_VEHICLE_ID, "甘G002", "Microbus", 8, "IDLE", "POINT(105.2421 35.2103)", "测试", true));
@@ -112,9 +136,11 @@ class GpsLocationIngressIntegrationTest {
                 VEHICLE_ID, OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
                 CONFIGURATION_ACTOR_ID, CONFIGURED_AT));
         onboardSystemId = system.getId();
+        runtimeRepository.save(OnboardSystemRuntimeState.initialize(onboardSystemId, CONFIGURED_AT));
         addLocationMember(
                 onboardSystemId, TERMINAL_ID,
                 OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        activateProfile(TERMINAL_ID, 60, 10);
     }
 
     @Test
@@ -149,6 +175,609 @@ class GpsLocationIngressIntegrationTest {
                 .containsOnly(VEHICLE_ID);
         assertThat(events).extracting(VehicleLocationEvent::getSourceRole)
                 .containsExactly("LOCATION_PRIMARY", "LOCATION_BACKUP");
+        assertThat(events).extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isEqualTo(events.getFirst().getId());
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(locationSwitchAudits()).singleElement().satisfies(audit ->
+                assertThat(audit.getReason()).isEqualTo("PRIMARY_SELECTED"));
+    }
+
+    @Test
+    void usesIdleProfileIntervalAndAuditsTheExactThresholdSwitchWithSafeAliases() throws Exception {
+        installBackup();
+        replacePrimaryProfile(60, 20);
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "a".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(39),
+                base.plusSeconds(40), 0x02L, "b".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        List<VehicleLocationEvent> events = eventRepository.findAllByOrderByDriverReportedAtAsc();
+        assertThat(events).extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, true);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+
+        AuditLog staleSwitch = locationSwitchAudits().stream()
+                .filter(audit -> "PRIMARY_STALE".equals(audit.getReason()))
+                .findFirst().orElseThrow();
+        JsonNode metadata = objectMapper.readTree(staleSwitch.getMetadataJson());
+        assertThat(metadata.path("previousDeviceAlias").asText()).isEqualTo("device-d61e5c0ecb0f");
+        assertThat(metadata.path("nextDeviceAlias").asText()).isEqualTo("device-3cf85ecc7851");
+        assertThat(metadata.path("previousRole").asText()).isEqualTo("LOCATION_PRIMARY");
+        assertThat(metadata.path("nextRole").asText()).isEqualTo("LOCATION_BACKUP");
+        assertThat(metadata.path("reasonCode").asText()).isEqualTo("PRIMARY_STALE");
+        assertThat(metadata.path("switchedAt").asText()).isNotBlank();
+        assertThat(staleSwitch.getMetadataJson())
+                .doesNotContain(TERMINAL_ID.toString(), OTHER_TERMINAL_ID.toString(),
+                        "GPS-PHONE", "GPS-001", "甘G001");
+    }
+
+    @Test
+    void usesActiveProfileIntervalWhenVehicleIsNotIdle() throws Exception {
+        installBackup();
+        replacePrimaryProfile(60, 20);
+        jdbc.update("update vehicles set current_status = 'IN_SERVICE' where id = ?", VEHICLE_ID);
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "c".repeat(64)))))
+                .andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(118),
+                base.plusSeconds(119), 0x02L, "d".repeat(64)))))
+                .andExpect(status().isOk());
+
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false);
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(119),
+                base.plusSeconds(120), 0x02L, "e".repeat(64)))))
+                .andExpect(status().isOk());
+
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, true);
+    }
+
+    @Test
+    void quarantinedPrimaryFallsBackThenRequiresThreeReportsAndOneRecoveryAudit() throws Exception {
+        installBackup();
+        OnboardSystemRuntimeState runtime = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtimeRepository.saveAndFlush(runtime);
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        List<CanonicalPositionIngress> reports = List.of(
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "1".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                        base.plusSeconds(1), 0L, "2".repeat(64)),
+                arbitrationPayload(OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(2),
+                        base.plusSeconds(2), 0x02L, "3".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(3),
+                        base.plusSeconds(3), 0x02L, "4".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                        base.plusSeconds(4), 0x02L, "5".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(5),
+                        base.plusSeconds(5), 0x02L, "6".repeat(64)));
+        for (CanonicalPositionIngress report : reports) {
+            postIngress(List.of(envelope(UUID.randomUUID(), report)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        }
+
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, true, false, false, true);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        OnboardSystemRuntimeState recovered = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(recovered.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.isPrimaryEligible()).isTrue();
+        assertThat(recovered.getPrimaryRecoveryStreak()).isZero();
+        assertThat(recovered.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED", "PRIMARY_RECOVERED");
+    }
+
+    @Test
+    void keepsRejectedPrimaryIneligibleDuringRecoverySoBackupTakesOverThenRequiresANewThreeReportRun()
+            throws Exception {
+        installBackup();
+        OnboardSystemRuntimeState runtime = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtimeRepository.saveAndFlush(runtime);
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        List<CanonicalPositionIngress> beforeBackup = List.of(
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "a".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                        base.plusSeconds(1), 0L, "b".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(2),
+                        base.plusSeconds(2), 0x02L, "c".repeat(64)));
+        for (CanonicalPositionIngress report : beforeBackup) {
+            postIngress(List.of(envelope(UUID.randomUUID(), report)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        }
+
+        OnboardSystemRuntimeState afterRecoveryOne = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(afterRecoveryOne.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(afterRecoveryOne.isPrimaryEligible()).isFalse();
+        assertThat(afterRecoveryOne.getPrimaryRecoveryStreak()).isEqualTo(1);
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(3),
+                base.plusSeconds(3), 0x02L, "d".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        OnboardSystemRuntimeState afterBackup = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterBackup.getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(afterBackup.isPrimaryEligible()).isFalse();
+        assertThat(afterBackup.getPrimaryRecoveryStreak()).isZero();
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED");
+
+        List<CanonicalPositionIngress> failback = List.of(
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                        base.plusSeconds(4), 0x02L, "e".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(5),
+                        base.plusSeconds(5), 0x02L, "f".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(5),
+                        base.plusSeconds(5), 0x02L, "1".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(6),
+                        base.plusSeconds(6), 0x02L, "2".repeat(64)));
+        for (CanonicalPositionIngress report : failback) {
+            postIngress(List.of(envelope(UUID.randomUUID(), report)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        }
+
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, false, true, false, false, false, true);
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        OnboardSystemRuntimeState recovered = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(vehicle.getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.isPrimaryEligible()).isTrue();
+        assertThat(recovered.getPrimaryRecoveryStreak()).isZero();
+        assertThat(recovered.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED", "PRIMARY_RECOVERED");
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void rejectedPrimaryQualityChangesRuntimeSoFreshBackupCanTakeOverWithoutRejectedEvent() throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "7".repeat(64)))))
+                .andExpect(status().isOk());
+        CanonicalPositionIngress rejected = arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                base.plusSeconds(1), 0x02L, "8".repeat(64), BigDecimal.ZERO);
+        postIngress(List.of(envelope(UUID.randomUUID(), rejected)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_COORDINATE"));
+
+        assertThat(eventRepository.count()).isOne();
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow().isPrimaryEligible())
+                .isFalse();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(2),
+                base.plusSeconds(2), 0x02L, "9".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        assertThat(eventRepository.count()).isEqualTo(2);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED");
+    }
+
+    @Test
+    void missingPrimaryProfileFailsClosedBeforeLocationOrConfigurationMutation() throws Exception {
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        profileRepository.deleteAll();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "a".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void missingRuntimeFailsClosedBeforeLocationOrConfigurationMutation() throws Exception {
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        runtimeRepository.deleteAll();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "b".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void rejectsSameTerminalPrimaryBackupTopologyWithoutMutatingLocationState() throws Exception {
+        roleRepository.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                onboardSystemId,
+                TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP,
+                "malformed same-terminal backup",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT.plusSeconds(1)));
+        OnboardSystemRuntimeState before = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = before.getRuntimeVersion();
+        OffsetDateTime runtimeUpdatedAt = before.getUpdatedAt();
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "3".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+        OnboardSystemRuntimeState after = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(after.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(after.getUpdatedAt()).isEqualTo(runtimeUpdatedAt);
+        assertThat(after.getActiveLocationTerminalId()).isNull();
+        assertThat(after.isPrimaryEligible()).isTrue();
+        assertThat(after.getPrimaryRecoveryStreak()).isZero();
+        assertThat(locationSwitchAudits()).isEmpty();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void rejectsPersistedRecoveryStreakAboveDomainMaximumWithoutRepairingRuntimeOrWritingLocation()
+            throws Exception {
+        jdbc.update("""
+                update onboard_system_runtime_state
+                set primary_recovery_streak = 3
+                where onboard_system_id = ?
+                """, onboardSystemId);
+        entityManager.clear();
+        OnboardSystemRuntimeState corrupted = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = corrupted.getRuntimeVersion();
+        OffsetDateTime runtimeUpdatedAt = corrupted.getUpdatedAt();
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        UUID idempotencyKey = UUID.randomUUID();
+
+        postIngress(List.of(envelope(idempotencyKey, arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"),
+                0x02L,
+                "0".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]")
+                        .value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        JtGatewayIngressReceipt receipt = receiptRepository.findById(idempotencyKey).orElseThrow();
+        assertThat(receipt.getFinalStatus()).isEqualTo("REJECTED");
+        assertThat(receipt.getReasonCodes()).containsExactly("ONBOARD_PROVENANCE_MISMATCH");
+        assertNoLocationStateWasWritten();
+        OnboardSystemRuntimeState after = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(after.getPrimaryRecoveryStreak()).isEqualTo(3);
+        assertThat(after.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(after.getUpdatedAt()).isEqualTo(runtimeUpdatedAt);
+        assertThat(after.getActiveLocationTerminalId()).isNull();
+        assertThat(after.isPrimaryEligible()).isTrue();
+        assertThat(after.getLastPrimaryValidAt()).isNull();
+        assertThat(after.getLastLocationSwitchAt()).isNull();
+        assertThat(locationSwitchAudits()).isEmpty();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void replayDoesNotAdvanceRuntimeRecoveryOrDuplicateSwitchAudit() throws Exception {
+        UUID key = UUID.randomUUID();
+        GatewayIngressEnvelope report = envelope(key, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "c".repeat(64)));
+
+        postIngress(List.of(report)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        OnboardSystemRuntimeState afterFirst = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = afterFirst.getRuntimeVersion();
+        int recoveryStreak = afterFirst.getPrimaryRecoveryStreak();
+        long auditCount = locationSwitchAudits().size();
+
+        postIngress(List.of(report)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"));
+
+        OnboardSystemRuntimeState afterReplay = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterReplay.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(afterReplay.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(afterReplay.getPrimaryRecoveryStreak()).isEqualTo(recoveryStreak);
+        assertThat(locationSwitchAudits()).hasSize((int) auditCount);
+        assertThat(eventRepository.count()).isOne();
+    }
+
+    @Test
+    void singlePrimaryRecoversOnlyOnThirdReportWithoutFakePhysicalSwitchOrReplayProgress()
+            throws Exception {
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        UUID initialKey = UUID.randomUUID();
+        UUID invalidKey = UUID.randomUUID();
+        UUID recoveryOneKey = UUID.randomUUID();
+        UUID recoveryTwoKey = UUID.randomUUID();
+        UUID recoveryThreeKey = UUID.randomUUID();
+
+        postIngress(List.of(envelope(initialKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "4".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        postIngress(List.of(envelope(invalidKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                base.plusSeconds(1), 0L, "5".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        OnboardSystemRuntimeState invalidated = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(invalidated.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(invalidated.isPrimaryEligible()).isFalse();
+        assertThat(invalidated.getPrimaryRecoveryStreak()).isZero();
+
+        GatewayIngressEnvelope recoveryOne = envelope(recoveryOneKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(2),
+                base.plusSeconds(2), 0x02L, "6".repeat(64)));
+        postIngress(List.of(recoveryOne)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        OnboardSystemRuntimeState afterOne = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long versionAfterOne = afterOne.getRuntimeVersion();
+        assertThat(afterOne.isPrimaryEligible()).isFalse();
+        assertThat(afterOne.getPrimaryRecoveryStreak()).isEqualTo(1);
+        long auditCountAfterOne = locationSwitchAudits().size();
+
+        postIngress(List.of(recoveryOne)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"));
+        OnboardSystemRuntimeState afterReplay = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterReplay.getRuntimeVersion()).isEqualTo(versionAfterOne);
+        assertThat(afterReplay.isPrimaryEligible()).isFalse();
+        assertThat(afterReplay.getPrimaryRecoveryStreak()).isEqualTo(1);
+        assertThat(locationSwitchAudits()).hasSize((int) auditCountAfterOne);
+
+        postIngress(List.of(envelope(recoveryTwoKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(3),
+                base.plusSeconds(3), 0x02L, "7".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        OnboardSystemRuntimeState afterTwo = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterTwo.isPrimaryEligible()).isFalse();
+        assertThat(afterTwo.getPrimaryRecoveryStreak()).isEqualTo(2);
+
+        postIngress(List.of(envelope(recoveryThreeKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                base.plusSeconds(4), 0x02L, "8".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        List<VehicleLocationEvent> events = eventRepository.findAllByOrderByDriverReportedAtAsc();
+        assertThat(events).extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, false, false, true);
+        VehicleLocationEvent recoveredEvent = eventRepository
+                .findByIdempotencyKey(recoveryThreeKey).orElseThrow();
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isEqualTo(recoveredEvent.getId());
+        OnboardSystemRuntimeState recovered = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(recovered.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.isPrimaryEligible()).isTrue();
+        assertThat(recovered.getPrimaryRecoveryStreak()).isZero();
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED");
+    }
+
+    @Test
+    void concurrentPrimaryAndBackupProduceOneMonotonicSnapshotAndConsistentRuntime() throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        GatewayIngressEnvelope primary = envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "d".repeat(64)));
+        GatewayIngressEnvelope backup = envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(1),
+                base.plusSeconds(1), 0x02L, "e".repeat(64)));
+        CountDownLatch workersReady = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<GpsLocationIngressService.Result> primaryResult = executor.submit(
+                    () -> ingestAfter(workersReady, start, primary));
+            Future<GpsLocationIngressService.Result> backupResult = executor.submit(
+                    () -> ingestAfter(workersReady, start, backup));
+            assertThat(workersReady.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(primaryResult.get(20, TimeUnit.SECONDS).status()).isEqualTo("ACCEPTED");
+            assertThat(backupResult.get(20, TimeUnit.SECONDS).status()).isEqualTo("ACCEPTED");
+        }
+
+        List<VehicleLocationEvent> events = eventRepository.findAll();
+        VehicleLocationEvent applied = events.stream()
+                .filter(VehicleLocationEvent::isSnapshotApplied)
+                .reduce((first, second) -> {
+                    throw new AssertionError("more than one concurrent event applied the snapshot");
+                })
+                .orElseThrow();
+        assertThat(events).hasSize(2);
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        OnboardSystemRuntimeState runtimeState = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(vehicle.getCurrentLocationEventId()).isEqualTo(applied.getId());
+        assertThat(vehicle.getCurrentLocationTerminalId()).isEqualTo(applied.getTerminalId());
+        assertThat(runtimeState.getActiveLocationTerminalId()).isEqualTo(applied.getTerminalId());
+        assertThat(locationSwitchAudits()).hasSize(1);
+    }
+
+    @Test
+    void gpsEventStartsUnappliedAndOnlyEligibleQualityCanBeMarkedSnapshotApplied() {
+        CanonicalPositionIngress ingress = arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "f".repeat(64));
+        CoordinateTransformer.StandardizedCoordinate coordinate =
+                new CoordinateTransformer.StandardizedCoordinate(
+                        new BigDecimal("105.2384988"), new BigDecimal("35.2109657"),
+                        "GCJ02", "TEST_TRANSFORM");
+        VehicleLocationEvent eligible = VehicleLocationEvent.recordGps(
+                VEHICLE_ID, TERMINAL_ID, ingress, coordinate,
+                new LocationQualityDecision(LocationQualityStatus.GOOD, Set.of(), true, true),
+                UUID.randomUUID(), ingress.payloadDigest(), CONFIGURED_AT,
+                ingress.gatewayReceivedAt(), false);
+        VehicleLocationEvent quarantined = VehicleLocationEvent.recordGps(
+                VEHICLE_ID, TERMINAL_ID, ingress, coordinate,
+                new LocationQualityDecision(
+                        LocationQualityStatus.QUARANTINED,
+                        Set.of(LocationQualityReason.POSITION_INVALID), true, false),
+                UUID.randomUUID(), "0".repeat(64), CONFIGURED_AT,
+                ingress.gatewayReceivedAt(), false);
+
+        assertThat(eligible.isSnapshotApplied()).isFalse();
+        eligible.markSnapshotApplied();
+        eligible.markSnapshotApplied();
+        assertThat(eligible.isSnapshotApplied()).isTrue();
+        assertThatThrownBy(quarantined::markSnapshotApplied)
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(quarantined.isSnapshotApplied()).isFalse();
+    }
+
+    @Test
+    void runtimeArbitrationValidatesBeforeAtomicMutationAndPreservesWarnings() {
+        OnboardSystemRuntimeState runtime = OnboardSystemRuntimeState.initialize(
+                onboardSystemId, CONFIGURED_AT);
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtime.applyLocationArbitration(
+                TERMINAL_ID,
+                true,
+                0,
+                CONFIGURED_AT.plusSeconds(2),
+                true,
+                CONFIGURED_AT.plusSeconds(3));
+
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(runtime.getLastPrimaryValidAt()).isEqualTo(CONFIGURED_AT.plusSeconds(2));
+        assertThat(runtime.getLastLocationSwitchAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+
+        assertThatThrownBy(() -> runtime.applyLocationArbitration(
+                OTHER_TERMINAL_ID,
+                false,
+                -1,
+                CONFIGURED_AT.plusSeconds(1),
+                true,
+                CONFIGURED_AT.plusSeconds(4)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(runtime.isPrimaryEligible()).isTrue();
+        assertThat(runtime.getPrimaryRecoveryStreak()).isZero();
+        assertThat(runtime.getLastPrimaryValidAt()).isEqualTo(CONFIGURED_AT.plusSeconds(2));
+        assertThat(runtime.getLastLocationSwitchAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getUpdatedAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+
+    }
+
+    @ParameterizedTest(name = "runtime apply rejects recovery streak {0}")
+    @ValueSource(ints = {3, Integer.MAX_VALUE})
+    void runtimeArbitrationRejectsRecoveryStreakAboveTwoWithoutMutation(int invalidStreak) {
+        OnboardSystemRuntimeState runtime = OnboardSystemRuntimeState.initialize(
+                UUID.randomUUID(), CONFIGURED_AT);
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtime.applyLocationArbitration(
+                TERMINAL_ID,
+                true,
+                0,
+                CONFIGURED_AT.plusSeconds(2),
+                true,
+                CONFIGURED_AT.plusSeconds(3));
+        long runtimeVersion = runtime.getRuntimeVersion();
+
+        assertThatThrownBy(() -> runtime.applyLocationArbitration(
+                TERMINAL_ID,
+                true,
+                invalidStreak,
+                CONFIGURED_AT.plusSeconds(2),
+                false,
+                CONFIGURED_AT.plusSeconds(4)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("primaryRecoveryStreak");
+        assertThat(runtime.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(runtime.isPrimaryEligible()).isTrue();
+        assertThat(runtime.getPrimaryRecoveryStreak()).isZero();
+        assertThat(runtime.getLastPrimaryValidAt()).isEqualTo(CONFIGURED_AT.plusSeconds(2));
+        assertThat(runtime.getLastLocationSwitchAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getUpdatedAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+    }
+
+    @Test
+    void recoveryCounterRejectsIncrementFromTwoWithoutMutation() {
+        OnboardSystemRuntimeState runtime = OnboardSystemRuntimeState.initialize(
+                UUID.randomUUID(), CONFIGURED_AT);
+        assertThat(runtime.recordPrimaryRecovery()).isEqualTo(1);
+        assertThat(runtime.recordPrimaryRecovery()).isEqualTo(2);
+        long runtimeVersion = runtime.getRuntimeVersion();
+        OffsetDateTime updatedAt = runtime.getUpdatedAt();
+
+        assertThatThrownBy(runtime::recordPrimaryRecovery)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("primaryRecoveryStreak");
+        assertThat(runtime.getPrimaryRecoveryStreak()).isEqualTo(2);
+        assertThat(runtime.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(runtime.getUpdatedAt()).isEqualTo(updatedAt);
+        assertThat(runtime.getActiveLocationTerminalId()).isNull();
+        assertThat(runtime.isPrimaryEligible()).isTrue();
+        assertThat(runtime.getLastPrimaryValidAt()).isNull();
+        assertThat(runtime.getLastLocationSwitchAt()).isNull();
+        assertThat(runtime.getWarningCodes()).isEmpty();
     }
 
     @Test
@@ -598,9 +1227,12 @@ class GpsLocationIngressIntegrationTest {
                 OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
                 CONFIGURATION_ACTOR_ID,
                 CONFIGURED_AT));
+        runtimeRepository.save(OnboardSystemRuntimeState.initialize(
+                otherSystem.getId(), CONFIGURED_AT));
         addLocationMember(
                 otherSystem.getId(), OTHER_TERMINAL_ID,
                 OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        activateProfile(OTHER_TERMINAL_ID, 60, 10);
 
         Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
         UUID trustedPositionKey = UUID.randomUUID();
@@ -1032,6 +1664,78 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
+    void rollsBackFlushedEventRuntimeVehicleAndReceiptWhenSwitchAuditPersistenceFailsThenRetries()
+            throws Exception {
+        UUID idempotencyKey = UUID.randomUUID();
+        GatewayIngressEnvelope accepted = envelope(idempotencyKey, arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"),
+                0x02L,
+                "9".repeat(64)));
+        OnboardSystemRuntimeState before = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = before.getRuntimeVersion();
+        OffsetDateTime runtimeUpdatedAt = before.getUpdatedAt();
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+
+        arbitrationPersistenceFailure.failNextAfter(() -> {
+            entityManager.flush();
+            VehicleLocationEvent persistedEvent = eventRepository
+                    .findByIdempotencyKey(idempotencyKey).orElseThrow();
+            Vehicle persistedVehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+            OnboardSystemRuntimeState persistedRuntime = runtimeRepository
+                    .findById(onboardSystemId).orElseThrow();
+            assertThat(persistedEvent.isSnapshotApplied())
+                    .as("event marker must be flushed before the injected audit failure")
+                    .isTrue();
+            assertThat(persistedVehicle.getCurrentLocationEventId())
+                    .as("vehicle snapshot must be flushed before the injected audit failure")
+                    .isEqualTo(persistedEvent.getId());
+            assertThat(persistedVehicle.getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+            assertThat(persistedRuntime.getActiveLocationTerminalId())
+                    .as("runtime source must be flushed before the injected audit failure")
+                    .isEqualTo(TERMINAL_ID);
+        });
+
+        assertThatThrownBy(() -> postIngress(List.of(accepted)))
+                .hasStackTraceContaining("forced task6 arbitration persistence failure");
+
+        entityManager.clear();
+        assertThat(receiptRepository.findById(idempotencyKey)).isEmpty();
+        assertThat(eventRepository.findByIdempotencyKey(idempotencyKey)).isEmpty();
+        Vehicle rolledBackVehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        assertThat(rolledBackVehicle.getCurrentLocationEventId()).isNull();
+        assertThat(rolledBackVehicle.getCurrentLocationTerminalId()).isNull();
+        OnboardSystemRuntimeState rolledBackRuntime = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(rolledBackRuntime.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(rolledBackRuntime.getUpdatedAt()).isEqualTo(runtimeUpdatedAt);
+        assertThat(rolledBackRuntime.getActiveLocationTerminalId()).isNull();
+        assertThat(rolledBackRuntime.isPrimaryEligible()).isTrue();
+        assertThat(rolledBackRuntime.getPrimaryRecoveryStreak()).isZero();
+        assertThat(rolledBackRuntime.getLastPrimaryValidAt()).isNull();
+        assertThat(rolledBackRuntime.getLastLocationSwitchAt()).isNull();
+        assertThat(locationSwitchAudits()).isEmpty();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+
+        postIngress(List.of(accepted)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        assertThat(receiptRepository.findById(idempotencyKey).orElseThrow().getFinalStatus())
+                .isEqualTo("ACCEPTED");
+        VehicleLocationEvent retriedEvent = eventRepository
+                .findByIdempotencyKey(idempotencyKey).orElseThrow();
+        assertThat(retriedEvent.isSnapshotApplied()).isTrue();
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isEqualTo(retriedEvent.getId());
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(locationSwitchAudits()).singleElement().satisfies(audit ->
+                assertThat(audit.getReason()).isEqualTo("PRIMARY_SELECTED"));
+    }
+
+    @Test
     void propagatesAnUnknownLocationDecoderFailureAndRollsBackTheClaim() throws Exception {
         UUID idempotencyKey = UUID.randomUUID();
         GatewayIngressEnvelope location = envelope(
@@ -1230,8 +1934,9 @@ class GpsLocationIngressIntegrationTest {
                         "CONSECUTIVE_QUARANTINE")));
 
         assertThat(eventRepository.findByIdempotencyKey(thirdAfterNormal).orElseThrow().isSnapshotApplied()).isFalse();
+        assertThat(eventRepository.findByIdempotencyKey(normal).orElseThrow().isSnapshotApplied()).isFalse();
         assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
-                .isEqualTo(eventRepository.findByIdempotencyKey(normal).orElseThrow().getId());
+                .isNull();
         assertThatRepositoryUsesStableGatewayOrder();
     }
 
@@ -1481,6 +2186,68 @@ class GpsLocationIngressIntegrationTest {
                 CONFIGURED_AT));
     }
 
+    private void installBackup() {
+        terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", CONFIGURATION_ACTOR_ID));
+        addLocationMember(
+                onboardSystemId,
+                OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP);
+    }
+
+    private void activateProfile(UUID terminalId, int activeIntervalSeconds, int idleIntervalSeconds) {
+        profileRepository.save(OnboardDeviceProtocolProfile.activate(
+                terminalId,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                activeIntervalSeconds,
+                idleIntervalSeconds,
+                "configure GPS profile",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+    }
+
+    private void replacePrimaryProfile(int activeIntervalSeconds, int idleIntervalSeconds) {
+        OnboardDeviceProtocolProfile current = profileRepository
+                .findActiveByTerminalId(TERMINAL_ID).orElseThrow();
+        current.supersede(
+                "replace GPS profile",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT.plusSeconds(1));
+        profileRepository.saveAndFlush(current);
+        profileRepository.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                TERMINAL_ID,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                activeIntervalSeconds,
+                idleIntervalSeconds,
+                "activate replacement GPS profile",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT.plusSeconds(1)));
+    }
+
+    private List<AuditLog> locationSwitchAudits() {
+        return auditLogRepository.findByEntityIdOrderByCreatedAtAsc(onboardSystemId).stream()
+                .filter(audit -> "LOCATION_SOURCE_SWITCHED".equals(audit.getAction()))
+                .toList();
+    }
+
+    private GpsLocationIngressService.Result ingestAfter(
+            CountDownLatch workersReady,
+            CountDownLatch start,
+            GatewayIngressEnvelope envelope) throws Exception {
+        workersReady.countDown();
+        if (!start.await(5, TimeUnit.SECONDS)) {
+            throw new AssertionError("timed out waiting to start concurrent GPS ingress");
+        }
+        return ingressRouter.ingest(List.of(envelope)).getFirst();
+    }
+
     private void assertCompositeAuthorityRejected() throws Exception {
         GatewayIngressEnvelope position = envelope(UUID.randomUUID(), provenancePayload(
                 TERMINAL_ID,
@@ -1522,6 +2289,47 @@ class GpsLocationIngressIntegrationTest {
                 locatedAt.plusSeconds(10),
                 0L,
                 0x02L,
+                new BigDecimal("50"),
+                90,
+                10,
+                8,
+                digest);
+    }
+
+    private CanonicalPositionIngress arbitrationPayload(
+            UUID terminalId,
+            String sourceRole,
+            Instant locatedAt,
+            Instant gatewayReceivedAt,
+            long statusBits,
+            String digest) {
+        return arbitrationPayload(
+                terminalId, sourceRole, locatedAt, gatewayReceivedAt,
+                statusBits, digest, new BigDecimal("105.2384988"));
+    }
+
+    private CanonicalPositionIngress arbitrationPayload(
+            UUID terminalId,
+            String sourceRole,
+            Instant locatedAt,
+            Instant gatewayReceivedAt,
+            long statusBits,
+            String digest,
+            BigDecimal longitude) {
+        return new CanonicalPositionIngress(
+                terminalId,
+                onboardSystemId,
+                VEHICLE_ID,
+                sourceRole,
+                "JT808_2019",
+                7,
+                longitude,
+                new BigDecimal("35.2109657"),
+                "WGS84",
+                locatedAt,
+                gatewayReceivedAt,
+                0L,
+                statusBits,
                 new BigDecimal("50"),
                 90,
                 10,
@@ -1686,7 +2494,7 @@ class GpsLocationIngressIntegrationTest {
                 .contains("findTop3ByVehicleIdAndGatewayReceivedAtIsNotNullOrderByGatewayReceivedAtDescIdDesc");
     }
 
-    @TestConfiguration
+    @TestConfiguration(proxyBeanMethods = false)
     static class LocationCheckerConfiguration {
         @Bean @Primary FaultInjectingObjectMapper objectMapper(Jackson2ObjectMapperBuilder builder) {
             FaultInjectingObjectMapper objectMapper = new FaultInjectingObjectMapper();
@@ -1696,6 +2504,74 @@ class GpsLocationIngressIntegrationTest {
 
         @Bean @Primary TestServiceAreaLocationChecker gpsIngressAreaChecker() {
             return new TestServiceAreaLocationChecker();
+        }
+
+        @Bean
+        ArbitrationPersistenceFailure arbitrationPersistenceFailure() {
+            return new ArbitrationPersistenceFailure();
+        }
+
+        @Bean
+        static org.springframework.beans.factory.config.BeanPostProcessor auditFailurePostProcessor(
+                ArbitrationPersistenceFailure failure) {
+            return new org.springframework.beans.factory.config.BeanPostProcessor() {
+                @Override
+                public Object postProcessAfterInitialization(Object bean, String beanName) {
+                    if (!(bean instanceof AuditLogRepository repository)) {
+                        return bean;
+                    }
+                    return java.lang.reflect.Proxy.newProxyInstance(
+                            AuditLogRepository.class.getClassLoader(),
+                            new Class<?>[] {AuditLogRepository.class},
+                            (proxy, method, arguments) -> {
+                                if (method.getName().equals("save")
+                                        && arguments != null
+                                        && arguments.length == 1
+                                        && arguments[0] instanceof AuditLog audit) {
+                                    failure.beforeAuditSave(audit);
+                                }
+                                return invokeRepository(repository, method, arguments);
+                            });
+                }
+            };
+        }
+
+        private static Object invokeRepository(
+                Object repository,
+                java.lang.reflect.Method method,
+                Object[] arguments) throws Throwable {
+            try {
+                return method.invoke(repository, arguments);
+            } catch (java.lang.reflect.InvocationTargetException invocation) {
+                throw invocation.getTargetException();
+            }
+        }
+    }
+
+    static final class ArbitrationPersistenceFailure {
+        private final java.util.concurrent.atomic.AtomicReference<Runnable> beforeFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        void failNextAfter(Runnable verification) {
+            if (!beforeFailure.compareAndSet(null, java.util.Objects.requireNonNull(verification))) {
+                throw new IllegalStateException("arbitration persistence failure is already armed");
+            }
+        }
+
+        void beforeAuditSave(AuditLog audit) {
+            if (!"LOCATION_SOURCE_SWITCHED".equals(audit.getAction())) {
+                return;
+            }
+            Runnable verification = beforeFailure.getAndSet(null);
+            if (verification == null) {
+                return;
+            }
+            verification.run();
+            throw new IllegalStateException("forced task6 arbitration persistence failure");
+        }
+
+        void reset() {
+            beforeFailure.set(null);
         }
     }
 

@@ -822,10 +822,13 @@ class TerminalApiTest {
         org.springframework.test.util.ReflectionTestUtils.setField(
                 terminal, "lastSeenAt", offlineSeenAt);
         terminalRepository.saveAndFlush(terminal);
-        mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
+        String offlineBody = mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.onlineStatus").value("OFFLINE"))
-                .andExpect(jsonPath("$.data.offlineAt")
-                        .value(offlineSeenAt.plusMinutes(3).toString()));
+                .andExpect(jsonPath("$.data.offlineAt").isString())
+                .andReturn().getResponse().getContentAsString();
+        String actualOfflineAt = JsonPath.read(offlineBody, "$.data.offlineAt");
+        assertThat(OffsetDateTime.parse(actualOfflineAt).toInstant())
+                .isEqualTo(offlineSeenAt.plusMinutes(3).toInstant());
     }
 
     @Test

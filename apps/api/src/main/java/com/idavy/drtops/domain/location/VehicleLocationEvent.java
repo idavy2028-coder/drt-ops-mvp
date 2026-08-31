@@ -241,6 +241,14 @@ public class VehicleLocationEvent {
     public LocationQualityStatus getQualityStatus() { return qualityStatus; }
     public String getQualityReasons() { return qualityReasons; }
 
+    public void markSnapshotApplied() {
+        if (qualityStatus != LocationQualityStatus.GOOD
+                && qualityStatus != LocationQualityStatus.WARNING) {
+            throw new IllegalStateException("only eligible GPS quality can apply a snapshot");
+        }
+        this.snapshotApplied = true;
+    }
+
     public static VehicleLocationEvent recordGps(UUID vehicleId, UUID terminalId, CanonicalPositionIngress ingress,
             CoordinateTransformer.StandardizedCoordinate coordinate, LocationQualityDecision decision,
             UUID idempotencyKey, String fingerprint, OffsetDateTime recordedAt, java.time.Instant gatewayReceivedAt,
@@ -257,7 +265,7 @@ public class VehicleLocationEvent {
                 "POINT(" + coordinate.longitude().toPlainString() + " " + coordinate.latitude().toPlainString() + ")",
                 coordinate.longitude(), coordinate.latitude(), "GCJ02", null,
                 ingress.terminalLocatedAt().atOffset(java.time.ZoneOffset.UTC), recordedAt, null, null, null, null,
-                idempotencyKey, fingerprint, decision.applySnapshot(), outsideServiceArea);
+                idempotencyKey, fingerprint, false, outsideServiceArea);
         event.terminalId = terminalId; event.onboardSystemId = ingress.onboardSystemId(); event.sourceRole = ingress.sourceRole();
         event.protocolVersion = ingress.protocolVersion(); event.messageSerialNo = ingress.messageSerialNo();
         event.rawLongitude = ingress.rawLongitude(); event.rawLatitude = ingress.rawLatitude(); event.rawCoordinateSystem = ingress.rawCoordinateSystem();

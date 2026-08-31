@@ -78,7 +78,57 @@ public class OnboardSystemRuntimeState {
         this.updatedAt = nextChangedAt;
     }
 
+    public void applyLocationArbitration(
+            UUID selectedTerminalId,
+            boolean nextPrimaryEligible,
+            int nextPrimaryRecoveryStreak,
+            OffsetDateTime nextLastPrimaryValidAt,
+            boolean sourceChanged,
+            OffsetDateTime processedAt) {
+        if (nextPrimaryRecoveryStreak < 0 || nextPrimaryRecoveryStreak > 2) {
+            throw new IllegalArgumentException("primaryRecoveryStreak must be between 0 and 2");
+        }
+        OffsetDateTime processingTime = Objects.requireNonNull(processedAt, "processedAt");
+        boolean terminalActuallyChanged = !Objects.equals(activeLocationTerminalId, selectedTerminalId);
+        if (sourceChanged != terminalActuallyChanged) {
+            throw new IllegalArgumentException("sourceChanged must match the selected physical terminal");
+        }
+        if (sourceChanged && selectedTerminalId == null) {
+            throw new IllegalArgumentException("a source change requires a selected terminal");
+        }
+        if (lastPrimaryValidAt != null
+                && (nextLastPrimaryValidAt == null
+                        || nextLastPrimaryValidAt.isBefore(lastPrimaryValidAt))) {
+            throw new IllegalArgumentException("lastPrimaryValidAt must not move backward");
+        }
+        OffsetDateTime nextUpdatedAt = processingTime.isBefore(updatedAt)
+                ? updatedAt
+                : processingTime;
+        if (sourceChanged && lastLocationSwitchAt != null
+                && nextUpdatedAt.isBefore(lastLocationSwitchAt)) {
+            throw new IllegalArgumentException("lastLocationSwitchAt must not move backward");
+        }
+
+        boolean stateChanged = terminalActuallyChanged
+                || primaryEligible != nextPrimaryEligible
+                || primaryRecoveryStreak != nextPrimaryRecoveryStreak
+                || !Objects.equals(lastPrimaryValidAt, nextLastPrimaryValidAt);
+        this.activeLocationTerminalId = selectedTerminalId;
+        this.primaryEligible = nextPrimaryEligible;
+        this.primaryRecoveryStreak = nextPrimaryRecoveryStreak;
+        this.lastPrimaryValidAt = nextLastPrimaryValidAt;
+        if (sourceChanged) {
+            this.lastLocationSwitchAt = nextUpdatedAt;
+        }
+        if (stateChanged) {
+            this.updatedAt = nextUpdatedAt;
+        }
+    }
+
     public int recordPrimaryRecovery() {
+        if (primaryRecoveryStreak < 0 || primaryRecoveryStreak >= 2) {
+            throw new IllegalStateException("primaryRecoveryStreak must remain between 0 and 2");
+        }
         return ++primaryRecoveryStreak;
     }
 
