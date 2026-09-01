@@ -164,6 +164,18 @@ class DatabaseMigrationTest {
         Flyway.configure()
                 .dataSource(jdbcUrl, username, password)
                 .locations("classpath:db/migration")
+                .target("19")
+                .load()
+                .migrate();
+
+        try (var connection = DriverManager.getConnection(jdbcUrl, username, password);
+                var statement = connection.createStatement()) {
+            statement.executeUpdate("update vehicles set dispatchable = false where dispatchable");
+        }
+
+        Flyway.configure()
+                .dataSource(jdbcUrl, username, password)
+                .locations("classpath:db/migration")
                 .load()
                 .migrate();
 
@@ -208,6 +220,7 @@ class DatabaseMigrationTest {
         assertThat(driverCount).isEqualTo(2);
 
         try (var connection = DriverManager.getConnection(jdbcUrl, username, password)) {
+            assertThat(currentFlywayVersion(connection)).isEqualTo("20");
             try (var statement = connection.createStatement();
                     var resultSet = statement.executeQuery("select postgis_version()")) {
                 assertThat(resultSet.next()).isTrue();
@@ -239,6 +252,20 @@ class DatabaseMigrationTest {
                 password,
                 "update vehicle_location_events set note = 'changed' where id = ?");
         assertMutationRejected(jdbcUrl, username, password, "delete from vehicle_location_events where id = ?");
+    }
+
+    private static String currentFlywayVersion(java.sql.Connection connection) throws Exception {
+        try (var statement = connection.createStatement();
+                var resultSet = statement.executeQuery("""
+                        select version
+                        from flyway_schema_history
+                        where success
+                        order by installed_rank desc
+                        limit 1
+                        """)) {
+            assertThat(resultSet.next()).isTrue();
+            return resultSet.getString(1);
+        }
     }
 
     private static void assertColumns(java.sql.Connection connection, String tableName, String... expectedColumns)

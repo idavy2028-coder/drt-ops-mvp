@@ -3,15 +3,39 @@ package com.idavy.drtops.domain.terminal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapabilityRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystem;
+import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeState;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeStateRepository;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
+import org.aopalliance.intercept.MethodInterceptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,6 +44,8 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -64,6 +90,24 @@ class TerminalManagementServiceTest {
     VehicleRepository vehicleRepository;
 
     @Autowired
+    OnboardSystemRepository onboardSystemRepository;
+
+    @Autowired
+    OnboardSystemRuntimeStateRepository runtimeStateRepository;
+
+    @Autowired
+    OnboardDeviceMembershipRepository membershipRepository;
+
+    @Autowired
+    OnboardDeviceCapabilityRepository capabilityRepository;
+
+    @Autowired
+    OnboardDeviceProtocolProfileRepository profileRepository;
+
+    @Autowired
+    OnboardDeviceRoleAssignmentRepository roleRepository;
+
+    @Autowired
     FakeControlClient controlClient;
 
     @Autowired
@@ -72,10 +116,20 @@ class TerminalManagementServiceTest {
     @Autowired
     PlatformTransactionManager transactionManager;
 
+    @Autowired
+    LifecyclePause lifecyclePause;
+
     @BeforeEach
     void setUp() {
+        lifecyclePause.reset();
         gatewayAuditRepository.deleteAll();
         auditLogRepository.deleteAll();
+        roleRepository.deleteAll();
+        profileRepository.deleteAll();
+        capabilityRepository.deleteAll();
+        membershipRepository.deleteAll();
+        runtimeStateRepository.deleteAll();
+        onboardSystemRepository.deleteAll();
         bindingRepository.deleteAll();
         terminalRepository.deleteAll();
         vehicleRepository.deleteAll();
@@ -91,6 +145,284 @@ class TerminalManagementServiceTest {
         vehicleRepository.save(Vehicle.create(
                 CORRECTION_VEHICLE_ID, "浙A10003", "Microbus", 8, "IDLE",
                 "POINT(120.155 30.274)", "P6-2 REAL TERMINAL ACCEPTANCE", false));
+    }
+
+    @Test
+    void onboardOnlyBindCompletesRegistrationAndActivatesWithoutLegacyRow() {
+        JtTerminal terminal = preset("T-ONBOARD-BIND", "PHONE-ONBOARD-BIND");
+
+        service.bind(
+                terminal.getTerminalCode(), VEHICLE_ID, terminal.getVersion(),
+                "车载系统成员接入", ACTOR_ID);
+
+        JtTerminal bound = terminalRepository.findById(terminal.getId()).orElseThrow();
+        assertThat(bindingRepository.findAll()).isEmpty();
+        assertThat(membershipRepository.findActiveByTerminalId(bound.getId())).isPresent();
+
+        service.completeCompositeRegistration(
+                bound.getId(), bound.getAuthTokenVersion(), INITIAL_HASH, "gateway-onboard");
+        JtTerminal registered = terminalRepository.findById(bound.getId()).orElseThrow();
+        service.activate(
+                registered.getTerminalCode(), registered.getVersion(),
+                "车载系统成员上线", ACTOR_ID);
+
+        assertThat(terminalRepository.findById(bound.getId()).orElseThrow().getStatus())
+                .isEqualTo(JtTerminal.Status.ACTIVE);
+        assertThat(bindingRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void retiringLastMemberSuspendsSystemAndClosesAggregateWithoutUpdatingLegacyHistory() {
+        JtTerminal terminal = activeTerminal("T-LAST-MEMBER", "PHONE-LAST-MEMBER");
+        OnboardSystem system = onboardSystem(VEHICLE_ID, OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY);
+        addMembership(system.getId(), terminal.getId());
+        verifyCapability(terminal.getId(), OnboardDeviceCapability.Capability.JT808_LOCATION);
+        addProfile(terminal.getId());
+        addRole(system.getId(), terminal.getId(), OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        OnboardSystemRuntimeState runtime = runtimeStateRepository.findById(system.getId()).orElseThrow();
+        runtime.selectLocationSource(terminal.getId(), OffsetDateTime.now());
+        runtimeStateRepository.saveAndFlush(runtime);
+        JtTerminalVehicleBinding legacy = bindingRepository.saveAndFlush(
+                JtTerminalVehicleBinding.bind(terminal, VEHICLE_ID, "历史绑定", ACTOR_ID));
+
+        service.retire(
+                terminal.getTerminalCode(), terminal.getVersion(), "最后成员退役", ACTOR_ID);
+
+        assertThat(terminalRepository.findById(terminal.getId()).orElseThrow().getStatus())
+                .isEqualTo(JtTerminal.Status.RETIRED);
+        assertThat(onboardSystemRepository.findById(system.getId()).orElseThrow().getStatus())
+                .isEqualTo(OnboardSystem.Status.SUSPENDED);
+        assertThat(membershipRepository.findHistoryByTerminalIdOrderByValidFromAsc(terminal.getId()))
+                .singleElement()
+                .satisfies(row -> {
+                    assertThat(row.getStatus()).isEqualTo(OnboardDeviceMembership.Status.REMOVED);
+                    assertThat(row.getValidTo()).isNotNull();
+                });
+        assertThat(roleRepository.findHistoryByTerminalIdOrderByValidFromAsc(terminal.getId()))
+                .singleElement()
+                .satisfies(row -> {
+                    assertThat(row.getStatus()).isEqualTo(OnboardDeviceRoleAssignment.Status.REVOKED);
+                    assertThat(row.getValidTo()).isNotNull();
+                });
+        assertThat(runtimeStateRepository.findById(system.getId()).orElseThrow()
+                .getActiveLocationTerminalId()).isNull();
+        assertThat(bindingRepository.findById(legacy.getId()).orElseThrow()).satisfies(row -> {
+            assertThat(row.getStatus()).isEqualTo(JtTerminalVehicleBinding.Status.ACTIVE);
+            assertThat(row.getValidTo()).isNull();
+        });
+    }
+
+    @Test
+    void preprovisionedReplacementTransfersRolesWithoutWritingLegacyHistory() {
+        ReplacementFixture fixture = replacementFixture(true);
+
+        TerminalManagementService.ReplacementResult result = service.replace(
+                fixture.oldTerminal().getTerminalCode(),
+                fixture.replacement().getTerminalCode(),
+                fixture.oldTerminal().getVersion(),
+                fixture.replacement().getVersion(),
+                "预置换机", ACTOR_ID);
+
+        assertThat(result.terminal().getId()).isEqualTo(fixture.replacement().getId());
+        assertThat(terminalRepository.findById(fixture.oldTerminal().getId()).orElseThrow().getStatus())
+                .isEqualTo(JtTerminal.Status.RETIRED);
+        assertThat(membershipRepository.findActiveByTerminalId(fixture.oldTerminal().getId())).isEmpty();
+        assertThat(membershipRepository.findActiveByTerminalId(fixture.replacement().getId()))
+                .isPresent();
+        assertThat(roleRepository.findActiveByTerminalIdOrderByValidFromAsc(
+                fixture.oldTerminal().getId())).isEmpty();
+        assertThat(roleRepository.findActiveByTerminalIdOrderByValidFromAsc(
+                fixture.replacement().getId()))
+                .extracting(OnboardDeviceRoleAssignment::getRole)
+                .containsExactlyInAnyOrder(
+                        OnboardDeviceRoleAssignment.Role.DISPATCH,
+                        OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        assertThat(onboardSystemRepository.findById(fixture.system().getId()).orElseThrow().getStatus())
+                .isEqualTo(OnboardSystem.Status.ACTIVE);
+        assertThat(runtimeStateRepository.findById(fixture.system().getId()).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(fixture.replacement().getId());
+        assertThat(bindingRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void unverifiedReplacementIsRejectedWithoutAnyMutation() {
+        ReplacementFixture fixture = replacementFixture(false);
+        long oldVersion = fixture.oldTerminal().getVersion();
+        long replacementVersion = fixture.replacement().getVersion();
+        long systemVersion = fixture.system().getVersion();
+        int auditCount = auditLogRepository.findAll().size();
+
+        assertThatThrownBy(() -> service.replace(
+                fixture.oldTerminal().getTerminalCode(),
+                fixture.replacement().getTerminalCode(),
+                oldVersion, replacementVersion, "能力不足换机", ACTOR_ID))
+                .isInstanceOf(TerminalConflictException.class)
+                .hasMessage("ONBOARD_REPLACEMENT_CAPABILITY_MISSING");
+
+        assertThat(terminalRepository.findById(fixture.oldTerminal().getId()).orElseThrow())
+                .satisfies(terminal -> {
+                    assertThat(terminal.getStatus()).isEqualTo(JtTerminal.Status.ACTIVE);
+                    assertThat(terminal.getVersion()).isEqualTo(oldVersion);
+                });
+        assertThat(terminalRepository.findById(fixture.replacement().getId()).orElseThrow())
+                .satisfies(terminal -> {
+                    assertThat(terminal.getStatus()).isEqualTo(JtTerminal.Status.PENDING);
+                    assertThat(terminal.getVersion()).isEqualTo(replacementVersion);
+                });
+        assertThat(onboardSystemRepository.findById(fixture.system().getId()).orElseThrow())
+                .satisfies(system -> {
+                    assertThat(system.getStatus()).isEqualTo(OnboardSystem.Status.ACTIVE);
+                    assertThat(system.getVersion()).isEqualTo(systemVersion);
+                });
+        assertThat(membershipRepository.findActiveByTerminalId(fixture.oldTerminal().getId()))
+                .isPresent();
+        assertThat(membershipRepository.findActiveByTerminalId(fixture.replacement().getId()))
+                .isPresent();
+        assertThat(roleRepository.findActiveByTerminalIdOrderByValidFromAsc(
+                fixture.oldTerminal().getId()))
+                .extracting(OnboardDeviceRoleAssignment::getRole)
+                .containsExactlyInAnyOrder(
+                        OnboardDeviceRoleAssignment.Role.DISPATCH,
+                        OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        assertThat(roleRepository.findActiveByTerminalIdOrderByValidFromAsc(
+                fixture.replacement().getId())).isEmpty();
+        assertThat(runtimeStateRepository.findById(fixture.system().getId()).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(fixture.oldTerminal().getId());
+        assertThat(auditLogRepository.findAll()).hasSize(auditCount);
+        assertThat(gatewayAuditRepository.findAll()).isEmpty();
+        assertThat(bindingRepository.findAll()).isEmpty();
+        assertThat(controlClient.requests).isEmpty();
+    }
+
+    @Test
+    void retireRejectsStaleExpectedVersionAfterAggregateWaitWithoutMutation() throws Exception {
+        JtTerminal terminal = activeTerminal("T-RETIRE-STALE", "PHONE-RETIRE-STALE");
+        OnboardSystem system = onboardSystem(
+                VEHICLE_ID, OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY);
+        addMembership(system.getId(), terminal.getId());
+        verifyCapability(terminal.getId(), OnboardDeviceCapability.Capability.JT808_LOCATION);
+        addProfile(terminal.getId());
+        addRole(system.getId(), terminal.getId(), OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        OnboardSystemRuntimeState runtime = runtimeStateRepository.findById(system.getId()).orElseThrow();
+        runtime.selectLocationSource(terminal.getId(), OffsetDateTime.now());
+        runtimeStateRepository.saveAndFlush(runtime);
+        long expectedVersion = terminal.getVersion();
+        long systemVersion = system.getVersion();
+        int auditCount = auditLogRepository.findAll().size();
+        int gatewayAuditCount = gatewayAuditRepository.findAll().size();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        lifecyclePause.arm("retireTerminal");
+
+        try {
+            Future<TerminalManagementService.ActionResult> retire = executor.submit(() ->
+                    service.retire(
+                            terminal.getTerminalCode(), expectedVersion,
+                            "stale retire must fail", ACTOR_ID));
+            lifecyclePause.awaitEntered();
+            long concurrentVersion = touchTerminalInIndependentTransaction(terminal.getId());
+            lifecyclePause.release();
+            Throwable failure = failureOf(retire);
+
+            assertAll(
+                    () -> assertThat(failure)
+                            .isInstanceOf(TerminalConflictException.class)
+                            .hasMessage("terminal version conflict"),
+                    () -> assertThat(terminalRepository.findById(terminal.getId()).orElseThrow())
+                            .satisfies(current -> {
+                                assertThat(current.getStatus()).isEqualTo(JtTerminal.Status.ACTIVE);
+                                assertThat(current.getVersion()).isEqualTo(concurrentVersion);
+                            }),
+                    () -> assertThat(onboardSystemRepository.findById(system.getId()).orElseThrow())
+                            .satisfies(current -> {
+                                assertThat(current.getStatus()).isEqualTo(OnboardSystem.Status.ACTIVE);
+                                assertThat(current.getVersion()).isEqualTo(systemVersion);
+                            }),
+                    () -> assertThat(membershipRepository.findActiveByTerminalId(terminal.getId()))
+                            .isPresent(),
+                    () -> assertThat(roleRepository.findActiveByTerminalIdOrderByValidFromAsc(
+                            terminal.getId())).singleElement(),
+                    () -> assertThat(runtimeStateRepository.findById(system.getId()).orElseThrow()
+                            .getActiveLocationTerminalId()).isEqualTo(terminal.getId()),
+                    () -> assertThat(auditLogRepository.findAll()).hasSize(auditCount),
+                    () -> assertThat(gatewayAuditRepository.findAll()).hasSize(gatewayAuditCount),
+                    () -> assertThat(bindingRepository.findAll()).isEmpty(),
+                    () -> assertThat(controlClient.requests).isEmpty());
+        } finally {
+            lifecyclePause.release();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void replaceRejectsStaleReplacementVersionAfterAggregateWaitWithoutMutation()
+            throws Exception {
+        ReplacementFixture fixture = replacementFixture(true);
+        long oldExpectedVersion = fixture.oldTerminal().getVersion();
+        long replacementExpectedVersion = fixture.replacement().getVersion();
+        long systemVersion = fixture.system().getVersion();
+        int auditCount = auditLogRepository.findAll().size();
+        int gatewayAuditCount = gatewayAuditRepository.findAll().size();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        lifecyclePause.arm("replaceTerminal");
+
+        try {
+            Future<TerminalManagementService.ReplacementResult> replace = executor.submit(() ->
+                    service.replace(
+                            fixture.oldTerminal().getTerminalCode(),
+                            fixture.replacement().getTerminalCode(),
+                            oldExpectedVersion, replacementExpectedVersion,
+                            "stale replacement must fail", ACTOR_ID));
+            lifecyclePause.awaitEntered();
+            long concurrentReplacementVersion = touchTerminalInIndependentTransaction(
+                    fixture.replacement().getId());
+            lifecyclePause.release();
+            Throwable failure = failureOf(replace);
+
+            assertAll(
+                    () -> assertThat(failure)
+                            .isInstanceOf(TerminalConflictException.class)
+                            .hasMessage("terminal version conflict"),
+                    () -> assertThat(terminalRepository.findById(
+                                    fixture.oldTerminal().getId()).orElseThrow())
+                            .satisfies(current -> {
+                                assertThat(current.getStatus()).isEqualTo(JtTerminal.Status.ACTIVE);
+                                assertThat(current.getVersion()).isEqualTo(oldExpectedVersion);
+                            }),
+                    () -> assertThat(terminalRepository.findById(
+                                    fixture.replacement().getId()).orElseThrow())
+                            .satisfies(current -> {
+                                assertThat(current.getStatus()).isEqualTo(JtTerminal.Status.PENDING);
+                                assertThat(current.getVersion()).isEqualTo(
+                                        concurrentReplacementVersion);
+                            }),
+                    () -> assertThat(onboardSystemRepository.findById(
+                                    fixture.system().getId()).orElseThrow())
+                            .satisfies(current -> {
+                                assertThat(current.getStatus()).isEqualTo(OnboardSystem.Status.ACTIVE);
+                                assertThat(current.getVersion()).isEqualTo(systemVersion);
+                            }),
+                    () -> assertThat(membershipRepository.findActiveByTerminalId(
+                            fixture.oldTerminal().getId())).isPresent(),
+                    () -> assertThat(membershipRepository.findActiveByTerminalId(
+                            fixture.replacement().getId())).isPresent(),
+                    () -> assertThat(roleRepository.findActiveByTerminalIdOrderByValidFromAsc(
+                            fixture.oldTerminal().getId())).hasSize(2),
+                    () -> assertThat(roleRepository.findActiveByTerminalIdOrderByValidFromAsc(
+                            fixture.replacement().getId())).isEmpty(),
+                    () -> assertThat(runtimeStateRepository.findById(
+                                    fixture.system().getId()).orElseThrow()
+                            .getActiveLocationTerminalId()).isEqualTo(
+                                    fixture.oldTerminal().getId()),
+                    () -> assertThat(auditLogRepository.findAll()).hasSize(auditCount),
+                    () -> assertThat(gatewayAuditRepository.findAll()).hasSize(gatewayAuditCount),
+                    () -> assertThat(bindingRepository.findAll()).isEmpty(),
+                    () -> assertThat(controlClient.requests).isEmpty());
+        } finally {
+            lifecyclePause.release();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     @Test
@@ -166,34 +498,28 @@ class TerminalManagementServiceTest {
     }
 
     @Test
-    void preservesBindingHistoryWhenReplacingTerminal() {
-        JtTerminal oldTerminal = activate("T-004", "PHONE-004");
-        JtTerminal replacement = preset("T-005", "PHONE-005");
+    void preservesAuthenticationAndAuditStateWhenReplacingTerminal() {
+        ReplacementFixture fixture = replacementFixture(true);
+        JtTerminal oldTerminal = fixture.oldTerminal();
+        JtTerminal replacement = fixture.replacement();
         String oldHash = oldTerminal.getAuthTokenHash();
         int oldTokenVersion = oldTerminal.getAuthTokenVersion();
         String replacementHash = replacement.getAuthTokenHash();
         int replacementTokenVersion = replacement.getAuthTokenVersion();
-        assertThat(service.verifyRegistration(
-                "PHONE-005", "T-005", "MFG01", "MODEL-X", "浙A10001", "JT808_2019").approved())
-                .isFalse();
         assertThat(service.verifyAuthentication(
                 replacement.getId(), replacementTokenVersion, replacementHash, "gateway-a").approved())
                 .isFalse();
 
         TerminalManagementService.ReplacementResult result = service.replace(
-                "T-004", "T-005", oldTerminal.getVersion(), replacement.getVersion(), "设备换机", ACTOR_ID);
+                oldTerminal.getTerminalCode(), replacement.getTerminalCode(),
+                oldTerminal.getVersion(), replacement.getVersion(), "设备换机", ACTOR_ID);
 
-        List<JtTerminalVehicleBinding> history = bindingRepository.findByVehicleIdOrderByValidFromAsc(VEHICLE_ID);
-        assertThat(result.terminal().getTerminalCode()).isEqualTo("T-005");
-        assertThat(history).hasSize(2);
-        assertThat(history.get(0).getStatus()).isEqualTo(JtTerminalVehicleBinding.Status.UNBOUND);
-        assertThat(history.get(0).getValidTo()).isNotNull();
-        assertThat(history.get(1).getStatus()).isEqualTo(JtTerminalVehicleBinding.Status.ACTIVE);
-        assertThat(history.get(1).getTerminal().getTerminalCode()).isEqualTo("T-005");
-        assertThat(terminalRepository.findByTerminalCode("T-004").orElseThrow().getStatus())
+        assertThat(result.terminal().getTerminalCode()).isEqualTo(replacement.getTerminalCode());
+        assertThat(bindingRepository.findAll()).isEmpty();
+        assertThat(terminalRepository.findById(oldTerminal.getId()).orElseThrow().getStatus())
                 .isEqualTo(JtTerminal.Status.RETIRED);
-        JtTerminal retired = terminalRepository.findByTerminalCode("T-004").orElseThrow();
-        JtTerminal pending = terminalRepository.findByTerminalCode("T-005").orElseThrow();
+        JtTerminal retired = terminalRepository.findById(oldTerminal.getId()).orElseThrow();
+        JtTerminal pending = terminalRepository.findById(replacement.getId()).orElseThrow();
         assertThat(retired.getAuthTokenVersion()).isEqualTo(oldTokenVersion + 1);
         assertThat(retired.getAuthTokenHash()).isNotEqualTo(oldHash);
         assertThat(pending.getStatus()).isEqualTo(JtTerminal.Status.PENDING);
@@ -204,17 +530,20 @@ class TerminalManagementServiceTest {
                 pending.getId(), pending.getAuthTokenVersion(), pending.getAuthTokenHash(), "gateway-a").approved())
                 .isFalse();
         assertThat(service.verifyRegistration(
-                "PHONE-005", "T-005", "MFG01", "MODEL-X", "浙A10001", "JT808_2019").approved())
+                pending.getTerminalPhone(), pending.getTerminalCode(), "MFG01", "MODEL-X",
+                "浙A10001", "JT808_2019").approved())
                 .isTrue();
         assertThat(auditActions()).endsWith("JT_TERMINAL_REPLACED", "JT_TERMINAL_DISCONNECT_REQUESTED");
         String metadata = auditLogRepository.findAllByOrderByCreatedAtAsc().stream()
                 .filter(audit -> "JT_TERMINAL_REPLACED".equals(audit.getAction()))
                 .findFirst().orElseThrow().getMetadataJson();
         assertThat(metadata)
-                .contains("T-004", "T-005", "浙A10001", String.valueOf(oldTokenVersion + 1),
+                .contains(oldTerminal.getTerminalCode(), replacement.getTerminalCode(),
+                        "浙A10001", String.valueOf(oldTokenVersion + 1),
                         String.valueOf(replacementTokenVersion + 1))
                 .doesNotContain(oldTerminal.getId().toString(), replacement.getId().toString(),
-                        oldHash, replacementHash, "PHONE-004", "PHONE-005");
+                        oldHash, replacementHash,
+                        oldTerminal.getTerminalPhone(), replacement.getTerminalPhone());
         assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(event -> {
             assertThat(event.getEventType()).isEqualTo(JtGatewayAuditEvent.EventType.TERMINAL_REPLACED);
             assertThat(event.getResult()).isEqualTo(JtGatewayAuditEvent.Result.APPLIED);
@@ -222,43 +551,40 @@ class TerminalManagementServiceTest {
         });
 
         service.completeRegistration(pending.getId(), pending.getAuthTokenVersion(), ROTATED_HASH, "gateway-a");
-        pending = terminalRepository.findByTerminalCode("T-005").orElseThrow();
-        service.activate("T-005", pending.getVersion(), "完成换机上线", ACTOR_ID);
-        assertThat(terminalRepository.findByTerminalCode("T-005").orElseThrow().getStatus())
+        pending = terminalRepository.findById(replacement.getId()).orElseThrow();
+        service.activate(pending.getTerminalCode(), pending.getVersion(), "完成换机上线", ACTOR_ID);
+        assertThat(terminalRepository.findById(replacement.getId()).orElseThrow().getStatus())
                 .isEqualTo(JtTerminal.Status.ACTIVE);
     }
 
     @Test
-    void verifiesAuthenticationOnlyWhileAnActiveBindingExists() {
+    void verifiesAuthenticationOnlyWhileAnActiveMembershipExists() {
         JtTerminal terminal = activate("T-010", "PHONE-010");
         assertThat(service.verifyAuthentication(terminal.getId(), 1, INITIAL_HASH, "gateway-a").approved()).isTrue();
 
-        JtTerminalVehicleBinding binding = bindingRepository
-                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
+        OnboardDeviceMembership membership = membershipRepository
+                .findActiveByTerminalId(terminal.getId())
                 .orElseThrow();
-        binding.unbind("解除绑定", ACTOR_ID);
-        bindingRepository.saveAndFlush(binding);
+        membership.remove("解除成员关系", ACTOR_ID, OffsetDateTime.now());
+        membershipRepository.saveAndFlush(membership);
 
         assertThat(service.verifyAuthentication(terminal.getId(), 1, INITIAL_HASH, "gateway-a").approved()).isFalse();
     }
 
     @Test
     void rejectsAReplacementThatHasAlreadyCompletedRegistration() {
-        JtTerminal oldTerminal = activate("T-014", "PHONE-014");
-        JtTerminal replacement = preset("T-015", "PHONE-015");
-        service.bind("T-015", SECOND_VEHICLE_ID, replacement.getVersion(), "临时绑定", ACTOR_ID);
-        replacement = terminalRepository.findByTerminalCode("T-015").orElseThrow();
-        service.completeRegistration(replacement.getId(), replacement.getAuthTokenVersion(), ROTATED_HASH, "gateway-a");
-        replacement = terminalRepository.findByTerminalCode("T-015").orElseThrow();
-        JtTerminalVehicleBinding temporaryBinding = bindingRepository
-                .findByTerminalIdAndStatus(replacement.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                .orElseThrow();
-        temporaryBinding.unbind("结束临时绑定", ACTOR_ID);
-        bindingRepository.saveAndFlush(temporaryBinding);
+        ReplacementFixture fixture = replacementFixture(true);
+        JtTerminal oldTerminal = fixture.oldTerminal();
+        JtTerminal replacement = fixture.replacement();
+        replacement.completeRegistration(
+                replacement.getAuthTokenVersion(), ROTATED_HASH);
+        replacement = terminalRepository.saveAndFlush(replacement);
         long replacementVersion = replacement.getVersion();
+        String replacementCode = replacement.getTerminalCode();
 
         assertThatThrownBy(() -> service.replace(
-                "T-014", "T-015", oldTerminal.getVersion(), replacementVersion, "设备换机", ACTOR_ID))
+                oldTerminal.getTerminalCode(), replacementCode,
+                oldTerminal.getVersion(), replacementVersion, "设备换机", ACTOR_ID))
                 .isInstanceOf(TerminalConflictException.class);
         assertThat(controlClient.requests).isEmpty();
     }
@@ -466,11 +792,7 @@ class TerminalManagementServiceTest {
         service.bind(terminal.getTerminalCode(), CORRECTION_VEHICLE_ID,
                 terminal.getVersion(), "首配车辆", ACTOR_ID);
         terminal = terminalRepository.findById(terminal.getId()).orElseThrow();
-        JtTerminalVehicleBinding binding = bindingRepository
-                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                .orElseThrow();
         UUID terminalId = terminal.getId();
-        UUID bindingId = binding.getId();
         String authenticationHash = terminal.getAuthTokenHash();
         int authenticationVersion = terminal.getAuthTokenVersion();
 
@@ -482,9 +804,6 @@ class TerminalManagementServiceTest {
                 ACTOR_ID, "PRE_ACCEPTANCE_IDENTITY_CORRECTION");
 
         JtTerminal corrected = terminalRepository.findByTerminalCode("T-CORRECT-NEW").orElseThrow();
-        JtTerminalVehicleBinding correctedBinding = bindingRepository
-                .findByTerminalIdAndStatus(terminalId, JtTerminalVehicleBinding.Status.ACTIVE)
-                .orElseThrow();
         assertThat(result.changedFields()).containsExactlyInAnyOrder(
                 "terminalPhone", "terminalCode", "manufacturerId", "model",
                 "sourceCoordinateSystem", "vehicleIdentifier");
@@ -497,8 +816,8 @@ class TerminalManagementServiceTest {
         assertThat(corrected.getActiveSafetyStandard()).isEqualTo("T/JSATL12-2017");
         assertThat(corrected.getActiveSafetyModules()).contains("ADAS", "DMS");
         assertThat(corrected.isJt1078Enabled()).isTrue();
-        assertThat(correctedBinding.getId()).isEqualTo(bindingId);
-        assertThat(correctedBinding.getVehicleId()).isEqualTo(CORRECTION_VEHICLE_ID);
+        assertThat(membershipRepository.findActiveByTerminalId(terminalId)).isPresent();
+        assertThat(bindingRepository.findAll()).isEmpty();
         assertThat(vehicleRepository.findById(CORRECTION_VEHICLE_ID).orElseThrow().getPlateNumber())
                 .isEqualTo("浙A10003-NEW");
         assertThat(auditActions()).endsWith(
@@ -770,6 +1089,104 @@ class TerminalManagementServiceTest {
                 phone, code, "MFG01", "MODEL-X", "JT808_2019", "GCJ02", ACTOR_ID, "设备预置"));
     }
 
+    private JtTerminal activeTerminal(String code, String phone) {
+        JtTerminal terminal = preset(code, phone);
+        terminal.completeRegistration(terminal.getAuthTokenVersion(), INITIAL_HASH);
+        terminal.activate(true);
+        return terminalRepository.saveAndFlush(terminal);
+    }
+
+    private OnboardSystem onboardSystem(UUID vehicleId, OnboardSystem.OperatingMode operatingMode) {
+        OffsetDateTime now = OffsetDateTime.now();
+        OnboardSystem system = onboardSystemRepository.saveAndFlush(
+                OnboardSystem.create(vehicleId, operatingMode, ACTOR_ID, now));
+        runtimeStateRepository.saveAndFlush(
+                OnboardSystemRuntimeState.initialize(system.getId(), now));
+        return system;
+    }
+
+    private OnboardDeviceMembership addMembership(UUID systemId, UUID terminalId) {
+        return membershipRepository.saveAndFlush(OnboardDeviceMembership.join(
+                systemId, terminalId, OnboardDeviceMembership.NetworkMode.DIRECT_CELLULAR,
+                "Task 8 测试成员", ACTOR_ID, OffsetDateTime.now()));
+    }
+
+    private OnboardDeviceProtocolProfile addProfile(UUID terminalId) {
+        return profileRepository.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                terminalId,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.GBT28787_2023,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                30, 60, "Task 8 测试协议档案", ACTOR_ID, OffsetDateTime.now()));
+    }
+
+    private OnboardDeviceCapability verifyCapability(
+            UUID terminalId, OnboardDeviceCapability.Capability capability) {
+        OffsetDateTime declaredAt = OffsetDateTime.now();
+        OnboardDeviceCapability fact = OnboardDeviceCapability.declare(
+                terminalId, capability, "Task 8 测试能力声明", declaredAt);
+        fact.verify(
+                "task-8-controlled-evidence", ACTOR_ID,
+                "Task 8 测试能力验证", declaredAt.plusNanos(1));
+        return capabilityRepository.saveAndFlush(fact);
+    }
+
+    private OnboardDeviceRoleAssignment addRole(
+            UUID systemId, UUID terminalId, OnboardDeviceRoleAssignment.Role role) {
+        return roleRepository.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                systemId, terminalId, role, "Task 8 测试角色", ACTOR_ID, OffsetDateTime.now()));
+    }
+
+    private ReplacementFixture replacementFixture(boolean verifiedReplacement) {
+        JtTerminal oldTerminal = activeTerminal("T-REPLACE-OLD", "PHONE-REPLACE-OLD");
+        JtTerminal replacement = preset("T-REPLACE-NEW", "PHONE-REPLACE-NEW");
+        OnboardSystem system = onboardSystem(
+                VEHICLE_ID, OnboardSystem.OperatingMode.DISPATCH_SERVICE);
+        addMembership(system.getId(), oldTerminal.getId());
+        addMembership(system.getId(), replacement.getId());
+        addProfile(oldTerminal.getId());
+        addProfile(replacement.getId());
+        verifyCapability(oldTerminal.getId(), OnboardDeviceCapability.Capability.GBT28787_DISPATCH);
+        verifyCapability(oldTerminal.getId(), OnboardDeviceCapability.Capability.JT808_LOCATION);
+        if (verifiedReplacement) {
+            verifyCapability(
+                    replacement.getId(), OnboardDeviceCapability.Capability.GBT28787_DISPATCH);
+            verifyCapability(
+                    replacement.getId(), OnboardDeviceCapability.Capability.JT808_LOCATION);
+        } else {
+            capabilityRepository.saveAndFlush(OnboardDeviceCapability.declare(
+                    replacement.getId(), OnboardDeviceCapability.Capability.JT808_LOCATION,
+                    "Task 8 未验证 replacement fixture", OffsetDateTime.now()));
+        }
+        addRole(system.getId(), oldTerminal.getId(), OnboardDeviceRoleAssignment.Role.DISPATCH);
+        addRole(system.getId(), oldTerminal.getId(), OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        OnboardSystemRuntimeState runtime = runtimeStateRepository.findById(system.getId()).orElseThrow();
+        runtime.selectLocationSource(oldTerminal.getId(), OffsetDateTime.now());
+        runtimeStateRepository.saveAndFlush(runtime);
+        return new ReplacementFixture(system, oldTerminal, replacement);
+    }
+
+    private long touchTerminalInIndependentTransaction(UUID terminalId) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        Long version = transaction.execute(status -> {
+            JtTerminal terminal = terminalRepository.findById(terminalId).orElseThrow();
+            terminal.touch();
+            return terminalRepository.saveAndFlush(terminal).getVersion();
+        });
+        return java.util.Objects.requireNonNull(version);
+    }
+
+    private static Throwable failureOf(Future<?> future) throws Exception {
+        try {
+            future.get(5, TimeUnit.SECONDS);
+            return null;
+        } catch (ExecutionException failure) {
+            return failure.getCause();
+        }
+    }
+
     private JtTerminal registeredAndBound(String code, String phone) {
         JtTerminal terminal = preset(code, phone);
         service.bind(code, VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
@@ -805,6 +1222,70 @@ class TerminalManagementServiceTest {
         FakeControlClient fakeControlClient(DataSource dataSource) {
             return new FakeControlClient(dataSource);
         }
+
+        @Bean
+        LifecyclePause lifecyclePause() {
+            return new LifecyclePause();
+        }
+
+        @Bean
+        static BeanPostProcessor lifecyclePausePostProcessor(LifecyclePause pause) {
+            return new BeanPostProcessor() {
+                @Override
+                public Object postProcessAfterInitialization(Object bean, String beanName) {
+                    if (!(bean instanceof OnboardSystemConfigurationService)) {
+                        return bean;
+                    }
+                    ProxyFactory proxyFactory = new ProxyFactory(bean);
+                    proxyFactory.setProxyTargetClass(true);
+                    proxyFactory.addAdvice((MethodInterceptor) invocation -> {
+                        pause.before(invocation.getMethod().getName());
+                        return invocation.proceed();
+                    });
+                    return proxyFactory.getProxy();
+                }
+            };
+        }
+    }
+
+    static final class LifecyclePause {
+        private final AtomicReference<String> armedMethod = new AtomicReference<>();
+        private volatile CountDownLatch entered = new CountDownLatch(1);
+        private volatile CountDownLatch released = new CountDownLatch(1);
+
+        void arm(String methodName) {
+            reset();
+            if (!armedMethod.compareAndSet(null, methodName)) {
+                throw new IllegalStateException("lifecycle pause is already armed");
+            }
+        }
+
+        void before(String methodName) throws InterruptedException {
+            String expected = armedMethod.get();
+            if (methodName.equals(expected) && armedMethod.compareAndSet(expected, null)) {
+                entered.countDown();
+                if (!released.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("lifecycle pause release timed out");
+                }
+            }
+        }
+
+        void awaitEntered() throws InterruptedException {
+            if (!entered.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("lifecycle method was not reached");
+            }
+        }
+
+        void release() {
+            released.countDown();
+        }
+
+        void reset() {
+            released.countDown();
+            armedMethod.set(null);
+            entered = new CountDownLatch(1);
+            released = new CountDownLatch(1);
+        }
     }
 
     static final class FakeControlClient implements JtGatewayControlClient {
@@ -836,6 +1317,10 @@ class TerminalManagementServiceTest {
     }
 
     record DisconnectRequest(UUID terminalId, String reasonCode) {
+    }
+
+    private record ReplacementFixture(
+            OnboardSystem system, JtTerminal oldTerminal, JtTerminal replacement) {
     }
 
     private static String sha256(String value) {

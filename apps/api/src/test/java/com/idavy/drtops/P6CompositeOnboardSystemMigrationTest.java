@@ -26,6 +26,13 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -546,6 +553,294 @@ class P6CompositeOnboardSystemMigrationTest {
                     where status = 'ACTIVE' and valid_to is null
                     """)).isEqualTo(2);
         }
+    }
+
+    @Test
+    void v20RefusesContractWhenDispatchableVehicleHasNoDispatchRole() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_missing_dispatch");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            insertDispatchableVehicleWithoutDispatchRole(connection);
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining("ONBOARD_CONTRACT_DISPATCH_ROLE_MISSING");
+    }
+
+    @Test
+    void v20DropsSingleVehicleBindingIndexAndFreezesLegacyHistory() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_contract");
+        UUID legacyHistoryId;
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            insertContractReadyDualDeviceSystem(connection);
+            legacyHistoryId = insertLegacyHistory(connection);
+        }
+
+        flyway(postgres, schema, "20").migrate();
+
+        try (Connection connection = connection(postgres, schema)) {
+            assertThat(indexExists(connection,
+                    "uq_jt_terminal_vehicle_bindings_active_vehicle")).isFalse();
+            assertThat(indexExists(connection,
+                    "uq_jt_terminal_vehicle_bindings_active_terminal")).isTrue();
+            assertThat(queryCount(connection, """
+                    select count(*) from jt_terminal_vehicle_bindings where id = ?
+                    """, legacyHistoryId)).isEqualTo(1);
+            assertThatThrownBy(() -> insertLegacyBinding(connection))
+                    .hasMessageContaining("LEGACY_TERMINAL_BINDINGS_READ_ONLY");
+            assertThatThrownBy(() -> updateLegacyBinding(connection, legacyHistoryId))
+                    .hasMessageContaining("LEGACY_TERMINAL_BINDINGS_READ_ONLY");
+            assertThatThrownBy(() -> deleteLegacyBinding(connection, legacyHistoryId))
+                    .hasMessageContaining("LEGACY_TERMINAL_BINDINGS_READ_ONLY");
+        }
+    }
+
+    @Test
+    void v20RefusesActiveTerminalWithoutCurrentMembership() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_active_terminal_membership");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            insertActiveTerminal(connection, "013800000085", "T-TASK8-ACTIVE-UNBOUND");
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining(
+                        "ONBOARD_CONTRACT_ACTIVE_TERMINAL_MEMBERSHIP_MISSING");
+    }
+
+    @Test
+    void v20RefusesActiveSystemWithoutCurrentMembership() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_active_system_membership");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            insertSystem(
+                    connection, insertVehicle(connection, "TASK8-ACTIVE-EMPTY"),
+                    "SAFETY_MONITOR_ONLY");
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining(
+                        "ONBOARD_CONTRACT_ACTIVE_SYSTEM_MEMBERSHIP_MISSING");
+    }
+
+    @Test
+    void v20WaitsForInFlightCapabilityWriteAndRejectsCommittedInvalidContract()
+            throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_capability_writer_lock");
+        flyway(postgres, schema, "19").migrate();
+        ContractReadyIds ids;
+        try (Connection setup = connection(postgres, schema)) {
+            ids = insertContractReadyDualDeviceSystem(setup);
+        }
+
+        CountDownLatch migrationStarted = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<?> migrationFuture = null;
+        try (Connection writer = connection(postgres, schema)) {
+            writer.setAutoCommit(false);
+            try {
+                execute(writer, """
+                        update onboard_device_capabilities
+                        set status = 'DISABLED',
+                            reason = 'Task 8 concurrent disable fixture',
+                            updated_at = now(),
+                            version = version + 1
+                        where terminal_id = ?
+                          and capability = 'GBT28787_DISPATCH'
+                          and status = 'VERIFIED'
+                        """, ids.dispatchTerminalId());
+                assertThat(queryCount(writer, """
+                        select count(*)
+                        from onboard_device_capabilities
+                        where terminal_id = ?
+                          and capability = 'GBT28787_DISPATCH'
+                          and status = 'DISABLED'
+                        """, ids.dispatchTerminalId())).isEqualTo(1);
+
+                migrationFuture = executor.submit(() -> {
+                    migrationStarted.countDown();
+                    flyway(postgres, schema, "20").migrate();
+                });
+                assertThat(migrationStarted.await(5, TimeUnit.SECONDS))
+                        .as("V20 migration worker started")
+                        .isTrue();
+
+                try {
+                    migrationFuture.get(5, TimeUnit.SECONDS);
+                    throw new AssertionError(
+                            "V20 migration completed successfully before capability writer committed");
+                } catch (TimeoutException expectedLockWait) {
+                    // The migration must wait for the in-flight capability write to commit.
+                } catch (ExecutionException unexpectedEarlyFailure) {
+                    throw new AssertionError(
+                            "V20 migration failed before capability writer committed instead of waiting",
+                            unexpectedEarlyFailure.getCause());
+                }
+
+                writer.commit();
+                Future<?> migrationAfterCommit = migrationFuture;
+                assertThatThrownBy(() -> migrationAfterCommit.get(10, TimeUnit.SECONDS))
+                        .isInstanceOf(ExecutionException.class)
+                        .hasStackTraceContaining("ONBOARD_CONTRACT_ROLE_CAPABILITY_MISSING");
+            } finally {
+                writer.rollback();
+            }
+        } finally {
+            if (migrationFuture != null && !migrationFuture.isDone()) {
+                migrationFuture.cancel(true);
+            }
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS))
+                    .as("V20 migration executor terminated")
+                    .isTrue();
+        }
+    }
+
+    @Test
+    void v20RefusesDispatchableVehicleWithoutActiveSystem() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_dispatch_system");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            insertDispatchableVehicle(connection, "TASK8-NO-SYSTEM");
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining("ONBOARD_CONTRACT_DISPATCH_SYSTEM_MISSING");
+    }
+
+    @Test
+    void v20RefusesDispatchableVehicleWithWrongOperatingMode() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_dispatch_mode");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            UUID vehicleId = insertDispatchableVehicle(connection, "TASK8-WRONG-MODE");
+            insertSystem(connection, vehicleId, "SAFETY_MONITOR_ONLY");
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining("ONBOARD_CONTRACT_DISPATCH_MODE_INVALID");
+    }
+
+    @Test
+    void v20RefusesDispatchableVehicleWithoutLocationPrimaryRole() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_missing_primary");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            UUID actorId = insertActor(connection);
+            UUID vehicleId = insertDispatchableVehicle(connection, "TASK8-NO-PRIMARY");
+            UUID systemId = insertSystem(connection, vehicleId, "DISPATCH_SERVICE");
+            UUID terminalId = insertActiveTerminal(
+                    connection, "013800000086", "T-TASK8-NO-PRIMARY");
+            insertMembership(connection, systemId, terminalId);
+            insertVerifiedCapability(
+                    connection, terminalId, "GBT28787_DISPATCH", actorId);
+            insertRole(connection, systemId, terminalId, "DISPATCH", "ACTIVE", null);
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining(
+                        "ONBOARD_CONTRACT_LOCATION_PRIMARY_ROLE_MISSING");
+    }
+
+    @Test
+    void v20RefusesPrimaryAndBackupOnSameTerminal() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_same_location_terminal");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            ContractReadyIds ids = insertContractReadyDualDeviceSystem(connection);
+            insertRole(
+                    connection, ids.systemId(), ids.locationTerminalId(),
+                    "LOCATION_BACKUP", "ACTIVE", null);
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining(
+                        "ONBOARD_CONTRACT_LOCATION_TERMINALS_NOT_DISTINCT");
+    }
+
+    @Test
+    void v20RefusesRoleTerminalWithoutCurrentMembershipInSameSystem() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_role_membership");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            UUID actorId = insertActor(connection);
+            UUID systemId = insertSystem(
+                    connection, insertVehicle(connection, "TASK8-ROLE-NONMEMBER"),
+                    "SAFETY_MONITOR_ONLY");
+            UUID terminalId = insertTerminal(
+                    connection, "013800000087", "T-TASK8-ROLE-NONMEMBER");
+            insertVerifiedCapability(connection, terminalId, "VIDEO", actorId);
+            insertRole(connection, systemId, terminalId, "VIDEO", "ACTIVE", null);
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining("ONBOARD_CONTRACT_ROLE_MEMBERSHIP_MISSING");
+    }
+
+    @Test
+    void v20RefusesDispatchRoleWithoutMatchingVerifiedCapability() throws Exception {
+        assertRoleCapabilityGate(
+                "dispatch", "013800000088", "T-TASK8-CAP-DISPATCH",
+                "DISPATCH", "JT808_LOCATION");
+    }
+
+    @Test
+    void v20RefusesLocationRoleWithoutMatchingVerifiedCapability() throws Exception {
+        assertRoleCapabilityGate(
+                "location", "013800000089", "T-TASK8-CAP-LOCATION",
+                "LOCATION_PRIMARY", "VIDEO");
+    }
+
+    @Test
+    void v20RefusesActiveSafetyRoleWithoutMatchingVerifiedCapability() throws Exception {
+        assertRoleCapabilityGate(
+                "safety", "013800000090", "T-TASK8-CAP-SAFETY",
+                "ACTIVE_SAFETY", "VIDEO");
+    }
+
+    @Test
+    void v20RefusesVideoRoleWithoutMatchingVerifiedCapability() throws Exception {
+        assertRoleCapabilityGate(
+                "video", "013800000091", "T-TASK8-CAP-VIDEO",
+                "VIDEO", "JT808_LOCATION");
+    }
+
+    @Test
+    void v20RefusesWanUplinkOnSharedLanMembership() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_wan_network");
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            UUID systemId = insertSystem(
+                    connection, insertVehicle(connection, "TASK8-WAN-SHARED"),
+                    "SAFETY_MONITOR_ONLY");
+            UUID terminalId = insertTerminal(
+                    connection, "013800000092", "T-TASK8-WAN-SHARED");
+            insertMembership(connection, systemId, terminalId, "SHARED_LAN_CLIENT");
+            insertRole(connection, systemId, terminalId, "WAN_UPLINK", "ACTIVE", null);
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining(
+                        "ONBOARD_CONTRACT_WAN_UPLINK_NETWORK_MODE_INVALID");
     }
 
     @Test
@@ -1594,6 +1889,142 @@ class P6CompositeOnboardSystemMigrationTest {
         return new LegacyIds(vehicleId, terminalId, bindingId);
     }
 
+    private static void insertDispatchableVehicleWithoutDispatchRole(Connection connection)
+            throws Exception {
+        disableSeedDispatchableVehicles(connection);
+        UUID actorId = insertActor(connection);
+        UUID vehicleId = insertDispatchableVehicle(connection, "TASK8-NO-DISPATCH");
+        UUID systemId = insertSystem(connection, vehicleId, "DISPATCH_SERVICE");
+        UUID terminalId = insertActiveTerminal(
+                connection, "013800000081", "T-TASK8-NO-DISPATCH");
+        insertMembership(connection, systemId, terminalId);
+        insertVerifiedCapability(connection, terminalId, "JT808_LOCATION", actorId);
+        insertRole(connection, systemId, terminalId, "LOCATION_PRIMARY", "ACTIVE", null);
+    }
+
+    private static void assertRoleCapabilityGate(
+            String schemaSuffix,
+            String terminalPhone,
+            String terminalCode,
+            String role,
+            String wrongVerifiedCapability) throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v20_role_capability_" + schemaSuffix);
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            disableSeedDispatchableVehicles(connection);
+            UUID actorId = insertActor(connection);
+            UUID systemId = insertSystem(
+                    connection, insertVehicle(connection, "TASK8-CAP-" + schemaSuffix),
+                    "SAFETY_MONITOR_ONLY");
+            UUID terminalId = insertTerminal(connection, terminalPhone, terminalCode);
+            insertMembership(connection, systemId, terminalId);
+            insertVerifiedCapability(
+                    connection, terminalId, wrongVerifiedCapability, actorId);
+            insertRole(connection, systemId, terminalId, role, "ACTIVE", null);
+        }
+
+        assertThatThrownBy(() -> flyway(postgres, schema, "20").migrate())
+                .hasStackTraceContaining("ONBOARD_CONTRACT_ROLE_CAPABILITY_MISSING");
+    }
+
+    private static ContractReadyIds insertContractReadyDualDeviceSystem(Connection connection)
+            throws Exception {
+        disableSeedDispatchableVehicles(connection);
+        UUID actorId = insertActor(connection);
+        UUID vehicleId = insertDispatchableVehicle(connection, "TASK8-CONTRACT-READY");
+        UUID systemId = insertSystem(connection, vehicleId, "DISPATCH_SERVICE");
+        UUID dispatchTerminalId = insertActiveTerminal(
+                connection, "013800000082", "T-TASK8-DISPATCH");
+        UUID locationTerminalId = insertActiveTerminal(
+                connection, "013800000083", "T-TASK8-LOCATION");
+        insertMembership(connection, systemId, dispatchTerminalId);
+        insertMembership(connection, systemId, locationTerminalId);
+        insertVerifiedCapability(
+                connection, dispatchTerminalId, "GBT28787_DISPATCH", actorId);
+        insertVerifiedCapability(connection, locationTerminalId, "JT808_LOCATION", actorId);
+        insertRole(connection, systemId, dispatchTerminalId, "DISPATCH", "ACTIVE", null);
+        insertRole(connection, systemId, locationTerminalId, "LOCATION_PRIMARY", "ACTIVE", null);
+        return new ContractReadyIds(systemId, dispatchTerminalId, locationTerminalId);
+    }
+
+    private static void disableSeedDispatchableVehicles(Connection connection) throws Exception {
+        execute(connection, "update vehicles set dispatchable = false where dispatchable");
+    }
+
+    private static UUID insertDispatchableVehicle(Connection connection, String plate) throws Exception {
+        UUID vehicleId = insertVehicle(connection, plate);
+        execute(connection, "update vehicles set dispatchable = true where id = ?", vehicleId);
+        return vehicleId;
+    }
+
+    private static UUID insertActiveTerminal(Connection connection, String phone, String code)
+            throws Exception {
+        UUID terminalId = insertTerminal(connection, phone, code);
+        execute(connection, "update jt_terminals set status = 'ACTIVE' where id = ?", terminalId);
+        return terminalId;
+    }
+
+    private static UUID insertSystem(
+            Connection connection, UUID vehicleId, String operatingMode) throws Exception {
+        UUID id = UUID.randomUUID();
+        execute(connection, """
+                insert into onboard_systems (id, vehicle_id, status, operating_mode)
+                values (?, ?, 'ACTIVE', ?)
+                """, id, vehicleId, operatingMode);
+        return id;
+    }
+
+    private static void insertVerifiedCapability(
+            Connection connection, UUID terminalId, String capability, UUID actorId)
+            throws Exception {
+        execute(connection, """
+                insert into onboard_device_capabilities (
+                  id, terminal_id, capability, status, evidence_ref,
+                  verified_at, verified_by, reason
+                ) values (?, ?, ?, 'VERIFIED', 'task-8-controlled-evidence',
+                  now(), ?, 'Task 8 verified capability fixture')
+                """, UUID.randomUUID(), terminalId, capability, actorId);
+    }
+
+    private static void insertLegacyBinding(Connection connection) throws Exception {
+        UUID vehicleId = insertVehicle(connection, "TASK8-LEGACY-FROZEN");
+        UUID terminalId = insertTerminal(
+                connection, "013800000084", "T-TASK8-LEGACY-FROZEN");
+        execute(connection, """
+                insert into jt_terminal_vehicle_bindings (
+                  id, terminal_id, vehicle_id, valid_from, status, binding_reason
+                ) values (?, ?, ?, now(), 'ACTIVE', 'Task 8 frozen legacy write fixture')
+                """, UUID.randomUUID(), terminalId, vehicleId);
+    }
+
+    private static UUID insertLegacyHistory(Connection connection) throws Exception {
+        UUID bindingId = UUID.randomUUID();
+        UUID vehicleId = insertVehicle(connection, "TASK8-LEGACY-HISTORY");
+        UUID terminalId = insertTerminal(
+                connection, "013800000093", "T-TASK8-LEGACY-HISTORY");
+        execute(connection, """
+                insert into jt_terminal_vehicle_bindings (
+                  id, terminal_id, vehicle_id, valid_from, valid_to, status,
+                  binding_reason, unbinding_reason
+                ) values (?, ?, ?, now() - interval '1 hour', now(), 'UNBOUND',
+                  'Task 8 retained history fixture', 'Task 8 retained history close')
+                """, bindingId, terminalId, vehicleId);
+        return bindingId;
+    }
+
+    private static void updateLegacyBinding(Connection connection, UUID bindingId) throws Exception {
+        execute(connection, """
+                update jt_terminal_vehicle_bindings
+                set binding_reason = 'Task 8 forbidden legacy update'
+                where id = ?
+                """, bindingId);
+    }
+
+    private static void deleteLegacyBinding(Connection connection, UUID bindingId) throws Exception {
+        execute(connection, "delete from jt_terminal_vehicle_bindings where id = ?", bindingId);
+    }
+
     private static UUID insertVehicle(Connection connection, String plate) throws Exception {
         UUID id = UUID.randomUUID();
         try (PreparedStatement insert = connection.prepareStatement("""
@@ -1693,15 +2124,24 @@ class P6CompositeOnboardSystemMigrationTest {
 
     private static void insertMembership(
             Connection connection, UUID onboardSystemId, UUID terminalId) throws Exception {
+        insertMembership(connection, onboardSystemId, terminalId, "DIRECT_CELLULAR");
+    }
+
+    private static void insertMembership(
+            Connection connection,
+            UUID onboardSystemId,
+            UUID terminalId,
+            String networkMode) throws Exception {
         try (PreparedStatement insert = connection.prepareStatement("""
                 insert into onboard_device_memberships (
                   id, onboard_system_id, terminal_id, network_mode, status,
                   valid_from, added_reason
-                ) values (?, ?, ?, 'DIRECT_CELLULAR', 'ACTIVE', now(), 'Task 1 membership fixture')
+                ) values (?, ?, ?, ?, 'ACTIVE', now(), 'Task 1 membership fixture')
                 """)) {
             insert.setObject(1, UUID.randomUUID());
             insert.setObject(2, onboardSystemId);
             insert.setObject(3, terminalId);
+            insert.setString(4, networkMode);
             insert.executeUpdate();
         }
     }
@@ -1798,6 +2238,14 @@ class P6CompositeOnboardSystemMigrationTest {
                 from information_schema.tables
                 where table_schema = current_schema() and table_name = ?
                 """, tableName) == 1;
+    }
+
+    private static boolean indexExists(Connection connection, String indexName) throws Exception {
+        return queryCount(connection, """
+                select count(*)
+                from pg_indexes
+                where schemaname = current_schema() and indexname = ?
+                """, indexName) == 1;
     }
 
     private static int queryCount(Connection connection, String sql, Object... arguments) throws Exception {
@@ -2018,6 +2466,10 @@ class P6CompositeOnboardSystemMigrationTest {
     }
 
     private record LegacyIds(UUID vehicleId, UUID terminalId, UUID bindingId) {
+    }
+
+    private record ContractReadyIds(
+            UUID systemId, UUID dispatchTerminalId, UUID locationTerminalId) {
     }
 
     private record VersionSnapshot(long configurationVersion, long runtimeVersion) {

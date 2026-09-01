@@ -4,6 +4,7 @@ import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardConfigurationConflictException;
 import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService;
 import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
@@ -153,10 +154,8 @@ public class TerminalManagementService {
             String reason) {
         requireReason(reason);
         JtTerminal terminal = requireVersion(currentTerminalCode, expectedVersion);
-        JtTerminalVehicleBinding binding = bindingRepository
-                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                .orElseThrow(() -> new TerminalConflictException("active terminal binding is required"));
-        Vehicle vehicle = vehicleRepository.findByIdForAssignment(binding.getVehicleId())
+        UUID vehicleId = currentVehicleId(terminal.getId());
+        Vehicle vehicle = vehicleRepository.findByIdForAssignment(vehicleId)
                 .orElseThrow(() -> new TerminalConflictException("bound vehicle is unavailable"));
         String canonicalProtocol = requireCanonicalProtocolVersion(command.protocolVersion());
         requireIdentityCorrectionEligible(terminal, vehicle);
@@ -214,10 +213,8 @@ public class TerminalManagementService {
             long expectedVersion,
             IdentityCorrectionCommand command) {
         JtTerminal terminal = requireVersion(currentTerminalCode, expectedVersion);
-        JtTerminalVehicleBinding binding = bindingRepository
-                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                .orElseThrow(() -> new TerminalConflictException("active terminal binding is required"));
-        Vehicle vehicle = vehicleRepository.findById(binding.getVehicleId())
+        UUID vehicleId = currentVehicleId(terminal.getId());
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
                 .orElseThrow(() -> new TerminalConflictException("bound vehicle is unavailable"));
         String canonicalProtocol = requireCanonicalProtocolVersion(command.protocolVersion());
         requireIdentityCorrectionEligible(terminal, vehicle);
@@ -231,22 +228,8 @@ public class TerminalManagementService {
     @Transactional
     public JtTerminal completeRegistration(
             UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
-        if (gatewayInstance == null || gatewayInstance.isBlank()) {
-            throw new IllegalArgumentException("gatewayInstance must not be blank");
-        }
-        JtTerminal terminal = terminalRepository.findById(terminalId)
-                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "terminal not found"));
-        boolean hasActiveBinding = bindingRepository
-                .findByTerminalIdAndStatus(terminalId, JtTerminalVehicleBinding.Status.ACTIVE)
-                .isPresent();
-        if (!registrationPending(terminal)
-                || terminal.getLastRegisteredAt() != null
-                || !hasActiveBinding
-                || terminal.getAuthTokenVersion() != tokenVersion) {
-            throw new TerminalConflictException("terminal is not eligible for registration completion");
-        }
-        asConflict(() -> terminal.completeRegistration(tokenVersion, tokenSha256));
-        return terminalRepository.saveAndFlush(terminal);
+        return onboardRegistrationResolver.completeRegistration(
+                terminalId, tokenVersion, tokenSha256, gatewayInstance);
     }
 
     @Transactional(readOnly = true)
@@ -280,17 +263,17 @@ public class TerminalManagementService {
         if (!protocolVersionsMatch(terminal.getProtocolVersion(), protocolVersion)) {
             return RegistrationDecision.rejected("PROTOCOL_VERSION_MISMATCH");
         }
-        JtTerminalVehicleBinding binding = bindingRepository
-                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
+        UUID vehicleId = onboardConfigurationService
+                .findCurrentVehicleId(terminal.getId())
                 .orElse(null);
-        if (binding == null) {
+        if (vehicleId == null) {
             return RegistrationDecision.rejected("BINDING_MISSING");
         }
-        boolean vehicleMatches = vehicleRepository.findById(binding.getVehicleId())
+        boolean vehicleMatches = vehicleRepository.findById(vehicleId)
                 .map(vehicle -> secureEquals(vehicle.getPlateNumber(), vehicleIdentifier))
                 .orElse(false);
         return vehicleMatches
-                ? new RegistrationDecision(true, terminal.getId(), binding.getVehicleId(),
+                ? new RegistrationDecision(true, terminal.getId(), vehicleId,
                         terminal.getSourceCoordinateSystem(), terminal.getActiveSafetyStandard(),
                         parseActiveSafetyModules(terminal.getActiveSafetyModules()), terminal.getAuthTokenVersion(), null)
                 : RegistrationDecision.rejected("VEHICLE_IDENTIFIER_MISMATCH");
@@ -299,28 +282,10 @@ public class TerminalManagementService {
     @Transactional
     public AuthenticationDecision verifyAuthentication(
             UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
-        if (gatewayInstance == null || gatewayInstance.isBlank()) {
-            throw new IllegalArgumentException("gatewayInstance must not be blank");
-        }
-        JtTerminal terminal = terminalRepository.findById(terminalId).orElse(null);
-        if (terminal == null || terminal.getStatus() != JtTerminal.Status.ACTIVE
-                || terminal.getAuthTokenVersion() != tokenVersion
-                || tokenSha256 == null || !tokenSha256.matches("[0-9a-f]{64}")) {
-            return AuthenticationDecision.rejected();
-        }
-        if (bindingRepository
-                .findByTerminalIdAndStatus(terminalId, JtTerminalVehicleBinding.Status.ACTIVE)
-                .isEmpty()) {
-            return AuthenticationDecision.rejected();
-        }
-        byte[] expected = terminal.getAuthTokenHash().getBytes(StandardCharsets.US_ASCII);
-        byte[] presented = tokenSha256.getBytes(StandardCharsets.US_ASCII);
-        if (!MessageDigest.isEqual(expected, presented)) {
-            return AuthenticationDecision.rejected();
-        }
-        terminal.recordSuccessfulAuthentication(OffsetDateTime.now(clock));
-        terminalRepository.saveAndFlush(terminal);
-        return new AuthenticationDecision(true, null);
+        OnboardRegistrationResolver.AuthenticationDecision decision =
+                onboardRegistrationResolver.authenticateByTerminalId(
+                        terminalId, tokenVersion, tokenSha256, gatewayInstance);
+        return new AuthenticationDecision(decision.approved(), decision.reasonCode());
     }
 
     public OnboardRegistrationResolver.RegistrationDecision verifyCompositeRegistration(
@@ -384,16 +349,11 @@ public class TerminalManagementService {
         if (!vehicleRepository.existsById(vehicleId)) {
             throw new ResponseStatusException(NOT_FOUND, "vehicle not found");
         }
-        if (bindingRepository.findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE).isPresent()
-                || bindingRepository.findByVehicleIdAndStatus(vehicleId, JtTerminalVehicleBinding.Status.ACTIVE).isPresent()) {
-            throw new TerminalConflictException("terminal or vehicle already has an active binding");
-        }
         onboardConfigurationService.bindLegacyTerminal(
                 vehicleId, terminal, reason, actorId);
         if (terminal.getVersion() != expectedVersion) {
             throw new TerminalConflictException("terminal version conflict");
         }
-        bindingRepository.save(JtTerminalVehicleBinding.bind(terminal, vehicleId, reason, actorId));
         terminal.touch();
         terminalRepository.saveAndFlush(terminal);
         audit(terminal, "JT_TERMINAL_BOUND", actorId, reason);
@@ -404,9 +364,8 @@ public class TerminalManagementService {
     public JtTerminal activate(String terminalCode, long expectedVersion, String reason, UUID actorId) {
         JtTerminal terminal = requireVersion(terminalCode, expectedVersion);
         requireReason(reason);
-        boolean bound = bindingRepository
-                .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                .isPresent();
+        boolean bound = onboardConfigurationService
+                .hasCurrentActiveMembership(terminal.getId());
         asConflict(() -> terminal.activate(bound));
         terminalRepository.saveAndFlush(terminal);
         audit(terminal, "JT_TERMINAL_ACTIVATED", actorId, reason);
@@ -430,9 +389,13 @@ public class TerminalManagementService {
         PendingDisconnect pending = committedStateTransaction.execute(status -> {
             JtTerminal terminal = requireVersion(terminalCode, expectedVersion);
             requireReason(reason);
+            try {
+                onboardConfigurationService.retireTerminal(
+                        terminal.getId(), expectedVersion, reason, actorId);
+            } catch (OnboardConfigurationConflictException conflict) {
+                throw new TerminalConflictException(conflict.getMessage());
+            }
             asConflict(terminal::retire);
-            bindingRepository.findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                    .ifPresent(binding -> binding.unbind(reason, actorId));
             terminalRepository.saveAndFlush(terminal);
             audit(terminal, "JT_TERMINAL_RETIRED", actorId, reason);
             audit(terminal, "JT_TERMINAL_DISCONNECT_REQUESTED", actorId, reason);
@@ -454,22 +417,24 @@ public class TerminalManagementService {
             requireReason(reason);
             if (oldTerminal.getId().equals(replacement.getId())
                     || replacement.getStatus() != JtTerminal.Status.PENDING
-                    || replacement.getLastRegisteredAt() != null
-                    || bindingRepository.findByTerminalIdAndStatus(
-                            replacement.getId(), JtTerminalVehicleBinding.Status.ACTIVE).isPresent()) {
+                    || replacement.getLastRegisteredAt() != null) {
                 throw new TerminalConflictException("replacement terminal is not ready");
             }
-            JtTerminalVehicleBinding oldBinding = bindingRepository
-                    .findByTerminalIdAndStatus(oldTerminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                    .orElseThrow(() -> new TerminalConflictException("terminal has no active binding"));
-            UUID vehicleId = oldBinding.getVehicleId();
+            OnboardSystemConfigurationService.OnboardReplacementResult onboardReplacement;
+            try {
+                onboardReplacement = onboardConfigurationService.replaceTerminal(
+                        oldTerminal.getId(), expectedVersion,
+                        replacement.getId(), replacementExpectedVersion,
+                        reason, actorId);
+            } catch (OnboardConfigurationConflictException conflict) {
+                throw new TerminalConflictException(conflict.getMessage());
+            }
+            UUID vehicleId = onboardReplacement.vehicleId();
             String vehiclePlate = vehicleRepository.findById(vehicleId)
                     .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "vehicle not found"))
                     .getPlateNumber();
-            oldBinding.unbind(reason, actorId);
             asConflict(oldTerminal::retireAndInvalidateAuthentication);
             asConflict(replacement::prepareForReplacementRegistration);
-            bindingRepository.save(JtTerminalVehicleBinding.bind(replacement, vehicleId, reason, actorId));
             terminalRepository.saveAndFlush(oldTerminal);
             terminalRepository.saveAndFlush(replacement);
             String metadata = replacementMetadata(oldTerminal, replacement, vehiclePlate);
@@ -493,9 +458,8 @@ public class TerminalManagementService {
         PendingDisconnect pending = committedStateTransaction.execute(status -> {
             JtTerminal terminal = requireVersion(terminalCode, expectedVersion);
             requireReason(reason);
-            boolean bound = bindingRepository
-                    .findByTerminalIdAndStatus(terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)
-                    .isPresent();
+            boolean bound = onboardConfigurationService
+                    .hasCurrentActiveMembership(terminal.getId());
             if (!bound || terminal.getLastRegisteredAt() == null) {
                 throw new TerminalConflictException("terminal is not eligible for authentication rotation");
             }
@@ -537,6 +501,14 @@ public class TerminalManagementService {
             throw new TerminalConflictException("terminal version conflict");
         }
         return terminal;
+    }
+
+    private UUID currentVehicleId(UUID terminalId) {
+        try {
+            return onboardConfigurationService.requireCurrentVehicleId(terminalId);
+        } catch (OnboardConfigurationConflictException missingMembership) {
+            throw new TerminalConflictException("active onboard membership is required");
+        }
     }
 
     private void audit(JtTerminal terminal, String action, UUID actorId, String reason) {

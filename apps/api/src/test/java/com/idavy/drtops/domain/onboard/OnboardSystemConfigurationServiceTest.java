@@ -485,8 +485,7 @@ class OnboardSystemConfigurationServiceTest {
         assertThat(capabilityRepository.findHistoryByTerminalIdOrderByCreatedAtAsc(terminal.getId())).isEmpty();
         assertThat(profileRepository.findHistoryByTerminalIdOrderByValidFromAsc(terminal.getId())).isEmpty();
         assertThat(roleRepository.findHistoryByTerminalIdOrderByValidFromAsc(terminal.getId())).isEmpty();
-        assertThat(bindingRepository.findByTerminalIdAndStatus(
-                terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)).isPresent();
+        assertThat(bindingRepository.findAll()).isEmpty();
 
         Vehicle conflictingVehicle = fixtures.createVehicle("LEGACY-CONFLICT");
         JtTerminal conflictingTerminal = fixtures.terminal("legacy-conflict-terminal");
@@ -812,8 +811,7 @@ class OnboardSystemConfigurationServiceTest {
             assertThat(bindCompletedWhileSystemLocked).isFalse();
             assertThat(terminalProbeCompletedWhileSystemLocked).isTrue();
             assertThat(bindOutcome).isEqualTo(OperationOutcome.succeeded());
-            assertThat(bindingRepository.findByTerminalIdAndStatus(
-                    terminal.getId(), JtTerminalVehicleBinding.Status.ACTIVE)).isPresent();
+            assertThat(bindingRepository.findAll()).isEmpty();
             assertThat(membershipRepository.findActiveByTerminalId(terminal.getId())).isPresent();
         } finally {
             releaseSystem.countDown();

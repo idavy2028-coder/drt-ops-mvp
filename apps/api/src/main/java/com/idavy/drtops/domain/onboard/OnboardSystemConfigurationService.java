@@ -215,6 +215,171 @@ public class OnboardSystemConfigurationService {
         }
     }
 
+    @Transactional(readOnly = true)
+    public boolean hasCurrentActiveMembership(UUID terminalId) {
+        Objects.requireNonNull(terminalId, "terminalId");
+        return membershipRepository.findActiveByTerminalId(terminalId)
+                .flatMap(membership -> systemRepository.findById(membership.getOnboardSystemId()))
+                .filter(system -> system.getStatus() == OnboardSystem.Status.ACTIVE)
+                .isPresent();
+    }
+
+    @Transactional(readOnly = true)
+    public java.util.Optional<UUID> findCurrentVehicleId(UUID terminalId) {
+        Objects.requireNonNull(terminalId, "terminalId");
+        return membershipRepository.findActiveByTerminalId(terminalId)
+                .flatMap(membership -> systemRepository.findById(membership.getOnboardSystemId()))
+                .filter(system -> system.getStatus() == OnboardSystem.Status.ACTIVE)
+                .map(OnboardSystem::getVehicleId);
+    }
+
+    @Transactional(readOnly = true)
+    public UUID requireCurrentVehicleId(UUID terminalId) {
+        return findCurrentVehicleId(terminalId)
+                .orElseThrow(() -> conflict("ACTIVE_MEMBERSHIP_MISSING"));
+    }
+
+    @Transactional
+    public OnboardLifecycleResult retireTerminal(
+            UUID terminalId, long expectedTerminalVersion, String reason, UUID actorId) {
+        Objects.requireNonNull(terminalId, "terminalId");
+        Objects.requireNonNull(actorId, "actorId");
+        OnboardText.requireAuditText(reason, "reason");
+        OnboardDeviceMembership discovered = membershipRepository
+                .findActiveByTerminalId(terminalId)
+                .orElseThrow(() -> conflict("ACTIVE_MEMBERSHIP_MISSING"));
+        OnboardSystem discoveredSystem = systemRepository
+                .findById(discovered.getOnboardSystemId())
+                .orElseThrow(() -> conflict("ONBOARD_SYSTEM_NOT_ACTIVE"));
+        OnboardSystem system = lockedActiveSystem(discoveredSystem.getVehicleId());
+        lockTerminalState(List.of(terminalId));
+        requireTerminalVersion(terminalId, expectedTerminalVersion);
+        OnboardDeviceMembership membership = membershipRepository
+                .findActiveByTerminalId(terminalId)
+                .filter(candidate -> candidate.getOnboardSystemId().equals(system.getId()))
+                .orElseThrow(() -> conflict("ACTIVE_MEMBERSHIP_MISSING"));
+        List<OnboardDeviceMembership> currentMembers = membershipRepository
+                .findActiveByOnboardSystemIdOrderByValidFromAsc(system.getId());
+        List<OnboardDeviceRoleAssignment> currentRoles = roleRepository
+                .findActiveByTerminalIdOrderByValidFromAsc(terminalId).stream()
+                .filter(role -> role.getOnboardSystemId().equals(system.getId()))
+                .toList();
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findLockedByOnboardSystemId(system.getId())
+                .orElseThrow(() -> conflict("ONBOARD_RUNTIME_STATE_MISSING"));
+
+        OffsetDateTime changedAt = OffsetDateTime.now(clock);
+        currentRoles.forEach(role -> {
+            role.revoke(reason, actorId, changedAt);
+            roleRepository.save(role);
+        });
+        roleRepository.flush();
+        membership.remove(reason, actorId, changedAt);
+        membershipRepository.saveAndFlush(membership);
+        if (terminalId.equals(runtime.getActiveLocationTerminalId())) {
+            runtime.clearLocationSource(changedAt);
+            runtimeStateRepository.saveAndFlush(runtime);
+        }
+        if (currentMembers.size() == 1) {
+            system.suspend(actorId, changedAt);
+        } else {
+            system.touchConfiguration(actorId, changedAt);
+        }
+        systemRepository.saveAndFlush(system);
+        return new OnboardLifecycleResult(system.getId(), system.getVehicleId());
+    }
+
+    @Transactional
+    public OnboardReplacementResult replaceTerminal(
+            UUID oldTerminalId,
+            long expectedOldTerminalVersion,
+            UUID replacementTerminalId,
+            long expectedReplacementTerminalVersion,
+            String reason,
+            UUID actorId) {
+        Objects.requireNonNull(oldTerminalId, "oldTerminalId");
+        Objects.requireNonNull(replacementTerminalId, "replacementTerminalId");
+        Objects.requireNonNull(actorId, "actorId");
+        OnboardText.requireAuditText(reason, "reason");
+        if (oldTerminalId.equals(replacementTerminalId)) {
+            throw conflict("ONBOARD_REPLACEMENT_TERMINAL_INVALID");
+        }
+
+        OnboardDeviceMembership discovered = membershipRepository
+                .findActiveByTerminalId(oldTerminalId)
+                .orElseThrow(() -> conflict("ACTIVE_MEMBERSHIP_MISSING"));
+        OnboardSystem discoveredSystem = systemRepository
+                .findById(discovered.getOnboardSystemId())
+                .orElseThrow(() -> conflict("ONBOARD_SYSTEM_NOT_ACTIVE"));
+        OnboardSystem system = lockedActiveSystem(discoveredSystem.getVehicleId());
+        lockTerminalState(List.of(oldTerminalId, replacementTerminalId));
+        requireTerminalVersion(oldTerminalId, expectedOldTerminalVersion);
+        requireTerminalVersion(replacementTerminalId, expectedReplacementTerminalVersion);
+        OnboardDeviceMembership oldMembership = membershipRepository
+                .findActiveByTerminalId(oldTerminalId)
+                .filter(candidate -> candidate.getOnboardSystemId().equals(system.getId()))
+                .orElseThrow(() -> conflict("ACTIVE_MEMBERSHIP_MISSING"));
+        OnboardDeviceMembership replacementMembership = membershipRepository
+                .findActiveByTerminalId(replacementTerminalId)
+                .filter(candidate -> candidate.getOnboardSystemId().equals(system.getId()))
+                .orElseThrow(() -> conflict("ONBOARD_REPLACEMENT_MEMBERSHIP_MISSING"));
+        if (profileRepository.findActiveByTerminalId(replacementTerminalId).isEmpty()) {
+            throw conflict("ONBOARD_REPLACEMENT_PROFILE_MISSING");
+        }
+        List<OnboardDeviceRoleAssignment> rolesToTransfer = roleRepository
+                .findActiveByTerminalIdOrderByValidFromAsc(oldTerminalId).stream()
+                .filter(role -> role.getOnboardSystemId().equals(system.getId()))
+                .toList();
+        Set<Capability> verifiedCapabilities = capabilityRepository
+                .findCurrentByTerminalIdOrderByCreatedAtAsc(replacementTerminalId).stream()
+                .filter(fact -> fact.getStatus() == CapabilityStatus.VERIFIED)
+                .map(OnboardDeviceCapability::getCapability)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        for (OnboardDeviceRoleAssignment role : rolesToTransfer) {
+            if (role.getRole() == Role.WAN_UPLINK) {
+                if (replacementMembership.getNetworkMode() != NetworkMode.DIRECT_CELLULAR) {
+                    throw conflict("ONBOARD_REPLACEMENT_NETWORK_MODE_INVALID");
+                }
+            } else if (!supports(role.getRole(), verifiedCapabilities)) {
+                throw conflict("ONBOARD_REPLACEMENT_CAPABILITY_MISSING");
+            }
+        }
+
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findLockedByOnboardSystemId(system.getId())
+                .orElseThrow(() -> conflict("ONBOARD_RUNTIME_STATE_MISSING"));
+        OffsetDateTime changedAt = OffsetDateTime.now(clock);
+        rolesToTransfer.forEach(role -> {
+            role.revoke(reason, actorId, changedAt);
+            roleRepository.save(role);
+        });
+        roleRepository.flush();
+        rolesToTransfer.forEach(role -> roleRepository.save(
+                OnboardDeviceRoleAssignment.assign(
+                        system.getId(), replacementTerminalId, role.getRole(),
+                        reason, actorId, changedAt)));
+        roleRepository.flush();
+        oldMembership.remove(reason, actorId, changedAt);
+        membershipRepository.saveAndFlush(oldMembership);
+        if (oldTerminalId.equals(runtime.getActiveLocationTerminalId())) {
+            boolean transfersLocation = rolesToTransfer.stream().anyMatch(role ->
+                    role.getRole() == Role.LOCATION_PRIMARY
+                            || role.getRole() == Role.LOCATION_BACKUP);
+            if (transfersLocation) {
+                runtime.selectLocationSource(replacementTerminalId, changedAt);
+            } else {
+                runtime.clearLocationSource(changedAt);
+            }
+            runtimeStateRepository.saveAndFlush(runtime);
+        }
+        system.touchConfiguration(actorId, changedAt);
+        systemRepository.saveAndFlush(system);
+        return new OnboardReplacementResult(
+                system.getId(), system.getVehicleId(),
+                rolesToTransfer.stream().map(OnboardDeviceRoleAssignment::getRole).collect(
+                        java.util.stream.Collectors.toUnmodifiableSet()));
+    }
+
     private OnboardSystem bindLegacyTerminalLocked(
             UUID vehicleId,
             JtTerminal terminal,
@@ -416,6 +581,14 @@ public class OnboardSystemConfigurationService {
             JtTerminal terminal = terminalRepository.findById(terminalId)
                     .orElseThrow(() -> conflict("TERMINAL_NOT_FOUND"));
             entityManager.refresh(terminal);
+        }
+    }
+
+    private void requireTerminalVersion(UUID terminalId, long expectedVersion) {
+        JtTerminal terminal = terminalRepository.findById(terminalId)
+                .orElseThrow(() -> conflict("TERMINAL_NOT_FOUND"));
+        if (terminal.getVersion() != expectedVersion) {
+            throw conflict("terminal version conflict");
         }
     }
 
@@ -1125,6 +1298,17 @@ public class OnboardSystemConfigurationService {
             Capability capability,
             CapabilityStatus status,
             long version) {
+    }
+
+    public record OnboardLifecycleResult(UUID onboardSystemId, UUID vehicleId) {
+    }
+
+    public record OnboardReplacementResult(
+            UUID onboardSystemId, UUID vehicleId, Set<Role> transferredRoles) {
+        public OnboardReplacementResult {
+            transferredRoles = transferredRoles == null || transferredRoles.isEmpty()
+                    ? Set.of() : Set.copyOf(transferredRoles);
+        }
     }
 
     public record OnboardSystemView(

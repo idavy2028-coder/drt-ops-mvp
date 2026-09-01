@@ -13,6 +13,8 @@ import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
 import com.idavy.drtops.domain.onboard.OnboardTestFixtures;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import com.jayway.jsonpath.JsonPath;
@@ -99,6 +101,9 @@ class TerminalApiTest {
 
     @Autowired
     OnboardDeviceMembershipRepository onboardMembershipRepository;
+
+    @Autowired
+    OnboardDeviceProtocolProfileRepository onboardProfileRepository;
 
     @Autowired
     OnboardTestFixtures onboardFixtures;
@@ -338,8 +343,8 @@ class TerminalApiTest {
                 .andExpect(jsonPath("$.data.lastAuthenticatedAt").isEmpty())
                 .andExpect(jsonPath("$.data.lastHeartbeatAt").isEmpty())
                 .andExpect(jsonPath("$.data.lastLocationAt").isEmpty())
-                .andExpect(jsonPath("$.data.currentBinding.plateNumber").value("浙A20001"))
-                .andExpect(jsonPath("$.data.bindingHistory[0].plateNumber").value("浙A20001"))
+                .andExpect(jsonPath("$.data.currentBinding").doesNotExist())
+                .andExpect(jsonPath("$.data.bindingHistory").isEmpty())
                 .andExpect(jsonPath("$.data.securityAudits[0].eventType").value("ONLINE"))
                 .andExpect(jsonPath("$.data.securityAudits[0].reasonCode").value("SESSION_ESTABLISHED"))
                 .andExpect(jsonPath("$.data", not(hasKey("id"))))
@@ -797,12 +802,14 @@ class TerminalApiTest {
         JtTerminal oldTerminal = registerBindAndActivate("T-DETAIL-OLD", "PHONE-OLD");
         mockMvc.perform(post("/api/terminals").contentType(MediaType.APPLICATION_JSON)
                         .content(presetRequest("T-DETAIL-NEW", "PHONE-NEW"))).andExpect(status().isCreated());
-        JtTerminal replacement = terminalRepository.findByTerminalCode("T-DETAIL-NEW").orElseThrow();
+        JtTerminal replacement = preprovisionReplacement("T-DETAIL-NEW");
         mockMvc.perform(post("/api/terminals/T-DETAIL-OLD/replace").contentType(MediaType.APPLICATION_JSON).content("""
                 {"replacementTerminalCode":"T-DETAIL-NEW","expectedVersion":%d,"replacementExpectedVersion":%d,"reason":"换机"}
                 """.formatted(oldTerminal.getVersion(), replacement.getVersion()))) .andExpect(status().isOk());
         mockMvc.perform(get("/api/terminals/T-DETAIL-OLD"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.currentBinding").doesNotExist());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.currentBinding").doesNotExist())
+                .andExpect(jsonPath("$.data.bindingHistory").isEmpty());
     }
 
     @Test
@@ -863,7 +870,7 @@ class TerminalApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(presetRequest("T-API-007", "PHONE-9007")))
                 .andExpect(status().isCreated());
-        JtTerminal replacement = terminalRepository.findByTerminalCode("T-API-007").orElseThrow();
+        JtTerminal replacement = preprovisionReplacement("T-API-007");
         controlClient.available = false;
 
         mockMvc.perform(post("/api/terminals/T-API-006/replace")
@@ -879,6 +886,48 @@ class TerminalApiTest {
 
         assertThat(terminalRepository.findByTerminalCode("T-API-006").orElseThrow().getStatus())
                 .isEqualTo(JtTerminal.Status.RETIRED);
+    }
+
+    @Test
+    void rejectsUnpreparedReplacementWithoutMutation() throws Exception {
+        JtTerminal oldTerminal = registerBindAndActivate(
+                "T-API-UNPREPARED-OLD", "PHONE-UNPREPARED-OLD");
+        mockMvc.perform(post("/api/terminals")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(presetRequest(
+                                "T-API-UNPREPARED-NEW", "PHONE-UNPREPARED-NEW")))
+                .andExpect(status().isCreated());
+        JtTerminal replacement = terminalRepository
+                .findByTerminalCode("T-API-UNPREPARED-NEW").orElseThrow();
+        int auditCount = auditLogRepository.findAll().size();
+
+        mockMvc.perform(post("/api/terminals/T-API-UNPREPARED-OLD/replace")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"replacementTerminalCode":"T-API-UNPREPARED-NEW",
+                                 "expectedVersion":%d,"replacementExpectedVersion":%d,
+                                 "reason":"未预置换机"}
+                                """.formatted(
+                                oldTerminal.getVersion(), replacement.getVersion())))
+                .andExpect(status().isConflict());
+
+        assertThat(terminalRepository.findById(oldTerminal.getId()).orElseThrow())
+                .satisfies(terminal -> {
+                    assertThat(terminal.getStatus()).isEqualTo(JtTerminal.Status.ACTIVE);
+                    assertThat(terminal.getVersion()).isEqualTo(oldTerminal.getVersion());
+                });
+        assertThat(terminalRepository.findById(replacement.getId()).orElseThrow())
+                .satisfies(terminal -> {
+                    assertThat(terminal.getStatus()).isEqualTo(JtTerminal.Status.PENDING);
+                    assertThat(terminal.getVersion()).isEqualTo(replacement.getVersion());
+                });
+        assertThat(onboardMembershipRepository.findActiveByTerminalId(oldTerminal.getId()))
+                .isPresent();
+        assertThat(onboardMembershipRepository.findActiveByTerminalId(replacement.getId()))
+                .isEmpty();
+        assertThat(bindingRepository.findAll()).isEmpty();
+        assertThat(auditLogRepository.findAll()).hasSize(auditCount);
+        assertThat(controlClient.requests).isEmpty();
     }
 
     @Test
@@ -950,6 +999,27 @@ class TerminalApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(action(terminal.getVersion(), "正式启用")))
                 .andExpect(status().isOk());
+        return terminalRepository.findByTerminalCode(code).orElseThrow();
+    }
+
+    private JtTerminal preprovisionReplacement(String code) {
+        JtTerminal replacement = terminalRepository.findByTerminalCode(code).orElseThrow();
+        service.bind(
+                code, VEHICLE_ID, replacement.getVersion(),
+                "预置同系统 replacement",
+                UUID.fromString("11111111-1111-1111-1111-111111111111"));
+        replacement = terminalRepository.findByTerminalCode(code).orElseThrow();
+        onboardProfileRepository.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                replacement.getId(),
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.GBT28787_2023,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                30, 60, "replacement 自有协议档案",
+                UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                OffsetDateTime.now()));
+        onboardFixtures.verifyDispatchAndLocation(code);
+        assertThat(bindingRepository.findAll()).isEmpty();
         return terminalRepository.findByTerminalCode(code).orElseThrow();
     }
 
