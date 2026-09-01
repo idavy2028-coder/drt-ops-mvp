@@ -12,6 +12,7 @@ import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.MediaProfile
 import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.SafetyProfile;
 import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.TransportProfile;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
+import com.idavy.drtops.domain.onboard.OnboardReadinessService.OnboardReadiness;
 import com.idavy.drtops.domain.onboard.OnboardSystem.OperatingMode;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
@@ -59,6 +60,7 @@ public class OnboardSystemConfigurationService {
     private final OnboardDeviceProtocolProfileRepository profileRepository;
     private final OnboardDeviceRoleAssignmentRepository roleRepository;
     private final OnboardSystemRuntimeStateRepository runtimeStateRepository;
+    private final OnboardReadinessService readinessService;
     private final JtTerminalRepository terminalRepository;
     private final AuditLogRepository auditLogRepository;
     private final ObjectMapper objectMapper;
@@ -72,6 +74,7 @@ public class OnboardSystemConfigurationService {
             OnboardDeviceProtocolProfileRepository profileRepository,
             OnboardDeviceRoleAssignmentRepository roleRepository,
             OnboardSystemRuntimeStateRepository runtimeStateRepository,
+            OnboardReadinessService readinessService,
             JtTerminalRepository terminalRepository,
             AuditLogRepository auditLogRepository,
             ObjectMapper objectMapper,
@@ -83,6 +86,7 @@ public class OnboardSystemConfigurationService {
         this.profileRepository = profileRepository;
         this.roleRepository = roleRepository;
         this.runtimeStateRepository = runtimeStateRepository;
+        this.readinessService = readinessService;
         this.terminalRepository = terminalRepository;
         this.auditLogRepository = auditLogRepository;
         this.objectMapper = objectMapper;
@@ -127,16 +131,26 @@ public class OnboardSystemConfigurationService {
         if (firstResult > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("page is too large");
         }
-        List<OnboardSystem> systems = entityManager.createQuery("""
-                        select system
+        List<Object[]> systemRows = entityManager.createQuery("""
+                        select system, runtime
                         from OnboardSystem system
+                        left join OnboardSystemRuntimeState runtime
+                          on runtime.onboardSystemId = system.id
                         where system.status = :status
                         order by system.vehicleId, system.id
-                        """, OnboardSystem.class)
+                        """, Object[].class)
                 .setParameter("status", OnboardSystem.Status.ACTIVE)
                 .setFirstResult((int) firstResult)
                 .setMaxResults(size)
                 .getResultList();
+        List<OnboardSystem> systems = systemRows.stream()
+                .map(row -> (OnboardSystem) row[0])
+                .toList();
+        Map<UUID, OnboardSystemRuntimeState> runtimeBySystem = systemRows.stream()
+                .filter(row -> row[1] != null)
+                .collect(java.util.stream.Collectors.toMap(
+                        row -> ((OnboardSystem) row[0]).getId(),
+                        row -> (OnboardSystemRuntimeState) row[1]));
         long totalElements = entityManager.createQuery("""
                         select count(system)
                         from OnboardSystem system
@@ -146,12 +160,30 @@ public class OnboardSystemConfigurationService {
                 .getSingleResult();
         long totalPages = (totalElements + size - 1) / size;
         return new OnboardSystemPage(
-                assembleViews(systems), page, size, totalElements, totalPages);
+                assembleViews(systems, runtimeBySystem), page, size, totalElements, totalPages);
     }
 
     @Transactional(readOnly = true)
     public OnboardSystemView getSystem(UUID vehicleId) {
-        return assembleViews(List.of(activeSystem(vehicleId))).getFirst();
+        OnboardSystem system = activeSystem(vehicleId);
+        Map<UUID, OnboardSystemRuntimeState> runtime = runtimeStateRepository
+                .findById(system.getId())
+                .map(state -> Map.of(system.getId(), state))
+                .orElseGet(Map::of);
+        return assembleViews(List.of(system), runtime).getFirst();
+    }
+
+    @Transactional
+    public OnboardSystemDetailSnapshot getSystemDetail(UUID vehicleId) {
+        OnboardSystem system = lockedActiveSystem(vehicleId);
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findLockedByOnboardSystemId(system.getId())
+                .orElseThrow(() -> conflict("ONBOARD_RUNTIME_STATE_NOT_FOUND"));
+        entityManager.refresh(runtime);
+        OnboardSystemView view = assembleViews(
+                List.of(system), Map.of(system.getId(), runtime)).getFirst();
+        OnboardReadiness readiness = readinessService.evaluate(vehicleId);
+        return new OnboardSystemDetailSnapshot(view, readiness);
     }
 
     @Transactional
@@ -496,37 +528,98 @@ public class OnboardSystemConfigurationService {
 
     private Map<String, JtTerminal> lockConfigurationState(
             UUID onboardSystemId, List<DeviceConfiguration> devices) {
-        Set<String> terminalCodes = new HashSet<>();
         Set<UUID> terminalIds = new HashSet<>();
+        Map<String, UUID> currentAliasTerminalIds = new LinkedHashMap<>();
         Map<String, UUID> desiredTerminalIds = new LinkedHashMap<>();
+        Map<String, String> desiredAliases = new LinkedHashMap<>();
         if (onboardSystemId != null) {
             membershipRepository.findActiveByOnboardSystemIdOrderByValidFromAsc(onboardSystemId)
-                    .forEach(membership -> terminalIds.add(membership.getTerminalId()));
+                    .forEach(membership -> {
+                        UUID terminalId = membership.getTerminalId();
+                        terminalIds.add(terminalId);
+                        String alias = safeDeviceAlias(terminalId);
+                        if (currentAliasTerminalIds.putIfAbsent(alias, terminalId) != null) {
+                            throw conflict("DUPLICATE_DEVICE_ALIAS");
+                        }
+                    });
         }
         for (DeviceConfiguration device : devices) {
-            if (device == null || device.terminalCode() == null || device.terminalCode().isBlank()) {
-                throw new IllegalArgumentException("TERMINAL_CODE_REQUIRED");
+            String selector = selectorKey(device);
+            UUID terminalId;
+            if (hasText(device.deviceAlias())) {
+                terminalId = currentAliasTerminalIds.get(device.deviceAlias());
+                if (terminalId == null) {
+                    throw conflict("DEVICE_ALIAS_CHANGED");
+                }
+                desiredAliases.put(selector, device.deviceAlias());
+            } else {
+                terminalId = terminalRepository.findByTerminalCode(device.terminalCode())
+                        .map(JtTerminal::getId)
+                        .orElseThrow(() -> conflict("TERMINAL_NOT_FOUND"));
             }
-            if (!terminalCodes.add(device.terminalCode())) {
-                throw conflict("DUPLICATE_TERMINAL_CODE");
+            if (desiredTerminalIds.containsValue(terminalId)) {
+                throw conflict(hasText(device.deviceAlias())
+                        ? "DUPLICATE_DEVICE_ALIAS" : "DUPLICATE_TERMINAL_CODE");
             }
-            UUID terminalId = terminalRepository.findByTerminalCode(device.terminalCode())
-                    .map(JtTerminal::getId)
-                    .orElseThrow(() -> conflict("TERMINAL_NOT_FOUND"));
-            desiredTerminalIds.put(device.terminalCode(), terminalId);
+            desiredTerminalIds.put(selector, terminalId);
             terminalIds.add(terminalId);
         }
         lockTerminalState(terminalIds);
+
+        Map<String, UUID> lockedAliases = new LinkedHashMap<>();
+        if (onboardSystemId != null) {
+            membershipRepository.findActiveByOnboardSystemIdOrderByValidFromAsc(onboardSystemId)
+                    .forEach(membership -> {
+                        String alias = safeDeviceAlias(membership.getTerminalId());
+                        if (lockedAliases.putIfAbsent(alias, membership.getTerminalId()) != null) {
+                            throw conflict("DUPLICATE_DEVICE_ALIAS");
+                        }
+                    });
+        }
         Map<String, JtTerminal> lockedTerminals = new LinkedHashMap<>();
-        desiredTerminalIds.forEach((terminalCode, terminalId) -> {
+        desiredTerminalIds.forEach((selector, terminalId) -> {
             JtTerminal terminal = terminalRepository.findById(terminalId)
                     .orElseThrow(() -> conflict("TERMINAL_NOT_FOUND"));
-            if (!terminalCode.equals(terminal.getTerminalCode())) {
+            String alias = desiredAliases.get(selector);
+            if (alias != null && !terminalId.equals(lockedAliases.get(alias))) {
+                throw conflict("DEVICE_ALIAS_CHANGED");
+            }
+            if (alias == null && !selector.equals("terminalCode:" + terminal.getTerminalCode())) {
                 throw conflict("TERMINAL_CODE_CHANGED");
             }
-            lockedTerminals.put(terminalCode, terminal);
+            lockedTerminals.put(selector, terminal);
         });
+        requireUniqueDesiredAliases(desiredTerminalIds.values());
         return Map.copyOf(lockedTerminals);
+    }
+
+    private static void requireUniqueDesiredAliases(
+            java.util.Collection<UUID> desiredTerminalIds) {
+        Set<String> aliases = new HashSet<>();
+        for (UUID terminalId : desiredTerminalIds) {
+            if (!aliases.add(safeDeviceAlias(terminalId))) {
+                throw conflict("DUPLICATE_DEVICE_ALIAS");
+            }
+        }
+    }
+
+    private static String selectorKey(DeviceConfiguration device) {
+        if (device == null) {
+            throw new IllegalArgumentException("DEVICE_SELECTOR_REQUIRED");
+        }
+        boolean hasTerminalCode = hasText(device.terminalCode());
+        boolean hasDeviceAlias = hasText(device.deviceAlias());
+        if (hasTerminalCode == hasDeviceAlias) {
+            throw new IllegalArgumentException(hasTerminalCode
+                    ? "DEVICE_SELECTOR_MIXED" : "DEVICE_SELECTOR_REQUIRED");
+        }
+        return hasDeviceAlias
+                ? "deviceAlias:" + device.deviceAlias()
+                : "terminalCode:" + device.terminalCode();
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private JtTerminal lockTerminalByCode(String terminalCode) {
@@ -656,21 +749,32 @@ public class OnboardSystemConfigurationService {
         return normalized.substring(normalized.lastIndexOf('.') + 1);
     }
 
-    private List<OnboardSystemView> assembleViews(List<OnboardSystem> systems) {
+    private List<OnboardSystemView> assembleViews(
+            List<OnboardSystem> systems,
+            Map<UUID, OnboardSystemRuntimeState> runtimeBySystem) {
         if (systems.isEmpty()) {
             return List.of();
         }
         List<UUID> systemIds = systems.stream().map(OnboardSystem::getId).toList();
-        List<OnboardDeviceMembership> memberships = entityManager.createQuery("""
-                        select membership
+        List<Object[]> membershipRows = entityManager.createQuery("""
+                        select membership, terminal
                         from OnboardDeviceMembership membership
+                        join JtTerminal terminal on terminal.id = membership.terminalId
                         where membership.onboardSystemId in :systemIds
                           and membership.status = :status and membership.validTo is null
                         order by membership.validFrom, membership.id
-                        """, OnboardDeviceMembership.class)
+                        """, Object[].class)
                 .setParameter("systemIds", systemIds)
                 .setParameter("status", OnboardDeviceMembership.Status.ACTIVE)
                 .getResultList();
+        List<OnboardDeviceMembership> memberships = membershipRows.stream()
+                .map(row -> (OnboardDeviceMembership) row[0])
+                .toList();
+        Map<UUID, JtTerminal> terminalById = membershipRows.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        row -> ((JtTerminal) row[1]).getId(),
+                        row -> (JtTerminal) row[1],
+                        (first, duplicate) -> first));
         List<OnboardDeviceRoleAssignment> roles = entityManager.createQuery("""
                         select assignment
                         from OnboardDeviceRoleAssignment assignment
@@ -729,12 +833,31 @@ public class OnboardSystemConfigurationService {
                     .getOrDefault(system.getId(), List.of()).stream()
                     .map(membership -> toDeviceView(
                             membership, rolesByTerminal, capabilitiesByTerminal,
-                            profileByTerminal))
+                            profileByTerminal, terminalById))
                     .sorted(Comparator.comparing(DeviceView::deviceAlias))
                     .toList();
+            Set<UUID> memberIds = membershipsBySystem
+                    .getOrDefault(system.getId(), List.of()).stream()
+                    .map(OnboardDeviceMembership::getTerminalId)
+                    .collect(java.util.stream.Collectors.toSet());
+            UUID activeLocationTerminalId = java.util.Optional.ofNullable(
+                            runtimeBySystem.get(system.getId()))
+                    .map(OnboardSystemRuntimeState::getActiveLocationTerminalId)
+                    .orElse(null);
+            String activeLocationDeviceAlias = memberIds.contains(activeLocationTerminalId)
+                    ? safeDeviceAlias(activeLocationTerminalId) : null;
+            UUID wanTerminalId = roles.stream()
+                    .filter(role -> role.getOnboardSystemId().equals(system.getId()))
+                    .filter(role -> role.getRole() == Role.WAN_UPLINK)
+                    .map(OnboardDeviceRoleAssignment::getTerminalId)
+                    .filter(memberIds::contains)
+                    .findFirst().orElse(null);
+            String wanDeviceAlias = wanTerminalId == null
+                    ? null : safeDeviceAlias(wanTerminalId);
             return new OnboardSystemView(
                     system.getId(), system.getVehicleId(), system.getStatus(),
-                    system.getOperatingMode(), system.getVersion(), devices);
+                    system.getOperatingMode(), system.getVersion(),
+                    activeLocationDeviceAlias, wanDeviceAlias, devices);
         }).toList();
     }
 
@@ -742,8 +865,11 @@ public class OnboardSystemConfigurationService {
             OnboardDeviceMembership membership,
             Map<UUID, List<OnboardDeviceRoleAssignment>> rolesByTerminal,
             Map<UUID, List<OnboardDeviceCapability>> capabilitiesByTerminal,
-            Map<UUID, OnboardDeviceProtocolProfile> profileByTerminal) {
+            Map<UUID, OnboardDeviceProtocolProfile> profileByTerminal,
+            Map<UUID, JtTerminal> terminalById) {
         UUID terminalId = membership.getTerminalId();
+        JtTerminal terminal = Objects.requireNonNull(
+                terminalById.get(terminalId), "active membership terminal");
         List<String> roles = rolesByTerminal.getOrDefault(terminalId, List.of()).stream()
                 .map(OnboardDeviceRoleAssignment::getRole)
                 .sorted(Comparator.comparingInt(Enum::ordinal))
@@ -760,7 +886,10 @@ public class OnboardSystemConfigurationService {
                 .orElse(null);
         return new DeviceView(
                 safeDeviceAlias(terminalId), membership.getNetworkMode(),
-                roles, profiles, capabilities);
+                roles, profiles, capabilities, terminal.getStatus(),
+                terminal.getLastAuthenticatedAt() != null,
+                terminal.getLastRegisteredAt(), terminal.getLastAuthenticatedAt(),
+                terminal.getLastSeenAt());
     }
 
     private static ProtocolProfiles toProfiles(OnboardDeviceProtocolProfile profile) {
@@ -879,15 +1008,15 @@ public class OnboardSystemConfigurationService {
             Map<String, JtTerminal> lockedTerminals) {
         Map<String, DesiredDevice> resolved = new LinkedHashMap<>();
         for (DeviceConfiguration device : devices) {
-            if (device == null || device.terminalCode() == null || device.terminalCode().isBlank()) {
-                throw new IllegalArgumentException("TERMINAL_CODE_REQUIRED");
+            String selector = selectorKey(device);
+            if (resolved.containsKey(selector)) {
+                throw conflict(hasText(device.deviceAlias())
+                        ? "DUPLICATE_DEVICE_ALIAS" : "DUPLICATE_TERMINAL_CODE");
             }
-            if (resolved.containsKey(device.terminalCode())) {
-                throw conflict("DUPLICATE_TERMINAL_CODE");
-            }
-            JtTerminal terminal = lockedTerminals.get(device.terminalCode());
+            JtTerminal terminal = lockedTerminals.get(selector);
             if (terminal == null) {
-                throw conflict("TERMINAL_CODE_CHANGED");
+                throw conflict(hasText(device.deviceAlias())
+                        ? "DEVICE_ALIAS_CHANGED" : "TERMINAL_CODE_CHANGED");
             }
             if (terminal.getStatus() == JtTerminal.Status.RETIRED) {
                 throw conflict("TERMINAL_RETIRED");
@@ -903,7 +1032,7 @@ public class OnboardSystemConfigurationService {
                     .collect(java.util.stream.Collectors.toUnmodifiableSet());
             Set<Role> roles = device.roles() == null
                     ? Set.of() : Set.copyOf(device.roles());
-            resolved.put(device.terminalCode(), new DesiredDevice(
+            resolved.put(selector, new DesiredDevice(
                     terminal, device.networkMode(), roles, profiles, verifiedCapabilities));
         }
         return Map.copyOf(resolved);
@@ -1253,9 +1382,18 @@ public class OnboardSystemConfigurationService {
 
     public record DeviceConfiguration(
             String terminalCode,
+            String deviceAlias,
             NetworkMode networkMode,
             Set<Role> roles,
             ProtocolProfiles protocolProfiles) {
+        public DeviceConfiguration(
+                String terminalCode,
+                NetworkMode networkMode,
+                Set<Role> roles,
+                ProtocolProfiles protocolProfiles) {
+            this(terminalCode, null, networkMode, roles, protocolProfiles);
+        }
+
         public DeviceConfiguration {
             roles = roles == null ? Set.of() : Set.copyOf(roles);
         }
@@ -1317,6 +1455,8 @@ public class OnboardSystemConfigurationService {
             OnboardSystem.Status status,
             OperatingMode operatingMode,
             long version,
+            String activeLocationDeviceAlias,
+            String wanDeviceAlias,
             List<DeviceView> devices) {
         public OnboardSystemView {
             devices = devices == null ? List.of() : List.copyOf(devices);
@@ -1334,12 +1474,26 @@ public class OnboardSystemConfigurationService {
         }
     }
 
+    public record OnboardSystemDetailSnapshot(
+            OnboardSystemView system,
+            OnboardReadiness readiness) {
+        public OnboardSystemDetailSnapshot {
+            Objects.requireNonNull(system, "system");
+            Objects.requireNonNull(readiness, "readiness");
+        }
+    }
+
     public record DeviceView(
             String deviceAlias,
             NetworkMode networkMode,
             List<String> roles,
             ProtocolProfiles protocolProfiles,
-            List<String> verifiedCapabilities) {
+            List<String> verifiedCapabilities,
+            JtTerminal.Status terminalStatus,
+            boolean authenticationPresent,
+            OffsetDateTime lastRegisteredAt,
+            OffsetDateTime lastAuthenticatedAt,
+            OffsetDateTime lastSeenAt) {
         public DeviceView {
             roles = roles == null ? List.of() : List.copyOf(roles);
             verifiedCapabilities = verifiedCapabilities == null

@@ -8,6 +8,8 @@ import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService.Configu
 import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService.ConfigurationPreview;
 import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService.OnboardSystemView;
 import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService.OnboardSystemPage;
+import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService.OnboardSystemDetailSnapshot;
+import com.idavy.drtops.domain.onboard.OnboardReadinessService.OnboardReadiness;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -41,8 +43,10 @@ public class OnboardSystemController {
     }
 
     @GetMapping("/onboard-systems/{vehicleId}")
-    ApiResponse<OnboardSystemView> get(@PathVariable UUID vehicleId) {
-        return ApiResponse.ok(service.getSystem(vehicleId));
+    ApiResponse<OnboardSystemDetailResponse> get(@PathVariable UUID vehicleId) {
+        OnboardSystemDetailSnapshot snapshot = service.getSystemDetail(vehicleId);
+        return ApiResponse.ok(OnboardSystemDetailResponse.from(
+                snapshot.system(), snapshot.readiness()));
     }
 
     @PostMapping("/onboard-systems/{vehicleId}/configuration/preview")
@@ -91,5 +95,27 @@ public class OnboardSystemController {
             Long expectedVersion,
             String reason,
             String evidenceRef) {
+    }
+
+    public record OnboardSystemDetailResponse(
+            UUID onboardSystemId,
+            UUID vehicleId,
+            OnboardSystem.Status status,
+            OnboardSystem.OperatingMode operatingMode,
+            long version,
+            String activeLocationDeviceAlias,
+            String wanDeviceAlias,
+            List<OnboardSystemConfigurationService.DeviceView> devices,
+            OnboardReadiness readiness) {
+
+        static OnboardSystemDetailResponse from(
+                OnboardSystemView system,
+                OnboardReadiness readiness) {
+            return new OnboardSystemDetailResponse(
+                    system.onboardSystemId(), system.vehicleId(), system.status(),
+                    system.operatingMode(), system.version(),
+                    system.activeLocationDeviceAlias(), system.wanDeviceAlias(),
+                    system.devices(), readiness);
+        }
     }
 }

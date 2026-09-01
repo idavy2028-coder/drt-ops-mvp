@@ -3,6 +3,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
+import { routes } from "../router";
+import OnboardSystemManagementPage from "./OnboardSystemManagementPage.vue";
 import TerminalManagementPage from "./TerminalManagementPage.vue";
 
 const terminalApi = vi.hoisted(() => ({
@@ -49,6 +51,20 @@ describe("TerminalManagementPage", () => {
     expect(screen.queryByText("auth-token-digest")).not.toBeInTheDocument();
     expect(screen.queryByText("raw-payload")).not.toBeInTheDocument();
     expect(screen.queryByText("11111111-1111-1111-1111-111111111111")).not.toBeInTheDocument();
+  });
+
+  it("keeps physical-device operations on the compatibility route with an aggregate-page banner", async () => {
+    // Mutations caught: routing /terminals back to the raw device page, removing the
+    // /terminals/devices compatibility route, or stranding operators without a safe return link.
+    expect(routes.find((route) => route.path === "/terminals")?.component)
+      .toBe(OnboardSystemManagementPage);
+    expect(routes.find((route) => route.path === "/terminals/devices")?.component)
+      .toBe(TerminalManagementPage);
+
+    render(TerminalManagementPage);
+    expect(await screen.findByText("物理设备兼容操作")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "返回车载系统总览" }))
+      .toHaveAttribute("href", "/terminals");
   });
 
   it("shows management actions only to a terminal manager", async () => {
