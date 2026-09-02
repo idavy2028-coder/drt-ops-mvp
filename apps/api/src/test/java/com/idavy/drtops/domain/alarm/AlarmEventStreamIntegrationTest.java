@@ -533,6 +533,7 @@ class AlarmEventStreamIntegrationTest {
     }
 
     @Test
+    @Transactional
     void cleansOnlyPublishedOutboxRowsOlderThanSevenDays() {
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
         VehicleAlarmOutboxEvent published = outbox.saveAndFlush(
@@ -547,11 +548,13 @@ class AlarmEventStreamIntegrationTest {
                 Instant.parse("2026-08-01T00:00:00Z"), pending.getId());
 
         assertThat(publisher.cleanupPublishedBefore(Instant.parse("2026-08-08T00:00:00Z"))).isEqualTo(1);
+        entityManager.clear();
         assertThat(outbox.findById(published.getId())).isEmpty();
         assertThat(outbox.findById(pending.getId()).orElseThrow().getStatus()).isEqualTo("PENDING");
     }
 
     @Test
+    @Transactional
     void schedulesSevenDayCleanupForPublishedOutboxRowsOnly() throws Exception {
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
         VehicleAlarmOutboxEvent published = outbox.saveAndFlush(
@@ -568,6 +571,7 @@ class AlarmEventStreamIntegrationTest {
         Method scheduledCleanup = AlarmOutboxPublisher.class.getDeclaredMethod("scheduledCleanup");
         assertThat(scheduledCleanup.getAnnotation(org.springframework.scheduling.annotation.Scheduled.class)).isNotNull();
         scheduledCleanup.invoke(publisher);
+        entityManager.clear();
 
         assertThat(outbox.findById(published.getId())).isEmpty();
         assertThat(outbox.findById(pending.getId()).orElseThrow().getStatus()).isEqualTo("PENDING");
@@ -823,4 +827,5 @@ class AlarmEventStreamIntegrationTest {
             return (longitude, latitude) -> true;
         }
     }
+
 }

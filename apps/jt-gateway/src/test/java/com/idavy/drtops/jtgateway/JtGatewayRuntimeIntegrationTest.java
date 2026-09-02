@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -72,6 +73,9 @@ class JtGatewayRuntimeIntegrationTest {
     private static final String SERVICE_CREDENTIAL = "runtime-test-credential";
     private static final UUID TERMINAL_ID =
             UUID.fromString("44444444-4444-4444-4444-444444444444");
+    private static final String RECORDER_IDENTITY = "000000000002";
+    private static final UUID RECORDER_TERMINAL_ID =
+            UUID.fromString("77777777-7777-7777-7777-777777777777");
     private static final UUID VEHICLE_ID =
             UUID.fromString("55555555-5555-5555-5555-555555555555");
 
@@ -192,6 +196,80 @@ class JtGatewayRuntimeIntegrationTest {
                         fileDatabaseUrl(database), "sa", ""));
         assertEquals(3, restarted.totalCount(),
                 "location plus registration/authentication audits must survive context shutdown");
+    }
+
+    @Test
+    void keepsTwoSyntheticDeviceSessionsIndependentWhenTheyShareOneVehicleIdentifier() throws Exception {
+        // Mutation caught: indexing sessions by vehicle or vehicle identifier instead of terminalId.
+        int devicePort = freeLoopbackPort();
+        try (OperationsApiStub api = new OperationsApiStub();
+                ConfigurableApplicationContext context = start(Map.ofEntries(
+                        Map.entry("jt.gateway.tcp.enabled", "true"),
+                        Map.entry("jt.gateway.tcp.bind-address", "127.0.0.1"),
+                        Map.entry("jt.gateway.tcp.port", Integer.toString(devicePort)),
+                        Map.entry("jt.gateway.operations-api.base-url", api.baseUrl()),
+                        Map.entry("jt.gateway.service-credential.version", "3"),
+                        Map.entry("jt.gateway.service-credential.plaintext", SERVICE_CREDENTIAL),
+                        Map.entry("jt.gateway.instance", "runtime-dual-device-test"),
+                        Map.entry("jt.gateway.dispatch.initial-delay", "600000"),
+                        Map.entry("spring.datasource.url",
+                                "jdbc:h2:mem:runtime_dual_device;MODE=PostgreSQL;DB_CLOSE_DELAY=-1"),
+                        Map.entry("spring.datasource.username", "sa"),
+                        Map.entry("spring.datasource.password", "")))) {
+            TerminalSessionRegistry sessions = context.getBean(TerminalSessionRegistry.class);
+            try (SimulatedTerminal dispatch = new SimulatedTerminal(
+                    TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, "VEHICLE-A", "SYNTH", "D", "DSP001");
+                    SimulatedTerminal recorder = new SimulatedTerminal(
+                            RECORDER_IDENTITY, ProtocolVersion.JT808_2013, "VEHICLE-A", "SYNTH", "R", "REC001")) {
+                authenticate(dispatch, devicePort);
+                authenticate(recorder, devicePort);
+
+                await(() -> sessions.current(TERMINAL_ID).isPresent()
+                        && sessions.current(RECORDER_TERMINAL_ID).isPresent(), Duration.ofSeconds(3));
+                assertTrue(sessions.current(TERMINAL_ID).isPresent());
+                assertTrue(sessions.current(RECORDER_TERMINAL_ID).isPresent());
+                assertEquals(2, api.distinctRegisteredTerminalIds());
+
+                dispatch.disconnect();
+                await(() -> sessions.current(TERMINAL_ID).isEmpty(), Duration.ofSeconds(3));
+                assertTrue(sessions.current(RECORDER_TERMINAL_ID).isPresent(),
+                        "disconnecting dispatch must not evict the recorder session");
+            }
+        }
+    }
+
+    @Test
+    void recordsRoleViolationWithoutCreatingAttachmentMetadataForSyntheticDispatchTerminal() throws Exception {
+        // Mutation caught: allowing a non-VIDEO device to register attachment metadata as business data.
+        int devicePort = freeLoopbackPort();
+        try (OperationsApiStub api = new OperationsApiStub();
+                ConfigurableApplicationContext context = start(Map.ofEntries(
+                        Map.entry("jt.gateway.tcp.enabled", "true"),
+                        Map.entry("jt.gateway.tcp.bind-address", "127.0.0.1"),
+                        Map.entry("jt.gateway.tcp.port", Integer.toString(devicePort)),
+                        Map.entry("jt.gateway.operations-api.base-url", api.baseUrl()),
+                        Map.entry("jt.gateway.service-credential.version", "3"),
+                        Map.entry("jt.gateway.service-credential.plaintext", SERVICE_CREDENTIAL),
+                        Map.entry("jt.gateway.instance", "runtime-role-violation-test"),
+                        Map.entry("jt.gateway.dispatch.fixed-delay", "25"),
+                        Map.entry("spring.datasource.url",
+                                "jdbc:h2:mem:runtime_role_violation;MODE=PostgreSQL;DB_CLOSE_DELAY=-1"),
+                        Map.entry("spring.datasource.username", "sa"),
+                        Map.entry("spring.datasource.password", "")))) {
+            try (SimulatedTerminal dispatch = new SimulatedTerminal(
+                    TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, "VEHICLE-A")) {
+                authenticate(dispatch, devicePort);
+                dispatch.sendFrame(0x1206, new byte[] {0, 1, 0});
+                SimulatedTerminal.ReplyRecord reply = dispatch.awaitReply(Duration.ofSeconds(3));
+                assertNotNull(reply);
+                assertEquals(0, reply.result());
+
+                await(() -> api.protocolAuditReasons().contains("DEVICE_ROLE_VIOLATION"),
+                        Duration.ofSeconds(5));
+                assertEquals(List.of("PROTOCOL_AUDIT"), api.ingressKinds());
+                assertEquals(List.of("DEVICE_ROLE_VIOLATION"), api.protocolAuditReasons());
+            }
+        }
     }
 
     @Test
@@ -679,6 +757,20 @@ class JtGatewayRuntimeIntegrationTest {
         }
     }
 
+    private static void authenticate(SimulatedTerminal terminal, int devicePort) {
+        terminal.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), devicePort));
+        terminal.sendRegistration();
+        SimulatedTerminal.ReplyRecord registration = terminal.awaitReply(Duration.ofSeconds(3));
+        assertNotNull(registration);
+        assertEquals(0x8100, registration.messageId());
+        assertEquals(0, registration.result());
+        terminal.sendAuthentication();
+        SimulatedTerminal.ReplyRecord authentication = terminal.awaitReply(Duration.ofSeconds(3));
+        assertNotNull(authentication);
+        assertEquals(0x8001, authentication.messageId());
+        assertEquals(0, authentication.result());
+    }
+
     private static String fileDatabaseUrl(Path database) {
         return "jdbc:h2:file:" + database.toAbsolutePath().toString().replace('\\', '/')
                 + ";MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE";
@@ -814,24 +906,28 @@ class JtGatewayRuntimeIntegrationTest {
         private final CountDownLatch probeBlocked = new CountDownLatch(1);
         private final CountDownLatch releaseProbe = new CountDownLatch(1);
         private final CountDownLatch ingressReceived = new CountDownLatch(1);
-        private volatile String registeredTokenDigest;
+        private final Map<UUID, String> registeredTokenDigests = new ConcurrentHashMap<>();
 
         private OperationsApiStub() throws IOException {
             server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-            server.createContext("/internal/jt-gateway/registrations/verify", exchange -> respond(
-                    exchange, 200, approvedRegistrationResponse()));
+            server.createContext("/internal/jt-gateway/registrations/verify", exchange -> {
+                JsonNode request = read(exchange);
+                respond(exchange, 200, approvedRegistrationResponse(contextFor(
+                        request.required("terminalPhone").asText())));
+            });
             server.createContext("/internal/jt-gateway/registrations/", exchange -> {
                 JsonNode request = read(exchange);
-                registeredTokenDigest = request.required("tokenSha256").asText();
+                UUID terminalId = terminalIdFromCompletionPath(exchange.getRequestURI().getPath());
+                registeredTokenDigests.put(terminalId, request.required("tokenSha256").asText());
                 respond(exchange, 200, "{\"data\":{\"completed\":true}}");
             });
             server.createContext("/internal/jt-gateway/authentications/verify", exchange -> {
                 JsonNode request = read(exchange);
-                boolean approved = registeredTokenDigest != null
-                        && registeredTokenDigest.equals(request.required("tokenSha256").asText())
-                        && TERMINAL_ID.toString().equals(request.required("terminalId").asText())
+                UUID terminalId = UUID.fromString(request.required("terminalId").asText());
+                boolean approved = registeredTokenDigests.containsKey(terminalId)
+                        && registeredTokenDigests.get(terminalId).equals(request.required("tokenSha256").asText())
                         && request.required("tokenVersion").asInt() == 3;
-                respond(exchange, 200, authenticationResponse(approved));
+                respond(exchange, 200, authenticationResponse(approved, contextFor(terminalId)));
             });
             server.createContext("/internal/jt-gateway/audit-events", exchange -> {
                 JsonNode request = read(exchange);
@@ -879,28 +975,29 @@ class JtGatewayRuntimeIntegrationTest {
             server.start();
         }
 
-        private static String approvedRegistrationResponse() {
+        private static String approvedRegistrationResponse(DeviceContext context) {
             return """
                     {"data":{"approved":true,
-                     "terminalId":"44444444-4444-4444-4444-444444444444",
+                     "terminalId":"%s",
                      "onboardSystemId":"66666666-6666-6666-6666-666666666666",
                      "vehicleId":"55555555-5555-5555-5555-555555555555",
-                     "roles":["LOCATION_PRIMARY","ACTIVE_SAFETY"],
+                     "roles":%s,
                      "sourceCoordinateSystem":"WGS84",
                      "activeSafetyStandard":"T/JSATL12-2017",
                      "activeSafetyModules":["ADAS"],"tokenVersion":3,
-                     "context":{"terminalId":"44444444-4444-4444-4444-444444444444",
+                     "context":{"terminalId":"%s",
                       "onboardSystemId":"66666666-6666-6666-6666-666666666666",
                       "vehicleId":"55555555-5555-5555-5555-555555555555",
-                      "roles":["LOCATION_PRIMARY","ACTIVE_SAFETY"],
+                      "roles":%s,
                       "sourceCoordinateSystem":"WGS84",
                       "activeSafetyStandard":"T/JSATL12-2017",
                       "activeSafetyModules":["ADAS"],"tokenVersion":3},
                      "warnings":[],"reasonCode":null}}
-                    """;
+                    """.formatted(context.terminalId(), context.rolesJson(),
+                    context.terminalId(), context.rolesJson());
         }
 
-        private static String authenticationResponse(boolean approved) {
+        private static String authenticationResponse(boolean approved, DeviceContext context) {
             if (!approved) {
                 return "{\"data\":{\"approved\":false,"
                         + "\"context\":null,"
@@ -908,15 +1005,34 @@ class JtGatewayRuntimeIntegrationTest {
             }
             return """
                     {"data":{"approved":true,
-                     "context":{"terminalId":"44444444-4444-4444-4444-444444444444",
+                     "context":{"terminalId":"%s",
                       "onboardSystemId":"66666666-6666-6666-6666-666666666666",
                       "vehicleId":"55555555-5555-5555-5555-555555555555",
-                      "roles":["LOCATION_PRIMARY","ACTIVE_SAFETY"],
+                      "roles":%s,
                       "sourceCoordinateSystem":"WGS84",
                       "activeSafetyStandard":"T/JSATL12-2017",
                       "activeSafetyModules":["ADAS"],"tokenVersion":3},
                      "reasonCode":null}}
-                    """;
+                    """.formatted(context.terminalId(), context.rolesJson());
+        }
+
+        private static DeviceContext contextFor(String terminalPhone) {
+            return RECORDER_IDENTITY.equals(terminalPhone)
+                    ? new DeviceContext(RECORDER_TERMINAL_ID,
+                    "[\"LOCATION_BACKUP\",\"ACTIVE_SAFETY\",\"VIDEO\"]")
+                    : new DeviceContext(TERMINAL_ID, "[\"LOCATION_PRIMARY\",\"ACTIVE_SAFETY\"]");
+        }
+
+        private static DeviceContext contextFor(UUID terminalId) {
+            return RECORDER_TERMINAL_ID.equals(terminalId)
+                    ? contextFor(RECORDER_IDENTITY)
+                    : contextFor(TERMINAL_IDENTITY);
+        }
+
+        private static UUID terminalIdFromCompletionPath(String path) {
+            String prefix = "/internal/jt-gateway/registrations/";
+            String terminalId = path.substring(prefix.length(), path.lastIndexOf("/complete"));
+            return UUID.fromString(terminalId);
         }
 
         private String baseUrl() {
@@ -925,6 +1041,27 @@ class JtGatewayRuntimeIntegrationTest {
 
         private int ingressCount() {
             return ingress.size();
+        }
+
+        private int distinctRegisteredTerminalIds() {
+            return registeredTokenDigests.size();
+        }
+
+        private List<String> ingressKinds() {
+            return ingress.stream().map(envelope -> envelope.required("kind").asText()).toList();
+        }
+
+        private List<String> protocolAuditReasons() {
+            return ingress.stream()
+                    .filter(envelope -> "PROTOCOL_AUDIT".equals(envelope.required("kind").asText()))
+                    .map(envelope -> {
+                        try {
+                            return mapper.readTree(envelope.required("payloadJson").asText())
+                                    .required("reasonCode").asText();
+                        } catch (IOException malformed) {
+                            throw new IllegalStateException(malformed);
+                        }
+                    }).toList();
         }
 
         private int probeCount() {
@@ -969,7 +1106,7 @@ class JtGatewayRuntimeIntegrationTest {
 
         private String diagnostic() {
             return "paths=" + requestPaths + ", authenticated=" + authenticated
-                    + ", completionRecorded=" + (registeredTokenDigest != null);
+                    + ", completionRecorded=" + !registeredTokenDigests.isEmpty();
         }
 
         private JsonNode read(HttpExchange exchange) throws IOException {
@@ -1009,5 +1146,7 @@ class JtGatewayRuntimeIntegrationTest {
             server.stop(0);
             httpWorkers.shutdownNow();
         }
+
+        private record DeviceContext(UUID terminalId, String rolesJson) { }
     }
 }

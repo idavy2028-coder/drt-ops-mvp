@@ -17,7 +17,9 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -39,6 +41,7 @@ public final class SimulatedTerminal implements AutoCloseable {
     private final String model;
     private final String terminalCode;
     private final String maskedAlias;
+    private final UUID connectionId = UUID.randomUUID();
     private final AtomicInteger serialNumbers = new AtomicInteger();
     private final BlockingQueue<ReplyRecord> replies = new LinkedBlockingQueue<>();
     private final CountDownLatch peerClosed = new CountDownLatch(1);
@@ -47,6 +50,7 @@ public final class SimulatedTerminal implements AutoCloseable {
     private OutputStream output;
     private Thread reader;
     private volatile byte[] registrationToken = new byte[0];
+    private ConnectionState connectionState = ConnectionState.NEW;
 
     public SimulatedTerminal(String identity, ProtocolVersion protocolVersion, String plateNumber) {
         this(identity, protocolVersion, plateNumber, "SIMMF", "SIM-MODEL", "SIM0001");
@@ -80,18 +84,27 @@ public final class SimulatedTerminal implements AutoCloseable {
         return protocolVersion;
     }
 
+    /** Synthetic physical-connection identifier; it never exposes terminal identity or credentials. */
+    public UUID connectionId() {
+        return connectionId;
+    }
+
     public synchronized void connect(InetSocketAddress endpoint) {
-        if (socket != null) {
-            throw new IllegalStateException("terminal is already connected");
+        if (connectionState != ConnectionState.NEW) {
+            throw new IllegalStateException("terminal connection is single-use and already closed or connected");
         }
+        Socket connected = new Socket();
         try {
-            socket = new Socket();
-            socket.connect(endpoint, 2_000);
-            output = socket.getOutputStream();
+            connected.connect(endpoint, 2_000);
+            socket = connected;
+            output = connected.getOutputStream();
+            connectionState = ConnectionState.CONNECTED;
         } catch (IOException unreachable) {
+            try { connected.close(); } catch (IOException ignored) { }
+            connectionState = ConnectionState.CLOSED;
             throw new IllegalStateException("cannot connect to the platform endpoint", unreachable);
         }
-        reader = new Thread(this::readLoop, "jt-sim-reader");
+        reader = new Thread(() -> readLoop(connected), "jt-sim-reader");
         reader.setDaemon(true);
         reader.start();
     }
@@ -217,15 +230,37 @@ public final class SimulatedTerminal implements AutoCloseable {
         }
     }
 
-    public synchronized void disconnect() {
-        if (socket != null) {
+    public void disconnect() {
+        Socket connected;
+        Thread readerToJoin;
+        synchronized (this) {
+            if (connectionState == ConnectionState.CLOSED) {
+                return;
+            }
+            connectionState = ConnectionState.CLOSED;
+            connected = socket;
+            socket = null;
+            output = null;
+            readerToJoin = reader;
+            reader = null;
+            clearSessionState();
+        }
+        if (connected != null) {
             try {
-                socket.close();
+                connected.close();
             } catch (IOException ignored) {
                 // Closing a simulated terminal must never fail the scenario runner.
             }
-            socket = null;
-            output = null;
+        }
+        if (readerToJoin != null && readerToJoin != Thread.currentThread()) {
+            try {
+                readerToJoin.join(500);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        synchronized (this) {
+            clearSessionState();
         }
     }
 
@@ -250,10 +285,10 @@ public final class SimulatedTerminal implements AutoCloseable {
         }
     }
 
-    private void readLoop() {
+    private void readLoop(Socket connected) {
         EmbeddedChannel decoder = new EmbeddedChannel(new Jt808FrameDecoder());
         try {
-            InputStream input = socket.getInputStream();
+            InputStream input = connected.getInputStream();
             byte[] chunk = new byte[1024];
             int read;
             while ((read = input.read(chunk)) >= 0) {
@@ -262,7 +297,16 @@ public final class SimulatedTerminal implements AutoCloseable {
                 while ((decoded = decoder.readInbound()) != null) {
                     Jt808Frame frame = (Jt808Frame) decoded;
                     try {
-                        replies.add(toReplyRecord(frame));
+                        DecodedReply reply = decodeReply(frame);
+                        synchronized (this) {
+                            if (connectionState == ConnectionState.CONNECTED && socket == connected) {
+                                if (reply.registrationToken() != null) {
+                                    Arrays.fill(registrationToken, (byte) 0);
+                                    registrationToken = reply.registrationToken();
+                                }
+                                replies.add(reply.reply());
+                            }
+                        }
                     } finally {
                         if (frame.body().refCnt() > 0) {
                             frame.body().release();
@@ -278,7 +322,7 @@ public final class SimulatedTerminal implements AutoCloseable {
         }
     }
 
-    private ReplyRecord toReplyRecord(Jt808Frame frame) {
+    private DecodedReply decodeReply(Jt808Frame frame) {
         ByteBuf body = frame.body().duplicate();
         byte[] bytes = new byte[body.readableBytes()];
         body.readBytes(bytes);
@@ -286,21 +330,28 @@ public final class SimulatedTerminal implements AutoCloseable {
         if (messageId == 0x8001 && bytes.length >= 5) {
             int requestSerial = ((bytes[0] & 0xff) << 8) | (bytes[1] & 0xff);
             int requestMessageId = ((bytes[2] & 0xff) << 8) | (bytes[3] & 0xff);
-            return new ReplyRecord(messageId, requestMessageId, bytes[4] & 0xff, requestSerial,
-                    HexFormat.of().formatHex(bytes));
+            return new DecodedReply(new ReplyRecord(messageId, requestMessageId, bytes[4] & 0xff, requestSerial,
+                    HexFormat.of().formatHex(bytes)), null);
         }
         if (messageId == 0x8100 && bytes.length >= 3) {
             int requestSerial = ((bytes[0] & 0xff) << 8) | (bytes[1] & 0xff);
             int result = bytes[2] & 0xff;
+            byte[] token = null;
             if (result == 0 && bytes.length > 3) {
-                byte[] token = new byte[bytes.length - 3];
+                token = new byte[bytes.length - 3];
                 System.arraycopy(bytes, 3, token, 0, token.length);
-                registrationToken = token;
             }
-            return new ReplyRecord(messageId, 0x0100, result, requestSerial, HexFormat.of().formatHex(bytes));
+            return new DecodedReply(new ReplyRecord(
+                    messageId, 0x0100, result, requestSerial, HexFormat.of().formatHex(bytes)), token);
         }
-        return new ReplyRecord(messageId, null, -1, frame.header().serialNumber(),
-                HexFormat.of().formatHex(bytes));
+        return new DecodedReply(new ReplyRecord(messageId, null, -1, frame.header().serialNumber(),
+                HexFormat.of().formatHex(bytes)), null);
+    }
+
+    private void clearSessionState() {
+        Arrays.fill(registrationToken, (byte) 0);
+        registrationToken = new byte[0];
+        replies.clear();
     }
 
     private static void writeFixed(ByteBuf target, String value, int length, Charset charset) {
@@ -318,4 +369,8 @@ public final class SimulatedTerminal implements AutoCloseable {
      */
     public record ReplyRecord(
             int messageId, Integer requestMessageId, int result, int requestSerialNo, String bodyHex) { }
+
+    private record DecodedReply(ReplyRecord reply, byte[] registrationToken) { }
+
+    private enum ConnectionState { NEW, CONNECTED, CLOSED }
 }

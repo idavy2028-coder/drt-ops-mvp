@@ -8,10 +8,14 @@ import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Executes a parsed scenario against a live endpoint. Every protocol step requires the honest
@@ -26,29 +30,85 @@ public final class ScenarioRunner {
             "attachmentInfo", 0x1210,
             "fileUploadCompleteNotification", 0x1206);
 
-    private final Scenario scenario;
+    private Scenario scenario;
     private final InetSocketAddress endpoint;
     private final Map<String, SimulatedTerminal> connections = new LinkedHashMap<>();
+    private final Map<String, Scenario.TerminalDefinition> terminalDefinitions = new LinkedHashMap<>();
     private final List<ScenarioReport.StepRecord> steps = new ArrayList<>();
     private final List<ScenarioReport.ReplyRecord> replies = new ArrayList<>();
+    private final Set<String> authenticatedAliases = new LinkedHashSet<>();
+    private final List<String> completedMultiSteps = new ArrayList<>();
     private final Map<String, byte[]> fixtureBodies;
+    private final ScenarioControl control;
+    private final AtomicReference<InstanceRunState> instanceRunState =
+            new AtomicReference<>(InstanceRunState.NEW);
     private String currentConnection;
     private boolean failed;
 
-    private ScenarioRunner(Scenario scenario, InetSocketAddress endpoint, Map<String, byte[]> fixtureBodies) {
+    private ScenarioRunner(
+            Scenario scenario,
+            InetSocketAddress endpoint,
+            Map<String, byte[]> fixtureBodies,
+            ScenarioControl control) {
         this.scenario = scenario;
         this.endpoint = endpoint;
         this.fixtureBodies = fixtureBodies;
+        this.control = control;
+    }
+
+    /** Test-only multi-device entry point. Control-plane steps are unavailable unless supplied. */
+    public ScenarioRunner(InetSocketAddress endpoint, ScenarioControl control) {
+        this(null, Objects.requireNonNull(endpoint, "endpoint"), loadFixtures(),
+                Objects.requireNonNull(control, "control"));
+    }
+
+    /** Wire-only instance entry point; control-plane steps still fail closed. */
+    public ScenarioRunner(InetSocketAddress endpoint) {
+        this(null, Objects.requireNonNull(endpoint, "endpoint"), loadFixtures(), null);
     }
 
     public static ScenarioReport run(Scenario scenario, InetSocketAddress endpoint) {
         Objects.requireNonNull(scenario, "scenario");
         Objects.requireNonNull(endpoint, "endpoint");
-        ScenarioRunner runner = new ScenarioRunner(scenario, endpoint, loadFixtures());
-        return runner.execute();
+        ScenarioRunner runner = new ScenarioRunner(scenario, endpoint, loadFixtures(), null);
+        return runner.executeReport();
     }
 
-    private ScenarioReport execute() {
+    /** Runs a multi-device scenario and returns its non-sensitive aggregate test result. */
+    public Scenario.ScenarioResult run(Scenario scenario) {
+        Objects.requireNonNull(scenario, "scenario");
+        if (!scenario.multiTerminal()) {
+            throw new IllegalArgumentException("multi-device runner requires a multi-terminal scenario");
+        }
+        if (!instanceRunState.compareAndSet(InstanceRunState.NEW, InstanceRunState.RUNNING)) {
+            throw new IllegalStateException("instance runner is single-use and cannot run again");
+        }
+        try {
+            this.scenario = scenario;
+            executeMulti(false);
+            if (failed) {
+                throw new IllegalStateException("multi-device scenario failed; no partial result is available");
+            }
+            return multiResult();
+        } finally {
+            instanceRunState.set(InstanceRunState.FINISHED);
+        }
+    }
+
+    /** Exposes the synthetic per-instance connection identifier to a test control adapter. */
+    public UUID connectionId(String terminalAlias) {
+        SimulatedTerminal terminal = connections.get(terminalAlias);
+        if (terminal == null) {
+            throw new IllegalArgumentException("no such terminal alias: " + terminalAlias);
+        }
+        return terminal.connectionId();
+    }
+
+    private ScenarioReport executeReport() {
+        if (scenario.multiTerminal()) {
+            executeMulti(true);
+            return new ScenarioReport(scenario.name(), "multiple-terminals", steps, replies);
+        }
         String identity = scenario.terminal().identity();
         String alias = "****" + identity.substring(Math.max(0, identity.length() - 4));
         try {
@@ -66,6 +126,162 @@ public final class ScenarioRunner {
             connections.values().forEach(SimulatedTerminal::close);
         }
         return new ScenarioReport(scenario.name(), alias, steps, replies);
+    }
+
+    private void executeMulti(boolean includeReport) {
+        terminalDefinitions.clear();
+        scenario.terminals().forEach(terminal -> terminalDefinitions.put(terminal.alias(), terminal));
+        try {
+            for (int index = 0; index < scenario.scenarioSteps().size(); index++) {
+                Scenario.ScenarioStep step = scenario.scenarioSteps().get(index);
+                if (failed) {
+                    if (includeReport) {
+                        steps.add(new ScenarioReport.StepRecord(index, step.action().name(), step.terminalAlias(),
+                                ScenarioReport.Outcome.SKIP, "skipped after the first failed step"));
+                    }
+                    continue;
+                }
+                executeMultiStep(index, step, includeReport);
+            }
+        } finally {
+            connections.values().forEach(SimulatedTerminal::close);
+        }
+    }
+
+    private void executeMultiStep(int index, Scenario.ScenarioStep step, boolean includeReport) {
+        try {
+            String detail = switch (step.action()) {
+                case CONNECT -> connect(step.terminalAlias());
+                case REGISTER -> register(multiConnection(step));
+                case AUTHENTICATE -> authenticate(step.terminalAlias(), multiConnection(step));
+                case LOCATION -> location(multiConnection(step));
+                case DISCONNECT -> disconnect(multiConnection(step));
+                case ADVANCE_CLOCK -> advanceClock(step);
+                case EXPECT_ACTIVE_SOURCE -> expectActiveSource(step);
+                case CHANGE_WAN_UPLINK -> changeWanUplink(step);
+            };
+            completedMultiSteps.add(step.action().name());
+            if (includeReport) {
+                steps.add(new ScenarioReport.StepRecord(index, step.action().name(), step.terminalAlias(),
+                        ScenarioReport.Outcome.PASS, detail));
+            }
+        } catch (StepFailure failure) {
+            failed = true;
+            if (includeReport) {
+                steps.add(new ScenarioReport.StepRecord(index, step.action().name(), step.terminalAlias(),
+                        ScenarioReport.Outcome.FAIL, failure.getMessage()));
+            }
+        } catch (RuntimeException unexpected) {
+            failed = true;
+            if (includeReport) {
+                steps.add(new ScenarioReport.StepRecord(index, step.action().name(), step.terminalAlias(),
+                        ScenarioReport.Outcome.FAIL, unexpected.getClass().getSimpleName() + ": " + unexpected.getMessage()));
+            }
+        }
+    }
+
+    private String connect(String alias) {
+        if (connections.containsKey(alias)) {
+            throw new StepFailure("terminal is already connected: " + alias);
+        }
+        Scenario.TerminalDefinition definition = terminalDefinitions.get(alias);
+        if (definition == null) {
+            throw new StepFailure("no such terminal alias: " + alias);
+        }
+        SimulatedTerminal terminal = new SimulatedTerminal(
+                definition.terminalIdentity(), definition.protocolVersion(), definition.vehicleIdentifier(),
+                "SIMMF", "SIM-MODEL", definition.terminalCode());
+        try {
+            terminal.connect(endpoint);
+        } catch (RuntimeException unreachable) {
+            terminal.close();
+            throw new StepFailure("connect failed: " + unreachable.getMessage());
+        }
+        connections.put(alias, terminal);
+        return "connected as " + alias;
+    }
+
+    private String register(SimulatedTerminal terminal) {
+        int serial = terminal.sendRegistration();
+        SimulatedTerminal.ReplyRecord reply = awaitReply(terminal, DEFAULT_REPLY_TIMEOUT);
+        if (reply == null || reply.messageId() != 0x8100 || reply.result() != 0) {
+            throw new StepFailure("registration was not accepted (serial " + serial + ")");
+        }
+        return "registered";
+    }
+
+    private String authenticate(String alias, SimulatedTerminal terminal) {
+        int serial = terminal.sendAuthentication();
+        SimulatedTerminal.ReplyRecord reply = awaitReply(terminal, DEFAULT_REPLY_TIMEOUT);
+        if (reply == null || reply.messageId() != 0x8001 || reply.result() != 0
+                || reply.requestMessageId() == null || reply.requestMessageId() != 0x0102
+                || reply.requestSerialNo() != serial) {
+            throw new StepFailure("authentication was not accepted (serial " + serial + ")");
+        }
+        authenticatedAliases.add(alias);
+        return "authenticated";
+    }
+
+    private String location(SimulatedTerminal terminal) {
+        int serial = terminal.sendPosition();
+        SimulatedTerminal.ReplyRecord reply = awaitReply(terminal, DEFAULT_REPLY_TIMEOUT);
+        if (reply == null || reply.messageId() != 0x8001 || reply.result() != 0
+                || reply.requestMessageId() == null || reply.requestMessageId() != 0x0200
+                || reply.requestSerialNo() != serial) {
+            throw new StepFailure("location was not acknowledged with success (serial " + serial + ")");
+        }
+        return "location acknowledged";
+    }
+
+    private String disconnect(SimulatedTerminal terminal) {
+        terminal.disconnect();
+        return "disconnected";
+    }
+
+    private String advanceClock(Scenario.ScenarioStep step) {
+        requireControl().advanceClock(step);
+        return "clock advanced by " + step.millis() + " ms";
+    }
+
+    private String expectActiveSource(Scenario.ScenarioStep step) {
+        requireControl().expectActiveSource(step);
+        return "active source asserted";
+    }
+
+    private String changeWanUplink(Scenario.ScenarioStep step) {
+        requireControl().changeWanUplink(step);
+        return "WAN uplink changed";
+    }
+
+    private ScenarioControl requireControl() {
+        if (control == null) {
+            throw new StepFailure("control adapter is required for control-plane steps");
+        }
+        return control;
+    }
+
+    private SimulatedTerminal multiConnection(Scenario.ScenarioStep step) {
+        SimulatedTerminal terminal = connections.get(step.terminalAlias());
+        if (terminal == null) {
+            throw new StepFailure("no connected terminal alias: " + step.terminalAlias());
+        }
+        return terminal;
+    }
+
+    private SimulatedTerminal.ReplyRecord awaitReply(SimulatedTerminal terminal, Duration timeout) {
+        SimulatedTerminal.ReplyRecord reply = terminal.awaitReply(timeout);
+        if (reply != null) {
+            record(reply);
+        }
+        return reply;
+    }
+
+    private Scenario.ScenarioResult multiResult() {
+        Set<String> vehicleIdentifiers = scenario.terminals().stream()
+                .map(Scenario.TerminalDefinition::vehicleIdentifier)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return new Scenario.ScenarioResult(connections.size(), Set.copyOf(authenticatedAliases),
+                vehicleIdentifiers, List.copyOf(completedMultiSteps));
     }
 
     private void execute(int index, Scenario.Step step) {
@@ -319,4 +535,13 @@ public final class ScenarioRunner {
             super(message);
         }
     }
+
+    /** Narrow test adapter for stateful onboard control assertions; live runs fail closed without it. */
+    public interface ScenarioControl {
+        void advanceClock(Scenario.ScenarioStep step);
+        void expectActiveSource(Scenario.ScenarioStep step);
+        void changeWanUplink(Scenario.ScenarioStep step);
+    }
+
+    private enum InstanceRunState { NEW, RUNNING, FINISHED }
 }
