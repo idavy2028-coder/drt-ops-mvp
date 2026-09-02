@@ -101,8 +101,8 @@ docs-only commit 使 worktree 回到 clean；该 planning commit 不计入 6 个
 **文件：**
 
 - 新建： `apps/api/src/main/resources/db/migration/V21__repair_composite_onboard_runtime_authority.sql`
-- 修改： `apps/api/src/test/java/com/idavy/drtops/P6CompositeOnboardSystemMigrationTest.java`
-- 修改： `apps/api/src/test/java/com/idavy/drtops/DatabaseMigrationTest.java`
+- 修改： `apps/api/src/test/java/com/idavy/drtops/P6CompositeOnboardSystemMigrationTest.java`（external PostgreSQL 功能行为）
+- 修改： `apps/api/src/test/java/com/idavy/drtops/DatabaseMigrationTest.java`（真实 Flyway head/schema smoke，不读取 V21 源码）
 
 **接口：**
 
@@ -118,39 +118,187 @@ docs-only commit 使 worktree 回到 clean；该 planning commit 不计入 6 个
 
 ```java
 @Test
-void v21AddsLeaseRuntimeClocksAndAlarmProvenanceWithoutRewritingHistory()
+void v21CreatesLeaseRuntimeAndAlarmSchemaWithEnforcedCatalogContracts()
         throws Exception {
     ExternalPostgres postgres = externalPostgres();
-    String schema = schema("v21_additive_authority");
+    String schema = schema("v21_catalog_contract");
     flyway(postgres, schema, "20").migrate();
-
-    UUID auditId = UUID.randomUUID();
-    UUID auditEntityId = UUID.randomUUID();
+    UUID terminalId;
     try (Connection connection = connection(postgres, schema)) {
-        execute(connection, """
-                insert into audit_logs(
-                    id, entity_type, entity_id, action, actor_type, actor_id,
-                    reason, metadata_json, created_at
-                ) values (?, 'JT_TERMINAL', ?, 'JT_TERMINAL_REPLACED',
-                    'SYSTEM', 'migration-test', 'sentinel',
-                    '{"sentinel":"unchanged"}'::jsonb, now())
-                """, auditId, auditEntityId);
+        terminalId = insertTerminal(
+                connection, "013800000094", "T-V21-LEASE");
     }
 
     flyway(postgres, schema, "21").migrate();
 
     try (Connection connection = connection(postgres, schema)) {
-        assertThat(tableExists(connection, "jt_terminal_session_leases")).isTrue();
-        assertThat(columnExists(connection, "onboard_system_runtime_state",
-                "last_primary_valid_gateway_received_at")).isTrue();
-        assertThat(columnExists(connection, "onboard_system_runtime_state",
-                "primary_terminal_cursor_at")).isTrue();
-        assertThat(columnExists(connection, "onboard_system_runtime_state",
-                "backup_terminal_cursor_at")).isTrue();
-        assertThat(columnExists(connection, "vehicle_alarms", "onboard_system_id")).isTrue();
-        assertThat(queryText(connection,
-                "select metadata_json::text from audit_logs where id = ?", auditId))
-                .contains("\"sentinel\": \"unchanged\"");
+        assertThat(tableExists(
+                connection, "jt_terminal_session_leases")).isTrue();
+        assertThat(columnNames(
+                connection, "jt_terminal_session_leases"))
+                .containsExactly(
+                        "terminal_id",
+                        "gateway_instance",
+                        "connection_id",
+                        "token_version",
+                        "lease_generation",
+                        "authenticated_at",
+                        "last_valid_message_at",
+                        "expires_at",
+                        "released_at",
+                        "release_reason",
+                        "updated_at",
+                        "version");
+        assertThat(columnMetadata(
+                connection,
+                "onboard_system_runtime_state",
+                "last_primary_valid_gateway_received_at"))
+                .isEqualTo(new ColumnMetadata(
+                        "timestamp with time zone", "YES"));
+        assertThat(columnMetadata(
+                connection,
+                "onboard_system_runtime_state",
+                "primary_terminal_cursor_at"))
+                .isEqualTo(new ColumnMetadata(
+                        "timestamp with time zone", "YES"));
+        assertThat(columnMetadata(
+                connection,
+                "onboard_system_runtime_state",
+                "backup_terminal_cursor_at"))
+                .isEqualTo(new ColumnMetadata(
+                        "timestamp with time zone", "YES"));
+        assertThat(columnMetadata(
+                connection, "vehicle_alarms", "onboard_system_id"))
+                .isEqualTo(new ColumnMetadata("uuid", "YES"));
+
+        assertThat(constraintNames(
+                connection, "jt_terminal_session_leases"))
+                .contains(
+                        "jt_terminal_session_leases_pkey",
+                        "jt_terminal_session_leases_terminal_id_fkey",
+                        "ck_jt_terminal_session_leases_token_version",
+                        "ck_jt_terminal_session_leases_generation",
+                        "ck_jt_terminal_session_leases_expiry",
+                        "ck_jt_terminal_session_leases_release",
+                        "ck_jt_terminal_session_leases_release_reason");
+        assertThat(constraintNames(connection, "vehicle_alarms"))
+                .contains("vehicle_alarms_onboard_system_id_fkey");
+        assertThat(indexDefinitions(
+                connection, "jt_terminal_session_leases").get(
+                        "idx_jt_terminal_session_leases_live_expiry"))
+                .contains(
+                        "(expires_at)",
+                        "WHERE (released_at IS NULL)");
+        assertThat(indexDefinitions(
+                connection, "vehicle_alarms").get(
+                        "idx_vehicle_alarms_onboard_system_received"))
+                .contains(
+                        "(onboard_system_id, gateway_received_at DESC)",
+                        "WHERE (onboard_system_id IS NOT NULL)");
+
+        assertInvalidLease(
+                connection,
+                UUID.randomUUID(),
+                1,
+                1,
+                "2026-09-02T00:00:00Z",
+                "2026-09-02T00:03:00Z",
+                null,
+                null,
+                "jt_terminal_session_leases_terminal_id_fkey");
+        assertInvalidLease(
+                connection,
+                terminalId,
+                0,
+                1,
+                "2026-09-02T00:00:00Z",
+                "2026-09-02T00:03:00Z",
+                null,
+                null,
+                "ck_jt_terminal_session_leases_token_version");
+        assertInvalidLease(
+                connection,
+                terminalId,
+                1,
+                0,
+                "2026-09-02T00:00:00Z",
+                "2026-09-02T00:03:00Z",
+                null,
+                null,
+                "ck_jt_terminal_session_leases_generation");
+        assertInvalidLease(
+                connection,
+                terminalId,
+                1,
+                1,
+                "2026-09-02T00:00:00Z",
+                "2026-09-02T00:00:00Z",
+                null,
+                null,
+                "ck_jt_terminal_session_leases_expiry");
+        assertInvalidLease(
+                connection,
+                terminalId,
+                1,
+                1,
+                "2026-09-02T00:00:00Z",
+                "2026-09-02T00:03:00Z",
+                "2026-09-02T00:01:00Z",
+                null,
+                "ck_jt_terminal_session_leases_release");
+
+        insertValidLease(connection, terminalId);
+        assertThat(queryCount(connection, """
+                select count(*)
+                from jt_terminal_session_leases
+                where terminal_id = ?
+                  and token_version = 1
+                  and lease_generation = 1
+                  and released_at is null
+                """, terminalId)).isEqualTo(1);
+        assertConstraintViolation(
+                () -> insertValidLease(connection, terminalId),
+                "jt_terminal_session_leases_pkey");
+    }
+}
+
+@Test
+void v21PreservesAuditLegacyBindingAndAlarmSentinelRows()
+        throws Exception {
+    ExternalPostgres postgres = externalPostgres();
+    String schema = schema("v21_history_preserved");
+    flyway(postgres, schema, "19").migrate();
+    V21HistoryFixture fixture;
+    HistorySnapshot before;
+    try (Connection connection = connection(postgres, schema)) {
+        fixture = insertV21HistoryFixture(connection);
+        before = readHistorySnapshot(connection, fixture);
+    }
+    flyway(postgres, schema, "20").migrate();
+    flyway(postgres, schema, "21").migrate();
+
+    try (Connection connection = connection(postgres, schema)) {
+        assertThat(readHistorySnapshot(connection, fixture))
+                .isEqualTo(before);
+        assertThat(queryCount(connection, """
+                select count(*)
+                from audit_logs
+                where id = ?
+                  and metadata_json = '{"sentinel":"unchanged"}'::jsonb
+                """, fixture.auditId())).isEqualTo(1);
+        assertThat(queryCount(connection, """
+                select count(*)
+                from jt_terminal_vehicle_bindings
+                where id = ?
+                  and status = 'UNBOUND'
+                  and valid_to is not null
+                """, fixture.bindingId())).isEqualTo(1);
+        assertThat(queryCount(connection, """
+                select count(*)
+                from vehicle_alarms
+                where id = ?
+                  and onboard_system_id is null
+                """, fixture.alarmId())).isEqualTo(1);
     }
 }
 
@@ -178,15 +326,224 @@ void v21BackfillsSnapshotProvenanceOnlyFromTheExactCurrentEvent()
     }
 }
 
-private static boolean columnExists(
-        Connection connection, String tableName, String columnName) throws Exception {
-    return queryCount(connection, """
-            select count(*)
+private static ColumnMetadata columnMetadata(
+        Connection connection,
+        String tableName,
+        String columnName) throws Exception {
+    try (PreparedStatement query = connection.prepareStatement("""
+            select data_type, is_nullable
             from information_schema.columns
             where table_schema = current_schema()
               and table_name = ?
               and column_name = ?
-            """, tableName, columnName) == 1;
+            """)) {
+        query.setString(1, tableName);
+        query.setString(2, columnName);
+        try (ResultSet rows = query.executeQuery()) {
+            assertThat(rows.next()).isTrue();
+            ColumnMetadata metadata =
+                    new ColumnMetadata(rows.getString(1), rows.getString(2));
+            assertThat(rows.next()).isFalse();
+            return metadata;
+        }
+    }
+}
+
+private static List<String> constraintNames(
+        Connection connection, String tableName) throws Exception {
+    try (PreparedStatement query = connection.prepareStatement("""
+            select constraint_record.conname
+            from pg_constraint constraint_record
+            join pg_class table_record
+              on table_record.oid = constraint_record.conrelid
+            join pg_namespace namespace_record
+              on namespace_record.oid = table_record.relnamespace
+            where namespace_record.nspname = current_schema()
+              and table_record.relname = ?
+            order by constraint_record.conname
+            """)) {
+        query.setString(1, tableName);
+        try (ResultSet rows = query.executeQuery()) {
+            List<String> names = new ArrayList<>();
+            while (rows.next()) names.add(rows.getString(1));
+            return List.copyOf(names);
+        }
+    }
+}
+
+private static Map<String, String> indexDefinitions(
+        Connection connection, String tableName) throws Exception {
+    try (PreparedStatement query = connection.prepareStatement("""
+            select indexname, regexp_replace(indexdef, '\\s+', ' ', 'g')
+            from pg_indexes
+            where schemaname = current_schema()
+              and tablename = ?
+            order by indexname
+            """)) {
+        query.setString(1, tableName);
+        try (ResultSet rows = query.executeQuery()) {
+            Map<String, String> definitions = new LinkedHashMap<>();
+            while (rows.next()) {
+                definitions.put(rows.getString(1), rows.getString(2));
+            }
+            return Map.copyOf(definitions);
+        }
+    }
+}
+
+private static void assertInvalidLease(
+        Connection connection,
+        UUID terminalId,
+        int tokenVersion,
+        long generation,
+        String authenticatedAt,
+        String expiresAt,
+        String releasedAt,
+        String releaseReason,
+        String constraintName) {
+    assertConstraintViolation(() -> execute(connection, """
+            insert into jt_terminal_session_leases (
+              terminal_id, gateway_instance, connection_id,
+              token_version, lease_generation,
+              authenticated_at, last_valid_message_at, expires_at,
+              released_at, release_reason, updated_at
+            ) values (
+              ?, 'gateway-test', ?, ?, ?,
+              cast(? as timestamptz), cast(? as timestamptz),
+              cast(? as timestamptz), cast(? as timestamptz), ?,
+              cast(? as timestamptz)
+            )
+            """,
+            terminalId,
+            UUID.randomUUID(),
+            tokenVersion,
+            generation,
+            authenticatedAt,
+            authenticatedAt,
+            expiresAt,
+            releasedAt,
+            releaseReason,
+            authenticatedAt), constraintName);
+}
+
+private static void insertValidLease(
+        Connection connection, UUID terminalId) throws Exception {
+    execute(connection, """
+            insert into jt_terminal_session_leases (
+              terminal_id, gateway_instance, connection_id,
+              token_version, lease_generation,
+              authenticated_at, last_valid_message_at, expires_at,
+              updated_at
+            ) values (
+              ?, 'gateway-test', ?, 1, 1,
+              timestamp with time zone '2026-09-02 00:00:00+00',
+              timestamp with time zone '2026-09-02 00:00:00+00',
+              timestamp with time zone '2026-09-02 00:03:00+00',
+              timestamp with time zone '2026-09-02 00:00:00+00'
+            )
+            """, terminalId, UUID.randomUUID());
+}
+
+private static V21HistoryFixture insertV21HistoryFixture(
+        Connection connection) throws Exception {
+    UUID vehicleId = insertVehicle(
+            connection, "V21-HISTORY-" + UUID.randomUUID());
+    UUID terminalId = insertTerminal(
+            connection, "013800000095", "T-V21-HISTORY");
+    UUID systemId = insertSystem(connection, vehicleId);
+    insertMembership(connection, systemId, terminalId);
+
+    UUID auditId = UUID.randomUUID();
+    execute(connection, """
+            insert into audit_logs(
+              id, entity_type, entity_id, action,
+              actor_type, actor_id, reason, metadata_json, created_at
+            ) values (
+              ?, 'JT_TERMINAL', ?, 'JT_TERMINAL_REPLACED',
+              'SYSTEM', 'migration-test', 'sentinel',
+              '{"sentinel":"unchanged"}'::jsonb,
+              timestamp with time zone '2026-09-02 00:00:00+00'
+            )
+            """, auditId, terminalId);
+
+    UUID bindingId = UUID.randomUUID();
+    execute(connection, """
+            insert into jt_terminal_vehicle_bindings(
+              id, terminal_id, vehicle_id,
+              valid_from, valid_to, status,
+              binding_reason, unbinding_reason,
+              created_at, updated_at
+            ) values (
+              ?, ?, ?,
+              timestamp with time zone '2026-09-01 00:00:00+00',
+              timestamp with time zone '2026-09-01 01:00:00+00',
+              'UNBOUND', 'sentinel binding', 'sentinel unbinding',
+              timestamp with time zone '2026-09-01 00:00:00+00',
+              timestamp with time zone '2026-09-01 01:00:00+00'
+            )
+            """, bindingId, terminalId, vehicleId);
+
+    UUID alarmId = UUID.randomUUID();
+    UUID publicId = UUID.randomUUID();
+    execute(connection, """
+            insert into vehicle_alarms(
+              id, public_id, vehicle_id, terminal_id,
+              standard, module, terminal_alarm_id,
+              alarm_type_code, alarm_type_name_snapshot,
+              alarm_level, terminal_alarm_identifier,
+              terminal_alarm_state, occurred_at, gateway_received_at,
+              longitude, latitude, location_quality_status,
+              location_quality_reasons, processing_status,
+              payload_digest, deduplication_key, created_at
+            ) values (
+              ?, ?, ?, ?,
+              'T/JSATL12-2017', 'ADAS', 1,
+              1, 'SENTINEL', 1, repeat('a', 64), 'START',
+              timestamp with time zone '2026-09-01 00:00:00+00',
+              timestamp with time zone '2026-09-01 00:00:01+00',
+              121.4737000, 31.2304000, 'GOOD', '[]'::jsonb,
+              'NEW', repeat('b', 64), repeat('c', 64),
+              timestamp with time zone '2026-09-01 00:00:01+00'
+            )
+            """, alarmId, publicId, vehicleId, terminalId);
+    return new V21HistoryFixture(auditId, bindingId, alarmId);
+}
+
+private static HistorySnapshot readHistorySnapshot(
+        Connection connection, V21HistoryFixture fixture) throws Exception {
+    return new HistorySnapshot(
+            queryText(connection, """
+                    select md5(concat_ws(
+                      '|', entity_type, entity_id::text, action,
+                      actor_type, actor_id, reason, metadata_json::text,
+                      created_at::text
+                    ))
+                    from audit_logs where id = ?
+                    """, fixture.auditId()),
+            queryText(connection, """
+                    select md5(concat_ws(
+                      '|', terminal_id::text, vehicle_id::text,
+                      valid_from::text, valid_to::text, status,
+                      binding_reason, unbinding_reason,
+                      created_at::text, updated_at::text
+                    ))
+                    from jt_terminal_vehicle_bindings where id = ?
+                    """, fixture.bindingId()),
+            queryText(connection, """
+                    select md5(concat_ws(
+                      '|', public_id::text, vehicle_id::text,
+                      terminal_id::text, standard, module,
+                      terminal_alarm_id::text, alarm_type_code::text,
+                      alarm_type_name_snapshot, alarm_level::text,
+                      terminal_alarm_identifier, terminal_alarm_state,
+                      occurred_at::text, gateway_received_at::text,
+                      longitude::text, latitude::text,
+                      location_quality_status, location_quality_reasons::text,
+                      processing_status, payload_digest,
+                      deduplication_key, created_at::text
+                    ))
+                    from vehicle_alarms where id = ?
+                    """, fixture.alarmId()));
 }
 
 private static ExactSnapshotFixture insertExactCurrentSnapshotFixture(
@@ -308,12 +665,23 @@ private record ExactSnapshotFixture(
         UUID vehicleId, UUID onboardSystemId) { }
 
 private record MismatchedSnapshotFixture(UUID vehicleId) { }
+
+private record ColumnMetadata(
+        String dataType, String isNullable) { }
+
+private record V21HistoryFixture(
+        UUID auditId, UUID bindingId, UUID alarmId) { }
+
+private record HistorySnapshot(
+        String auditDigest,
+        String bindingDigest,
+        String alarmDigest) { }
 ```
 
 两个 fixture 只使用 synthetic UUID/车牌；helper 内用 PreparedStatement，不拼接业务值。
 
-同时在 `DatabaseMigrationTest.migrationScriptsDeclareCoreTablesAndSeedData` 读取 V21，并断言只出现允许的
-`CREATE TABLE/ALTER TABLE/UPDATE vehicles`；把 external migration 的最终 Flyway version 从 `20` 改为 `21`。
+`DatabaseMigrationTest` 不读取 V21 源文件、不做 migration 源码字符串正负匹配。它只在真实 external
+PostgreSQL 迁移测试中把最终 Flyway version 从 `20` 改为 `21`，并从数据库 catalog 验证 V21 table/columns 可见。
 
 - [ ] **步骤 2：运行 V21 测试并保存 RED**
 
@@ -321,9 +689,9 @@ private record MismatchedSnapshotFixture(UUID vehicleId) { }
 
 ```powershell
 docker run --rm --name drt-p6-2-remediation-pg `
-  -e POSTGRES_USER=remediation `
-  -e POSTGRES_PASSWORD=remediation-test-only `
-  -e POSTGRES_DB=p6_2_remediation `
+  -e POSTGRES_USER=composite `
+  -e POSTGRES_PASSWORD=composite-test-only `
+  -e POSTGRES_DB=composite_onboard `
   -p 55441:5432 `
   -d postgis/postgis:16-3.5
 
@@ -331,9 +699,9 @@ docker run --rm --name drt-p6-2-remediation-pg `
   '-Dtest=P6CompositeOnboardSystemMigrationTest,DatabaseMigrationTest' `
   '-Ddrt.integration.composite-onboard=true' `
   '-Ddrt.integration.composite-onboard.external-ephemeral=true' `
-  '-Ddrt.integration.composite-onboard.jdbc-url=jdbc:postgresql://127.0.0.1:55441/p6_2_remediation' `
-  '-Ddrt.integration.composite-onboard.username=remediation' `
-  '-Ddrt.integration.composite-onboard.password=remediation-test-only' `
+  '-Ddrt.integration.composite-onboard.jdbc-url=jdbc:postgresql://127.0.0.1:55441/composite_onboard' `
+  '-Ddrt.integration.composite-onboard.username=composite' `
+  '-Ddrt.integration.composite-onboard.password=composite-test-only' `
   "-Djava.io.tmpdir=$MavenTemp" test
 ```
 
@@ -401,30 +769,44 @@ WHERE vehicle.current_location_onboard_system_id IS NULL
 
 禁止在此 migration 中修改 `audit_logs`、`jt_terminal_vehicle_bindings`、V19/V20、历史 alarm 行或 runtime cursor。
 
-- [ ] **步骤 4：添加静态迁移安全断言**
+- [ ] **步骤 4：补全真实 PostgreSQL catalog 与行行为验证**
 
-`DatabaseMigrationTest` 必须断言 V21：
+`P6CompositeOnboardSystemMigrationTest` 的功能 GREEN 必须来自步骤 1 中的实际迁移和数据库查询：
+
+- `information_schema.tables/columns` 验证 table、字段类型与 nullable；
+- `pg_constraint` 验证 PK/FK/CHECK 名称，实际非法 INSERT 验证 CHECK 会拒绝；
+- `pg_indexes` 验证两个 partial index 的列、排序和 predicate；
+- exact/mismatched 两组 vehicle/event 行验证 deterministic backfill；
+- migration 前后 `HistorySnapshot` 完全相等，并逐行验证 audit JSON、legacy UNBOUND row、historical alarm
+  及其 null onboard provenance。
+
+`DatabaseMigrationTest` 的 external PostgreSQL test 只增加：
 
 ```java
-assertThat(v21).contains(
-        "CREATE TABLE jt_terminal_session_leases",
-        "last_primary_valid_gateway_received_at TIMESTAMPTZ",
-        "primary_terminal_cursor_at TIMESTAMPTZ",
-        "backup_terminal_cursor_at TIMESTAMPTZ",
-        "ADD COLUMN onboard_system_id UUID REFERENCES onboard_systems(id)",
-        "vehicle.current_location_event_id = event.id",
-        "event.terminal_id = vehicle.current_location_terminal_id");
-assertThat(v21.toLowerCase()).doesNotContain(
-        "drop table", "drop column", "truncate", "delete from audit_logs",
-        "update audit_logs", "update vehicle_alarms");
+assertThat(currentFlywayVersion(connection)).isEqualTo("21");
+assertThat(tableNames).contains("jt_terminal_session_leases");
+assertColumns(
+        connection,
+        "onboard_system_runtime_state",
+        "last_primary_valid_gateway_received_at",
+        "primary_terminal_cursor_at",
+        "backup_terminal_cursor_at");
+assertColumns(
+        connection,
+        "vehicle_alarms",
+        "onboard_system_id");
 ```
+
+不得为 V21 新增读取 migration 源码的断言。若执行者额外做 forbidden-token 扫描，只能作为提交前静态 lint 单独记录，
+明确不计入功能 RED/GREEN，也不能替代上述 external PostgreSQL 行为测试。
 
 - [ ] **步骤 5：运行聚焦 GREEN 与迁移回归**
 
-重跑 步骤 2 的 Maven 命令。
+重跑步骤 2 的 Maven 命令。
 
-预期 GREEN：两个 suite 全部通过，failure/error=0；Flyway 21；sentinel audit JSON 和 legacy row count 未变；
-只有 exact current event 获得 snapshot provenance。
+预期 GREEN：两个 external suite 全部通过，failure/error=0；真实 Flyway head=21；table/column/constraint/index
+均由 catalog 查询确认；非法 lease 行被实际约束拒绝；audit/legacy/alarm sentinel 行迁移前后完全相等；只有 exact
+current event 获得 snapshot provenance。
 
 - [ ] **步骤 6：停止一次性数据库**
 
@@ -444,7 +826,7 @@ docker stop drt-p6-2-remediation-pg
 - deterministic UPDATE 不跨 vehicle/terminal；
 - audit/legacy/alarm history 未被清洗。
 
-预期：Critical=0、Important=0。任何 migration 改动在提交前重新运行 步骤 5。
+预期：Critical=0、Important=0。任何 migration 改动在提交前重新运行步骤 5。
 
 - [ ] **步骤 8：提交 R1 并冻结 V21**
 
@@ -1174,7 +1556,7 @@ npm.cmd --prefix apps/admin-web run typecheck
 - old session 在 role revoke 后被 API 二次授权拒绝；
 - terminal detail 不再把 legacy ACTIVE row 显示为当前。
 
-预期：Critical=0、Important=0。修复任何复审问题后重新运行 步骤 13-14。
+预期：Critical=0、Important=0。修复任何复审问题后重新运行步骤 13-14。
 
 - [ ] **步骤 16：将 R2 作为一个纵向单元提交**
 
@@ -1816,7 +2198,7 @@ npm.cmd --prefix apps/admin-web run typecheck
 - lease internals 不进管理 DTO/日志；
 - V21 diff 为零。
 
-预期：Critical=0、Important=0。修复后重跑 步骤 14。
+预期：Critical=0、Important=0。修复后重跑步骤 14。
 
 - [ ] **步骤 16：提交 R3**
 
@@ -2311,7 +2693,7 @@ new system reuse 和 concurrency 全通过。
 - Vehicle system/terminal/event/runtime provenance 一致；
 - V21 diff 为零。
 
-预期：Critical=0、Important=0。修复后重跑 步骤 11-12。
+预期：Critical=0、Important=0。修复后重跑步骤 11-12。
 
 - [ ] **步骤 14：提交 R4**
 
@@ -2781,7 +3163,7 @@ npm.cmd --prefix apps/admin-web run build
 - read-only 可分页但不可配置；
 - 键盘和 aria label 可用。
 
-预期：Critical=0、Important=0。修复后重跑 步骤 5。
+预期：Critical=0、Important=0。修复后重跑步骤 5。
 
 - [ ] **步骤 7：提交 R6**
 
@@ -2815,9 +3197,9 @@ git log --oneline -6
 
 ```powershell
 docker run --rm --name drt-p6-2-remediation-final-pg `
-  -e POSTGRES_USER=remediation_final `
-  -e POSTGRES_PASSWORD=remediation-final-test-only `
-  -e POSTGRES_DB=p6_2_remediation_final `
+  -e POSTGRES_USER=composite `
+  -e POSTGRES_PASSWORD=composite-final-test-only `
+  -e POSTGRES_DB=composite_onboard `
   -p 55442:5432 `
   -d postgis/postgis:16-3.5
 
@@ -2826,9 +3208,9 @@ $ExternalStartedAt = [DateTimeOffset]::UtcNow
   '-Dtest=P6CompositeOnboardSystemMigrationTest,DatabaseMigrationTest' `
   '-Ddrt.integration.composite-onboard=true' `
   '-Ddrt.integration.composite-onboard.external-ephemeral=true' `
-  '-Ddrt.integration.composite-onboard.jdbc-url=jdbc:postgresql://127.0.0.1:55442/p6_2_remediation_final' `
-  '-Ddrt.integration.composite-onboard.username=remediation_final' `
-  '-Ddrt.integration.composite-onboard.password=remediation-final-test-only' `
+  '-Ddrt.integration.composite-onboard.jdbc-url=jdbc:postgresql://127.0.0.1:55442/composite_onboard' `
+  '-Ddrt.integration.composite-onboard.username=composite' `
+  '-Ddrt.integration.composite-onboard.password=composite-final-test-only' `
   "-Djava.io.tmpdir=$MavenTemp" test
 if ($LASTEXITCODE -ne 0) {
     throw "EXTERNAL_MIGRATION_REGRESSION_FAILED=$LASTEXITCODE"
@@ -2963,7 +3345,7 @@ cloud/real acceptance 或附件/媒体/full GB 实现。
 docker stop drt-p6-2-remediation-final-pg
 ```
 
-预期：精确测试容器被删除；不触碰其他容器、volume 或网络。若 门禁 2～7 中途失败，也必须在保存失败证据后执行本
+预期：精确测试容器被删除；不触碰其他容器、volume 或网络。若门禁 2～7 中途失败，也必须在保存失败证据后执行本
 门禁。
 
 ## 计划自检结果
@@ -2982,12 +3364,23 @@ docker stop drt-p6-2-remediation-final-pg
 | 角色/成员改变后 runtime 可自愈且合法源不抖动 | R4 | 集中协调 |
 | audit 不保存 terminal/phone/plate/auth 原文 | R5 | 精确 metadata 白名单 + 禁止值测试 |
 | 管理端聚合和全部车辆可达 | R6 | 既有分页 API + 可访问控件 |
-| V19/V20 历史和回滚安全 | R1、最终门禁 | additive V21 + 不可变迁移检查 |
+| V19/V20 历史和回滚安全 | R1、最终门禁 | external PostgreSQL catalog/row 行为 + 不可变迁移检查 |
 | 附件、媒体、full GB 消息保持非目标 | 全局约束、最终门禁 | 无相关生产文件 |
 | cloud/真实设备/真实流量需要另行授权 | 全局约束、最终门禁 | 本计划不执行 |
 
 覆盖裁决：I-1～I-7 全部映射到一个且仅一个主实施任务；I-1/I-2 和 I-4/I-5 分别以纵向门禁合并。没有把
 deferred attachment/media/cloud 项混入。
+
+### 测试质量复核
+
+- R1 功能 RED/GREEN 只来自真实 external PostgreSQL：Flyway 实际迁移、`information_schema`、`pg_constraint`、
+  `pg_indexes`、非法/合法 lease INSERT、deterministic backfill 和 sentinel row 前后对比。
+- `P6CompositeOnboardSystemMigrationTest` 负责 table/column/constraint/index/backfill/history 行为；
+  `DatabaseMigrationTest` 只负责真实 Flyway head=21 和 external schema smoke。
+- 计划不要求读取 migration 源文本作正负字符串匹配。
+- 可选 forbidden-token 静态 lint 与功能测试分开记录，不能参与 R1 GREEN 裁决。
+
+测试质量裁决：通过；R1 不再以源码字符串或变更探测器替代数据库行为。
 
 ### 共享文件与接口冲突复核
 
