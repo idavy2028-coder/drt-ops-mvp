@@ -864,6 +864,23 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 最后有证据的云端终态仍为 gateway 停止、TCP `7611` 无监听；本轮 Task 0 未访问云端、未启动容器、未接入真实流量。附件/媒体链路继续禁用，不属于本次复合车载系统基础交付。
 - 下一入口：完成六组既有变更的独立复核与显式路径提交，确认暂存为 0、工作树干净并记录基线 SHA；随后创建隔离实施 worktree，从计划 Task 1 的 V19 RED 测试开始。真实流量窗口、gateway 启动和云端部署均需后续单独授权。
 
+### P6-2 Task 12 本地隔离迁移与四设备验收（2026-09-02）
+
+- 状态：`DONE_WITH_CONCERNS`。实现 worktree 为 `codex/p6-2-composite-onboard-system`，入口/当前 HEAD 为 `ecae1b7a429b0781fa6dbef76d6b64d54fba24d9`；本轮未 stage、commit、push、SSH/SFTP、云端操作、安全组操作、真实设备或真实流量。
+- actual API JAR 构建退出码 0，JAR SHA-256 `BD62961A81E0FDB9570503A876AC2CEF61AF48E19A9BDF524EB9FF94965B2DC3`。唯一一次性 PostGIS 16 环境使用 loopback 随机端口、独立卷和 run label；gateway 从未启动，7611 各阶段及清理后均为 0。
+- 真实本地迁移链完成：V18 seed 为 4 车辆/4 终端/4 活动 legacy bindings，pre-V19 备份可读；V19 为 4 systems/4 runtime/4 memberships 且保持 UUID/鉴权/时间戳；actual API 完成 16 次 capability verification；DryRun 4/4，memberships/roles/profiles/audits/system-version-sum/terminal-version-sum/capabilities 七个观测维度未变化，结合 preview API 只读合同，本次未观察到配置写入，但不把它外推为所有相关表内容级零写；ApplyV19 4/4、version 1；ContractCheck 4/4；post-Apply 备份可读；V20 为旧索引 0、legacy 拒写 trigger 1、API `UP`、意外重启 0。
+- 四设备终态：4 physical devices、4 active systems、4 active memberships、4 active protocol profiles、16 verified capabilities、16 active roles；`LOCATION_PRIMARY/ACTIVE_SAFETY/VIDEO/WAN_UPLINK` 各 4；4 辆 source-derived 车辆均 `SAFETY_MONITOR_ONLY` 且不可调度，identity 唯一 4/4，attachment 非空字段 0。
+- fixture 例外：Flyway V2 自带 2 辆无 legacy binding 的 demo 车辆且默认可调度；仅在一次性数据库中归一为不可调度，以通过 V20 全局 gate。未改变四条私密源记录、业务代码或源私密数据。
+- 云端 V20 硬门禁：任何未来云端 V19→V20 前，必须在最新只读备份的恢复克隆上完成全库盘点；所有 `dispatchable=true` 车辆必须具备满足 V20 的活动 system、`DISPATCH_SERVICE` 模式、活动 membership、`DISPATCH`/`LOCATION_PRIMARY` 角色及相应 verified capability，或由业务所有者明确授权、通过另行审计的业务变更改为不可调度。本次一次性 fixture SQL 禁止直接复用于云端，禁止据此未经授权修改生产车辆；盘点或处置未闭环即 **NO-GO**。
+- 新鲜验证：external PostgreSQL 57 tests、0 failure/error、1 conditional skip；Task10 matrix 41/41；Java 125 suites、963/963、0 failure/error、83 skips、Maven exit 0；frontend 54 files/304 tests、typecheck/build exit 0、191 modules，并保留非阻断 `>500 kB` warning；Task11 private 43/43；Task12 private RED→GREEN 后 6/6。
+- Task 12 初审修复轮次没有重跑 963 suite，只在新的唯一 disposable PostGIS 环境中重跑 focused external 57：`P6CompositeOnboardSystemMigrationTest` 54/54，`DatabaseMigrationTest` 3 项（0 failure/error、1 conditional skip），合计 57/0/0/1、Maven exit 0、`external-ephemeral=true`。`2026-09-02T07:23:03Z` 机械生成的 private safe summary SHA-256 为 `80A22B8B6F2F295C387890DE3B06FE18B9B3A3DDD5BF0419EE45BE4B9861F6CA`，源日志 SHA-256 为 `2D12988B996C14ADF935F1186020F985E61A45CBBF03A2CBCA730CA95ECFBBC0`，不含连接属性；本轮容器/卷已精确清理，现有 Docker 资源未变化，7611=0。
+- 两项诊断：external 首轮因临时 `composite` 角色不是 disposable superuser 导致 V1 PostGIS extension errors，重建精确任务测试库/角色后完整通过；Java 首轮 `clean test` 因历史 `hsperfdata` 目录 clean AccessDenied 在 API 前退出，不计成功，随后清空四模块 Surefire 报告、切换新 TEMP/TMP 的完整 `mvn test` 才形成有效 963/963。
+- 清理：task container/volume/run-label 资源均 0，现有容器/卷名称集合不变、状态类别漂移 0，PostgreSQL/API/7611 listener 0，Java 0、Task-owned Node 0、PowerShell 0。完整备份 SHA、working manifest SHA、原始身份引用和测试凭据仅留在 ignored `.private`。
+- 公开证据：`docs/pilot/evidence/p6-2/local-composite-onboard-acceptance-2026-09-02.md`。本次是本地隔离验收，不是云端部署或真实设备/流量验收；附件、媒体、完整 GB/T 28787 业务消息继续 out of scope。
+- 已知残余：Task10 的异常路径 `ByteBuf` 释放时机与 instance runner 首失败诊断保真两个 deferred Minor 继续只读保留；本任务禁止业务代码修改。下一入口是统一最终 review，接受后才可另行授权云端/真实设备计划，本记录本身不授权部署或真实流量。
+
+- 最终泄漏扫描覆盖 19 个目标和 14 个当前敏感值：公开原值、私密安全输出原值、身份摘要、公开私密绝对路径、长 credential pattern 均为 0，严格 UTF-8 通过。最终 `git diff --check` 通过，状态严格为本地验收报告与 `progress.md` 两项，staged 0、tracked `.private` 0；未 stage/commit/push。
+
 ### P6-2 Task 0 基线门禁收口（2026-08-29）
 
 - 六组既有变更已完成独立只读复核。A 组先修复协议单字段 canonical identity 冲突预检、真实唯一约束 409 映射和审计摘要禁存；B 组先修复审计持久化/协议应答顺序、维护并发预约、私密捕获授权、2019 legacy 布局精确摘要门禁、维护状态有界性与鉴权异常 Netty 所有权。修复均保留真实 RED→GREEN 证据，并在最终复核中获 `APPROVED`；C、D、E、F 也分别获批。
