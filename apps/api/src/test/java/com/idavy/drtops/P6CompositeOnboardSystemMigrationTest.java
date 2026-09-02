@@ -22,9 +22,13 @@ import jakarta.persistence.EntityManagerFactory;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -1840,6 +1844,400 @@ class P6CompositeOnboardSystemMigrationTest {
         }
     }
 
+    @Test
+    void v21CreatesLeaseRuntimeAndAlarmSchemaWithEnforcedCatalogContracts()
+            throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v21_catalog_contract");
+        migrateContractReadyToV20(postgres, schema);
+        UUID terminalId;
+        try (Connection connection = connection(postgres, schema)) {
+            terminalId = insertTerminal(
+                    connection, "013800000094", "T-V21-LEASE");
+        }
+
+        flyway(postgres, schema, "21").migrate();
+
+        try (Connection connection = connection(postgres, schema)) {
+            assertThat(tableExists(
+                    connection, "jt_terminal_session_leases")).isTrue();
+            assertThat(columnNames(
+                    connection, "jt_terminal_session_leases"))
+                    .containsExactly(
+                            "terminal_id",
+                            "gateway_instance",
+                            "connection_id",
+                            "token_version",
+                            "lease_generation",
+                            "authenticated_at",
+                            "last_valid_message_at",
+                            "expires_at",
+                            "released_at",
+                            "release_reason",
+                            "updated_at",
+                            "version");
+            assertThat(columnContracts(
+                    connection, "jt_terminal_session_leases"))
+                    .containsExactly(
+                            Map.entry("terminal_id",
+                                    new ColumnContract("uuid", null, "NO", null)),
+                            Map.entry("gateway_instance",
+                                    new ColumnContract("character varying", 120, "NO", null)),
+                            Map.entry("connection_id",
+                                    new ColumnContract("uuid", null, "NO", null)),
+                            Map.entry("token_version",
+                                    new ColumnContract("integer", null, "NO", null)),
+                            Map.entry("lease_generation",
+                                    new ColumnContract("bigint", null, "NO", null)),
+                            Map.entry("authenticated_at",
+                                    new ColumnContract(
+                                            "timestamp with time zone", null, "NO", null)),
+                            Map.entry("last_valid_message_at",
+                                    new ColumnContract(
+                                            "timestamp with time zone", null, "NO", null)),
+                            Map.entry("expires_at",
+                                    new ColumnContract(
+                                            "timestamp with time zone", null, "NO", null)),
+                            Map.entry("released_at",
+                                    new ColumnContract(
+                                            "timestamp with time zone", null, "YES", null)),
+                            Map.entry("release_reason",
+                                    new ColumnContract(
+                                            "character varying", 80, "YES", null)),
+                            Map.entry("updated_at",
+                                    new ColumnContract(
+                                            "timestamp with time zone", null, "NO", null)),
+                            Map.entry("version",
+                                    new ColumnContract("bigint", null, "NO", "0")));
+            assertThat(columnMetadata(
+                    connection,
+                    "onboard_system_runtime_state",
+                    "last_primary_valid_gateway_received_at"))
+                    .isEqualTo(new ColumnMetadata(
+                            "timestamp with time zone", "YES"));
+            assertThat(columnMetadata(
+                    connection,
+                    "onboard_system_runtime_state",
+                    "primary_terminal_cursor_at"))
+                    .isEqualTo(new ColumnMetadata(
+                            "timestamp with time zone", "YES"));
+            assertThat(columnMetadata(
+                    connection,
+                    "onboard_system_runtime_state",
+                    "backup_terminal_cursor_at"))
+                    .isEqualTo(new ColumnMetadata(
+                            "timestamp with time zone", "YES"));
+            assertThat(columnMetadata(
+                    connection, "vehicle_alarms", "onboard_system_id"))
+                    .isEqualTo(new ColumnMetadata("uuid", "YES"));
+
+            assertThat(constraintNames(
+                    connection, "jt_terminal_session_leases"))
+                    .contains(
+                            "jt_terminal_session_leases_pkey",
+                            "jt_terminal_session_leases_terminal_id_fkey",
+                            "ck_jt_terminal_session_leases_token_version",
+                            "ck_jt_terminal_session_leases_generation",
+                            "ck_jt_terminal_session_leases_expiry",
+                            "ck_jt_terminal_session_leases_release",
+                            "ck_jt_terminal_session_leases_release_reason");
+            assertThat(constraintNames(connection, "vehicle_alarms"))
+                    .contains("vehicle_alarms_onboard_system_id_fkey");
+            Map<String, ConstraintMetadata> leaseConstraints =
+                    constraintMetadata(connection, "jt_terminal_session_leases");
+            assertConstraintMetadata(
+                    leaseConstraints,
+                    "jt_terminal_session_leases_pkey",
+                    "p",
+                    null,
+                    "PRIMARY KEY (terminal_id)");
+            assertConstraintMetadata(
+                    leaseConstraints,
+                    "jt_terminal_session_leases_terminal_id_fkey",
+                    "f",
+                    "jt_terminals",
+                    "FOREIGN KEY (terminal_id)",
+                    "REFERENCES jt_terminals(id)");
+            assertConstraintMetadata(
+                    leaseConstraints,
+                    "ck_jt_terminal_session_leases_token_version",
+                    "c",
+                    null,
+                    "token_version > 0");
+            assertConstraintMetadata(
+                    leaseConstraints,
+                    "ck_jt_terminal_session_leases_generation",
+                    "c",
+                    null,
+                    "lease_generation > 0");
+            assertConstraintMetadata(
+                    leaseConstraints,
+                    "ck_jt_terminal_session_leases_expiry",
+                    "c",
+                    null,
+                    "expires_at > last_valid_message_at",
+                    "last_valid_message_at >= authenticated_at");
+            assertConstraintMetadata(
+                    leaseConstraints,
+                    "ck_jt_terminal_session_leases_release",
+                    "c",
+                    null,
+                    "released_at IS NULL",
+                    "release_reason IS NULL",
+                    "released_at IS NOT NULL",
+                    "release_reason IS NOT NULL");
+            assertConstraintMetadata(
+                    leaseConstraints,
+                    "ck_jt_terminal_session_leases_release_reason",
+                    "c",
+                    null,
+                    "release_reason IS NULL",
+                    "^[A-Z][A-Z0-9_]{2,79}$");
+            assertConstraintMetadata(
+                    constraintMetadata(connection, "vehicle_alarms"),
+                    "vehicle_alarms_onboard_system_id_fkey",
+                    "f",
+                    "onboard_systems",
+                    "FOREIGN KEY (onboard_system_id)",
+                    "REFERENCES onboard_systems(id)");
+            assertThat(indexDefinitions(
+                    connection, "jt_terminal_session_leases").get(
+                            "idx_jt_terminal_session_leases_live_expiry"))
+                    .contains(
+                            "(expires_at)",
+                            "WHERE (released_at IS NULL)");
+            assertThat(indexDefinitions(
+                    connection, "vehicle_alarms").get(
+                            "idx_vehicle_alarms_onboard_system_received"))
+                    .contains(
+                            "(onboard_system_id, gateway_received_at DESC)",
+                            "WHERE (onboard_system_id IS NOT NULL)");
+
+            assertInvalidLease(
+                    connection,
+                    UUID.randomUUID(),
+                    1,
+                    1,
+                    "2026-09-02T00:00:00Z",
+                    "2026-09-02T00:03:00Z",
+                    null,
+                    null,
+                    "jt_terminal_session_leases_terminal_id_fkey");
+            assertInvalidLease(
+                    connection,
+                    terminalId,
+                    0,
+                    1,
+                    "2026-09-02T00:00:00Z",
+                    "2026-09-02T00:03:00Z",
+                    null,
+                    null,
+                    "ck_jt_terminal_session_leases_token_version");
+            assertInvalidLease(
+                    connection,
+                    terminalId,
+                    1,
+                    0,
+                    "2026-09-02T00:00:00Z",
+                    "2026-09-02T00:03:00Z",
+                    null,
+                    null,
+                    "ck_jt_terminal_session_leases_generation");
+            assertInvalidLease(
+                    connection,
+                    terminalId,
+                    1,
+                    1,
+                    "2026-09-02T00:00:00Z",
+                    "2026-09-02T00:00:00Z",
+                    null,
+                    null,
+                    "ck_jt_terminal_session_leases_expiry");
+            assertInvalidLease(
+                    connection,
+                    terminalId,
+                    1,
+                    1,
+                    "2026-09-02T00:00:00Z",
+                    "2026-09-02T00:03:00Z",
+                    "2026-09-02T00:01:00Z",
+                    null,
+                    "ck_jt_terminal_session_leases_release");
+            assertInvalidLease(
+                    connection,
+                    terminalId,
+                    1,
+                    2,
+                    "2026-09-02T00:00:00Z",
+                    "2026-09-02T00:03:00Z",
+                    "2026-09-02T00:01:00Z",
+                    "invalid-reason",
+                    "ck_jt_terminal_session_leases_release_reason");
+
+            insertValidLease(connection, terminalId);
+            assertThat(queryCount(connection, """
+                    select count(*)
+                    from jt_terminal_session_leases
+                    where terminal_id = ?
+                      and token_version = 1
+                      and lease_generation = 1
+                      and released_at is null
+                    """, terminalId)).isEqualTo(1);
+            assertConstraintViolation(
+                    () -> insertValidLease(connection, terminalId),
+                    "jt_terminal_session_leases_pkey");
+        }
+    }
+
+    @Test
+    void v21RejectsInvalidLeaseReleaseReason() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v21_release_reason");
+        migrateContractReadyToV20(postgres, schema);
+        UUID terminalId;
+        try (Connection connection = connection(postgres, schema)) {
+            terminalId = insertTerminal(
+                    connection, "013800000101", "T-V21-RELEASE");
+        }
+        flyway(postgres, schema, "21").migrate();
+
+        try (Connection connection = connection(postgres, schema)) {
+            assertInvalidLease(
+                    connection,
+                    terminalId,
+                    1,
+                    2,
+                    "2026-09-02T00:00:00Z",
+                    "2026-09-02T00:03:00Z",
+                    "2026-09-02T00:01:00Z",
+                    "invalid-reason",
+                    "ck_jt_terminal_session_leases_release_reason");
+        }
+    }
+
+    @Test
+    void v21RejectsAlarmReferencingUnknownOnboardSystem() throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v21_alarm_system_fk");
+        migrateContractReadyToV20(postgres, schema);
+        UUID vehicleId;
+        UUID terminalId;
+        try (Connection connection = connection(postgres, schema)) {
+            vehicleId = insertVehicle(connection, "V21-ALARM-FK");
+            terminalId = insertTerminal(
+                    connection, "013800000102", "T-V21-ALARM-FK");
+        }
+        flyway(postgres, schema, "21").migrate();
+
+        try (Connection connection = connection(postgres, schema)) {
+            assertConstraintViolation(
+                    () -> insertAlarmWithOnboardSystem(
+                            connection, vehicleId, terminalId, UUID.randomUUID()),
+                    "vehicle_alarms_onboard_system_id_fkey");
+        }
+    }
+
+    @Test
+    void v21PreservesAuditLegacyBindingAndAlarmSentinelRows()
+            throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v21_history_preserved");
+        flyway(postgres, schema, "19").migrate();
+        V21HistoryFixture fixture;
+        HistorySnapshot before;
+        try (Connection connection = connection(postgres, schema)) {
+            insertContractReadyDualDeviceSystem(connection);
+            fixture = insertV21HistoryFixture(connection);
+            before = readHistorySnapshotBeforeV21(connection, fixture);
+        }
+        flyway(postgres, schema, "20").migrate();
+        flyway(postgres, schema, "21").migrate();
+
+        try (Connection connection = connection(postgres, schema)) {
+            assertThat(readHistorySnapshotAfterV21(connection, fixture))
+                    .isEqualTo(before);
+            assertThat(queryCount(connection, """
+                    select count(*)
+                    from audit_logs
+                    where id = ?
+                      and metadata_json = '{"sentinel":"unchanged"}'::jsonb
+                    """, fixture.auditId())).isEqualTo(1);
+            assertThat(queryCount(connection, """
+                    select count(*)
+                    from jt_terminal_vehicle_bindings
+                    where id = ?
+                      and status = 'UNBOUND'
+                      and valid_to is not null
+                    """, fixture.bindingId())).isEqualTo(1);
+            assertThat(queryCount(connection, """
+                    select count(*)
+                    from vehicle_alarms
+                    where id = ?
+                      and onboard_system_id is null
+                    """, fixture.alarmId())).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void v21BackfillsSnapshotProvenanceOnlyFromTheExactCurrentEvent()
+            throws Exception {
+        ExternalPostgres postgres = externalPostgres();
+        String schema = schema("v21_exact_snapshot_provenance");
+        migrateContractReadyToV20(postgres, schema);
+        ExactSnapshotFixture exact = insertExactCurrentSnapshotFixture(postgres, schema);
+        MismatchedSnapshotFixture mismatch =
+                insertMismatchedCurrentSnapshotFixture(postgres, schema);
+        StaleSnapshotFixture stale =
+                insertStaleNonCurrentEventFixture(postgres, schema);
+        ExistingSnapshotFixture existing =
+                insertExistingNonNullSnapshotFixture(postgres, schema);
+        VehicleMismatchSnapshotFixture vehicleMismatch =
+                insertCurrentEventVehicleMismatchFixture(postgres, schema);
+        NullProvenanceSnapshotFixture nullProvenance =
+                insertNullEventProvenanceFixture(postgres, schema);
+        CrossVehicleSystemSnapshotFixture crossVehicleSystem =
+                insertCrossVehicleSystemFixture(postgres, schema);
+
+        flyway(postgres, schema, "21").migrate();
+
+        try (Connection connection = connection(postgres, schema)) {
+            assertThat(queryUuid(connection, """
+                    select current_location_onboard_system_id
+                    from vehicles where id = ?
+                    """, exact.vehicleId())).isEqualTo(exact.onboardSystemId());
+            assertThat(queryNullableUuid(connection, """
+                    select current_location_onboard_system_id
+                    from vehicles where id = ?
+                    """, mismatch.vehicleId())).isNull();
+            assertThat(queryNullableUuid(connection, """
+                    select current_location_onboard_system_id
+                    from vehicles where id = ?
+                    """, stale.vehicleId())).isNull();
+            assertThat(queryUuid(connection, """
+                    select current_location_onboard_system_id
+                    from vehicles where id = ?
+                    """, existing.vehicleId()))
+                    .isEqualTo(existing.originalOnboardSystemId());
+            assertThat(queryNullableUuid(connection, """
+                    select current_location_onboard_system_id
+                    from vehicles where id = ?
+                    """, vehicleMismatch.vehicleId())).isNull();
+            assertThat(queryNullableUuid(connection, """
+                    select current_location_onboard_system_id
+                    from vehicles where id = ?
+                    """, nullProvenance.vehicleId())).isNull();
+            assertThat(queryCount(connection, """
+                    select update_count
+                    from v21_snapshot_update_probe
+                    where vehicle_id = ?
+                    """, nullProvenance.vehicleId())).isZero();
+            assertThat(queryNullableUuid(connection, """
+                    select current_location_onboard_system_id
+                    from vehicles where id = ?
+                    """, crossVehicleSystem.vehicleId())).isNull();
+        }
+    }
+
     private static ExternalPostgres externalPostgres() {
         Assumptions.assumeTrue(Boolean.getBoolean(INTEGRATION_PROPERTY),
                 "composite onboard migration verification was not enabled");
@@ -1852,6 +2250,15 @@ class P6CompositeOnboardSystemMigrationTest {
                                 "jdbc:postgresql://(?:127\\.0\\.0\\.1|localhost):\\d+/composite_onboard"),
                 "requires an explicit empty loopback composite_onboard PostgreSQL database");
         return new ExternalPostgres(jdbcUrl, username, password);
+    }
+
+    private static void migrateContractReadyToV20(
+            ExternalPostgres postgres, String schema) throws Exception {
+        flyway(postgres, schema, "19").migrate();
+        try (Connection connection = connection(postgres, schema)) {
+            insertContractReadyDualDeviceSystem(connection);
+        }
+        flyway(postgres, schema, "20").migrate();
     }
 
     private static Flyway flyway(ExternalPostgres postgres, String schema, String target) {
@@ -2204,6 +2611,607 @@ class P6CompositeOnboardSystemMigrationTest {
         assertThatThrownBy(action).hasStackTraceContaining(constraintName);
     }
 
+    private static ColumnMetadata columnMetadata(
+            Connection connection,
+            String tableName,
+            String columnName) throws Exception {
+        try (PreparedStatement query = connection.prepareStatement("""
+                select data_type, is_nullable
+                from information_schema.columns
+                where table_schema = current_schema()
+                  and table_name = ?
+                  and column_name = ?
+                """)) {
+            query.setString(1, tableName);
+            query.setString(2, columnName);
+            try (ResultSet rows = query.executeQuery()) {
+                assertThat(rows.next()).isTrue();
+                ColumnMetadata metadata =
+                        new ColumnMetadata(rows.getString(1), rows.getString(2));
+                assertThat(rows.next()).isFalse();
+                return metadata;
+            }
+        }
+    }
+
+    private static List<String> constraintNames(
+            Connection connection, String tableName) throws Exception {
+        try (PreparedStatement query = connection.prepareStatement("""
+                select constraint_record.conname
+                from pg_constraint constraint_record
+                join pg_class table_record
+                  on table_record.oid = constraint_record.conrelid
+                join pg_namespace namespace_record
+                  on namespace_record.oid = table_record.relnamespace
+                where namespace_record.nspname = current_schema()
+                  and table_record.relname = ?
+                order by constraint_record.conname
+                """)) {
+            query.setString(1, tableName);
+            try (ResultSet rows = query.executeQuery()) {
+                List<String> names = new ArrayList<>();
+                while (rows.next()) names.add(rows.getString(1));
+                return List.copyOf(names);
+            }
+        }
+    }
+
+    private static Map<String, ColumnContract> columnContracts(
+            Connection connection, String tableName) throws Exception {
+        try (PreparedStatement query = connection.prepareStatement("""
+                select information_column.column_name,
+                       information_column.data_type,
+                       information_column.character_maximum_length,
+                       information_column.is_nullable,
+                       pg_get_expr(default_record.adbin, default_record.adrelid)
+                from information_schema.columns information_column
+                join pg_namespace namespace_record
+                  on namespace_record.nspname = information_column.table_schema
+                join pg_class table_record
+                  on table_record.relnamespace = namespace_record.oid
+                 and table_record.relname = information_column.table_name
+                join pg_attribute attribute_record
+                  on attribute_record.attrelid = table_record.oid
+                 and attribute_record.attname = information_column.column_name
+                 and attribute_record.attnum > 0
+                 and not attribute_record.attisdropped
+                left join pg_attrdef default_record
+                  on default_record.adrelid = table_record.oid
+                 and default_record.adnum = attribute_record.attnum
+                where information_column.table_schema = current_schema()
+                  and information_column.table_name = ?
+                order by information_column.ordinal_position
+                """)) {
+            query.setString(1, tableName);
+            try (ResultSet rows = query.executeQuery()) {
+                Map<String, ColumnContract> contracts = new LinkedHashMap<>();
+                while (rows.next()) {
+                    contracts.put(rows.getString(1), new ColumnContract(
+                            rows.getString(2),
+                            rows.getObject(3, Integer.class),
+                            rows.getString(4),
+                            rows.getString(5)));
+                }
+                return contracts;
+            }
+        }
+    }
+
+    private static Map<String, ConstraintMetadata> constraintMetadata(
+            Connection connection, String tableName) throws Exception {
+        try (PreparedStatement query = connection.prepareStatement("""
+                select constraint_record.conname,
+                       constraint_record.contype::text,
+                       referenced_table.relname,
+                       pg_get_constraintdef(constraint_record.oid, true)
+                from pg_constraint constraint_record
+                join pg_class table_record
+                  on table_record.oid = constraint_record.conrelid
+                join pg_namespace namespace_record
+                  on namespace_record.oid = table_record.relnamespace
+                left join pg_class referenced_table
+                  on referenced_table.oid = constraint_record.confrelid
+                where namespace_record.nspname = current_schema()
+                  and table_record.relname = ?
+                order by constraint_record.conname
+                """)) {
+            query.setString(1, tableName);
+            try (ResultSet rows = query.executeQuery()) {
+                Map<String, ConstraintMetadata> metadata = new LinkedHashMap<>();
+                while (rows.next()) {
+                    metadata.put(rows.getString(1), new ConstraintMetadata(
+                            rows.getString(2), rows.getString(3), rows.getString(4)));
+                }
+                return metadata;
+            }
+        }
+    }
+
+    private static void assertConstraintMetadata(
+            Map<String, ConstraintMetadata> constraints,
+            String constraintName,
+            String type,
+            String referencedTable,
+            String... definitionFragments) {
+        ConstraintMetadata metadata = constraints.get(constraintName);
+        assertThat(metadata).as(constraintName).isNotNull();
+        assertThat(metadata.type()).as(constraintName + " type").isEqualTo(type);
+        assertThat(metadata.referencedTable())
+                .as(constraintName + " referenced table")
+                .isEqualTo(referencedTable);
+        assertThat(metadata.definition())
+                .as(constraintName + " definition")
+                .contains(definitionFragments);
+    }
+
+    private static Map<String, String> indexDefinitions(
+            Connection connection, String tableName) throws Exception {
+        try (PreparedStatement query = connection.prepareStatement("""
+                select indexname, regexp_replace(indexdef, '\\s+', ' ', 'g')
+                from pg_indexes
+                where schemaname = current_schema()
+                  and tablename = ?
+                order by indexname
+                """)) {
+            query.setString(1, tableName);
+            try (ResultSet rows = query.executeQuery()) {
+                Map<String, String> definitions = new LinkedHashMap<>();
+                while (rows.next()) {
+                    definitions.put(rows.getString(1), rows.getString(2));
+                }
+                return Map.copyOf(definitions);
+            }
+        }
+    }
+
+    private static void assertInvalidLease(
+            Connection connection,
+            UUID terminalId,
+            int tokenVersion,
+            long generation,
+            String authenticatedAt,
+            String expiresAt,
+            String releasedAt,
+            String releaseReason,
+            String constraintName) {
+        assertConstraintViolation(() -> execute(connection, """
+                insert into jt_terminal_session_leases (
+                  terminal_id, gateway_instance, connection_id,
+                  token_version, lease_generation,
+                  authenticated_at, last_valid_message_at, expires_at,
+                  released_at, release_reason, updated_at
+                ) values (
+                  ?, 'gateway-test', ?, ?, ?,
+                  cast(? as timestamptz), cast(? as timestamptz),
+                  cast(? as timestamptz), cast(? as timestamptz), ?,
+                  cast(? as timestamptz)
+                )
+                """,
+                terminalId,
+                UUID.randomUUID(),
+                tokenVersion,
+                generation,
+                authenticatedAt,
+                authenticatedAt,
+                expiresAt,
+                releasedAt,
+                releaseReason,
+                authenticatedAt), constraintName);
+    }
+
+    private static void insertValidLease(
+            Connection connection, UUID terminalId) throws Exception {
+        execute(connection, """
+                insert into jt_terminal_session_leases (
+                  terminal_id, gateway_instance, connection_id,
+                  token_version, lease_generation,
+                  authenticated_at, last_valid_message_at, expires_at,
+                  updated_at
+                ) values (
+                  ?, 'gateway-test', ?, 1, 1,
+                  timestamp with time zone '2026-09-02 00:00:00+00',
+                  timestamp with time zone '2026-09-02 00:00:00+00',
+                  timestamp with time zone '2026-09-02 00:03:00+00',
+                  timestamp with time zone '2026-09-02 00:00:00+00'
+                )
+                """, terminalId, UUID.randomUUID());
+    }
+
+    private static void insertAlarmWithOnboardSystem(
+            Connection connection,
+            UUID vehicleId,
+            UUID terminalId,
+            UUID onboardSystemId) throws Exception {
+        execute(connection, """
+                insert into vehicle_alarms(
+                  id, public_id, vehicle_id, terminal_id,
+                  standard, module, terminal_alarm_id,
+                  alarm_type_code, alarm_type_name_snapshot,
+                  alarm_level, terminal_alarm_identifier,
+                  terminal_alarm_state, occurred_at, gateway_received_at,
+                  longitude, latitude, location_quality_status,
+                  location_quality_reasons, processing_status,
+                  payload_digest, deduplication_key, onboard_system_id,
+                  created_at
+                ) values (
+                  ?, ?, ?, ?,
+                  'T/JSATL12-2017', 'ADAS', 2,
+                  2, 'INVALID_SYSTEM_SENTINEL', 1, repeat('d', 64), 'START',
+                  timestamp with time zone '2026-09-02 00:00:00+00',
+                  timestamp with time zone '2026-09-02 00:00:01+00',
+                  121.4737000, 31.2304000, 'GOOD', '[]'::jsonb,
+                  'NEW', repeat('e', 64), ?, ?,
+                  timestamp with time zone '2026-09-02 00:00:01+00'
+                )
+                """,
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                vehicleId,
+                terminalId,
+                UUID.randomUUID().toString().replace("-", "")
+                        + UUID.randomUUID().toString().replace("-", ""),
+                onboardSystemId);
+    }
+
+    private static V21HistoryFixture insertV21HistoryFixture(
+            Connection connection) throws Exception {
+        UUID vehicleId = insertVehicle(
+                connection, "V21-HIST-" + UUID.randomUUID().toString().substring(0, 8));
+        UUID terminalId = insertTerminal(
+                connection, "013800000095", "T-V21-HISTORY");
+        UUID systemId = insertSystem(connection, vehicleId);
+        insertMembership(connection, systemId, terminalId);
+
+        UUID auditId = UUID.randomUUID();
+        execute(connection, """
+                insert into audit_logs(
+                  id, entity_type, entity_id, action,
+                  actor_type, actor_id, reason, metadata_json, created_at
+                ) values (
+                  ?, 'JT_TERMINAL', ?, 'JT_TERMINAL_REPLACED',
+                  'SYSTEM', 'migration-test', 'sentinel',
+                  '{"sentinel":"unchanged"}'::jsonb,
+                  timestamp with time zone '2026-09-02 00:00:00+00'
+                )
+                """, auditId, terminalId);
+
+        UUID bindingId = UUID.randomUUID();
+        execute(connection, """
+                insert into jt_terminal_vehicle_bindings(
+                  id, terminal_id, vehicle_id,
+                  valid_from, valid_to, status,
+                  binding_reason, unbinding_reason,
+                  created_at, updated_at
+                ) values (
+                  ?, ?, ?,
+                  timestamp with time zone '2026-09-01 00:00:00+00',
+                  timestamp with time zone '2026-09-01 01:00:00+00',
+                  'UNBOUND', 'sentinel binding', 'sentinel unbinding',
+                  timestamp with time zone '2026-09-01 00:00:00+00',
+                  timestamp with time zone '2026-09-01 01:00:00+00'
+                )
+                """, bindingId, terminalId, vehicleId);
+
+        UUID alarmId = UUID.randomUUID();
+        UUID publicId = UUID.randomUUID();
+        execute(connection, """
+                insert into vehicle_alarms(
+                  id, public_id, vehicle_id, terminal_id,
+                  standard, module, terminal_alarm_id,
+                  alarm_type_code, alarm_type_name_snapshot,
+                  alarm_level, terminal_alarm_identifier,
+                  terminal_alarm_state, occurred_at, gateway_received_at,
+                  longitude, latitude, location_quality_status,
+                  location_quality_reasons, processing_status,
+                  payload_digest, deduplication_key, created_at
+                ) values (
+                  ?, ?, ?, ?,
+                  'T/JSATL12-2017', 'ADAS', 1,
+                  1, 'SENTINEL', 1, repeat('a', 64), 'START',
+                  timestamp with time zone '2026-09-01 00:00:00+00',
+                  timestamp with time zone '2026-09-01 00:00:01+00',
+                  121.4737000, 31.2304000, 'GOOD', '[]'::jsonb,
+                  'NEW', repeat('b', 64), repeat('c', 64),
+                  timestamp with time zone '2026-09-01 00:00:01+00'
+                )
+                """, alarmId, publicId, vehicleId, terminalId);
+        return new V21HistoryFixture(auditId, bindingId, alarmId);
+    }
+
+    private static HistorySnapshot readHistorySnapshotBeforeV21(
+            Connection connection, V21HistoryFixture fixture) throws Exception {
+        return new HistorySnapshot(
+                queryText(connection, """
+                        select to_jsonb(audit_row)::text
+                        from audit_logs audit_row where id = ?
+                        """, fixture.auditId()),
+                queryText(connection, """
+                        select to_jsonb(binding_row)::text
+                        from jt_terminal_vehicle_bindings binding_row where id = ?
+                        """, fixture.bindingId()),
+                queryText(connection, """
+                        select to_jsonb(alarm_row)::text
+                        from vehicle_alarms alarm_row where id = ?
+                        """, fixture.alarmId()));
+    }
+
+    private static HistorySnapshot readHistorySnapshotAfterV21(
+            Connection connection, V21HistoryFixture fixture) throws Exception {
+        return new HistorySnapshot(
+                queryText(connection, """
+                        select to_jsonb(audit_row)::text
+                        from audit_logs audit_row where id = ?
+                        """, fixture.auditId()),
+                queryText(connection, """
+                        select to_jsonb(binding_row)::text
+                        from jt_terminal_vehicle_bindings binding_row where id = ?
+                        """, fixture.bindingId()),
+                queryText(connection, """
+                        select (to_jsonb(alarm_row) - 'onboard_system_id')::text
+                        from vehicle_alarms alarm_row where id = ?
+                        """, fixture.alarmId()));
+    }
+
+    private static ExactSnapshotFixture insertExactCurrentSnapshotFixture(
+            ExternalPostgres postgres, String schema) throws Exception {
+        try (Connection connection = connection(postgres, schema)) {
+            UUID vehicleId = insertVehicle(
+                    connection, "V21-EXACT-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID terminalId = insertTerminal(
+                    connection, "013800000091", "T-V21-EXACT");
+            UUID systemId = insertSystem(connection, vehicleId);
+            insertMembership(connection, systemId, terminalId);
+            UUID eventId = insertGpsSnapshotEvent(
+                    connection, vehicleId, terminalId, systemId);
+            execute(connection, """
+                    update vehicles
+                    set current_location_event_id = ?,
+                        current_location_terminal_id = ?,
+                        current_location_source = 'GPS_DEVICE'
+                    where id = ?
+                    """, eventId, terminalId, vehicleId);
+            return new ExactSnapshotFixture(vehicleId, systemId);
+        }
+    }
+
+    private static MismatchedSnapshotFixture
+            insertMismatchedCurrentSnapshotFixture(
+                    ExternalPostgres postgres, String schema) throws Exception {
+        try (Connection connection = connection(postgres, schema)) {
+            UUID vehicleId = insertVehicle(
+                    connection, "V21-MISMATCH-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID eventTerminalId = insertTerminal(
+                    connection, "013800000092", "T-V21-EVENT");
+            UUID currentTerminalId = insertTerminal(
+                    connection, "013800000093", "T-V21-CURRENT");
+            UUID systemId = insertSystem(connection, vehicleId);
+            insertMembership(connection, systemId, eventTerminalId);
+            UUID eventId = insertGpsSnapshotEvent(
+                    connection, vehicleId, eventTerminalId, systemId);
+            execute(connection, """
+                    update vehicles
+                    set current_location_event_id = ?,
+                        current_location_terminal_id = ?,
+                        current_location_source = 'GPS_DEVICE'
+                    where id = ?
+                    """, eventId, currentTerminalId, vehicleId);
+            return new MismatchedSnapshotFixture(vehicleId);
+        }
+    }
+
+    private static StaleSnapshotFixture insertStaleNonCurrentEventFixture(
+            ExternalPostgres postgres, String schema) throws Exception {
+        try (Connection connection = connection(postgres, schema)) {
+            UUID vehicleId = insertVehicle(
+                    connection, "V21-STALE-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID terminalId = insertTerminal(
+                    connection, "013800000096", "T-V21-STALE");
+            UUID systemId = insertSystem(connection, vehicleId);
+            insertMembership(connection, systemId, terminalId);
+            insertGpsSnapshotEvent(connection, vehicleId, terminalId, systemId);
+            UUID currentEventId = insertGpsSnapshotEvent(
+                    connection, vehicleId, terminalId, null);
+            updateVehicleCurrentEvent(
+                    connection, vehicleId, currentEventId, terminalId, null);
+            return new StaleSnapshotFixture(vehicleId);
+        }
+    }
+
+    private static ExistingSnapshotFixture insertExistingNonNullSnapshotFixture(
+            ExternalPostgres postgres, String schema) throws Exception {
+        try (Connection connection = connection(postgres, schema)) {
+            UUID vehicleId = insertVehicle(
+                    connection, "V21-KEEP-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID terminalId = insertTerminal(
+                    connection, "013800000097", "T-V21-KEEP");
+            UUID originalSystemId = insertSystem(connection, vehicleId);
+            insertMembership(connection, originalSystemId, terminalId);
+            UUID eventSystemId = insertInactiveSystem(connection, vehicleId);
+            UUID eventId = insertGpsSnapshotEvent(
+                    connection, vehicleId, terminalId, eventSystemId);
+            updateVehicleCurrentEvent(
+                    connection, vehicleId, eventId, terminalId, originalSystemId);
+            return new ExistingSnapshotFixture(vehicleId, originalSystemId);
+        }
+    }
+
+    private static VehicleMismatchSnapshotFixture insertCurrentEventVehicleMismatchFixture(
+            ExternalPostgres postgres, String schema) throws Exception {
+        try (Connection connection = connection(postgres, schema)) {
+            UUID vehicleId = insertVehicle(
+                    connection, "V21-EVENT-A-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID eventVehicleId = insertVehicle(
+                    connection, "V21-EVENT-B-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID terminalId = insertTerminal(
+                    connection, "013800000098", "T-V21-EVENT-MISMATCH");
+            UUID systemId = insertSystem(connection, vehicleId);
+            insertMembership(connection, systemId, terminalId);
+            UUID eventId = insertGpsSnapshotEvent(
+                    connection, eventVehicleId, terminalId, systemId);
+            updateVehicleCurrentEvent(
+                    connection, vehicleId, eventId, terminalId, null);
+            return new VehicleMismatchSnapshotFixture(vehicleId);
+        }
+    }
+
+    private static NullProvenanceSnapshotFixture insertNullEventProvenanceFixture(
+            ExternalPostgres postgres, String schema) throws Exception {
+        try (Connection connection = connection(postgres, schema)) {
+            UUID vehicleId = insertVehicle(
+                    connection, "V21-NULL-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID terminalId = insertTerminal(
+                    connection, "013800000099", "T-V21-NULL");
+            UUID systemId = insertSystem(connection, vehicleId);
+            insertMembership(connection, systemId, terminalId);
+            UUID eventId = insertGpsSnapshotEvent(
+                    connection, vehicleId, terminalId, null);
+            updateVehicleCurrentEvent(
+                    connection, vehicleId, eventId, terminalId, null);
+            execute(connection, """
+                    create table v21_snapshot_update_probe (
+                      vehicle_id uuid primary key,
+                      update_count integer not null default 0
+                    )
+                    """);
+            execute(connection, """
+                    insert into v21_snapshot_update_probe(vehicle_id)
+                    values (?)
+                    """, vehicleId);
+            execute(connection, """
+                    create function count_v21_snapshot_update()
+                    returns trigger language plpgsql as $$
+                    begin
+                      update v21_snapshot_update_probe
+                      set update_count = update_count + 1
+                      where vehicle_id = new.id;
+                      return new;
+                    end;
+                    $$
+                    """);
+            execute(connection, """
+                    create trigger count_v21_snapshot_update
+                    after update of current_location_onboard_system_id on vehicles
+                    for each row execute function count_v21_snapshot_update()
+                    """);
+            return new NullProvenanceSnapshotFixture(vehicleId);
+        }
+    }
+
+    private static CrossVehicleSystemSnapshotFixture insertCrossVehicleSystemFixture(
+            ExternalPostgres postgres, String schema) throws Exception {
+        try (Connection connection = connection(postgres, schema)) {
+            UUID vehicleId = insertVehicle(
+                    connection, "V21-XVEH-A-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID otherVehicleId = insertVehicle(
+                    connection, "V21-XVEH-B-" + UUID.randomUUID().toString().substring(0, 8));
+            UUID terminalId = insertTerminal(
+                    connection, "013800000100", "T-V21-XVEH");
+            UUID ownSystemId = insertSystem(connection, vehicleId);
+            insertMembership(connection, ownSystemId, terminalId);
+            UUID otherSystemId = insertSystem(connection, otherVehicleId);
+            UUID eventId = insertGpsSnapshotEvent(
+                    connection, vehicleId, terminalId, otherSystemId);
+            updateVehicleCurrentEvent(
+                    connection, vehicleId, eventId, terminalId, null);
+            return new CrossVehicleSystemSnapshotFixture(vehicleId);
+        }
+    }
+
+    private static UUID insertInactiveSystem(
+            Connection connection, UUID vehicleId) throws Exception {
+        UUID id = UUID.randomUUID();
+        execute(connection, """
+                insert into onboard_systems (
+                  id, vehicle_id, status, operating_mode
+                ) values (?, ?, 'SUSPENDED', 'SAFETY_MONITOR_ONLY')
+                """, id, vehicleId);
+        return id;
+    }
+
+    private static void updateVehicleCurrentEvent(
+            Connection connection,
+            UUID vehicleId,
+            UUID eventId,
+            UUID terminalId,
+            UUID onboardSystemId) throws Exception {
+        execute(connection, """
+                update vehicles
+                set current_location_event_id = ?,
+                    current_location_terminal_id = ?,
+                    current_location_onboard_system_id = ?,
+                    current_location_source = 'GPS_DEVICE'
+                where id = ?
+                """, eventId, terminalId, onboardSystemId, vehicleId);
+    }
+
+    private static UUID insertGpsSnapshotEvent(
+            Connection connection,
+            UUID vehicleId,
+            UUID terminalId,
+            UUID onboardSystemId) throws Exception {
+        UUID eventId = UUID.randomUUID();
+        execute(connection, """
+                insert into vehicle_location_events (
+                  id, vehicle_id, event_type, source, location,
+                  longitude, latitude, coordinate_system,
+                  driver_reported_at, idempotency_key,
+                  request_fingerprint, snapshot_applied,
+                  outside_service_area, terminal_id,
+                  protocol_version, message_serial_no,
+                  raw_longitude, raw_latitude,
+                  raw_coordinate_system, gateway_received_at,
+                  payload_digest, coordinate_transform_version,
+                  quality_status, quality_reasons,
+                  onboard_system_id, source_role
+                ) values (
+                  ?, ?, 'GPS_REPORTED', 'GPS_DEVICE',
+                  ST_SetSRID(
+                    ST_MakePoint(121.4737, 31.2304), 4326
+                  )::geography,
+                  121.4737000, 31.2304000, 'GCJ02',
+                  now(), ?, repeat('f', 64), true, false, ?,
+                  'JT808_2019', 1,
+                  121.4737000, 31.2304000, 'GCJ02', now(),
+                  repeat('e', 64), 'V21_TEST',
+                  'GOOD', '[]'::jsonb, ?, 'LOCATION_PRIMARY'
+                )
+                """,
+                eventId,
+                vehicleId,
+                UUID.randomUUID(),
+                terminalId,
+                onboardSystemId);
+        return eventId;
+    }
+
+    private static String queryText(
+            Connection connection, String sql, Object argument) throws Exception {
+        try (PreparedStatement query = connection.prepareStatement(sql)) {
+            query.setObject(1, argument);
+            try (ResultSet rows = query.executeQuery()) {
+                assertThat(rows.next()).isTrue();
+                return rows.getString(1);
+            }
+        }
+    }
+
+    private static UUID queryUuid(
+            Connection connection, String sql, UUID argument) throws Exception {
+        return Objects.requireNonNull(
+                queryNullableUuid(connection, sql, argument));
+    }
+
+    private static UUID queryNullableUuid(
+            Connection connection, String sql, UUID argument) throws Exception {
+        try (PreparedStatement query = connection.prepareStatement(sql)) {
+            query.setObject(1, argument);
+            try (ResultSet rows = query.executeQuery()) {
+                assertThat(rows.next()).isTrue();
+                return rows.getObject(1, UUID.class);
+            }
+        }
+    }
+
     private static void assertInvalidWarningCodes(
             Connection connection, UUID onboardSystemId, String warningCodesJson) {
         assertConstraintViolation(() -> execute(connection, """
@@ -2463,6 +3471,56 @@ class P6CompositeOnboardSystemMigrationTest {
     }
 
     private record ExternalPostgres(String jdbcUrl, String username, String password) {
+    }
+
+    private record ExactSnapshotFixture(
+            UUID vehicleId, UUID onboardSystemId) {
+    }
+
+    private record MismatchedSnapshotFixture(UUID vehicleId) {
+    }
+
+    private record StaleSnapshotFixture(UUID vehicleId) {
+    }
+
+    private record ExistingSnapshotFixture(
+            UUID vehicleId, UUID originalOnboardSystemId) {
+    }
+
+    private record VehicleMismatchSnapshotFixture(UUID vehicleId) {
+    }
+
+    private record NullProvenanceSnapshotFixture(UUID vehicleId) {
+    }
+
+    private record CrossVehicleSystemSnapshotFixture(UUID vehicleId) {
+    }
+
+    private record ColumnMetadata(
+            String dataType, String isNullable) {
+    }
+
+    private record ColumnContract(
+            String dataType,
+            Integer characterMaximumLength,
+            String isNullable,
+            String defaultExpression) {
+    }
+
+    private record ConstraintMetadata(
+            String type,
+            String referencedTable,
+            String definition) {
+    }
+
+    private record V21HistoryFixture(
+            UUID auditId, UUID bindingId, UUID alarmId) {
+    }
+
+    private record HistorySnapshot(
+            String auditRow,
+            String bindingRow,
+            String alarmRow) {
     }
 
     private record LegacyIds(UUID vehicleId, UUID terminalId, UUID bindingId) {

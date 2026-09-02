@@ -207,7 +207,8 @@ class DatabaseMigrationTest {
                 "onboard_device_memberships",
                 "onboard_device_capabilities",
                 "onboard_device_protocol_profiles",
-                "onboard_device_role_assignments");
+                "onboard_device_role_assignments",
+                "jt_terminal_session_leases");
 
         Integer areaCount = jdbcTemplate.queryForObject("select count(*) from service_areas", Integer.class);
         Integer stopCount = jdbcTemplate.queryForObject("select count(*) from virtual_stops", Integer.class);
@@ -220,7 +221,7 @@ class DatabaseMigrationTest {
         assertThat(driverCount).isEqualTo(2);
 
         try (var connection = DriverManager.getConnection(jdbcUrl, username, password)) {
-            assertThat(currentFlywayVersion(connection)).isEqualTo("20");
+            assertThat(currentFlywayVersion(connection)).isEqualTo("21");
             try (var statement = connection.createStatement();
                     var resultSet = statement.executeQuery("select postgis_version()")) {
                 assertThat(resultSet.next()).isTrue();
@@ -239,6 +240,16 @@ class DatabaseMigrationTest {
                     "current_location_coordinate_system", "current_location_reported_at",
                     "current_location_recorded_at", "current_location_event_id",
                     "current_location_task_id", "current_location_onboard_system_id");
+            assertColumns(
+                    connection,
+                    "onboard_system_runtime_state",
+                    "last_primary_valid_gateway_received_at",
+                    "primary_terminal_cursor_at",
+                    "backup_terminal_cursor_at");
+            assertColumns(
+                    connection,
+                    "vehicle_alarms",
+                    "onboard_system_id");
             assertColumns(connection, "virtual_stops",
                     "address", "area_name", "coordinate_system", "source",
                     "verified_at", "verified_by", "updated_at");
