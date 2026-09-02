@@ -2,15 +2,17 @@
 
 ## 结论
 
-**DONE_WITH_CONCERNS**。
+**Task 11/12 交付物与本地隔离执行已完成；P6-2 复合车载系统本地开发/隔离验收未收口；云端部署、真实设备、真实流量未开始/未授权。**
 
-2026-09-02 在分支 `codex/p6-2-composite-onboard-system`、HEAD
-`ecae1b7a429b0781fa6dbef76d6b64d54fba24d9` 上完成本地隔离验收。实际 API JAR、实际
+2026-09-02 在分支 `codex/p6-2-composite-onboard-system`、Task 12 执行入口 HEAD
+`ecae1b7a429b0781fa6dbef76d6b64d54fba24d9` 上完成本地隔离执行。实际 API JAR、实际
 PostgreSQL 16/PostGIS 和实际业务 API 依次执行 V18 seed、V19 expand、能力核验、
 `DryRun`、`ApplyV19`、`ContractCheck`、备份和 V20 contract；四条当前私密记录均以
 `terminal-01` 至 `terminal-04` 安全别名完成。
 
-本结论只证明本地隔离迁移与功能验收，不是云端部署，也不是真实设备或真实流量验收。
+最终 whole-branch review 已审阅到代码/文档基准 HEAD
+`c4e504676b4b8dac4bc0a38d0609996cde9d9ec8`，确认以下证据可以保留为 Task 执行证据，但不能据此
+宣布 P6-2 阶段通过或收口。本结论不是云端部署，也不是真实设备或真实流量验收。
 全程未执行 SSH/SFTP、云 Docker、云 PostgreSQL、安全组操作或真实流量接入。JT gateway
 从未启动，TCP 7611 在各阶段和清理后监听数均为 0。
 
@@ -76,6 +78,32 @@ Flyway V2 还会生成 2 辆没有 legacy binding 的 demo 车辆。它们不是
 `2D12988B996C14ADF935F1186020F985E61A45CBBF03A2CBCA730CA95ECFBBC0`；摘要不含 URL、用户名、密码、
 命令行或 system properties。该轮没有重跑 963 项 Java 全回归。
 
+## 当前本地收口阻断项
+
+1. **I-1 profile/capability → session/decode 合同未接通。** 活动协议档案和已核验能力尚未成为
+   会话与主动安全解码的唯一权威事实。修复需把锁定后读取的活动 transport/business/safety/media
+   profile 及其与 `VERIFIED` 能力的交集写入会话，由 gateway 据此校验版本和选择解码器，并用真实
+   configuration/profile/capability → registration/auth context → decode 合同测试覆盖。
+2. **I-2 alarm authorization 仍查询被冻结的 legacy binding。** 第二设备可能因没有 legacy row 被拒，
+   历史绑定也可能被误当成当前权限。修复需按发生时刻、统一锁顺序重查活动 system、membership、
+   `ACTIVE_SAFETY` role 及对应 verified capability/profile；legacy binding 只能作为明确标注的历史展示，
+   并补第二设备成功、角色撤销、跨车/历史绑定和并发配置测试。
+3. **I-3 readiness 以历史鉴权代替 live lease。** 永久保存的最后鉴权时间不能证明当前在线。修复需以
+   物理 terminal 为键维护含 gateway instance、connection、令牌版本和过期时间的当前 session lease，
+   在鉴权、有效消息、接管、离线/断连时一致更新，并让 readiness、自动/人工调度和 UI 共同消费该事实。
+4. **I-4 位置时钟域和迟到坏质量处理不安全。** 修复需拆分“平台最后收到有效主源时间”和“主源 terminal
+   time 单调恢复游标”，staleness 只使用平台时钟、恢复只使用终端事件时序；迟到/重放门禁必须先于质量
+   改变，并覆盖允许偏差、迟到 `REJECTED/QUARANTINED`、阈值两侧和重启持久化测试。
+5. **I-5 configuration/runtime/vehicle onboard provenance 未协调。** 位置角色或成员改变后 runtime 可能仍指向
+   旧源，车辆快照也未可靠记录所属 onboard system。修复需在统一锁序中协调配置、runtime 和车辆快照：
+   非法旧源应重置、仍合法源应保留，并写入及核对当前 onboard system provenance；补角色迁移、移除活动源、
+   新系统复用车辆和并发 ingress 测试。
+6. **I-6 换机审计持久化原始 terminal/plate。** 新审计 metadata 只能保留安全设备别名、角色、版本、计数和
+   安全原因码，原始 terminal code 与车牌必须成为禁止项。已有环境先只读盘点受影响审计，再由安全/业务
+   所有者批准独立历史处置，不能直接覆盖历史记录。
+7. **I-7 UI 仅可访问第一页 20 条。** 管理端需提供可访问分页/搜索或有明确上限的逐页加载，显示真实
+   `totalElements`，并覆盖 21+ 项、翻页草稿失效、请求竞态和 `TERMINAL_READ`-only 行为。
+
 ## 清理与安全
 
 - 只创建一组唯一命名、run label、loopback 随机端口、独立卷的一次性 PostGIS 资源；未停止、
@@ -96,11 +124,20 @@ UTF-8/GBK 表示和身份单值 SHA-256：公开原值 0、私密安全输出原
 1. 本记录不能替代云端 V19/V20 cutover、真实设备双会话或真实流量授权；任何此类动作仍需新的
    明确授权、目标/端口/安全组复核和有界窗口。
 2. Task 10 ledger 中两个 deferred Minor 继续只读保留：异常路径 `ByteBuf` 释放时机，以及 instance
-   runner 首个失败步骤/原因的诊断保真。本任务禁止修改业务代码，未尝试修复或重分类。
-3. 首次 external migration 运行因一次性测试角色缺少 disposable superuser 权限而在 V1 PostGIS
+   runner 首个失败步骤/原因的诊断保真；二者必须在未来真实窗口前修复并补对应负向测试。本任务禁止修改
+   业务代码，未尝试修复或重分类。
+3. Task 11 runner library 当前在安全 catch 外加载。任何 cloud runner 前必须先把 library 加载与 fallback
+   错误格式化纳入不依赖该 library 的安全边界，并覆盖 missing、ACL 和 syntax 三类子进程失败的 stderr
+   脱敏负向测试；现有 Task 11 43/43 和输出扫描不覆盖加载失败路径。
+4. Task 12 helper 的 6/6 只覆盖既有 helper 行为，不是完整 cleanup 测试，也未证明 exactly-4 或外层 cleanup
+   selector/match-count fail-closed。当前执行已有独立四记录终态和精确资源清理证据，因此该项保留为非阻断
+   Minor；若复用 helper，必须先补 `count==4` 与 selector/match-count 函数测试。
+5. 首次 external migration 运行因一次性测试角色缺少 disposable superuser 权限而在 V1 PostGIS
    extension 处失败；只重建精确的任务测试库/角色后 57 项完整通过。首次 Java `clean test` 又被
    历史 `hsperfdata` 目录的 Windows clean 权限阻断；清空 Surefire 报告并使用新 TEMP/TMP 的完整
    `mvn test` 才形成有效 963/963 证据。两次失败均未改业务代码，且失败证据保留在私密日志中。
 
-下一授权入口是统一最终 review：复核本报告、私密证据索引、tracked allowlist、泄漏扫描和清理门禁。
-只有该 review 接受后，才可另行提出云端/真实设备验收计划；本次结果本身不授权部署或流量接入。
+业务代码 TDD 修复 I-1～I-7 已于本轮获得授权，当前实施中；修复后必须重跑 Java、frontend、external、
+private 完整门禁，并重新执行独立 whole-branch review。在新鲜完整门禁和 re-review 通过前，P6-2 本地
+开发/隔离验收仍未收口，不得部署、接入真实设备或真实流量。Task 10 两个 Minor、Task 11 runner-library
+前置、Task 12 helper 复用前置和云端 V20 全库 `NO-GO` 继续生效；本轮既有证据不能替代修复后的新鲜证据。

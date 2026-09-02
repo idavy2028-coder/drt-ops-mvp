@@ -864,9 +864,10 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 最后有证据的云端终态仍为 gateway 停止、TCP `7611` 无监听；本轮 Task 0 未访问云端、未启动容器、未接入真实流量。附件/媒体链路继续禁用，不属于本次复合车载系统基础交付。
 - 下一入口：完成六组既有变更的独立复核与显式路径提交，确认暂存为 0、工作树干净并记录基线 SHA；随后创建隔离实施 worktree，从计划 Task 1 的 V19 RED 测试开始。真实流量窗口、gateway 启动和云端部署均需后续单独授权。
 
-### P6-2 Task 12 本地隔离迁移与四设备验收（2026-09-02）
+### P6-2 Task 11/12 交付与最终 whole-branch review（2026-09-02）
 
-- 状态：`DONE_WITH_CONCERNS`。实现 worktree 为 `codex/p6-2-composite-onboard-system`，入口/当前 HEAD 为 `ecae1b7a429b0781fa6dbef76d6b64d54fba24d9`；本轮未 stage、commit、push、SSH/SFTP、云端操作、安全组操作、真实设备或真实流量。
+- 状态：**Task 11/12 交付物与本地隔离执行已完成；P6-2 复合车载系统本地开发/隔离验收未收口；云端部署、真实设备、真实流量未开始/未授权。**
+- 实现 branch 为 `codex/p6-2-composite-onboard-system`；Task 12 执行入口 HEAD 为 `ecae1b7a429b0781fa6dbef76d6b64d54fba24d9`，最终 whole-branch review 的当前代码/文档基准 HEAD 为 `c4e504676b4b8dac4bc0a38d0609996cde9d9ec8`。本次预计形成独立 docs corrective commit，当前为 pending，不预写或伪造该提交 SHA；写入本记录后工作树仅有本报告与 `docs/pilot/evidence/p6-2/local-composite-onboard-acceptance-2026-09-02.md` 两项 tracked 未提交，staged 0。本轮未 stage、commit、push、SSH/SFTP、云端操作、安全组操作、真实设备或真实流量。
 - actual API JAR 构建退出码 0，JAR SHA-256 `BD62961A81E0FDB9570503A876AC2CEF61AF48E19A9BDF524EB9FF94965B2DC3`。唯一一次性 PostGIS 16 环境使用 loopback 随机端口、独立卷和 run label；gateway 从未启动，7611 各阶段及清理后均为 0。
 - 真实本地迁移链完成：V18 seed 为 4 车辆/4 终端/4 活动 legacy bindings，pre-V19 备份可读；V19 为 4 systems/4 runtime/4 memberships 且保持 UUID/鉴权/时间戳；actual API 完成 16 次 capability verification；DryRun 4/4，memberships/roles/profiles/audits/system-version-sum/terminal-version-sum/capabilities 七个观测维度未变化，结合 preview API 只读合同，本次未观察到配置写入，但不把它外推为所有相关表内容级零写；ApplyV19 4/4、version 1；ContractCheck 4/4；post-Apply 备份可读；V20 为旧索引 0、legacy 拒写 trigger 1、API `UP`、意外重启 0。
 - 四设备终态：4 physical devices、4 active systems、4 active memberships、4 active protocol profiles、16 verified capabilities、16 active roles；`LOCATION_PRIMARY/ACTIVE_SAFETY/VIDEO/WAN_UPLINK` 各 4；4 辆 source-derived 车辆均 `SAFETY_MONITOR_ONLY` 且不可调度，identity 唯一 4/4，attachment 非空字段 0。
@@ -877,7 +878,9 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 两项诊断：external 首轮因临时 `composite` 角色不是 disposable superuser 导致 V1 PostGIS extension errors，重建精确任务测试库/角色后完整通过；Java 首轮 `clean test` 因历史 `hsperfdata` 目录 clean AccessDenied 在 API 前退出，不计成功，随后清空四模块 Surefire 报告、切换新 TEMP/TMP 的完整 `mvn test` 才形成有效 963/963。
 - 清理：task container/volume/run-label 资源均 0，现有容器/卷名称集合不变、状态类别漂移 0，PostgreSQL/API/7611 listener 0，Java 0、Task-owned Node 0、PowerShell 0。完整备份 SHA、working manifest SHA、原始身份引用和测试凭据仅留在 ignored `.private`。
 - 公开证据：`docs/pilot/evidence/p6-2/local-composite-onboard-acceptance-2026-09-02.md`。本次是本地隔离验收，不是云端部署或真实设备/流量验收；附件、媒体、完整 GB/T 28787 业务消息继续 out of scope。
-- 已知残余：Task10 的异常路径 `ByteBuf` 释放时机与 instance runner 首失败诊断保真两个 deferred Minor 继续只读保留；本任务禁止业务代码修改。下一入口是统一最终 review，接受后才可另行授权云端/真实设备计划，本记录本身不授权部署或真实流量。
+- 最终 whole-branch review 的当前本地收口阻断项为 I-1～I-7：I-1 活动 profile/verified capability 尚未贯通 session/decode；I-2 alarm authorization 仍查询被冻结的 legacy binding；I-3 readiness 以历史鉴权代替当前 session lease；I-4 位置 staleness 混用平台/终端时钟且迟到坏质量可改变主源资格；I-5 configuration 改变后未协调 runtime 与 vehicle onboard provenance；I-6 换机审计持久化原始 terminal/plate；I-7 UI 固定只读取第一页 20 条。修复必须分别补真实纵向合同、第二设备及撤权/跨车并发、离线调度拒绝、允许偏差与迟到重放、角色迁移/新系统复用、原文禁止项与历史只读盘点、21+ 分页/竞态/只读权限测试。
+- 继续准确保留的 Minor/硬门禁：Task 10 异常路径 `ByteBuf` 释放时机与 instance runner 首个失败步骤/原因诊断保真两个 Minor 必须在真实窗口前修复；Task 11 runner library 在安全 catch 外加载，任何 cloud runner 前必须修复并覆盖 missing/ACL/syntax 三类子进程失败的 stderr 脱敏负向测试；Task 12 helper 6/6 不等于完整 cleanup 测试，复用前须补 `count==4` 和 selector/match-count fail-closed 测试；云端 V20 全库盘点或业务处置未闭环继续为 **NO-GO**。
+- 下一入口：业务代码 TDD 修复 I-1～I-7 已于本轮获得授权，当前实施中；修复后必须重跑 Java、frontend、external、private 完整门禁与独立 whole-branch re-review。在新鲜完整门禁和 re-review 通过前，P6-2 本地开发/隔离验收仍未收口，不得部署、接入真实设备或真实流量；本轮既有证据不能替代修复后的新鲜证据。
 
 - 最终泄漏扫描覆盖 19 个目标和 14 个当前敏感值：公开原值、私密安全输出原值、身份摘要、公开私密绝对路径、长 credential pattern 均为 0，严格 UTF-8 通过。最终 `git diff --check` 通过，状态严格为本地验收报告与 `progress.md` 两项，staged 0、tracked `.private` 0；未 stage/commit/push。
 
