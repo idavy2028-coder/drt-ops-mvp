@@ -378,3 +378,87 @@ docker compose --env-file .env -f infra/docker-compose.pilot.yml exec -T jt-gate
 当前网关能够解码、脱敏、持久化并投递 `ATTACHMENT_METADATA`，但现有运营 API 尚未批准附件类型、通道、媒体格式和 0x1206 的落库合同。API 因此对首次和重复投递都固定返回 `REJECTED + ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE`；网关要求 `ApiResponse.data` 用 idempotencyKey 对整批逐项确认，看到该拒绝、遗漏、重复或未知状态时，整批保持重试并使 `lastDeliverySuccessful=false`。这避免 2xx 静默丢失，但不等于附件全链路验收通过。
 
 在真实附件验收前，必须另行审批并实现 API metadata contract；本轮不得通过手工清空 pending、降低确认规则或伪造 ACCEPTED 响应绕过该边界。
+
+## P6-2 复合车载系统 V19/V20 本地隔离迁移
+
+### 适用范围与禁止边界
+
+本节只批准在本机 loopback API 和隔离数据副本上演练复合车载系统迁移，不构成云端部署、生产变更或真实设备接入批准。迁移期间不得连接 SSH/SFTP，不得消费云部署配置，也不得把私密终端标识、车辆标识、号牌、坐标、认证材料或其摘要写入日志和公开证据。
+
+附件、媒体上传目标、二进制内容以及完整 GB/T 28787 业务消息仍不在本批范围内。`media_profile` 仅表示已审批的协议档案字段，不能据此执行媒体链路或附件验收。
+
+公开录入模板为 `docs/pilot/evidence/p6-2/onboard-system-intake-template.csv`。模板中的 `vehicle-01`、`terminal-01` 等均为合成示例；真实录入必须留在 Git 忽略的私密目录，且原始终端别名必须重新映射为 `terminal-01` 至 `terminal-04`，不得复制到公开文件。
+
+### 停服门禁和 V19 展开演练
+
+先说明目的：V19 只展开复合车载模型并保留旧绑定兼容面；在配置预览或应用前停止 gateway，避免 7611 会话和运行时事件与管理配置并发。
+
+执行窗口必须逐项确认：
+
+1. 使用隔离数据库备份完成一次 V18→V19 演练，并保留备份 SHA-256、Flyway 版本和计数证据。
+2. 停止 gateway，确认宿主与容器均无 7611 监听；不能用“暂时没有终端连接”替代端口关闭证据。
+3. API 仅绑定本机 loopback；runner 会拒绝非 loopback 地址。
+4. 私密 CSV、JSON、manifest 和脚本均通过 PowerShell 5.1 严格 UTF-8 读取；发现非法字节立即终止。
+5. 每台物理设备的终端身份唯一，能力材料状态为 `VERIFIED`，独占角色无冲突，角色与协议档案匹配。
+
+下面命令只展示调用形状。先在当前受控 PowerShell 进程中从批准的安全位置设置 `P6_2_PRIVATE_SOURCE_ROOT`；不要回显其值，也不要把认证令牌写入命令行。runner 只从进程环境读取可选的 `P6_2_MIGRATION_API_TOKEN`。
+
+```powershell
+# 目的：只做字段级 preview，固定系统 UUID/版本供后续恢复检查，不执行配置 apply。
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File '.private\cloud-deployment\p6-2-cloud-7fa38d0\Invoke-CloudOnboardSystemMigration.ps1' `
+  -Mode DryRun `
+  -ApiBaseUri 'http://127.0.0.1:8080' `
+  -GatewayStopped
+```
+
+`DryRun` 必须只有车辆/detail 读取和配置 preview，业务配置 apply 次数为零。输出只允许安全别名、阶段/步骤、HTTP 状态、对象版本、告警码、记录数和文件 SHA-256。
+
+### ApplyV19、恢复和失败边界
+
+先说明目的：`ApplyV19` 对每辆车严格执行 preview→带 `expectedVersion` 的 apply→detail read-back，确认版本和期望状态一致后才处理下一辆车。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File '.private\cloud-deployment\p6-2-cloud-7fa38d0\Invoke-CloudOnboardSystemMigration.ps1' `
+  -Mode ApplyV19 `
+  -ApiBaseUri 'http://127.0.0.1:8080' `
+  -GatewayStopped
+```
+
+恢复执行必须先比较 manifest 固定的车载系统 UUID、`expectedVersion` 和已应用期望状态。任一业务步骤失败后 runner 记录安全失败步骤并停止，不自动重试；由负责人核对审计、版本和数据库状态后决定新操作。禁止修改 manifest 跳过失败，也禁止直接写表。
+
+首次 `DryRun/ApplyV19` 对尚未固定 API 别名的设备只发送私密 `terminalCode` 选择器，不同时发送 `deviceAlias`。apply 成功后的 read-back 使用网络模式、角色、已验证能力、四类协议档案和上报间隔组成的非身份期望签名，要求每条未映射记录与一个且仅一个 `device-<12hex>` API 派生别名匹配；重复期望签名在写入前失败关闭。映射只保存在 ignored 私密 manifest，后续恢复和 `ContractCheck` 只用 API 派生别名核对。别名改变、重复、缺失或期望状态漂移均终止，不回退到模糊顺序匹配，也不保存终端号码、终端 ID、车辆标识或其单值摘要。
+
+apply 请求发出前，runner 先持久化 `apply-requested`；响应合同通过后、read-back 前持久化 `read-back-pending`。从 apply 发出开始，任何 HTTP、JSON、UUID、版本、别名映射或期望状态无法确认的结果都会落为 `manual-review-required`，保留旧 `expectedVersion` 并禁止自动续跑。
+
+回退只允许通过现有受控 API 提交一份新的、带新 `expectedVersion`、原因和审计记录的期望配置。已追加的能力、成员、角色和协议档案历史不可删除；V20 收口后的旧绑定只读门禁也不能通过回滚业务配置撤销。数据库版本回退必须使用部署窗口前的完整备份恢复到新实例，不能在原卷上覆盖恢复，不能自动降级 V20。
+
+### ContractCheck、V20 收口和重启
+
+先说明目的：`ContractCheck` 在应用 V20 前只读核对本批车辆的活动系统、成员、已验证能力、协议档案、独占角色、主备分离及 WAN 网络模式，不执行任何 POST。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File '.private\cloud-deployment\p6-2-cloud-7fa38d0\Invoke-CloudOnboardSystemMigration.ps1' `
+  -Mode ContractCheck `
+  -ApiBaseUri 'http://127.0.0.1:8080' `
+  -GatewayStopped
+```
+
+runner 的本批只读检查不能替代 V20 SQL 的全局门禁。只有 `ContractCheck` 通过、gateway 仍停止、7611 仍无监听、隔离备份可恢复且 V20 对全部活动终端/车辆的合同检查通过后，才能执行 V20。V20 会冻结旧绑定写入；应用后先验证 API 健康和 Flyway 版本，再启动 gateway，最后用另行批准的模拟器或真实设备验收恢复 readiness。任何一步失败都保持 gateway 停止并升级处理。
+
+### 日常设备与角色运维
+
+所有日常变更都必须先加载最新 detail，携带 `expectedVersion`、非空原因、操作者和证据引用，并保留变更前后版本与审计事件：
+
+- 新增物理设备：先校验终端身份唯一，完成能力声明与独立验证，再加入成员、设置网络模式/协议档案，最后分配角色。材料未验证时不得分配依赖该能力的角色。
+- 移除物理设备：先转移其独占角色和 WAN 职责，确认主备/调度合同仍成立，再撤销成员；不能先删设备再补角色。
+- 能力验证：证据只记录批准的私密引用，公开证据仅记录安全别名、能力类型、状态、版本和审计号。能力撤销会影响角色时应先完成受控降级。
+- 独占角色：同一车载系统的 `DISPATCH`、`LOCATION_PRIMARY`、`ACTIVE_SAFETY` 各最多一个活动设备。变更主/备时先验证两台不同物理设备的定位能力，再以一个完整期望状态原子提交。
+- WAN/SIM 迁移：先验证目标设备网络可达及 `DIRECT_CELLULAR`，再迁移 `WAN_UPLINK`。SIM/WAN 变化不迁移或重建终端身份、认证凭证、业务角色和在线会话；旧会话必须按正常鉴权生命周期结束，新链路重新鉴权。
+- 单设备降级：调度终端丢失时不得把未验证调度能力的记录仪提升为 `DISPATCH`；记录仪丢失时保留可验证的调度/定位能力，并把安全、视频状态明确标记为不可用。降级原因、告警、开始/结束时间和恢复版本必须进入审计。
+
+### 证据收集
+
+每阶段至少保存：时间窗、操作者角色、Git HEAD、Flyway 版本、gateway 停止与 7611 关闭证据、模式、成功/失败计数、对象版本、告警码、manifest SHA-256、数据库备份 SHA-256 和审计号。证据不得包含私密绝对路径、原始 CSV/JSON、HTTP 请求/响应正文、终端或车辆真实标识、认证头及云地址。

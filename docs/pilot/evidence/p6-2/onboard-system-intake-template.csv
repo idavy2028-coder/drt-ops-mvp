@@ -1,0 +1,3 @@
+vehicle_alias,terminal_alias,network_mode,capabilities,transport_profile,business_profile,safety_profile,media_profile,roles,active_position_interval_seconds,idle_position_interval_seconds,materials_status,notes
+vehicle-01,terminal-01,DIRECT_CELLULAR,JT808_LOCATION|GBT28787_DISPATCH,JT808_2019,GBT28787_2023,NONE,NONE,DISPATCH|LOCATION_PRIMARY|WAN_UPLINK,10,60,VERIFIED,SYNTHETIC_EXAMPLE_DO_NOT_APPLY
+vehicle-01,terminal-02,SHARED_LAN_CLIENT,JT808_LOCATION|ADAS|DMS,JT808_2019,NONE,JSATL12_2017,NONE,LOCATION_BACKUP|ACTIVE_SAFETY,10,60,VERIFIED,SYNTHETIC_EXAMPLE_DO_NOT_APPLY
