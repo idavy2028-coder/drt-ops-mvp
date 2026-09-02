@@ -96,7 +96,7 @@ docs-only commit 使 worktree 回到 clean；该 planning commit 不计入 6 个
 
 ---
 
-### 任务 R1：冻结增量式 V21 数据库结构
+### Task 1 (R1): 冻结增量式 V21 数据库结构
 
 **文件：**
 
@@ -854,7 +854,7 @@ git commit --only -m 'feat: add final review remediation schema' -- `
 
 ---
 
-### 任务 R2：以单一“协议档案到报警授权”纵向合同闭环 I-1 与 I-2
+### Task 2 (R2): 以单一“协议档案到报警授权”纵向合同闭环 I-1 与 I-2
 
 **文件：**
 
@@ -1608,7 +1608,7 @@ git commit --only -m 'fix: align onboard session and alarm authority' -- $R2File
 
 ---
 
-### 任务 R3：新增带防串扰的当前会话租约，并让所有就绪度消费者统一使用
+### Task 3 (R3): 新增带防串扰的当前会话租约，并让所有就绪度消费者统一使用
 
 **文件：**
 
@@ -2245,7 +2245,7 @@ git commit --only -m 'fix: require live terminal session leases' -- $R3Files
 
 ---
 
-### 任务 R4：修复位置时钟域并协调配置、运行态与快照来源
+### Task 4 (R4): 修复位置时钟域并协调配置、运行态与快照来源
 
 **文件：**
 
@@ -2722,7 +2722,7 @@ git commit --only -m 'fix: coordinate location runtime provenance' -- $R4Files
 
 ---
 
-### 任务 R5：停止在换机审计元数据中持久化原始终端与车牌
+### Task 5 (R5): 停止在换机审计元数据中持久化原始终端与车牌
 
 **文件：**
 
@@ -2912,7 +2912,7 @@ git commit --only -m 'fix: redact terminal replacement audit metadata' -- $R5Fil
 
 ---
 
-### 任务 R6：仅用现有分页 API 让每套车载系统可访问
+### Task 6 (R6): 仅用现有分页 API 让每套车载系统可访问
 
 **文件：**
 
