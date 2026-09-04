@@ -141,6 +141,32 @@ public class OnboardTestFixtures {
                 "configure synthetic recorder system"), ACTOR_ID);
     }
 
+    public RolelessMemberFixture configureRolelessMember(
+            String terminalCode, String vehicleIdentifier) {
+        Vehicle vehicle = vehicleRepository.findByPlateNumber(vehicleIdentifier)
+                .orElseGet(() -> createVehicle(
+                        UUID.randomUUID(), vehicleIdentifier, false));
+        OnboardSystem system = activeSystem(
+                vehicle, OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY);
+        JtTerminal terminal = terminal(terminalCode);
+        membershipRepository.saveAndFlush(OnboardDeviceMembership.join(
+                system.getId(), terminal.getId(), NetworkMode.DIRECT_CELLULAR,
+                "synthetic roleless member", ACTOR_ID, OffsetDateTime.now()));
+        profileRepository.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                terminal.getId(),
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                30,
+                60,
+                "synthetic roleless profile",
+                ACTOR_ID,
+                OffsetDateTime.now()));
+        return new RolelessMemberFixture(
+                terminal.getTerminalPhone(), terminal.getId(), vehicle.getId());
+    }
+
     public UUID recorderOnlyVehicleId() {
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         String code = "recorder-ready-" + suffix;
@@ -300,5 +326,9 @@ public class OnboardTestFixtures {
             return "PHONE-RECORDER";
         }
         return "PHONE-" + terminalCode;
+    }
+
+    public record RolelessMemberFixture(
+            String semanticPhone, UUID terminalId, UUID vehicleId) {
     }
 }

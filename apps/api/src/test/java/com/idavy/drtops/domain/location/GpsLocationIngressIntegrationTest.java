@@ -13,6 +13,8 @@ import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapabilityRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
@@ -90,6 +92,7 @@ class GpsLocationIngressIntegrationTest {
     @Autowired JtTerminalRepository terminalRepository;
     @Autowired JtTerminalVehicleBindingRepository bindingRepository;
     @Autowired OnboardSystemRepository onboardSystemRepository;
+    @Autowired OnboardDeviceCapabilityRepository capabilityRepository;
     @Autowired OnboardDeviceMembershipRepository membershipRepository;
     @Autowired OnboardDeviceProtocolProfileRepository profileRepository;
     @Autowired OnboardDeviceRoleAssignmentRepository roleRepository;
@@ -121,7 +124,8 @@ class GpsLocationIngressIntegrationTest {
         jdbc.update("delete from vehicle_alarms");
         receiptRepository.deleteAll(); gatewayAuditRepository.deleteAll(); eventRepository.deleteAll();
         auditLogRepository.deleteAll();
-        roleRepository.deleteAll(); profileRepository.deleteAll(); membershipRepository.deleteAll();
+        roleRepository.deleteAll(); capabilityRepository.deleteAll();
+        profileRepository.deleteAll(); membershipRepository.deleteAll();
         runtimeRepository.deleteAll(); onboardSystemRepository.deleteAll();
         bindingRepository.deleteAll(); terminalRepository.deleteAll(); vehicleRepository.deleteAll();
         vehicleRepository.save(Vehicle.create(VEHICLE_ID, "甘G001", "Microbus", 8, "IDLE", "POINT(105.2421 35.2103)", "测试", true));
@@ -140,7 +144,10 @@ class GpsLocationIngressIntegrationTest {
         addLocationMember(
                 onboardSystemId, TERMINAL_ID,
                 OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
-        activateProfile(TERMINAL_ID, 60, 10);
+        addActiveSafetyAuthority(onboardSystemId, TERMINAL_ID);
+        activateProfile(
+                TERMINAL_ID, 60, 10,
+                OnboardDeviceProtocolProfile.SafetyProfile.JSATL12_2017);
     }
 
     @Test
@@ -917,9 +924,11 @@ class GpsLocationIngressIntegrationTest {
         Instant envelopeReceivedAt = Instant.parse("2026-08-12T09:00:00Z");
         GatewayIngressEnvelope quarantined = envelopeAt(positionKey, VEHICLE_ID, 0,
                 "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), envelopeReceivedAt);
-        GatewayIngressEnvelope adas = alarmEnvelope(positionKey, "ADAS", 1, "FORWARD_COLLISION", "1".repeat(64),
+        GatewayIngressEnvelope adas = alarmEnvelope(onboardSystemId, positionKey,
+                "ADAS", 1, "FORWARD_COLLISION", "1".repeat(64),
                 Instant.parse("2026-08-12T01:00:00Z"), envelopeReceivedAt);
-        GatewayIngressEnvelope dms = alarmEnvelope(positionKey, "DMS", 2, "PHONE", "2".repeat(64),
+        GatewayIngressEnvelope dms = alarmEnvelope(onboardSystemId, positionKey,
+                "DMS", 2, "PHONE", "2".repeat(64),
                 Instant.parse("2026-08-12T01:00:00Z"), envelopeReceivedAt);
 
         postIngress(List.of(quarantined, adas, dms)).andExpect(status().isOk())
@@ -950,7 +959,8 @@ class GpsLocationIngressIntegrationTest {
         Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
         GatewayIngressEnvelope rejected = envelopeAt(positionKey, VEHICLE_ID, 0x02,
                 "181.0000000", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
-        GatewayIngressEnvelope alarm = alarmEnvelope(positionKey, "ADAS", 1, "FORWARD_COLLISION", "3".repeat(64),
+        GatewayIngressEnvelope alarm = alarmEnvelope(onboardSystemId, positionKey,
+                "ADAS", 1, "FORWARD_COLLISION", "3".repeat(64),
                 receivedAt, receivedAt);
 
         postIngress(List.of(rejected, alarm)).andExpect(status().isOk())
@@ -1046,7 +1056,8 @@ class GpsLocationIngressIntegrationTest {
         UUID positionKey = UUID.randomUUID();
         GatewayIngressEnvelope position = envelopeAt(positionKey, VEHICLE_ID, 0x02,
                 "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
-        GatewayIngressEnvelope alarm = alarmEnvelope(positionKey, "ADAS", 1, "FORWARD_COLLISION",
+        GatewayIngressEnvelope alarm = alarmEnvelope(onboardSystemId, positionKey,
+                "ADAS", 1, "FORWARD_COLLISION",
                 "7".repeat(64), receivedAt, receivedAt);
         GatewayIngressEnvelope alarmBusinessReplay = new GatewayIngressEnvelope(
                 1, UUID.randomUUID(), "ALARM", receivedAt, alarm.payloadJson());
@@ -1125,10 +1136,10 @@ class GpsLocationIngressIntegrationTest {
                 rejectedPositionKey, VEHICLE_ID, 0x02, "181.0000000", "35.2109657",
                 Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
         GatewayIngressEnvelope crossAccepted = alarmFor(
-                OTHER_TERMINAL_ID, OTHER_VEHICLE_ID, acceptedPositionKey,
+                OTHER_TERMINAL_ID, onboardSystemId, OTHER_VEHICLE_ID, acceptedPositionKey,
                 "ADAS", 1, "FORWARD_COLLISION", "8".repeat(64), receivedAt);
         GatewayIngressEnvelope crossRejected = alarmFor(
-                OTHER_TERMINAL_ID, OTHER_VEHICLE_ID, rejectedPositionKey,
+                OTHER_TERMINAL_ID, onboardSystemId, OTHER_VEHICLE_ID, rejectedPositionKey,
                 "DMS", 2, "PHONE", "9".repeat(64), receivedAt);
         UUID manualPositionKey = UUID.randomUUID();
         OffsetDateTime manualAt = OffsetDateTime.parse("2026-08-12T08:59:50Z");
@@ -1142,7 +1153,7 @@ class GpsLocationIngressIntegrationTest {
         org.springframework.test.util.ReflectionTestUtils.setField(manual, "terminalId", TERMINAL_ID);
         eventRepository.saveAndFlush(manual);
         GatewayIngressEnvelope manualDependency = alarmFor(
-                TERMINAL_ID, VEHICLE_ID, manualPositionKey,
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, manualPositionKey,
                 "ADAS", 3, "LANE_DEPARTURE", "e".repeat(64), receivedAt);
         UUID wrongKindKey = UUID.randomUUID();
         GatewayIngressEnvelope attachment = new GatewayIngressEnvelope(
@@ -1153,7 +1164,7 @@ class GpsLocationIngressIntegrationTest {
         wrongKindReceipt.identify("ATTACHMENT_METADATA", TERMINAL_ID, VEHICLE_ID);
         receiptRepository.saveAndFlush(wrongKindReceipt);
         GatewayIngressEnvelope wrongKindDependency = alarmFor(
-                TERMINAL_ID, VEHICLE_ID, wrongKindKey,
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, wrongKindKey,
                 "DMS", 4, "DISTRACTION", "f".repeat(64), receivedAt);
         UUID neighborKey = UUID.randomUUID();
         GatewayIngressEnvelope neighbor = envelopeAt(
@@ -1190,9 +1201,11 @@ class GpsLocationIngressIntegrationTest {
                 rejectedPositionKey, VEHICLE_ID, 0x02, "181", "35.2109657",
                 Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
         GatewayIngressEnvelope rejectedDependency = alarmEnvelope(
-                rejectedPositionKey, "ADAS", 11, "FORWARD_COLLISION", "1".repeat(64), receivedAt, receivedAt);
+                onboardSystemId, rejectedPositionKey, "ADAS", 11,
+                "FORWARD_COLLISION", "1".repeat(64), receivedAt, receivedAt);
         GatewayIngressEnvelope missingDependency = alarmEnvelope(
-                UUID.randomUUID(), "DMS", 12, "PHONE", "2".repeat(64), receivedAt, receivedAt);
+                onboardSystemId, UUID.randomUUID(), "DMS", 12,
+                "PHONE", "2".repeat(64), receivedAt, receivedAt);
         UUID neighborKey = UUID.randomUUID();
         GatewayIngressEnvelope neighbor = envelopeAt(
                 neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
@@ -1232,7 +1245,9 @@ class GpsLocationIngressIntegrationTest {
         addLocationMember(
                 otherSystem.getId(), OTHER_TERMINAL_ID,
                 OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
-        activateProfile(OTHER_TERMINAL_ID, 60, 10);
+        activateProfile(
+                OTHER_TERMINAL_ID, 60, 10,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE);
 
         Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
         UUID trustedPositionKey = UUID.randomUUID();
@@ -1270,7 +1285,8 @@ class GpsLocationIngressIntegrationTest {
                 1, wrongKindKey, "ATTACHMENT_METADATA", receivedAt, "{}");
 
         GatewayIngressEnvelope start = alarmEnvelope(
-                trustedPositionKey, "ADAS", 21, "FORWARD_COLLISION", "3".repeat(64),
+                onboardSystemId, trustedPositionKey, "ADAS", 21,
+                "FORWARD_COLLISION", "3".repeat(64),
                 receivedAt, receivedAt);
         postIngress(List.of(trustedPosition, rejectedPosition, crossVehiclePosition, wrongKind, start))
                 .andExpect(status().isOk())
@@ -1325,7 +1341,8 @@ class GpsLocationIngressIntegrationTest {
                 positionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
                 Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
         GatewayIngressEnvelope start = alarmEnvelope(
-                positionKey, "ADAS", 1, "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
+                onboardSystemId, positionKey, "ADAS", 1,
+                "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
         postIngress(List.of(position, start)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
         com.fasterxml.jackson.databind.node.ObjectNode endPayload =
@@ -1363,7 +1380,8 @@ class GpsLocationIngressIntegrationTest {
                 positionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
                 Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
         GatewayIngressEnvelope start = alarmEnvelope(
-                positionKey, "ADAS", 31, "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
+                onboardSystemId, positionKey, "ADAS", 31,
+                "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
         com.fasterxml.jackson.databind.node.ObjectNode endPayload =
                 (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(start.payloadJson());
         endPayload.put("state", "END");
@@ -1758,7 +1776,8 @@ class GpsLocationIngressIntegrationTest {
     @Test
     void propagatesAnUnknownAlarmDecoderFailureWithoutWritingARejectedReceipt() throws Exception {
         GatewayIngressEnvelope alarm = alarmEnvelope(
-                UUID.randomUUID(), "ADAS", 41, "FORWARD_COLLISION", "f".repeat(64),
+                onboardSystemId, UUID.randomUUID(), "ADAS", 41,
+                "FORWARD_COLLISION", "f".repeat(64),
                 Instant.parse("2026-08-12T09:00:00Z"), Instant.parse("2026-08-12T09:00:00Z"));
         IllegalArgumentException failure = new IllegalArgumentException("forced alarm decoder failure");
         faultInjectingObjectMapper.failReading(alarm.payloadJson(), failure);
@@ -2196,12 +2215,41 @@ class GpsLocationIngressIntegrationTest {
                 OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP);
     }
 
-    private void activateProfile(UUID terminalId, int activeIntervalSeconds, int idleIntervalSeconds) {
+    private void addActiveSafetyAuthority(UUID systemId, UUID terminalId) {
+        roleRepository.save(OnboardDeviceRoleAssignment.assign(
+                systemId,
+                terminalId,
+                OnboardDeviceRoleAssignment.Role.ACTIVE_SAFETY,
+                "configure active-safety role",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+        for (OnboardDeviceCapability.Capability capability : List.of(
+                OnboardDeviceCapability.Capability.ADAS,
+                OnboardDeviceCapability.Capability.DMS)) {
+            OnboardDeviceCapability declared = OnboardDeviceCapability.declare(
+                    terminalId,
+                    capability,
+                    "declare active-safety capability",
+                    CONFIGURED_AT);
+            declared.verify(
+                    "synthetic location-ingress authority evidence",
+                    CONFIGURATION_ACTOR_ID,
+                    "verify active-safety capability",
+                    CONFIGURED_AT);
+            capabilityRepository.save(declared);
+        }
+    }
+
+    private void activateProfile(
+            UUID terminalId,
+            int activeIntervalSeconds,
+            int idleIntervalSeconds,
+            OnboardDeviceProtocolProfile.SafetyProfile safetyProfile) {
         profileRepository.save(OnboardDeviceProtocolProfile.activate(
                 terminalId,
                 OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
                 OnboardDeviceProtocolProfile.BusinessProfile.NONE,
-                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                safetyProfile,
                 OnboardDeviceProtocolProfile.MediaProfile.NONE,
                 activeIntervalSeconds,
                 idleIntervalSeconds,
@@ -2360,6 +2408,7 @@ class GpsLocationIngressIntegrationTest {
         assertThat(apiAlarmCount()).isZero();
     }
     private GatewayIngressEnvelope alarmEnvelope(
+            UUID alarmOnboardSystemId,
             UUID positionKey,
             String module,
             int typeCode,
@@ -2369,6 +2418,7 @@ class GpsLocationIngressIntegrationTest {
             Instant envelopeGatewayReceivedAt) throws Exception {
         java.util.Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("terminalId", TERMINAL_ID);
+        payload.put("onboardSystemId", alarmOnboardSystemId);
         payload.put("vehicleId", VEHICLE_ID);
         payload.put("standard", "T/JSATL12-2017");
         payload.put("module", module);
@@ -2394,6 +2444,7 @@ class GpsLocationIngressIntegrationTest {
     }
     private GatewayIngressEnvelope alarmFor(
             UUID terminalId,
+            UUID alarmOnboardSystemId,
             UUID vehicleId,
             UUID positionKey,
             String module,
@@ -2402,7 +2453,8 @@ class GpsLocationIngressIntegrationTest {
             String digest,
             Instant receivedAt) throws Exception {
         GatewayIngressEnvelope source = alarmEnvelope(
-                positionKey, module, typeCode, alarmType, digest, receivedAt, receivedAt);
+                alarmOnboardSystemId, positionKey, module, typeCode,
+                alarmType, digest, receivedAt, receivedAt);
         com.fasterxml.jackson.databind.node.ObjectNode payload =
                 (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(source.payloadJson());
         payload.put("terminalId", terminalId.toString());

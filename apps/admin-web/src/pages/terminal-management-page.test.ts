@@ -46,6 +46,10 @@ describe("TerminalManagementPage", () => {
     expect(screen.getByText("JT/T 1078：支持")).toBeInTheDocument();
     expect(screen.getByText("最近鉴权：尚无数据")).toBeInTheDocument();
     expect(screen.getByText("SESSION_ESTABLISHED")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "当前车载系统归属" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "历史 legacy 绑定" })).toBeInTheDocument();
+    expect(screen.getByText("甘J-D001 · ACTIVE")).toBeInTheDocument();
+    expect(screen.getByText(/甘J-H001 · UNBOUND/)).toBeInTheDocument();
     expect(screen.getByText("所有操作须填写原因，并在提交前进行第二次确认；提交前会重新读取最新版本。")).toBeInTheDocument();
     expect(screen.queryByText("PHONE-9012")).not.toBeInTheDocument();
     expect(screen.queryByText("auth-token-digest")).not.toBeInTheDocument();
@@ -196,8 +200,10 @@ function detail(terminalCode = "JT-001", version = 4) {
     lastHeartbeatAt: null,
     lastLocationAt: null,
     offlineAt: null,
-    currentBinding: { plateNumber: "甘J-D001", status: "ACTIVE", validFrom: "2026-08-11T08:00:00Z", validTo: null },
-    bindingHistory: [{ plateNumber: "甘J-D001", status: "ACTIVE", validFrom: "2026-08-11T08:00:00Z", validTo: null }],
+    currentOnboardMembership: { onboardSystemId: "system-1", vehicleId: "vehicle-1", plateNumber: "甘J-D001", status: "ACTIVE", validFrom: "2026-08-11T08:00:00Z" },
+    legacyBindingHistory: [{ plateNumber: "甘J-H001", status: "UNBOUND", validFrom: "2026-08-01T08:00:00Z", validTo: "2026-08-02T08:00:00Z" }],
+    currentBinding: null,
+    bindingHistory: [{ plateNumber: "甘J-H001", status: "UNBOUND", validFrom: "2026-08-01T08:00:00Z", validTo: "2026-08-02T08:00:00Z" }],
     securityAudits: [{ eventType: "ONLINE", result: "APPLIED", reasonCode: "SESSION_ESTABLISHED", protocolVersion: "JT808_2019", messageId: 2, occurredAt: "2026-08-12T08:00:00Z" }]
   };
 }

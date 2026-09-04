@@ -371,6 +371,14 @@ export interface TerminalBindingSummary {
   validTo: IsoDateTime | null;
 }
 
+export interface CurrentOnboardMembershipSummary {
+  onboardSystemId: UUID;
+  vehicleId: UUID;
+  plateNumber: string;
+  status: string;
+  validFrom: IsoDateTime;
+}
+
 export interface TerminalSecurityAudit {
   eventType: string;
   result: string;
@@ -391,6 +399,8 @@ export interface TerminalDetail extends TerminalSummary {
   lastHeartbeatAt: IsoDateTime | null;
   lastLocationAt: IsoDateTime | null;
   offlineAt: IsoDateTime | null;
+  currentOnboardMembership: CurrentOnboardMembershipSummary | null;
+  legacyBindingHistory: TerminalBindingSummary[];
   currentBinding: TerminalBindingSummary | null;
   bindingHistory: TerminalBindingSummary[];
   securityAudits: TerminalSecurityAudit[];

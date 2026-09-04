@@ -1,12 +1,17 @@
 package com.idavy.drtops.domain.onboard;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability.Capability;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability.CapabilityStatus;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.BusinessProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.MediaProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.SafetyProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.TransportProfile;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
@@ -33,12 +38,15 @@ import org.springframework.transaction.annotation.Transactional;
 public class OnboardRegistrationResolver {
 
     public static final String VEHICLE_IDENTIFIER_MISMATCH = "VEHICLE_IDENTIFIER_MISMATCH";
+    public static final int SESSION_CONTRACT_VERSION = 2;
 
     private final JtTerminalRepository terminalRepository;
     private final OnboardDeviceMembershipRepository membershipRepository;
     private final OnboardSystemRepository systemRepository;
     private final OnboardSystemRuntimeStateRepository runtimeRepository;
     private final OnboardDeviceRoleAssignmentRepository roleRepository;
+    private final OnboardDeviceProtocolProfileRepository profileRepository;
+    private final OnboardDeviceCapabilityRepository capabilityRepository;
     private final VehicleRepository vehicleRepository;
     private final AuditLogRepository auditLogRepository;
     private final EntityManager entityManager;
@@ -51,6 +59,8 @@ public class OnboardRegistrationResolver {
             OnboardSystemRepository systemRepository,
             OnboardSystemRuntimeStateRepository runtimeRepository,
             OnboardDeviceRoleAssignmentRepository roleRepository,
+            OnboardDeviceProtocolProfileRepository profileRepository,
+            OnboardDeviceCapabilityRepository capabilityRepository,
             VehicleRepository vehicleRepository,
             AuditLogRepository auditLogRepository,
             EntityManager entityManager,
@@ -61,6 +71,8 @@ public class OnboardRegistrationResolver {
         this.systemRepository = systemRepository;
         this.runtimeRepository = runtimeRepository;
         this.roleRepository = roleRepository;
+        this.profileRepository = profileRepository;
+        this.capabilityRepository = capabilityRepository;
         this.vehicleRepository = vehicleRepository;
         this.auditLogRepository = auditLogRepository;
         this.entityManager = entityManager;
@@ -101,8 +113,8 @@ public class OnboardRegistrationResolver {
             return RegistrationDecision.rejected("ACTIVE_MEMBERSHIP_MISSING");
         }
         OnboardDeviceMembership initialMembership = initialMemberships.getFirst();
-        LockedRegistrationState locked = lockAndReload(
-                codeTerminal.getId(), initialMembership.getOnboardSystemId());
+        LockedRegistrationState locked = loadLockedSessionAuthority(
+                codeTerminal.getId(), initialMembership.getOnboardSystemId(), true);
         if (locked == null) {
             return RegistrationDecision.rejected("ACTIVE_MEMBERSHIP_MISSING");
         }
@@ -145,13 +157,13 @@ public class OnboardRegistrationResolver {
             audit(system, VEHICLE_IDENTIFIER_MISMATCH,
                     "warningCount", runtime.getWarningCodes().size());
             return RegistrationDecision.approved(
-                    context(terminal, membership, system),
+                    context(locked),
                     List.of(VEHICLE_IDENTIFIER_MISMATCH));
         }
 
         removeMismatchWarning(runtime);
         return RegistrationDecision.approved(
-                context(terminal, membership, system), List.of());
+                context(locked), List.of());
     }
 
     @Transactional
@@ -169,8 +181,8 @@ public class OnboardRegistrationResolver {
             throw new TerminalConflictException(
                     "terminal is not eligible for registration completion");
         }
-        LockedRegistrationState locked = lockAndReload(
-                located.getId(), memberships.getFirst().getOnboardSystemId());
+        LockedRegistrationState locked = loadLockedSessionAuthority(
+                located.getId(), memberships.getFirst().getOnboardSystemId(), false);
         if (locked == null
                 || locked.system().getStatus() != OnboardSystem.Status.ACTIVE
                 || vehicleRepository.findById(locked.system().getVehicleId()).isEmpty()
@@ -235,8 +247,8 @@ public class OnboardRegistrationResolver {
         if (memberships.size() != 1) {
             return AuthenticationDecision.rejected("AUTHENTICATION_REJECTED");
         }
-        LockedRegistrationState locked = lockAndReload(
-                terminalId, memberships.getFirst().getOnboardSystemId());
+        LockedRegistrationState locked = loadLockedSessionAuthority(
+                terminalId, memberships.getFirst().getOnboardSystemId(), false);
         if (locked == null
                 || locked.system().getStatus() != OnboardSystem.Status.ACTIVE
                 || vehicleRepository.findById(locked.system().getVehicleId()).isEmpty()) {
@@ -258,8 +270,7 @@ public class OnboardRegistrationResolver {
                 || !secureEquals(terminal.getAuthTokenHash(), tokenSha256)) {
             return AuthenticationDecision.rejected("AUTHENTICATION_REJECTED");
         }
-        TerminalSessionContext context = context(
-                terminal, locked.membership(), locked.system());
+        TerminalSessionContext context = context(locked);
         terminal.recordSuccessfulAuthentication(OffsetDateTime.now(clock));
         terminalRepository.saveAndFlush(terminal);
         return AuthenticationDecision.approved(context);
@@ -286,14 +297,15 @@ public class OnboardRegistrationResolver {
         return terminals.size() == 1 && terminals.getFirst().getId().equals(terminalId);
     }
 
-    private LockedRegistrationState lockAndReload(UUID terminalId, UUID onboardSystemId) {
+    private LockedRegistrationState loadLockedSessionAuthority(
+            UUID terminalId, UUID onboardSystemId, boolean includeRuntime) {
         if (!lockOne("onboard_systems", "id", onboardSystemId)) {
             return null;
         }
         if (!lockOne("jt_terminals", "id", terminalId)) {
             return null;
         }
-        entityManager.createNativeQuery("""
+        List<?> lockedMemberships = entityManager.createNativeQuery("""
                         select id from onboard_device_memberships
                         where terminal_id = :terminalId
                           and status = 'ACTIVE' and valid_to is null
@@ -302,18 +314,56 @@ public class OnboardRegistrationResolver {
                         """)
                 .setParameter("terminalId", terminalId)
                 .getResultList();
-        if (!lockOne("onboard_system_runtime_state", "onboard_system_id", onboardSystemId)) {
+        if (lockedMemberships.size() != 1) {
+            return null;
+        }
+        entityManager.createNativeQuery("""
+                        select id from onboard_device_role_assignments
+                        where onboard_system_id = :onboardSystemId
+                          and terminal_id = :terminalId
+                          and status = 'ACTIVE' and valid_to is null
+                        order by role, id
+                        for update
+                        """)
+                .setParameter("onboardSystemId", onboardSystemId)
+                .setParameter("terminalId", terminalId)
+                .getResultList();
+        List<?> lockedProfiles = entityManager.createNativeQuery("""
+                        select id from onboard_device_protocol_profiles
+                        where terminal_id = :terminalId
+                          and status = 'ACTIVE' and valid_to is null
+                        order by id
+                        for update
+                        """)
+                .setParameter("terminalId", terminalId)
+                .getResultList();
+        if (lockedProfiles.size() != 1) {
+            return null;
+        }
+        entityManager.createNativeQuery("""
+                        select id from onboard_device_capabilities
+                        where terminal_id = :terminalId and status = 'VERIFIED'
+                        order by capability, id
+                        for update
+                        """)
+                .setParameter("terminalId", terminalId)
+                .getResultList();
+        if (includeRuntime
+                && !lockOne("onboard_system_runtime_state", "onboard_system_id", onboardSystemId)) {
             return null;
         }
         JtTerminal terminal = terminalRepository.findById(terminalId).orElse(null);
         OnboardSystem system = systemRepository.findById(onboardSystemId).orElse(null);
-        OnboardSystemRuntimeState runtime = runtimeRepository.findById(onboardSystemId).orElse(null);
-        if (terminal == null || system == null || runtime == null) {
+        OnboardSystemRuntimeState runtime = includeRuntime
+                ? runtimeRepository.findById(onboardSystemId).orElse(null) : null;
+        if (terminal == null || system == null || includeRuntime && runtime == null) {
             return null;
         }
         entityManager.refresh(terminal);
         entityManager.refresh(system);
-        entityManager.refresh(runtime);
+        if (runtime != null) {
+            entityManager.refresh(runtime);
+        }
         List<OnboardDeviceMembership> memberships = activeMemberships(terminalId);
         if (memberships.size() != 1) {
             return null;
@@ -323,7 +373,25 @@ public class OnboardRegistrationResolver {
         if (!membership.getOnboardSystemId().equals(onboardSystemId)) {
             return null;
         }
-        return new LockedRegistrationState(terminal, membership, system, runtime);
+        List<OnboardDeviceRoleAssignment> assignments = roleRepository
+                .findActiveByTerminalIdOrderByValidFromAsc(terminalId).stream()
+                .filter(assignment -> onboardSystemId.equals(assignment.getOnboardSystemId()))
+                .toList();
+        EnumSet<Role> roles = EnumSet.noneOf(Role.class);
+        assignments.forEach(assignment -> roles.add(assignment.getRole()));
+        OnboardDeviceProtocolProfile profile = profileRepository
+                .findActiveByTerminalId(terminalId).orElse(null);
+        if (profile == null) {
+            return null;
+        }
+        Set<Capability> verifiedCapabilities = capabilityRepository
+                .findCurrentByTerminalIdOrderByCreatedAtAsc(terminalId).stream()
+                .filter(fact -> fact.getStatus() == CapabilityStatus.VERIFIED)
+                .map(OnboardDeviceCapability::getCapability)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return new LockedRegistrationState(
+                terminal, membership, system, runtime,
+                Set.copyOf(roles), profile, verifiedCapabilities);
     }
 
     private boolean lockOne(String table, String idColumn, UUID id) {
@@ -377,28 +445,55 @@ public class OnboardRegistrationResolver {
         }
     }
 
-    private TerminalSessionContext context(
-            JtTerminal terminal,
-            OnboardDeviceMembership membership,
-            OnboardSystem system) {
-        EnumSet<Role> roles = EnumSet.noneOf(Role.class);
-        entityManager.createQuery("""
-                        select assignment
-                        from OnboardDeviceRoleAssignment assignment
-                        where assignment.onboardSystemId = :systemId
-                          and assignment.terminalId = :terminalId
-                          and assignment.status = :status and assignment.validTo is null
-                        order by assignment.role
-                        """, OnboardDeviceRoleAssignment.class)
-                .setParameter("systemId", system.getId())
-                .setParameter("terminalId", terminal.getId())
-                .setParameter("status", OnboardDeviceRoleAssignment.Status.ACTIVE)
-                .getResultList()
-                .forEach(assignment -> roles.add(assignment.getRole()));
+    private TerminalSessionContext context(LockedRegistrationState authority) {
+        JtTerminal terminal = authority.terminal();
+        OnboardSystem system = authority.system();
+        OnboardDeviceProtocolProfile profile = authority.profile();
+        List<String> modules = enabledActiveSafetyModules(
+                authority.roles(), authority.verifiedCapabilities());
+        SessionProtocolProfile sessionProfile = new SessionProtocolProfile(
+                profile.getTransportProfile(),
+                profile.getBusinessProfile(),
+                profile.getSafetyProfile(),
+                profile.getMediaProfile(),
+                modules,
+                profile.getActivePositionIntervalSeconds(),
+                profile.getIdlePositionIntervalSeconds());
         return new TerminalSessionContext(
-                terminal.getId(), membership.getOnboardSystemId(), system.getVehicleId(),
-                roles, terminal.getSourceCoordinateSystem(), terminal.getActiveSafetyStandard(),
-                parseModules(terminal.getActiveSafetyModules()), terminal.getAuthTokenVersion());
+                SESSION_CONTRACT_VERSION,
+                terminal.getId(),
+                authority.membership().getOnboardSystemId(),
+                system.getVehicleId(),
+                system.getVersion(),
+                authority.roles(),
+                terminal.getSourceCoordinateSystem(),
+                sessionProfile,
+                compatibilitySafetyStandard(profile.getSafetyProfile()),
+                modules,
+                terminal.getAuthTokenVersion());
+    }
+
+    private static List<String> enabledActiveSafetyModules(
+            Set<Role> roles, Set<Capability> verifiedCapabilities) {
+        if (!roles.contains(Role.ACTIVE_SAFETY)) {
+            return List.of();
+        }
+        List<String> modules = new ArrayList<>(2);
+        if (verifiedCapabilities.contains(Capability.ADAS)) {
+            modules.add("ADAS");
+        }
+        if (verifiedCapabilities.contains(Capability.DMS)) {
+            modules.add("DMS");
+        }
+        return List.copyOf(modules);
+    }
+
+    private static String compatibilitySafetyStandard(SafetyProfile profile) {
+        return switch (profile) {
+            case JSATL12_2017 -> "T/JSATL12-2017";
+            case GBT28787_2023 -> "GB/T 28787-2023";
+            case NONE -> null;
+        };
     }
 
     private void addMismatchWarning(OnboardSystemRuntimeState runtime) {
@@ -434,18 +529,6 @@ public class OnboardRegistrationResolver {
         }
     }
 
-    private List<String> parseModules(String serialized) {
-        if (serialized == null || serialized.isBlank()) {
-            return List.of();
-        }
-        try {
-            return List.copyOf(objectMapper.readValue(
-                    serialized, new TypeReference<List<String>>() { }));
-        } catch (JsonProcessingException malformed) {
-            return List.of();
-        }
-    }
-
     private static boolean secureEquals(String expected, String presented) {
         if (expected == null || presented == null) {
             return false;
@@ -464,21 +547,51 @@ public class OnboardRegistrationResolver {
             String protocolVersion) {
     }
 
+    public record SessionProtocolProfile(
+            TransportProfile transportProfile,
+            BusinessProfile businessProfile,
+            SafetyProfile safetyProfile,
+            MediaProfile mediaProfile,
+            List<String> enabledActiveSafetyModules,
+            int activePositionIntervalSeconds,
+            int idlePositionIntervalSeconds) {
+        public SessionProtocolProfile {
+            Objects.requireNonNull(transportProfile, "transportProfile");
+            Objects.requireNonNull(businessProfile, "businessProfile");
+            Objects.requireNonNull(safetyProfile, "safetyProfile");
+            Objects.requireNonNull(mediaProfile, "mediaProfile");
+            enabledActiveSafetyModules = List.copyOf(enabledActiveSafetyModules);
+            if (activePositionIntervalSeconds <= 0
+                    || idlePositionIntervalSeconds <= 0) {
+                throw new IllegalArgumentException("position intervals must be positive");
+            }
+        }
+    }
+
     public record TerminalSessionContext(
+            int contractVersion,
             UUID terminalId,
             UUID onboardSystemId,
             UUID vehicleId,
+            long onboardConfigurationVersion,
             Set<Role> roles,
             String sourceCoordinateSystem,
+            SessionProtocolProfile protocolProfile,
             String activeSafetyStandard,
             List<String> activeSafetyModules,
             int tokenVersion) {
         public TerminalSessionContext {
+            if (contractVersion != SESSION_CONTRACT_VERSION) {
+                throw new IllegalArgumentException("unsupported session contract version");
+            }
+            Objects.requireNonNull(terminalId, "terminalId");
+            Objects.requireNonNull(onboardSystemId, "onboardSystemId");
+            Objects.requireNonNull(vehicleId, "vehicleId");
+            Objects.requireNonNull(protocolProfile, "protocolProfile");
             roles = roles == null || roles.isEmpty()
                     ? Set.of()
                     : Collections.unmodifiableSet(EnumSet.copyOf(roles));
-            activeSafetyModules = activeSafetyModules == null
-                    ? List.of() : List.copyOf(activeSafetyModules);
+            activeSafetyModules = List.copyOf(activeSafetyModules);
         }
     }
 
@@ -535,6 +648,9 @@ public class OnboardRegistrationResolver {
             JtTerminal terminal,
             OnboardDeviceMembership membership,
             OnboardSystem system,
-            OnboardSystemRuntimeState runtime) {
+            OnboardSystemRuntimeState runtime,
+            Set<Role> roles,
+            OnboardDeviceProtocolProfile profile,
+            Set<Capability> verifiedCapabilities) {
     }
 }

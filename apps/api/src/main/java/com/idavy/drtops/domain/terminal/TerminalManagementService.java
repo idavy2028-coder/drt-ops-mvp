@@ -5,7 +5,9 @@ import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.onboard.OnboardConfigurationConflictException;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
 import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
 import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -35,6 +37,8 @@ public class TerminalManagementService {
     private final JtTerminalRepository terminalRepository;
     private final JtTerminalVehicleBindingRepository bindingRepository;
     private final VehicleRepository vehicleRepository;
+    private final OnboardDeviceMembershipRepository membershipRepository;
+    private final OnboardSystemRepository onboardSystemRepository;
     private final AuditLogRepository auditLogRepository;
     private final JtGatewayAuditEventRepository gatewayAuditRepository;
     private final JtGatewayControlClient controlClient;
@@ -48,6 +52,8 @@ public class TerminalManagementService {
             JtTerminalRepository terminalRepository,
             JtTerminalVehicleBindingRepository bindingRepository,
             VehicleRepository vehicleRepository,
+            OnboardDeviceMembershipRepository membershipRepository,
+            OnboardSystemRepository onboardSystemRepository,
             AuditLogRepository auditLogRepository,
             JtGatewayAuditEventRepository gatewayAuditRepository,
             JtGatewayControlClient controlClient,
@@ -59,6 +65,8 @@ public class TerminalManagementService {
         this.terminalRepository = terminalRepository;
         this.bindingRepository = bindingRepository;
         this.vehicleRepository = vehicleRepository;
+        this.membershipRepository = membershipRepository;
+        this.onboardSystemRepository = onboardSystemRepository;
         this.auditLogRepository = auditLogRepository;
         this.gatewayAuditRepository = gatewayAuditRepository;
         this.controlClient = controlClient;
@@ -86,11 +94,26 @@ public class TerminalManagementService {
     @Transactional(readOnly = true)
     public TerminalDetail getDetail(String terminalCode) {
         JtTerminal terminal = get(terminalCode);
-        List<BindingSummary> bindings = bindingRepository.findByTerminalIdOrderByValidFromDesc(terminal.getId()).stream()
+        List<BindingSummary> legacyBindings = bindingRepository
+                .findByTerminalIdOrderByValidFromDesc(terminal.getId()).stream()
                 .map(binding -> new BindingSummary(
                         vehicleRepository.findById(binding.getVehicleId()).map(vehicle -> vehicle.getPlateNumber()).orElse("车辆已不可用"),
                         binding.getStatus().name(), binding.getValidFrom(), binding.getValidTo()))
                 .toList();
+        CurrentOnboardMembershipSummary currentMembership = membershipRepository
+                .findActiveByTerminalId(terminal.getId())
+                .flatMap(membership -> onboardSystemRepository
+                        .findById(membership.getOnboardSystemId())
+                        .filter(system -> system.getStatus()
+                                == com.idavy.drtops.domain.onboard.OnboardSystem.Status.ACTIVE)
+                        .flatMap(system -> vehicleRepository.findById(system.getVehicleId())
+                                .map(vehicle -> new CurrentOnboardMembershipSummary(
+                                        system.getId(),
+                                        system.getVehicleId(),
+                                        vehicle.getPlateNumber(),
+                                        membership.getStatus().name(),
+                                        membership.getValidFrom()))))
+                .orElse(null);
         List<GatewayAuditSummary> audits = gatewayAuditRepository.findByTerminalIdOrderByOccurredAtDesc(terminal.getId()).stream()
                 .map(event -> new GatewayAuditSummary(event.getEventType().name(), event.getResult().name(),
                         event.getReasonCode(), event.getProtocolVersion(), event.getMessageId(), event.getOccurredAt()))
@@ -98,14 +121,9 @@ public class TerminalManagementService {
         OffsetDateTime lastSeenAt = terminal.getLastSeenAt();
         OnlineStatus onlineStatus = lastSeenAt == null ? OnlineStatus.NEVER_SEEN
                 : lastSeenAt.isBefore(OffsetDateTime.now(clock).minusSeconds(180)) ? OnlineStatus.OFFLINE : OnlineStatus.ONLINE;
-        BindingSummary currentBinding = bindingRepository.findByTerminalIdAndStatus(terminal.getId(),
-                        JtTerminalVehicleBinding.Status.ACTIVE)
-                .map(binding -> new BindingSummary(vehicleRepository.findById(binding.getVehicleId())
-                        .map(vehicle -> vehicle.getPlateNumber()).orElse("车辆已不可用"), binding.getStatus().name(),
-                        binding.getValidFrom(), binding.getValidTo()))
-                .orElse(null);
         return new TerminalDetail(terminal, onlineStatus, lastSeenAt,
-                onlineStatus == OnlineStatus.OFFLINE ? lastSeenAt.plusSeconds(180) : null, currentBinding, bindings, audits);
+                onlineStatus == OnlineStatus.OFFLINE ? lastSeenAt.plusSeconds(180) : null,
+                null, legacyBindings, currentMembership, legacyBindings, audits);
     }
 
     @Transactional
@@ -751,6 +769,14 @@ public class TerminalManagementService {
     public record BindingSummary(String plateNumber, String status, OffsetDateTime validFrom, OffsetDateTime validTo) {
     }
 
+    public record CurrentOnboardMembershipSummary(
+            UUID onboardSystemId,
+            UUID vehicleId,
+            String plateNumber,
+            String status,
+            OffsetDateTime validFrom) {
+    }
+
     public record GatewayAuditSummary(
             String eventType, String result, String reasonCode, String protocolVersion, Integer messageId,
             OffsetDateTime occurredAt) {
@@ -763,6 +789,8 @@ public class TerminalManagementService {
             OffsetDateTime offlineAt,
             BindingSummary currentBinding,
             List<BindingSummary> bindingHistory,
+            CurrentOnboardMembershipSummary currentOnboardMembership,
+            List<BindingSummary> legacyBindingHistory,
             List<GatewayAuditSummary> securityAudits) {
     }
 

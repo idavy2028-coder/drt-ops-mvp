@@ -273,6 +273,8 @@ public class TerminalController {
             java.time.OffsetDateTime offlineAt,
             TerminalManagementService.BindingSummary currentBinding,
             java.util.List<TerminalManagementService.BindingSummary> bindingHistory,
+            TerminalManagementService.CurrentOnboardMembershipSummary currentOnboardMembership,
+            java.util.List<TerminalManagementService.BindingSummary> legacyBindingHistory,
             java.util.List<TerminalManagementService.GatewayAuditSummary> securityAudits) {
         static TerminalDetailView from(TerminalManagementService.TerminalDetail detail) {
             JtTerminal terminal = detail.terminal();
@@ -282,7 +284,9 @@ public class TerminalController {
                     parseModules(terminal.getActiveSafetyModules()), terminal.isJt1078Enabled(), terminal.getStatus().name(),
                     detail.onlineStatus().name(), terminal.getLastRegisteredAt() != null, terminal.getVersion(),
                     terminal.getLastRegisteredAt(), terminal.getLastAuthenticatedAt(), detail.lastValidMessageAt(),
-                    null, null, detail.offlineAt(), detail.currentBinding(), detail.bindingHistory(), detail.securityAudits());
+                    null, null, detail.offlineAt(), detail.currentBinding(), detail.bindingHistory(),
+                    detail.currentOnboardMembership(), detail.legacyBindingHistory(),
+                    detail.securityAudits());
         }
 
         private static java.util.List<String> parseModules(String serialized) {

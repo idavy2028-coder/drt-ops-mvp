@@ -166,6 +166,61 @@ class OnboardSystemConfigurationServiceTest {
     }
 
     @Test
+    void rejectsRoleProfileMismatchAndTransportIdentityMismatch() {
+        OnboardSystem dispatchSystem = fixtures.activeSystem(OperatingMode.SAFETY_MONITOR_ONLY);
+        fixtures.verifyDispatchAndLocation("profile-dispatch");
+        assertThatThrownBy(() -> service.preview(
+                dispatchSystem.getVehicleId(),
+                command(dispatchSystem.getVersion(), OperatingMode.SAFETY_MONITOR_ONLY,
+                        List.of(deviceWithProfiles(
+                                "profile-dispatch", NetworkMode.DIRECT_CELLULAR,
+                                Set.of(Role.DISPATCH),
+                                new ProtocolProfiles(
+                                        "JT808_2019", "NONE", "NONE", "NONE", 30, 60))))))
+                .isInstanceOf(OnboardConfigurationConflictException.class)
+                .hasMessage("ROLE_PROTOCOL_PROFILE_MISMATCH:DISPATCH");
+
+        OnboardSystem safetySystem = fixtures.activeSystem(OperatingMode.SAFETY_MONITOR_ONLY);
+        fixtures.verifySafetyVideoAndLocation("profile-safety");
+        assertThatThrownBy(() -> service.preview(
+                safetySystem.getVehicleId(),
+                command(safetySystem.getVersion(), OperatingMode.SAFETY_MONITOR_ONLY,
+                        List.of(deviceWithProfiles(
+                                "profile-safety", NetworkMode.DIRECT_CELLULAR,
+                                Set.of(Role.ACTIVE_SAFETY),
+                                new ProtocolProfiles(
+                                        "JT808_2019", "NONE", "NONE", "NONE", 30, 60))))))
+                .isInstanceOf(OnboardConfigurationConflictException.class)
+                .hasMessage("ROLE_PROTOCOL_PROFILE_MISMATCH:ACTIVE_SAFETY");
+
+        OnboardSystem videoSystem = fixtures.activeSystem(OperatingMode.SAFETY_MONITOR_ONLY);
+        fixtures.verifySafetyVideoAndLocation("profile-video");
+        assertThatThrownBy(() -> service.preview(
+                videoSystem.getVehicleId(),
+                command(videoSystem.getVersion(), OperatingMode.SAFETY_MONITOR_ONLY,
+                        List.of(deviceWithProfiles(
+                                "profile-video", NetworkMode.DIRECT_CELLULAR,
+                                Set.of(Role.VIDEO),
+                                new ProtocolProfiles(
+                                        "JT808_2019", "NONE", "NONE", "NONE", 30, 60))))))
+                .isInstanceOf(OnboardConfigurationConflictException.class)
+                .hasMessage("ROLE_PROTOCOL_PROFILE_MISMATCH:VIDEO");
+
+        OnboardSystem transportSystem = fixtures.activeSystem(OperatingMode.SAFETY_MONITOR_ONLY);
+        fixtures.terminal("profile-transport");
+        assertThatThrownBy(() -> service.preview(
+                transportSystem.getVehicleId(),
+                command(transportSystem.getVersion(), OperatingMode.SAFETY_MONITOR_ONLY,
+                        List.of(deviceWithProfiles(
+                                "profile-transport", NetworkMode.DIRECT_CELLULAR,
+                                Set.of(),
+                                new ProtocolProfiles(
+                                        "JT808_2013", "NONE", "NONE", "NONE", 30, 60))))))
+                .isInstanceOf(OnboardConfigurationConflictException.class)
+                .hasMessage("TRANSPORT_PROFILE_IDENTITY_MISMATCH");
+    }
+
+    @Test
     void rejectsOnePhysicalTerminalAsBothPrimaryAndBackup() {
         OnboardSystem system = fixtures.activeSystem(OperatingMode.DISPATCH_SERVICE);
         fixtures.verifyDispatchAndLocation("dispatch-01");
@@ -238,7 +293,7 @@ class OnboardSystemConfigurationServiceTest {
         ConfigurationCommand second = command(firstResult.currentVersion(), List.of(
                 deviceWithProfiles("dispatch-secret-code", NetworkMode.SHARED_LAN_CLIENT,
                         Set.of(Role.DISPATCH, Role.LOCATION_PRIMARY),
-                        new ProtocolProfiles("JT808_2013", "NONE", "NONE", "NONE", 15, 60)),
+                        new ProtocolProfiles("JT808_2019", "GBT28787_2023", "NONE", "NONE", 15, 60)),
                 device("recorder-next", NetworkMode.DIRECT_CELLULAR,
                         Set.of(Role.LOCATION_BACKUP, Role.ACTIVE_SAFETY, Role.VIDEO, Role.WAN_UPLINK))));
 
@@ -1562,8 +1617,15 @@ class OnboardSystemConfigurationServiceTest {
 
     private static DeviceConfiguration device(
             String terminalCode, NetworkMode networkMode, Set<Role> roles) {
+        String businessProfile = roles.contains(Role.DISPATCH)
+                ? "GBT28787_2023" : "NONE";
+        String safetyProfile = roles.contains(Role.ACTIVE_SAFETY)
+                ? "JSATL12_2017" : "NONE";
+        String mediaProfile = roles.contains(Role.VIDEO)
+                ? "JT1078_2016" : "NONE";
         return deviceWithProfiles(terminalCode, networkMode, roles,
-                new ProtocolProfiles("JT808_2019", "NONE", "NONE", "NONE", 30, 60));
+                new ProtocolProfiles(
+                        "JT808_2019", businessProfile, safetyProfile, mediaProfile, 30, 60));
     }
 
     private static DeviceConfiguration deviceWithProfiles(

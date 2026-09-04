@@ -1,5 +1,7 @@
 package com.idavy.drtops.jtgateway.session;
 
+import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
+import com.idavy.drtops.jt.protocol.jsatl12.ActiveSafetyCapabilityProfile;
 import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
@@ -164,6 +166,26 @@ public final class TerminalSession {
 
     public TerminalSessionContext context() {
         return context;
+    }
+
+    public boolean acceptsTransport(ProtocolVersion version) {
+        return context != null
+                && version != null
+                && context.protocolProfile().transportProfile().equals(version.name());
+    }
+
+    public ActiveSafetyCapabilityProfile activeSafetyCapabilityProfile() {
+        if (context == null) {
+            return new ActiveSafetyCapabilityProfile(null, List.of());
+        }
+        String standard = switch (context.protocolProfile().safetyProfile()) {
+            case "JSATL12_2017" -> "T/JSATL12-2017";
+            case "GBT28787_2023" -> "GB/T 28787-2023";
+            default -> null;
+        };
+        return new ActiveSafetyCapabilityProfile(
+                standard,
+                context.protocolProfile().enabledActiveSafetyModules());
     }
 
 

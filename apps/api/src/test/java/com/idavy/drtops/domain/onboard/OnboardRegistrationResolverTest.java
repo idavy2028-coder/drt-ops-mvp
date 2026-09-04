@@ -6,8 +6,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.SafetyProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.TransportProfile;
 import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver.RegistrationDecision;
 import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver.RegistrationRequest;
+import com.idavy.drtops.domain.onboard.OnboardTestFixtures.RolelessMemberFixture;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
 import jakarta.persistence.EntityManager;
@@ -108,6 +111,45 @@ class OnboardRegistrationResolverTest {
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> dispatch.warnings().add("MUTATION"))
                 .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void sessionContextComesFromActiveProfileAndVerifiedCapabilities() {
+        fixtures.configureDualDeviceSystem(
+                "dispatch-01", "recorder-01", "VEHICLE-A");
+        JtTerminal recorder = terminalRepository.findByTerminalCode("recorder-01").orElseThrow();
+        recorder.configureCapabilities("T/GD-ACTIVE-SAFETY", "[\"DMS\"]", false);
+        terminalRepository.saveAndFlush(recorder);
+
+        RegistrationDecision decision = resolver.verify(registration(
+                "recorder-01", "PHONE-RECORDER", "VEHICLE-A"));
+
+        assertThat(decision.approved()).isTrue();
+        assertThat(decision.context().contractVersion()).isEqualTo(2);
+        assertThat(decision.context().onboardConfigurationVersion()).isPositive();
+        assertThat(decision.context().protocolProfile().transportProfile())
+                .isEqualTo(TransportProfile.JT808_2019);
+        assertThat(decision.context().protocolProfile().safetyProfile())
+                .isEqualTo(SafetyProfile.JSATL12_2017);
+        assertThat(decision.context().protocolProfile().enabledActiveSafetyModules())
+                .containsExactly("ADAS");
+        assertThat(decision.context().activeSafetyStandard())
+                .isEqualTo("T/JSATL12-2017");
+        assertThat(decision.context().activeSafetyModules())
+                .containsExactly("ADAS");
+    }
+
+    @Test
+    void memberWithoutBusinessRolesCanAuthenticateWithAnEmptyRoleSet() {
+        RolelessMemberFixture member = fixtures.configureRolelessMember(
+                "roleless-01", "ROLELESS-A");
+
+        RegistrationDecision decision = resolver.verify(registration(
+                "roleless-01", member.semanticPhone(), "ROLELESS-A"));
+
+        assertThat(decision.approved()).isTrue();
+        assertThat(decision.context().roles()).isEmpty();
+        assertThat(decision.context().protocolProfile().enabledActiveSafetyModules()).isEmpty();
     }
 
     @Test

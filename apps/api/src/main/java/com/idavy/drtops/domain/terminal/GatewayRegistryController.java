@@ -96,11 +96,14 @@ public class GatewayRegistryController {
 
     public record RegistrationVerificationResponse(
             boolean approved,
+            int contractVersion,
             UUID terminalId,
             UUID onboardSystemId,
             UUID vehicleId,
+            long onboardConfigurationVersion,
             Set<Role> roles,
             String sourceCoordinateSystem,
+            OnboardRegistrationResolver.SessionProtocolProfile protocolProfile,
             String activeSafetyStandard,
             List<String> activeSafetyModules,
             int tokenVersion,
@@ -112,11 +115,14 @@ public class GatewayRegistryController {
             OnboardRegistrationResolver.TerminalSessionContext context = decision.context();
             return new RegistrationVerificationResponse(
                     decision.approved(),
+                    context == null ? 0 : context.contractVersion(),
                     context == null ? null : context.terminalId(),
                     context == null ? null : context.onboardSystemId(),
                     context == null ? null : context.vehicleId(),
+                    context == null ? 0 : context.onboardConfigurationVersion(),
                     context == null ? Set.of() : context.roles(),
                     context == null ? null : context.sourceCoordinateSystem(),
+                    context == null ? null : context.protocolProfile(),
                     context == null ? null : context.activeSafetyStandard(),
                     context == null ? List.of() : context.activeSafetyModules(),
                     context == null ? 0 : context.tokenVersion(),

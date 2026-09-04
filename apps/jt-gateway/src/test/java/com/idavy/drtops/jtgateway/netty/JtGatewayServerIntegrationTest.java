@@ -431,13 +431,21 @@ class JtGatewayServerIntegrationTest {
     private static TerminalSessionContext context(
             UUID terminalId, Set<String> roles) {
         return new TerminalSessionContext(
+                2,
                 terminalId,
                 ONBOARD_SYSTEM_ID,
                 VEHICLE_ID,
+                4,
                 roles,
                 "WGS84",
-                "T/JSATL12-2017",
-                List.of("ADAS", "DMS"),
+                new TerminalSessionContext.SessionProtocolProfile(
+                        "JT808_2013",
+                        roles.contains("DISPATCH") ? "VENDOR_DISPATCH" : "NONE",
+                        "NONE",
+                        roles.contains("VIDEO") ? "JT1078_2016" : "NONE",
+                        List.of(), 30, 60),
+                null,
+                List.of(),
                 5);
     }
 

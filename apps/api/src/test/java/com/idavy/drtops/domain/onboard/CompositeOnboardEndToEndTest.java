@@ -7,13 +7,27 @@ import com.idavy.drtops.domain.onboard.OnboardReadinessService.ReadinessState;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.CanonicalPositionIngress;
 import com.idavy.drtops.domain.location.GatewayIngressEnvelope;
+import com.idavy.drtops.domain.location.GatewayIngressRouter;
 import com.idavy.drtops.domain.location.GpsLocationIngressService;
 import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.jt.protocol.codec.Jt808MessageHeader;
+import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
+import com.idavy.drtops.jt.protocol.core.LocationReport;
+import com.idavy.drtops.jt.protocol.core.LocationReportCodec;
+import com.idavy.drtops.jtgateway.ingress.ActiveSafetyAlarmRouter;
+import com.idavy.drtops.jtgateway.ingress.CanonicalVehicleAlarm;
+import com.idavy.drtops.jtgateway.session.TerminalSession;
+import com.idavy.drtops.jtgateway.session.TerminalSessionContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.embedded.EmbeddedChannel;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +38,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Cross-checks the installation-shape promises exercised by the dual-device simulator against
@@ -50,6 +65,10 @@ class CompositeOnboardEndToEndTest {
     @Autowired OnboardDeviceMembershipRepository membershipRepository;
     @Autowired OnboardSystemConfigurationService configurationService;
     @Autowired JtTerminalRepository terminalRepository;
+    @Autowired OnboardRegistrationResolver registrationResolver;
+    @Autowired GatewayIngressRouter gatewayIngressRouter;
+    @Autowired com.idavy.drtops.domain.location.VehicleLocationEventRepository locationEvents;
+    @Autowired JdbcTemplate jdbc;
 
     @BeforeEach
     void setUp() {
@@ -151,12 +170,132 @@ class CompositeOnboardEndToEndTest {
                 .containsExactlyInAnyOrder(Role.LOCATION_BACKUP, Role.ACTIVE_SAFETY, Role.VIDEO, Role.WAN_UPLINK);
     }
 
+    @Test
+    void realProfileCapabilitySessionDecodeAndAlarmAuthorizationStayOnOneAuthority()
+            throws Exception {
+        fixtures.configureDualDeviceSystem("dispatch-01", "recorder-01", "VEHICLE-A");
+        UUID vehicleId = vehicleRepository.findByPlateNumber("VEHICLE-A").orElseThrow().getId();
+        OnboardSystem system = systemRepository.findActiveByVehicleId(vehicleId).orElseThrow();
+        UUID recorderId = terminalRepository.findByTerminalCode("recorder-01").orElseThrow().getId();
+        OnboardRegistrationResolver.RegistrationDecision registration = registrationResolver.verify(
+                new OnboardRegistrationResolver.RegistrationRequest(
+                        "PHONE-RECORDER", "recorder-01", "SYNTH", "SYNTHETIC",
+                        "VEHICLE-A", "JT808_2019"));
+        assertThat(registration.approved()).isTrue();
+
+        String sessionJson = objectMapper.writeValueAsString(registration.context());
+        TerminalSessionContext gatewayContext = objectMapper.readValue(
+                sessionJson, TerminalSessionContext.class);
+        TerminalSession session = new TerminalSession(
+                new EmbeddedChannel(), Instant.parse("2026-01-15T02:00:00Z"));
+        session.registrationAccepted(gatewayContext, "00000000000000000000");
+        session.authenticated(Instant.parse("2026-01-15T02:00:00Z"));
+        LocationReport report = activeSafetyLocation();
+
+        UUID firstPositionKey = UUID.randomUUID();
+        ingestPosition(position(
+                recorderId, system.getId(), vehicleId, Role.LOCATION_BACKUP,
+                Instant.parse("2026-01-15T02:00:00Z"), 7), firstPositionKey);
+        CanonicalVehicleAlarm firstAlarm = new ActiveSafetyAlarmRouter().route(
+                session,
+                report,
+                Instant.parse("2026-01-15T02:00:01Z"),
+                firstPositionKey).alarms().getFirst();
+        UUID firstAlarmKey = UUID.randomUUID();
+        assertThat(gatewayIngressRouter.ingest(List.of(new GatewayIngressEnvelope(
+                1,
+                firstAlarmKey,
+                "ALARM",
+                firstAlarm.gatewayReceivedAt(),
+                objectMapper.writeValueAsString(firstAlarm))))).singleElement()
+                .satisfies(result -> assertThat(result.status())
+                        .as("first alarm rejection reasons: %s", result.reasonCodes())
+                        .isEqualTo("ACCEPTED"));
+
+        assertThat(jdbc.queryForMap("""
+                select terminal_id, onboard_system_id, vehicle_id, location_event_id
+                from vehicle_alarms where terminal_alarm_identifier = ?
+                """, firstAlarm.terminalAlarmIdentifier()))
+                .containsEntry("terminal_id", recorderId)
+                .containsEntry("onboard_system_id", system.getId())
+                .containsEntry("vehicle_id", vehicleId)
+                .containsEntry("location_event_id", locationEvents
+                        .findByIdempotencyKey(firstPositionKey).orElseThrow().getId());
+
+        OnboardDeviceRoleAssignment activeSafetyRole = roleRepository
+                .findActiveByTerminalIdOrderByValidFromAsc(recorderId).stream()
+                .filter(role -> role.getRole() == Role.ACTIVE_SAFETY)
+                .findFirst()
+                .orElseThrow();
+        activeSafetyRole.revoke(
+                "revoke active safety after first authorized alarm",
+                OnboardTestFixtures.ACTOR_ID,
+                OffsetDateTime.now());
+        roleRepository.saveAndFlush(activeSafetyRole);
+
+        UUID secondPositionKey = UUID.randomUUID();
+        ingestPosition(position(
+                recorderId, system.getId(), vehicleId, Role.LOCATION_BACKUP,
+                Instant.parse("2026-01-15T02:00:02Z"), 8), secondPositionKey);
+        CanonicalVehicleAlarm staleSessionAlarm = new ActiveSafetyAlarmRouter().route(
+                session,
+                report,
+                Instant.parse("2026-01-15T02:00:03Z"),
+                secondPositionKey).alarms().getFirst();
+        assertThat(gatewayIngressRouter.ingest(List.of(new GatewayIngressEnvelope(
+                1,
+                UUID.randomUUID(),
+                "ALARM",
+                staleSessionAlarm.gatewayReceivedAt(),
+                objectMapper.writeValueAsString(staleSessionAlarm))))).singleElement()
+                .satisfies(result -> {
+                    assertThat(result.status()).isEqualTo("REJECTED");
+                    assertThat(result.reasonCodes()).containsExactly(
+                            "ACTIVE_SAFETY_AUTHORITY_MISMATCH");
+                });
+        assertThat(jdbc.queryForObject(
+                "select count(*) from vehicle_alarms where terminal_id = ?",
+                Integer.class,
+                recorderId)).isEqualTo(1);
+    }
+
     private void ingest(CanonicalPositionIngress position) throws Exception {
         GatewayIngressEnvelope envelope = new GatewayIngressEnvelope(
                 1, UUID.randomUUID(), "POSITION", position.gatewayReceivedAt(),
                 objectMapper.writeValueAsString(position));
         assertThat(locationIngress.ingest(List.of(envelope))).singleElement()
                 .extracting(GpsLocationIngressService.Result::status).isEqualTo("ACCEPTED");
+    }
+
+    private void ingestPosition(CanonicalPositionIngress position, UUID positionKey)
+            throws Exception {
+        GatewayIngressEnvelope envelope = new GatewayIngressEnvelope(
+                1, positionKey, "POSITION", position.gatewayReceivedAt(),
+                objectMapper.writeValueAsString(position));
+        assertThat(locationIngress.ingest(List.of(envelope))).singleElement()
+                .extracting(GpsLocationIngressService.Result::status).isEqualTo("ACCEPTED");
+    }
+
+    private static LocationReport activeSafetyLocation() {
+        byte[] body = HexFormat.of().parseHex(
+                "000000000000000201e848000708898000140258005a260115100000642f0000100101010137080000003c001401e8480007088980260115100000000030303030303030260115100000010200");
+        ByteBuf buffer = Unpooled.wrappedBuffer(body);
+        try {
+            return new LocationReportCodec().decode(new Jt808MessageHeader(
+                    0x0200,
+                    body.length | 0x4000,
+                    body.length,
+                    0,
+                    false,
+                    ProtocolVersion.JT808_2019,
+                    1,
+                    "00000000000000000000",
+                    1,
+                    null,
+                    null), buffer);
+        } finally {
+            buffer.release();
+        }
     }
 
     private static CanonicalPositionIngress position(

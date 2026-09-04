@@ -8,6 +8,7 @@ import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jt.protocol.core.LocationReport;
 import com.idavy.drtops.jt.protocol.core.LocationReportCodec;
 import com.idavy.drtops.jtgateway.session.TerminalSession;
+import com.idavy.drtops.jtgateway.session.TerminalSessionContext;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import java.time.Instant;
@@ -18,13 +19,14 @@ import org.junit.jupiter.api.Test;
 
 class ActiveSafetyAlarmRouterTest {
     private static final UUID TERMINAL_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID SYSTEM_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
     private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final UUID POSITION_KEY = UUID.fromString("33333333-3333-3333-3333-333333333333");
 
     @Test
     void emitsTwoCanonicalAlarmsOnlyForTheBoundJsatl12Capabilities() {
         ActiveSafetyAlarmRouter.Result result = new ActiveSafetyAlarmRouter().route(
-                session("T/JSATL12-2017", List.of("ADAS", "DMS")), location(
+                session("JSATL12_2017", "T/JSATL12-2017", List.of("ADAS", "DMS")), location(
                         "000000000000000201e848000708898000140258005a260115100110642f0000100202020100000200003c001401e8480007088980260115100110000030303030303030260115100110080000652f0000200301020100000000003c001401e8480007088980260115100110000030303030303030260115100110090200"),
                 Instant.parse("2026-01-15T02:00:00Z"), POSITION_KEY);
 
@@ -42,7 +44,7 @@ class ActiveSafetyAlarmRouterTest {
     @Test
     void doesNotGuessActiveSafetyWithoutTheRegisteredCapabilityProfile() {
         ActiveSafetyAlarmRouter.Result result = new ActiveSafetyAlarmRouter().route(
-                session(null, List.of()), location(
+                session("NONE", null, List.of()), location(
                         "000000000000000201e848000708898000140258005a260115100000642f0000100101010137080000003c001401e8480007088980260115100000000030303030303030260115100000010200"),
                 Instant.parse("2026-01-15T02:00:00Z"), POSITION_KEY);
 
@@ -51,9 +53,9 @@ class ActiveSafetyAlarmRouterTest {
     }
 
     @Test
-    void rejectsARegisteredButUnimplementedGuangdongProfileWithoutUsingTheJsatl12Decoder() {
+    void rejectsARegisteredButUnimplementedGbtProfileWithoutUsingTheJsatl12Decoder() {
         ActiveSafetyAlarmRouter.Result result = new ActiveSafetyAlarmRouter().route(
-                session("T/GD-ACTIVE-SAFETY", List.of("ADAS")), location(
+                session("GBT28787_2023", "GB/T 28787-2023", List.of("ADAS")), location(
                         "000000000000000201e848000708898000140258005a260115100000642f0000100101010137080000003c001401e8480007088980260115100000000030303030303030260115100000010200"),
                 Instant.parse("2026-01-15T02:00:00Z"), POSITION_KEY);
 
@@ -64,7 +66,7 @@ class ActiveSafetyAlarmRouterTest {
     @Test
     void ignoresOrdinaryPositionsWithoutActiveSafetyItemsWhenNoCapabilityWasDeclared() {
         ActiveSafetyAlarmRouter.Result result = new ActiveSafetyAlarmRouter().route(
-                session(null, List.of()), location(
+                session("NONE", null, List.of()), location(
                         "000000000000000201e848000708898000140258005a260115100000"),
                 Instant.parse("2026-01-15T02:00:00Z"), POSITION_KEY);
 
@@ -75,7 +77,8 @@ class ActiveSafetyAlarmRouterTest {
     @Test
     void isolatesMalformedAlarmAndNeverTreats1206AsAnAlarmItem() {
         ActiveSafetyAlarmRouter router = new ActiveSafetyAlarmRouter();
-        TerminalSession session = session("T/JSATL12-2017", List.of("ADAS", "DMS"));
+        TerminalSession session = session(
+                "JSATL12_2017", "T/JSATL12-2017", List.of("ADAS", "DMS"));
 
         ActiveSafetyAlarmRouter.Result malformed = router.route(session, location(
                 "000000000000000201e848000708898000140258005a260115100000640100"),
@@ -90,9 +93,36 @@ class ActiveSafetyAlarmRouterTest {
         assertTrue(control.rejections().isEmpty());
     }
 
-    private static TerminalSession session(String standard, List<String> modules) {
+    @Test
+    void usesOnlyTheV2EnabledModuleIntersection() {
+        ActiveSafetyAlarmRouter.Result result = new ActiveSafetyAlarmRouter().route(
+                session("JSATL12_2017", "T/JSATL12-2017", List.of("ADAS")),
+                location(
+                        "000000000000000201e848000708898000140258005a260115100110642f0000100202020100000200003c001401e8480007088980260115100110000030303030303030260115100110080000652f0000200301020100000000003c001401e8480007088980260115100110000030303030303030260115100110090200"),
+                Instant.parse("2026-01-15T02:00:00Z"),
+                POSITION_KEY);
+
+        assertEquals(1, result.alarms().size());
+        assertEquals("ADAS", result.alarms().getFirst().module());
+    }
+
+    private static TerminalSession session(
+            String safetyProfile, String standard, List<String> modules) {
         TerminalSession session = new TerminalSession(new EmbeddedChannel(), Instant.parse("2026-01-15T02:00:00Z"));
-        session.registrationAccepted(TERMINAL_ID, VEHICLE_ID, "WGS84", 1, "000000000000", standard, modules);
+        session.registrationAccepted(new TerminalSessionContext(
+                2,
+                TERMINAL_ID,
+                SYSTEM_ID,
+                VEHICLE_ID,
+                4,
+                java.util.Set.of("ACTIVE_SAFETY"),
+                "WGS84",
+                new TerminalSessionContext.SessionProtocolProfile(
+                        "JT808_2013", "NONE", safetyProfile, "NONE",
+                        modules, 30, 60),
+                standard,
+                modules,
+                1), "000000000000");
         session.authenticated(Instant.parse("2026-01-15T02:00:00Z"));
         return session;
     }

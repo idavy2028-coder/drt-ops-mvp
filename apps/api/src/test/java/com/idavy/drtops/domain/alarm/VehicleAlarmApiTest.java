@@ -236,12 +236,14 @@ class VehicleAlarmApiTest {
 
     private static VehicleAlarm alarm(String module, String type, int typeCode, Instant occurredAt) {
         VehicleAlarmIngressService.AlarmFact fact = new VehicleAlarmIngressService.AlarmFact(
-                UUID.randomUUID(), VEHICLE_ID, "T/JSATL12-2017", module, typeCode, type,
+                UUID.randomUUID(), UUID.randomUUID(), VEHICLE_ID,
+                "T/JSATL12-2017", module, typeCode, type,
                 typeCode, "START", 1, "ALARM-" + typeCode, occurredAt, occurredAt.plusSeconds(1),
                 new BigDecimal("118.0000000"), new BigDecimal("32.0000000"), new BigDecimal("60.00"),
                 UUID.randomUUID(), "UNASSESSED", "a".repeat(64));
         return VehicleAlarm.start(fact, UUID.randomUUID().toString().replace("-", "")
                         + UUID.randomUUID().toString().replace("-", ""),
-                new AlarmStore.LocationReference(UUID.randomUUID(), "GOOD", "[]"));
+                new AlarmStore.LocationReference(
+                        UUID.randomUUID(), fact.onboardSystemId(), fact.occurredAt(), "GOOD", "[]"));
     }
 }

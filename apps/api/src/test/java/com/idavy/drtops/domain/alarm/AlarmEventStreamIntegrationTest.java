@@ -43,6 +43,8 @@ import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
 import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapabilityRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
 import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
@@ -112,6 +114,9 @@ class AlarmEventStreamIntegrationTest {
 
     @Autowired
     VehicleAlarmOutboxRepository outbox;
+
+    @Autowired
+    OnboardDeviceCapabilityRepository capabilities;
 
     @Autowired
     JdbcTemplate jdbc;
@@ -455,7 +460,7 @@ class AlarmEventStreamIntegrationTest {
                 terminalId,
                 OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
                 OnboardDeviceProtocolProfile.BusinessProfile.NONE,
-                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.JSATL12_2017,
                 OnboardDeviceProtocolProfile.MediaProfile.NONE,
                 10,
                 60,
@@ -476,6 +481,24 @@ class AlarmEventStreamIntegrationTest {
                 "SSE P95 GPS role",
                 configurationActor,
                 configuredAt));
+        roles.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                onboardSystem.getId(),
+                terminalId,
+                OnboardDeviceRoleAssignment.Role.ACTIVE_SAFETY,
+                "SSE P95 active-safety role",
+                configurationActor,
+                configuredAt));
+        OnboardDeviceCapability adas = OnboardDeviceCapability.declare(
+                terminalId,
+                OnboardDeviceCapability.Capability.ADAS,
+                "SSE P95 ADAS declaration",
+                configuredAt);
+        adas.verify(
+                "SSE-P95-ADAS-EVIDENCE",
+                configurationActor,
+                "SSE P95 ADAS verification",
+                configuredAt);
+        capabilities.saveAndFlush(adas);
 
         UserAccount operator = UserAccount.create("sse-p95-reader", "SSE P95 reader", "hash");
         operator.assignRoles(Set.of(RoleCode.OPERATOR));
@@ -492,7 +515,9 @@ class AlarmEventStreamIntegrationTest {
             Instant receivedAt = Instant.now();
             GatewayIngressEnvelope position = acceptedPositionEnvelope(
                     terminalId, onboardSystem.getId(), vehicleId, receivedAt);
-            GatewayIngressEnvelope alarm = alarmEnvelope(terminalId, vehicleId, position.idempotencyKey(), identifier, index, receivedAt);
+            GatewayIngressEnvelope alarm = alarmEnvelope(
+                    terminalId, onboardSystem.getId(), vehicleId,
+                    position.idempotencyKey(), identifier, index, receivedAt);
             long started = System.nanoTime();
             mockMvc.perform(post("/internal/jt-gateway/ingress")
                             .header("Authorization", "Bearer " + GATEWAY_CREDENTIAL)
@@ -579,14 +604,16 @@ class AlarmEventStreamIntegrationTest {
 
     private static VehicleAlarm alarm() {
         VehicleAlarmIngressService.AlarmFact fact = new VehicleAlarmIngressService.AlarmFact(
-                UUID.randomUUID(), UUID.randomUUID(), "T/JSATL12-2017", "ADAS", 1, "FORWARD_COLLISION",
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                "T/JSATL12-2017", "ADAS", 1, "FORWARD_COLLISION",
                 4097L, "START", 1, "ALARM-1", Instant.parse("2026-08-14T10:00:00Z"),
                 Instant.parse("2026-08-14T10:00:01Z"), new BigDecimal("118.0000000"),
                 new BigDecimal("32.0000000"), new BigDecimal("60.00"), UUID.randomUUID(), "UNASSESSED",
                 "a".repeat(64));
         return VehicleAlarm.start(fact, UUID.randomUUID().toString().replace("-", "")
                         + UUID.randomUUID().toString().replace("-", ""),
-                new AlarmStore.LocationReference(UUID.randomUUID(), "GOOD", "[]"));
+                new AlarmStore.LocationReference(
+                        UUID.randomUUID(), fact.onboardSystemId(), fact.occurredAt(), "GOOD", "[]"));
     }
 
     private GatewayIngressEnvelope acceptedPositionEnvelope(
@@ -603,9 +630,16 @@ class AlarmEventStreamIntegrationTest {
     }
 
     private GatewayIngressEnvelope alarmEnvelope(
-            UUID terminalId, UUID vehicleId, UUID positionKey, String identifier, int index, Instant receivedAt) throws Exception {
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            UUID positionKey,
+            String identifier,
+            int index,
+            Instant receivedAt) throws Exception {
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("terminalId", terminalId);
+        payload.put("onboardSystemId", onboardSystemId);
         payload.put("vehicleId", vehicleId);
         payload.put("standard", "T/JSATL12-2017");
         payload.put("module", "ADAS");

@@ -91,11 +91,16 @@ class ProtocolDispatchHandlerOwnershipTest {
                 authentication, new ProtocolDispatchHandler(authentication, modules));
         TerminalSession session = authentication.session();
         session.registrationAccepted(new TerminalSessionContext(
+                2,
                 TERMINAL_ID,
                 ONBOARD_SYSTEM_ID,
                 VEHICLE_ID,
+                4,
                 Set.of("LOCATION_PRIMARY"),
                 "WGS84",
+                new TerminalSessionContext.SessionProtocolProfile(
+                        "JT808_2013", "NONE", "NONE", "NONE",
+                        List.of(), 30, 60),
                 null,
                 List.of(),
                 1), IDENTITY);

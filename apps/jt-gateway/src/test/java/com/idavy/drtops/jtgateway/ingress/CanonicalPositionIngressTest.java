@@ -364,11 +364,16 @@ class CanonicalPositionIngressTest {
         EmbeddedChannel channel = new EmbeddedChannel();
         TerminalSession session = new TerminalSession(channel, RECEIVED_AT);
         session.registrationAccepted(new TerminalSessionContext(
+                2,
                 TERMINAL_ID,
                 ONBOARD_SYSTEM_ID,
                 vehicleId,
+                4,
                 Set.of("LOCATION_PRIMARY"),
                 sourceCoordinateSystem,
+                new TerminalSessionContext.SessionProtocolProfile(
+                        "JT808_2013", "NONE", "NONE", "NONE",
+                        List.of(), 30, 60),
                 null,
                 List.of(),
                 5), "123456789012");

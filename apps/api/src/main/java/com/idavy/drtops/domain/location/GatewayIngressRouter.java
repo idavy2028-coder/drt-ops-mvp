@@ -159,7 +159,8 @@ public class GatewayIngressRouter {
             if (payload == null) {
                 throw new InvalidIngressPayloadException("invalid alarm payload");
             }
-            return new VehicleAlarmIngressService.AlarmFact(payload.terminalId(), payload.vehicleId(), payload.standard(),
+            return new VehicleAlarmIngressService.AlarmFact(
+                    payload.terminalId(), payload.onboardSystemId(), payload.vehicleId(), payload.standard(),
                     payload.module(), payload.typeCode(), payload.alarmType(), payload.terminalAlarmId(),
                     payload.state(), payload.level(),
                     payload.terminalAlarmIdentifier(), payload.occurredAt(), envelope.gatewayReceivedAt(),
@@ -187,7 +188,8 @@ public class GatewayIngressRouter {
     }
 
     private record AlarmPayload(
-            UUID terminalId, UUID vehicleId, String standard, String module, long terminalAlarmId,
+            UUID terminalId, UUID onboardSystemId, UUID vehicleId,
+            String standard, String module, long terminalAlarmId,
             int typeCode, String alarmType,
             String state, int level, String terminalAlarmIdentifier, Instant occurredAt, Instant gatewayReceivedAt,
             BigDecimal longitude, BigDecimal latitude, BigDecimal speedKph, int vehicleStatus,

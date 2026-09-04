@@ -112,6 +112,19 @@ class OnboardReadinessServiceTest {
     }
 
     @Test
+    void unsupportedGbtActiveSafetyProfileNeverReportsReady() {
+        UUID vehicleId = fixtures.recorderOnlyVehicleId();
+        UUID terminalId = terminalForRole(vehicleId, Role.ACTIVE_SAFETY).getId();
+        jdbcTemplate.update(
+                "update onboard_device_protocol_profiles set safety_profile = 'GBT28787_2023' where terminal_id = ? and status = 'ACTIVE'",
+                terminalId);
+        entityManager.clear();
+
+        assertThat(service.evaluate(vehicleId).activeSafety())
+                .isEqualTo(ReadinessState.UNAVAILABLE);
+    }
+
+    @Test
     void vendorDispatchRequiresAuthenticationAndCurrentLocation() {
         // Mutations caught: omitting authentication or authoritative-location gates.
         OnboardReadiness noAuthentication = service.evaluate(

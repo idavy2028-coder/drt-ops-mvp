@@ -7,7 +7,8 @@ import java.util.UUID;
 
 /** Gateway-normalized alarm without a raw frame or full terminal identity string. */
 public record CanonicalVehicleAlarm(
-        UUID terminalId, UUID vehicleId, String standard, String module, long terminalAlarmId,
+        UUID terminalId, UUID onboardSystemId, UUID vehicleId,
+        String standard, String module, long terminalAlarmId,
         int typeCode, String alarmType,
         String state, int level, String terminalAlarmIdentifier, Instant occurredAt, Instant gatewayReceivedAt,
         BigDecimal longitude, BigDecimal latitude, BigDecimal speedKph, int vehicleStatus,
@@ -15,6 +16,7 @@ public record CanonicalVehicleAlarm(
         String extensionPayloadDigest) {
     public CanonicalVehicleAlarm {
         Objects.requireNonNull(terminalId, "terminalId");
+        Objects.requireNonNull(onboardSystemId, "onboardSystemId");
         Objects.requireNonNull(vehicleId, "vehicleId");
         Objects.requireNonNull(positionIdempotencyKey, "positionIdempotencyKey");
     }

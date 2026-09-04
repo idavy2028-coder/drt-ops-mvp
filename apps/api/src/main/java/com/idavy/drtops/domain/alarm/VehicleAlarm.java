@@ -21,6 +21,7 @@ public class VehicleAlarm {
     @Column(name = "public_id", nullable = false, updatable = false, unique = true) private UUID publicId;
     @Column(nullable = false) private UUID vehicleId;
     @Column(nullable = false) private UUID terminalId;
+    @Column(name = "onboard_system_id") private UUID onboardSystemId;
     @Column(name = "location_event_id") private UUID locationEventId;
     @Column(nullable = false) private String standard;
     @Column(nullable = false) private String module;
@@ -48,7 +49,11 @@ public class VehicleAlarm {
 
     protected VehicleAlarm() { }
     private VehicleAlarm(VehicleAlarmIngressService.AlarmFact fact, String key, AlarmStore.LocationReference location) {
-        id = UUID.randomUUID(); publicId = independentPublicId(id); vehicleId = fact.vehicleId(); terminalId = fact.terminalId(); standard = fact.standard();
+        if (!java.util.Objects.equals(fact.onboardSystemId(), location.onboardSystemId())) {
+            throw new IllegalArgumentException("alarm and location onboard system must match");
+        }
+        id = UUID.randomUUID(); publicId = independentPublicId(id); vehicleId = fact.vehicleId(); terminalId = fact.terminalId();
+        onboardSystemId = fact.onboardSystemId(); standard = fact.standard();
         locationEventId = location.eventId();
         module = fact.module(); terminalAlarmId = fact.terminalAlarmId();
         alarmTypeCode = fact.typeCode(); alarmTypeNameSnapshot = fact.alarmType();
@@ -84,6 +89,7 @@ public class VehicleAlarm {
     public Instant getEndedAt() { return endedAt; }
     public String getTerminalAlarmIdentifier() { return terminalAlarmIdentifier; }
     public UUID getTerminalId() { return terminalId; }
+    public UUID getOnboardSystemId() { return onboardSystemId; }
     public UUID getVehicleId() { return vehicleId; }
     public UUID getLocationEventId() { return locationEventId; }
     public String getLocationQualityStatus() { return locationQualityStatus; }

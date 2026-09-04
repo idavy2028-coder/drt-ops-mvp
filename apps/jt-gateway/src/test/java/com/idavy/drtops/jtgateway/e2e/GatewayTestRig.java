@@ -229,13 +229,23 @@ final class GatewayTestRig implements AutoCloseable {
 
         private AllowlistRegistry(boolean capable) {
             this.context = new TerminalSessionContext(
+                    2,
                     terminalId,
                     onboardSystemId,
                     vehicleId,
+                    4,
                     capable
                             ? Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY", "VIDEO")
                             : Set.of("LOCATION_PRIMARY"),
                     "WGS84",
+                    new TerminalSessionContext.SessionProtocolProfile(
+                            "JT808_2019",
+                            "NONE",
+                            capable ? "JSATL12_2017" : "NONE",
+                            capable ? "JT1078_2016" : "NONE",
+                            capable ? List.of("ADAS", "DMS") : List.of(),
+                            30,
+                            60),
                     capable ? CAPABLE_STANDARD : null,
                     capable ? List.of("ADAS", "DMS") : List.of(),
                     1);

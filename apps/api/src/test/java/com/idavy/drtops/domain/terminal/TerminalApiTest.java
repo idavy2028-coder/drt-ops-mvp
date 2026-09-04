@@ -281,18 +281,21 @@ class TerminalApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"vehicleId":"%s","expectedVersion":%d,"reason":"粤标能力终端绑定车辆"}
-                                """.formatted(VEHICLE_ID, configuredVersion)))
+                                 """.formatted(VEHICLE_ID, configuredVersion)))
                 .andExpect(status().isOk());
+        installRolelessSessionProfile(
+                terminalRepository.findByTerminalCode("T-CAP-GD-001").orElseThrow());
 
         internalPost("/internal/jt-gateway/registrations/verify", """
                 {"terminalPhone":"PHONE-CAP-GD-001","terminalCode":"T-CAP-GD-001",
                  "manufacturerId":"MFG01","model":"MODEL-X","vehicleIdentifier":"浙A20001",
                  "protocolVersion":"JT808_2019"}
-                """)
+                 """)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(true))
-                .andExpect(jsonPath("$.data.activeSafetyStandard").value("T/GD-ACTIVE-SAFETY"))
-                .andExpect(jsonPath("$.data.activeSafetyModules[0]").value("ADAS"));
+                .andExpect(jsonPath("$.data.protocolProfile.safetyProfile").value("NONE"))
+                .andExpect(jsonPath("$.data.activeSafetyStandard").doesNotExist())
+                .andExpect(jsonPath("$.data.activeSafetyModules").isEmpty());
     }
 
     @Test
@@ -344,7 +347,12 @@ class TerminalApiTest {
                 .andExpect(jsonPath("$.data.lastHeartbeatAt").isEmpty())
                 .andExpect(jsonPath("$.data.lastLocationAt").isEmpty())
                 .andExpect(jsonPath("$.data.currentBinding").doesNotExist())
+                .andExpect(jsonPath("$.data.currentOnboardMembership.onboardSystemId").isNotEmpty())
+                .andExpect(jsonPath("$.data.currentOnboardMembership.vehicleId")
+                        .value(VEHICLE_ID.toString()))
+                .andExpect(jsonPath("$.data.currentOnboardMembership.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.data.bindingHistory").isEmpty())
+                .andExpect(jsonPath("$.data.legacyBindingHistory").isEmpty())
                 .andExpect(jsonPath("$.data.securityAudits[0].eventType").value("ONLINE"))
                 .andExpect(jsonPath("$.data.securityAudits[0].reasonCode").value("SESSION_ESTABLISHED"))
                 .andExpect(jsonPath("$.data", not(hasKey("id"))))
@@ -352,7 +360,7 @@ class TerminalApiTest {
                 .andExpect(jsonPath("$.data", not(hasKey("authTokenVersion"))))
                 .andReturn().getResponse().getContentAsString();
 
-        assertThat(response).doesNotContain(terminal.getId().toString(), VEHICLE_ID.toString(), "PHONE-9012",
+        assertThat(response).doesNotContain(terminal.getId().toString(), "PHONE-9012",
                 TOKEN_HASH, "203.0.113.7:8800");
     }
 
@@ -434,6 +442,10 @@ class TerminalApiTest {
                 .andExpect(jsonPath("$.data.terminalId").isNotEmpty())
                 .andExpect(jsonPath("$.data.vehicleId").isNotEmpty())
                 .andExpect(jsonPath("$.data.onboardSystemId").isNotEmpty())
+                .andExpect(jsonPath("$.data.contractVersion").value(2))
+                .andExpect(jsonPath("$.data.onboardConfigurationVersion").isNumber())
+                .andExpect(jsonPath("$.data.protocolProfile.transportProfile")
+                        .value("JT808_2019"))
                 .andExpect(jsonPath("$.data.context.roles").isArray())
                 .andReturn().getResponse().getContentAsString();
         String recorderBody = internalPost("/internal/jt-gateway/registrations/verify", """
@@ -445,6 +457,14 @@ class TerminalApiTest {
                 .andExpect(jsonPath("$.data.approved").value(true))
                 .andExpect(jsonPath("$.data.terminalId").isNotEmpty())
                 .andExpect(jsonPath("$.data.onboardSystemId").isNotEmpty())
+                .andExpect(jsonPath("$.data.contractVersion").value(2))
+                .andExpect(jsonPath("$.data.protocolProfile.safetyProfile")
+                        .value("JSATL12_2017"))
+                .andExpect(jsonPath("$.data.protocolProfile.enabledActiveSafetyModules[0]")
+                        .value("ADAS"))
+                .andExpect(jsonPath("$.data.activeSafetyStandard")
+                        .value("T/JSATL12-2017"))
+                .andExpect(jsonPath("$.data.activeSafetyModules[0]").value("ADAS"))
                 .andExpect(jsonPath("$.data.context.roles").isArray())
                 .andReturn().getResponse().getContentAsString();
 
@@ -984,9 +1004,28 @@ class TerminalApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"vehicleId":"%s","expectedVersion":%d,"reason":"首配车辆"}
-                                """.formatted(VEHICLE_ID, terminal.getVersion())))
+                                 """.formatted(VEHICLE_ID, terminal.getVersion())))
                 .andExpect(status().isOk());
-        return terminalRepository.findByTerminalCode(code).orElseThrow();
+        terminal = terminalRepository.findByTerminalCode(code).orElseThrow();
+        installRolelessSessionProfile(terminal);
+        return terminal;
+    }
+
+    private void installRolelessSessionProfile(JtTerminal terminal) {
+        if (onboardProfileRepository.findActiveByTerminalId(terminal.getId()).isPresent()) {
+            return;
+        }
+        onboardProfileRepository.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                terminal.getId(),
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                30,
+                60,
+                "explicit roleless session profile fixture",
+                UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                OffsetDateTime.now()));
     }
 
     private JtTerminal registerBindAndActivate(String code, String phone) throws Exception {

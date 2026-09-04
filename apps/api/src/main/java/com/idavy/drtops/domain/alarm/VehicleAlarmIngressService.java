@@ -14,7 +14,6 @@ import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -55,18 +54,13 @@ public class VehicleAlarmIngressService {
             throw new IllegalArgumentException("invalid alarm batch");
         }
         batch.forEach(VehicleAlarmIngressService::validate);
-        batch.stream()
-                .map(AlarmFact::terminalId)
-                .distinct()
-                .sorted(Comparator.comparing(UUID::toString))
-                .forEach(store::lockTerminal);
-        batch.forEach(fact -> {
-            if (!store.matchesBindingAt(
-                    fact.terminalId(), fact.vehicleId(), fact.gatewayReceivedAt())) {
-                throw new IllegalArgumentException("terminal vehicle binding mismatch");
-            }
-        });
-        batch.forEach(this::ingestValidated);
+        List<AuthorizedAlarm> authorized = batch.stream()
+                .sorted(Comparator
+                        .comparing((AlarmFact fact) -> fact.onboardSystemId().toString())
+                        .thenComparing(fact -> fact.terminalId().toString()))
+                .map(fact -> new AuthorizedAlarm(fact, authorizeOrThrow(fact)))
+                .toList();
+        authorized.forEach(alarm -> ingestValidated(alarm.fact(), alarm.location()));
     }
     public Result ingest(UUID idempotencyKey, AlarmFact fact) {
         if (idempotencyKey == null || itemTransaction == null) {
@@ -93,21 +87,19 @@ public class VehicleAlarmIngressService {
         } catch (IllegalArgumentException invalid) {
             return Result.rejected(idempotencyKey, "INVALID_PAYLOAD");
         }
-        try {
-            store.lockTerminal(fact.terminalId());
-        } catch (EmptyResultDataAccessException unknownTerminal) {
-            return Result.rejected(idempotencyKey, "TERMINAL_BINDING_MISMATCH");
-        }
-        if (!store.matchesBindingAt(fact.terminalId(), fact.vehicleId(), fact.gatewayReceivedAt())) {
-            return Result.rejected(idempotencyKey, "TERMINAL_BINDING_MISMATCH");
-        }
         AlarmStore.LocationReference location = store.findLocation(
-                fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId()).orElse(null);
+                fact.positionIdempotencyKey(), fact.terminalId(),
+                fact.onboardSystemId(), fact.vehicleId()).orElse(null);
         if (location == null) {
             return Result.rejected(idempotencyKey,
                     store.hasLocationDependency(fact.positionIdempotencyKey())
                             ? "POSITION_DEPENDENCY_MISMATCH"
                             : "POSITION_INGRESS_NOT_SETTLED");
+        }
+        AlarmStore.ActiveSafetyAuthorization authorization =
+                store.lockAndAuthorizeActiveSafety(fact, location);
+        if (!authorization.authorized()) {
+            return Result.rejected(idempotencyKey, authorization.reasonCode());
         }
         if ("END".equals(fact.state())) {
             var open = store.findOpenStart(fact);
@@ -129,14 +121,25 @@ public class VehicleAlarmIngressService {
         if (store.findByDeduplicationKey(key).isPresent() || store.findOpenStart(fact).isPresent()) {
             return Result.replayed(idempotencyKey);
         }
+        if (store.hasOpenStart(fact)) {
+            return Result.rejected(idempotencyKey, "ALARM_STATE_INVALID");
+        }
         VehicleAlarm alarm = store.save(VehicleAlarm.start(fact, key, location));
         store.appendOutbox(alarm, "ALARM_CREATED");
         return Result.accepted(idempotencyKey);
     }
-    private void ingestValidated(AlarmFact fact) {
+    private AlarmStore.LocationReference authorizeOrThrow(AlarmFact fact) {
         AlarmStore.LocationReference location = store.findLocation(
-                        fact.positionIdempotencyKey(), fact.terminalId(), fact.vehicleId())
+                        fact.positionIdempotencyKey(), fact.terminalId(),
+                        fact.onboardSystemId(), fact.vehicleId())
                 .orElseThrow(() -> new IllegalStateException("position ingress is not settled"));
+        if (!store.lockAndAuthorizeActiveSafety(fact, location).authorized()) {
+            throw new IllegalArgumentException("active safety authority mismatch");
+        }
+        return location;
+    }
+
+    private void ingestValidated(AlarmFact fact, AlarmStore.LocationReference location) {
         if ("END".equals(fact.state())) {
             var open = store.findOpenStart(fact);
             if (open.isPresent() && !fact.occurredAt().isBefore(open.get().getOccurredAt())) {
@@ -148,12 +151,14 @@ public class VehicleAlarmIngressService {
         String key = keyFor(fact);
         if (store.findByDeduplicationKey(key).isPresent()) return;
         if (store.findOpenStart(fact).isPresent()) return;
+        if (store.hasOpenStart(fact)) return;
         VehicleAlarm alarm = store.save(VehicleAlarm.start(fact, key, location));
         store.appendOutbox(alarm, "ALARM_CREATED");
     }
     private static void validate(AlarmFact fact) {
         if (fact == null
                 || fact.terminalId() == null
+                || fact.onboardSystemId() == null
                 || fact.vehicleId() == null
                 || !validText(fact.standard(), 40)
                 || !("ADAS".equals(fact.module()) || "DMS".equals(fact.module()))
@@ -195,26 +200,28 @@ public class VehicleAlarmIngressService {
     }
     private static String keyFor(AlarmFact fact) {
         try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
-                (fact.terminalId()+"|"+fact.standard()+"|"+fact.module()+"|"+fact.terminalAlarmId()+"|"
+                (fact.terminalId()+"|"+fact.onboardSystemId()+"|"+fact.standard()+"|"+fact.module()+"|"+fact.terminalAlarmId()+"|"
                         +fact.terminalAlarmIdentifier()+"|"
                         +fact.typeCode()+"|"+fact.occurredAt()+"|"+fact.payloadDigest())
                         .getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException exception) { throw new IllegalStateException(exception); }
     }
-    public record AlarmFact(UUID terminalId, UUID vehicleId, String standard, String module, int typeCode,
+    public record AlarmFact(UUID terminalId, UUID onboardSystemId, UUID vehicleId, String standard, String module, int typeCode,
             String alarmType, long terminalAlarmId,
             String state, int level, String terminalAlarmIdentifier, Instant occurredAt, Instant gatewayReceivedAt,
             BigDecimal longitude, BigDecimal latitude, BigDecimal speedKph, UUID positionIdempotencyKey,
             String locationQualityStatus, String payloadDigest) {
-        public AlarmFact endAt(Instant endedAt) { return new AlarmFact(terminalId, vehicleId, standard, module, typeCode,
+        public AlarmFact endAt(Instant endedAt) { return new AlarmFact(terminalId, onboardSystemId, vehicleId, standard, module, typeCode,
                 alarmType, terminalAlarmId, "END", level, terminalAlarmIdentifier, endedAt, gatewayReceivedAt,
                 longitude, latitude, speedKph,
                 positionIdempotencyKey, locationQualityStatus, payloadDigest); }
-        public AlarmFact atPosition(UUID positionKey) { return new AlarmFact(terminalId, vehicleId, standard, module, typeCode,
+        public AlarmFact atPosition(UUID positionKey) { return new AlarmFact(terminalId, onboardSystemId, vehicleId, standard, module, typeCode,
                 alarmType, terminalAlarmId, state, level, terminalAlarmIdentifier, occurredAt, gatewayReceivedAt,
                 longitude, latitude, speedKph,
                 positionKey, locationQualityStatus, payloadDigest); }
     }
+    private record AuthorizedAlarm(
+            AlarmFact fact, AlarmStore.LocationReference location) { }
     public record Result(UUID idempotencyKey, String status, List<String> reasonCodes) {
         static Result accepted(UUID key) { return new Result(key, "ACCEPTED", List.of()); }
         static Result replayed(UUID key) { return new Result(key, "REPLAYED", List.of()); }

@@ -53,8 +53,7 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
             AtomicInteger baseAppends = new AtomicInteger();
             TerminalSession session = session(
                     Set.of("LOCATION_PRIMARY"),
-                    "T/JSATL12-2017",
-                    List.of("ADAS", "DMS"));
+                    "JT808_2013", "NONE", null, List.of());
             TerminalSessionRegistry sessions = new TerminalSessionRegistry();
             sessions.claim(session);
             ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
@@ -79,7 +78,8 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
         GatewayOutboxRepository repository = new GatewayOutboxRepository(dataSource);
         GatewayIngressBuffer buffer = new GatewayIngressBuffer(repository, new ObjectMapper().findAndRegisterModules(), Clock.systemUTC());
-        TerminalSession session = session("T/JSATL12-2017", List.of("ADAS", "DMS"));
+        TerminalSession session = session(
+                "JSATL12_2017", "T/JSATL12-2017", List.of("ADAS", "DMS"));
         TerminalSessionRegistry sessions = new TerminalSessionRegistry(); sessions.claim(session);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(new Jt808CoreModule(new LocationReportCodec()), buffer,
                 new ObjectMapper().findAndRegisterModules(), sessions, Clock.fixed(Instant.parse("2026-01-15T02:00:00Z"), ZoneOffset.UTC));
@@ -100,7 +100,8 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         for (String role : List.of("LOCATION_PRIMARY", "LOCATION_BACKUP")) {
             Fixture fixture = fixture(
                     "location_role_" + role.toLowerCase() + "_" + UUID.randomUUID(),
-                    Set.of(role), null, List.of(), new ObjectMapper().findAndRegisterModules());
+                    Set.of(role), "NONE", null, List.of(),
+                    new ObjectMapper().findAndRegisterModules());
 
             assertTrue(fixture.registry().dispatch(fixture.session(), basicLocationFrame())
                     .mayAcknowledgeSuccess());
@@ -126,7 +127,8 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
                 Set.of("LOCATION_PRIMARY", "LOCATION_BACKUP"))) {
             Fixture fixture = fixture(
                     "invalid_location_role_" + UUID.randomUUID(),
-                    roles, null, List.of(), new ObjectMapper().findAndRegisterModules());
+                    roles, "NONE", null, List.of(),
+                    new ObjectMapper().findAndRegisterModules());
 
             ProtocolModuleRegistry.DispatchResult result = assertDoesNotThrow(
                     () -> fixture.registry().dispatch(fixture.session(), basicLocationFrame()));
@@ -140,8 +142,9 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Fixture fixture = fixture(
                 "missing_active_safety_" + UUID.randomUUID(),
                 Set.of("LOCATION_PRIMARY"),
+                "JSATL12_2017",
                 "T/JSATL12-2017",
-                List.of("ADAS", "DMS"),
+                List.of(),
                 new ObjectMapper().findAndRegisterModules());
 
         assertTrue(fixture.registry().dispatch(fixture.session(), frame()).mayAcknowledgeSuccess());
@@ -176,8 +179,9 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Fixture fixture = fixture(
                 "missing_active_safety_audit_failure_" + UUID.randomUUID(),
                 Set.of("LOCATION_PRIMARY"),
+                "JSATL12_2017",
                 "T/JSATL12-2017",
-                List.of("ADAS", "DMS"),
+                List.of(),
                 auditFailingMapper);
 
         assertTrue(fixture.registry().dispatch(fixture.session(), frame()).mayAcknowledgeSuccess());
@@ -192,8 +196,9 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Fixture fixture = fixture(
                 "missing_active_safety_runtime_audit_failure_" + UUID.randomUUID(),
                 Set.of("LOCATION_PRIMARY"),
+                "JSATL12_2017",
                 "T/JSATL12-2017",
-                List.of("ADAS", "DMS"),
+                List.of(),
                 runtimeAuditFailingMapper());
         Jt808Frame input = frame();
         ProtocolModuleRegistry.DispatchResult result = null;
@@ -224,8 +229,9 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Fixture fixture = fixture(
                 "missing_video_" + UUID.randomUUID(),
                 Set.of("LOCATION_PRIMARY"),
-                "T/JSATL12-2017",
-                List.of("ADAS", "DMS"),
+                "NONE",
+                null,
+                List.of(),
                 new ObjectMapper().findAndRegisterModules());
 
         assertTrue(fixture.registry().dispatch(fixture.session(), fileUploadCompletedFrame())
@@ -244,8 +250,9 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Fixture fixture = fixture(
                 "missing_video_runtime_audit_failure_" + UUID.randomUUID(),
                 Set.of("LOCATION_PRIMARY"),
-                "T/JSATL12-2017",
-                List.of("ADAS", "DMS"),
+                "NONE",
+                null,
+                List.of(),
                 runtimeAuditFailingMapper());
         Jt808Frame input = fileUploadCompletedFrame();
         ProtocolModuleRegistry.DispatchResult result = null;
@@ -271,7 +278,8 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
         GatewayOutboxRepository repository = new GatewayOutboxRepository(dataSource);
         GatewayIngressBuffer buffer = new GatewayIngressBuffer(repository, new ObjectMapper().findAndRegisterModules(), Clock.systemUTC());
-        TerminalSession session = session("T/JSATL12-2017", List.of("ADAS", "DMS"));
+        TerminalSession session = session(
+                "JSATL12_2017", "T/JSATL12-2017", List.of("ADAS", "DMS"));
         TerminalSessionRegistry sessions = new TerminalSessionRegistry(); sessions.claim(session);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(new Jt808CoreModule(new LocationReportCodec()), buffer,
                 new ObjectMapper().findAndRegisterModules(), sessions, Clock.fixed(Instant.parse("2026-01-15T02:00:00Z"), ZoneOffset.UTC));
@@ -294,7 +302,8 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         GatewayOutboxRepository repository = new GatewayOutboxRepository(dataSource);
         GatewayIngressBuffer buffer = new GatewayIngressBuffer(
                 repository, new ObjectMapper().findAndRegisterModules(), Clock.systemUTC());
-        TerminalSession session = session("T/JSATL12-2017", List.of("ADAS", "DMS"));
+        TerminalSession session = session(
+                "JSATL12_2017", "T/JSATL12-2017", List.of("ADAS", "DMS"));
         TerminalSessionRegistry sessions = new TerminalSessionRegistry();
         sessions.claim(session);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(
@@ -312,7 +321,9 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
     @Test
     void derivesAlarmIdempotencyFromAlarmFactsRatherThanTheContainingPositionSerial() {
         com.idavy.drtops.jtgateway.ingress.CanonicalVehicleAlarm alarm = new com.idavy.drtops.jtgateway.ingress.CanonicalVehicleAlarm(
-                UUID.fromString("11111111-1111-1111-1111-111111111111"), UUID.fromString("22222222-2222-2222-2222-222222222222"),
+                UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                ONBOARD_SYSTEM_ID,
+                UUID.fromString("22222222-2222-2222-2222-222222222222"),
                 "T/JSATL12-2017", "ADAS", 0x00001001L, 1, "FORWARD_COLLISION", "START", 1, "a".repeat(64),
                 Instant.parse("2026-01-15T02:00:00Z"), Instant.parse("2026-01-15T02:00:01Z"),
                 new java.math.BigDecimal("118.000000"), new java.math.BigDecimal("32.000000"),
@@ -325,22 +336,54 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
                 ProtocolModuleRegistry.idempotencyKeyFor(alarm, replayedInAnotherFrame));
     }
 
-    private static TerminalSession session(String standard, List<String> modules) {
-        return session(
-                Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY", "VIDEO"),
-                standard,
-                modules);
+    @Test
+    void rejectsTransportMismatchBeforeLocationDecodeAndPersistence() {
+        Fixture fixture = fixture(
+                "transport_mismatch_" + UUID.randomUUID(),
+                Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY"),
+                "JSATL12_2017",
+                "T/JSATL12-2017",
+                List.of("ADAS"),
+                new ObjectMapper().findAndRegisterModules(),
+                "JT808_2019");
+
+        ProtocolModuleRegistry.DispatchResult result = fixture.registry().dispatch(
+                fixture.session(), frame());
+
+        assertFalse(result.mayAcknowledgeSuccess());
+        assertEquals(0, fixture.repository().totalCount());
     }
 
     private static TerminalSession session(
-            Set<String> roles, String standard, List<String> modules) {
+            String safetyProfile, String standard, List<String> modules) {
+        return session(
+                Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY", "VIDEO"),
+                "JT808_2013", safetyProfile, standard, modules);
+    }
+
+    private static TerminalSession session(
+            Set<String> roles,
+            String transportProfile,
+            String safetyProfile,
+            String standard,
+            List<String> modules) {
         TerminalSession session = new TerminalSession(new EmbeddedChannel(), Instant.parse("2026-01-15T02:00:00Z"));
         session.registrationAccepted(new TerminalSessionContext(
+                2,
                 TERMINAL_ID,
                 ONBOARD_SYSTEM_ID,
                 VEHICLE_ID,
+                4,
                 roles,
                 "WGS84",
+                new TerminalSessionContext.SessionProtocolProfile(
+                        transportProfile,
+                        "NONE",
+                        safetyProfile,
+                        roles.contains("VIDEO") ? "JT1078_2016" : "NONE",
+                        modules,
+                        30,
+                        60),
                 standard,
                 modules,
                 1), "000000000000");
@@ -350,9 +393,22 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
     private static Fixture fixture(
             String databaseName,
             Set<String> roles,
+            String safetyProfile,
             String standard,
             List<String> modules,
             ObjectMapper mapper) {
+        return fixture(
+                databaseName, roles, safetyProfile, standard, modules, mapper, "JT808_2013");
+    }
+
+    private static Fixture fixture(
+            String databaseName,
+            Set<String> roles,
+            String safetyProfile,
+            String standard,
+            List<String> modules,
+            ObjectMapper mapper,
+            String transportProfile) {
         DataSource dataSource = new DriverManagerDataSource(
                 "jdbc:h2:mem:" + databaseName + ";DB_CLOSE_DELAY=-1;MODE=PostgreSQL",
                 "sa",
@@ -360,7 +416,8 @@ class ProtocolModuleRegistryActiveSafetyDispatchTest {
         Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
         GatewayOutboxRepository repository = new GatewayOutboxRepository(dataSource);
         GatewayIngressBuffer buffer = new GatewayIngressBuffer(repository, mapper, Clock.systemUTC());
-        TerminalSession session = session(roles, standard, modules);
+        TerminalSession session = session(
+                roles, transportProfile, safetyProfile, standard, modules);
         TerminalSessionRegistry sessions = new TerminalSessionRegistry();
         sessions.claim(session);
         ProtocolModuleRegistry registry = new ProtocolModuleRegistry(

@@ -158,6 +158,7 @@ class TerminalManagementServiceTest {
         JtTerminal bound = terminalRepository.findById(terminal.getId()).orElseThrow();
         assertThat(bindingRepository.findAll()).isEmpty();
         assertThat(membershipRepository.findActiveByTerminalId(bound.getId())).isPresent();
+        addProfile(bound.getId());
 
         service.completeCompositeRegistration(
                 bound.getId(), bound.getAuthTokenVersion(), INITIAL_HASH, "gateway-onboard");
@@ -169,6 +170,34 @@ class TerminalManagementServiceTest {
         assertThat(terminalRepository.findById(bound.getId()).orElseThrow().getStatus())
                 .isEqualTo(JtTerminal.Status.ACTIVE);
         assertThat(bindingRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void detailUsesCurrentOnboardMembershipAndKeepsLegacyBindingAsHistoryOnly() {
+        JtTerminal terminal = preset("T-DETAIL-AUTHORITY", "PHONE-DETAIL-AUTHORITY");
+        service.bind(
+                terminal.getTerminalCode(), VEHICLE_ID, terminal.getVersion(),
+                "车载系统成员接入", ACTOR_ID);
+        JtTerminal current = terminalRepository.findById(terminal.getId()).orElseThrow();
+        bindingRepository.saveAndFlush(JtTerminalVehicleBinding.bind(
+                current, SECOND_VEHICLE_ID, "历史 legacy 绑定", ACTOR_ID));
+
+        TerminalManagementService.TerminalDetail detail = service.getDetail(
+                terminal.getTerminalCode());
+
+        assertThat(detail.currentBinding()).isNull();
+        assertThat(detail.currentOnboardMembership()).satisfies(membership -> {
+            assertThat(membership.onboardSystemId()).isEqualTo(
+                    membershipRepository.findActiveByTerminalId(terminal.getId())
+                            .orElseThrow().getOnboardSystemId());
+            assertThat(membership.vehicleId()).isEqualTo(VEHICLE_ID);
+            assertThat(membership.status()).isEqualTo("ACTIVE");
+            assertThat(membership.validFrom()).isNotNull();
+        });
+        assertThat(detail.legacyBindingHistory()).singleElement()
+                .satisfies(binding -> assertThat(binding.plateNumber())
+                        .isEqualTo("浙A10002"));
+        assertThat(detail.bindingHistory()).isEqualTo(detail.legacyBindingHistory());
     }
 
     @Test
@@ -437,6 +466,7 @@ class TerminalManagementServiceTest {
 
         service.bind("T-001", VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
         terminal = terminalRepository.findByTerminalCode("T-001").orElseThrow();
+        addProfile(terminal.getId());
         service.completeRegistration(terminal.getId(), 1, INITIAL_HASH, "gateway-a");
         terminal = terminalRepository.findByTerminalCode("T-001").orElseThrow();
         service.activate("T-001", terminal.getVersion(), "正式启用", ACTOR_ID);
@@ -665,6 +695,7 @@ class TerminalManagementServiceTest {
                 .isFalse();
 
         service.bind("T-007", VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
+        addProfile(terminal.getId());
         assertThat(service.verifyRegistration(
                 "PHONE-007", "T-007", "MFG01", "MODEL-X", "浙A10001", "JT808_2019").approved())
                 .isTrue();
@@ -859,6 +890,7 @@ class TerminalManagementServiceTest {
         service.bind(target.getTerminalCode(), CORRECTION_VEHICLE_ID,
                 target.getVersion(), "首配车辆", ACTOR_ID);
         target = terminalRepository.findById(target.getId()).orElseThrow();
+        addProfile(target.getId());
         JtTerminal duplicate = preset("T-CORRECT-DUP", "PHONE-CORRECT-DUP");
 
         long currentVersion = target.getVersion();
@@ -1054,6 +1086,7 @@ class TerminalManagementServiceTest {
 
         service.bind("T-008", VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
         JtTerminal bound = terminalRepository.findByTerminalCode("T-008").orElseThrow();
+        addProfile(bound.getId());
         assertThatThrownBy(() -> service.completeRegistration(bound.getId(), 0, INITIAL_HASH, "gateway-a"))
                 .isInstanceOf(TerminalConflictException.class);
         assertThatThrownBy(() -> service.completeRegistration(bound.getId(), 2, INITIAL_HASH, "gateway-a"))
@@ -1191,6 +1224,7 @@ class TerminalManagementServiceTest {
         JtTerminal terminal = preset(code, phone);
         service.bind(code, VEHICLE_ID, terminal.getVersion(), "首配车辆", ACTOR_ID);
         terminal = terminalRepository.findByTerminalCode(code).orElseThrow();
+        addProfile(terminal.getId());
         service.completeRegistration(terminal.getId(), terminal.getAuthTokenVersion(), INITIAL_HASH, "gateway-a");
         return terminalRepository.findByTerminalCode(code).orElseThrow();
     }

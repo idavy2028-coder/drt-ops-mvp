@@ -12,14 +12,21 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.jt.protocol.codec.Jt808Frame;
+import com.idavy.drtops.jt.protocol.codec.Jt808MessageHeader;
+import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
 import com.idavy.drtops.jtgateway.ingress.GatewayOutboxDispatcher;
 import com.idavy.drtops.jtgateway.ingress.GatewayOutboxRepository;
 import com.idavy.drtops.jtgateway.ingress.IngressKind;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiClient;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiStatus;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.embedded.EmbeddedChannel;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
@@ -39,6 +46,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
@@ -58,28 +66,40 @@ class OperationsTerminalRegistryClientTest {
         List<String> modules = new ArrayList<>(List.of("ADAS", "DMS"));
 
         TerminalSessionContext context = new TerminalSessionContext(
-                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, roles, "WGS84",
+                2, TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, 4,
+                roles, "WGS84",
+                new TerminalSessionContext.SessionProtocolProfile(
+                        "JT808_2019", "NONE", "JSATL12_2017", "JT1078_2016",
+                        modules, 30, 60),
                 "T/JSATL12-2017", modules, 7);
         roles.clear();
         modules.clear();
 
         assertEquals(Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY"), context.roles());
         assertEquals(List.of("ADAS", "DMS"), context.activeSafetyModules());
+        assertEquals(List.of("ADAS", "DMS"),
+                context.protocolProfile().enabledActiveSafetyModules());
         assertThrows(UnsupportedOperationException.class, () -> context.roles().add("VIDEO"));
         assertThrows(UnsupportedOperationException.class,
                 () -> context.activeSafetyModules().add("BSD"));
         assertThrows(NullPointerException.class, () -> new TerminalSessionContext(
-                null, SYSTEM_ID, VEHICLE_ID, Set.of("VIDEO"), "WGS84",
-                null, List.of(), 1));
+                2, null, SYSTEM_ID, VEHICLE_ID, 4, Set.of("VIDEO"), "WGS84",
+                profile("NONE", List.of()), null, List.of(), 1));
         assertThrows(IllegalArgumentException.class, () -> new TerminalSessionContext(
-                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, Set.of(" "), "WGS84",
-                null, List.of(), 1));
+                2, TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, 4, Set.of(" "), "WGS84",
+                profile("NONE", List.of()), null, List.of(), 1));
         assertThrows(IllegalArgumentException.class, () -> new TerminalSessionContext(
-                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, Set.of("VIDEO"), "EPSG:4326",
-                null, List.of(), 1));
+                2, TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, 4, Set.of("VIDEO"), "EPSG:4326",
+                profile("NONE", List.of()), null, List.of(), 1));
         assertThrows(IllegalArgumentException.class, () -> new TerminalSessionContext(
-                TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, Set.of("VIDEO"), "GCJ02",
-                null, List.of(), 0));
+                2, TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, 4, Set.of("VIDEO"), "GCJ02",
+                profile("NONE", List.of()), null, List.of(), 0));
+        assertThrows(IllegalArgumentException.class, () -> new TerminalSessionContext(
+                1, TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, 4, Set.of(), "GCJ02",
+                profile("NONE", List.of()), null, List.of(), 1));
+        assertThrows(NullPointerException.class, () -> new TerminalSessionContext(
+                2, TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, 4, Set.of(), "GCJ02",
+                null, null, List.of(), 1));
     }
 
     @Test
@@ -103,9 +123,10 @@ class OperationsTerminalRegistryClientTest {
 
         assertTrue(decision.approved());
         assertEquals(new TerminalSessionContext(
-                        TERMINAL_ID, SYSTEM_ID, VEHICLE_ID,
+                        2, TERMINAL_ID, SYSTEM_ID, VEHICLE_ID, 4,
                         Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO"),
-                        "WGS84", "T/JSATL12-2017", List.of("ADAS", "DMS"), 7),
+                        "WGS84", profile("JSATL12_2017", List.of("ADAS", "DMS")),
+                        "T/JSATL12-2017", List.of("ADAS", "DMS"), 7),
                 decision.context());
         assertEquals(TERMINAL_ID, decision.terminalId());
         assertEquals(VEHICLE_ID, decision.vehicleId());
@@ -119,6 +140,123 @@ class OperationsTerminalRegistryClientTest {
             decision.destroyAuthenticationToken();
         }
         assertTrue(decision.authenticationTokenDestroyed());
+        server.verify();
+    }
+
+    @Test
+    void rejectsRegistrationTransportMismatchBeforeTokenCompletion() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(
+                builder, "registration_transport_mismatch");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/registrations/verify"))
+                .andRespond(withSuccess(approvedRegistrationJson(TERMINAL_ID),
+                        MediaType.APPLICATION_JSON));
+        server.expect(ExpectedCount.never(), requestTo(
+                "http://operations.invalid/internal/jt-gateway/registrations/"
+                        + TERMINAL_ID + "/complete"));
+
+        RegistrationDecision decision = registry.verifyRegistration(
+                syntheticIdentity(
+                        com.idavy.drtops.jt.protocol.codec.ProtocolVersion.JT808_2013));
+
+        assertFalse(decision.approved());
+        assertEquals("SESSION_TRANSPORT_PROFILE_MISMATCH", decision.rejection().name());
+        assertNull(decision.context());
+        assertFalse(decision.hasAvailableAuthenticationToken());
+        server.verify();
+    }
+
+    @Test
+    void realClientTransportMismatchMakesHandlerAuditCloseWithoutRegistrationReplyOrCompletion()
+            throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RegistryFixture fixture = newRegistryFixture(
+                builder, "registration_transport_mismatch_handler");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/registrations/verify"))
+                .andRespond(withSuccess(approvedRegistrationJson(TERMINAL_ID),
+                        MediaType.APPLICATION_JSON));
+        server.expect(ExpectedCount.never(), requestTo(
+                "http://operations.invalid/internal/jt-gateway/registrations/"
+                        + TERMINAL_ID + "/complete"));
+        RegistrationAuthenticationHandler handler = new RegistrationAuthenticationHandler(
+                fixture.registry(),
+                new TerminalSessionRegistry(),
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(30));
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        Jt808Frame registration = jt8082013RegistrationFrame();
+        Object outbound = null;
+        try {
+            assertFalse(channel.writeInbound(registration));
+            outbound = channel.readOutbound();
+            List<GatewayOutboxRepository.OutboxEntry> audits =
+                    fixture.outbox().claimSessionAudits(NOW.plusSeconds(1), 10);
+            server.verify();
+
+            assertEquals(0, registration.body().refCnt());
+            assertFalse(channel.isOpen());
+            assertEquals(TerminalSessionState.CLOSED, handler.session().state());
+            assertNull(outbound);
+            assertEquals(1, audits.size());
+            var audit = fixture.mapper().readTree(audits.getFirst().payloadJson());
+            assertEquals("PROTOCOL_REJECTED", audit.path("eventType").asText());
+            assertEquals("REJECTED", audit.path("result").asText());
+            assertEquals(
+                    "SESSION_TRANSPORT_PROFILE_MISMATCH",
+                    audit.path("reasonCode").asText());
+        } finally {
+            if (outbound instanceof Jt808Frame reply && reply.body().refCnt() > 0) {
+                reply.body().release();
+            }
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void rejectsV2ProfileThatDiffersFromFlatCompatibilityFields() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(
+                builder, "inconsistent_v2_compatibility");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/registrations/verify"))
+                .andRespond(withSuccess("""
+                        {"data":{"approved":true,"contractVersion":2,
+                         "terminalId":"11111111-1111-1111-1111-111111111111",
+                         "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                         "vehicleId":"33333333-3333-3333-3333-333333333333",
+                         "onboardConfigurationVersion":4,
+                         "roles":["LOCATION_BACKUP","ACTIVE_SAFETY"],
+                         "sourceCoordinateSystem":"WGS84",
+                         "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                          "safetyProfile":"JSATL12_2017","mediaProfile":"NONE",
+                          "enabledActiveSafetyModules":["ADAS"],
+                          "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
+                         "activeSafetyStandard":"T/JSATL12-2017","activeSafetyModules":["DMS"],
+                         "tokenVersion":7,
+                         "context":{"contractVersion":2,
+                          "terminalId":"11111111-1111-1111-1111-111111111111",
+                          "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                          "vehicleId":"33333333-3333-3333-3333-333333333333",
+                          "onboardConfigurationVersion":4,
+                          "roles":["LOCATION_BACKUP","ACTIVE_SAFETY"],
+                          "sourceCoordinateSystem":"WGS84",
+                          "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                           "safetyProfile":"JSATL12_2017","mediaProfile":"NONE",
+                           "enabledActiveSafetyModules":["ADAS"],
+                           "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
+                          "activeSafetyStandard":"T/JSATL12-2017","activeSafetyModules":["ADAS"],
+                          "tokenVersion":7},"warnings":[]}}
+                        """, MediaType.APPLICATION_JSON));
+
+        RegistrationDecision decision = registry.verifyRegistration(syntheticIdentity());
+
+        assertFalse(decision.approved());
+        assertNull(decision.context());
         server.verify();
     }
 
@@ -186,6 +324,38 @@ class OperationsTerminalRegistryClientTest {
     }
 
     @Test
+    void acceptsAuthenticatedMemberWithNoBusinessRoles() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(
+                builder, "roleless_authentication_context");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/authentications/verify-by-identity"))
+                .andRespond(withSuccess("""
+                        {"data":{"approved":true,
+                         "context":{"contractVersion":2,
+                          "terminalId":"11111111-1111-1111-1111-111111111111",
+                          "onboardSystemId":"22222222-2222-2222-2222-222222222222",
+                          "vehicleId":"33333333-3333-3333-3333-333333333333",
+                          "onboardConfigurationVersion":0,"roles":[],
+                          "sourceCoordinateSystem":"WGS84",
+                          "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                           "safetyProfile":"NONE","mediaProfile":"NONE",
+                           "enabledActiveSafetyModules":[],
+                           "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
+                          "activeSafetyStandard":null,"activeSafetyModules":[],"tokenVersion":7}}}
+                        """, MediaType.APPLICATION_JSON));
+
+        AuthenticationDecision decision = registry.verifyAuthenticationByIdentity(
+                com.idavy.drtops.jt.protocol.codec.ProtocolVersion.JT808_2019,
+                "00000000000000000001", PRESENTED_DIGEST);
+
+        assertTrue(decision.approved());
+        assertTrue(decision.context().roles().isEmpty());
+        server.verify();
+    }
+
+    @Test
     void rejectsApprovedAuthenticationWithoutAValidContext() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
@@ -217,15 +387,27 @@ class OperationsTerminalRegistryClientTest {
                          "terminalId":"11111111-1111-1111-1111-111111111111",
                          "onboardSystemId":"22222222-2222-2222-2222-222222222222",
                          "vehicleId":"33333333-3333-3333-3333-333333333333",
+                         "onboardConfigurationVersion":4,
                          "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                          "sourceCoordinateSystem":"WGS84",
+                         "contractVersion":2,
+                         "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                          "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
+                          "enabledActiveSafetyModules":["ADAS","DMS"],
+                          "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                          "activeSafetyStandard":"T/JSATL12-2017",
                          "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7,
-                         "context":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                         "context":{"contractVersion":2,
+                          "terminalId":"11111111-1111-1111-1111-111111111111",
                           "onboardSystemId":"22222222-2222-2222-2222-222222222222",
                           "vehicleId":"33333333-3333-3333-3333-333333333333",
+                          "onboardConfigurationVersion":4,
                           "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                           "sourceCoordinateSystem":"WGS84",
+                          "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                           "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
+                           "enabledActiveSafetyModules":["ADAS","DMS"],
+                           "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                           "activeSafetyStandard":"T/JSATL12-2017",
                           "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7},
                          "warnings":[],"reasonCode":"SHOULD_NOT_COEXIST"}}
@@ -251,11 +433,17 @@ class OperationsTerminalRegistryClientTest {
                         "http://operations.invalid/internal/jt-gateway/authentications/verify"))
                 .andRespond(withSuccess("""
                         {"data":{"approved":true,
-                         "context":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                         "context":{"contractVersion":2,
+                          "terminalId":"11111111-1111-1111-1111-111111111111",
                           "onboardSystemId":"22222222-2222-2222-2222-222222222222",
                           "vehicleId":"33333333-3333-3333-3333-333333333333",
+                          "onboardConfigurationVersion":4,
                           "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                           "sourceCoordinateSystem":"WGS84",
+                          "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                           "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
+                           "enabledActiveSafetyModules":["ADAS","DMS"],
+                           "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                           "activeSafetyStandard":"T/JSATL12-2017",
                           "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7},
                          "reasonCode":"SHOULD_NOT_COEXIST"}}
@@ -567,35 +755,87 @@ class OperationsTerminalRegistryClientTest {
 
     private static OperationsTerminalRegistryClient newRegistry(
             RestClient.Builder builder, String databaseName) {
+        return newRegistryFixture(builder, databaseName).registry();
+    }
+
+    private static RegistryFixture newRegistryFixture(
+            RestClient.Builder builder, String databaseName) {
         DataSource dataSource = new DriverManagerDataSource(
                 "jdbc:h2:mem:" + databaseName.replace('-', '_')
                         + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1", "sa", "");
         Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
-        return new OperationsTerminalRegistryClient(
+        GatewayOutboxRepository outbox = new GatewayOutboxRepository(dataSource);
+        OperationsTerminalRegistryClient registry = new OperationsTerminalRegistryClient(
                 builder, "http://operations.invalid", CREDENTIAL, 3,
                 "gateway-registration-test", new SecureRandom(),
-                new OperationsApiStatus(Clock.systemUTC()),
+                new OperationsApiStatus(Clock.fixed(NOW, ZoneOffset.UTC)),
                 new GatewayIngressBuffer(
-                        new GatewayOutboxRepository(dataSource), mapper, Clock.systemUTC()),
+                        outbox, mapper, Clock.fixed(NOW, ZoneOffset.UTC)),
                 mapper);
+        return new RegistryFixture(registry, outbox, mapper);
     }
+
+    private static Jt808Frame jt8082013RegistrationFrame() {
+        ByteBuf body = Unpooled.buffer();
+        body.writeShort(62).writeShort(621);
+        writeFixedAscii(body, "MFG01", 5);
+        writeFixedAscii(body, "MODEL-X", 20);
+        writeFixedAscii(body, "T-001", 7);
+        body.writeByte(1);
+        body.writeCharSequence("TEST-A10001", StandardCharsets.US_ASCII);
+        int bodyLength = body.readableBytes();
+        Jt808MessageHeader header = new Jt808MessageHeader(
+                0x0100,
+                bodyLength,
+                bodyLength,
+                0,
+                false,
+                ProtocolVersion.JT808_2013,
+                0,
+                "000000000001",
+                9,
+                null,
+                null);
+        return new Jt808Frame(header, body, (byte) 0);
+    }
+
+    private static void writeFixedAscii(ByteBuf target, String value, int length) {
+        byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
+        target.writeBytes(bytes);
+        target.writeZero(length - bytes.length);
+    }
+
+    private record RegistryFixture(
+            OperationsTerminalRegistryClient registry,
+            GatewayOutboxRepository outbox,
+            ObjectMapper mapper) { }
 
     private static String approvedRegistrationJson(UUID nestedTerminalId) {
         return """
-                {"data":{"approved":true,
+                {"data":{"approved":true,"contractVersion":2,
                  "terminalId":"11111111-1111-1111-1111-111111111111",
                  "onboardSystemId":"22222222-2222-2222-2222-222222222222",
                  "vehicleId":"33333333-3333-3333-3333-333333333333",
+                 "onboardConfigurationVersion":4,
                  "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                  "sourceCoordinateSystem":"WGS84",
+                 "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                  "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
+                  "enabledActiveSafetyModules":["ADAS","DMS"],
+                  "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                  "activeSafetyStandard":"T/JSATL12-2017",
                  "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7,
-                 "context":{"terminalId":"%s",
+                 "context":{"contractVersion":2,"terminalId":"%s",
                   "onboardSystemId":"22222222-2222-2222-2222-222222222222",
                   "vehicleId":"33333333-3333-3333-3333-333333333333",
+                  "onboardConfigurationVersion":4,
                   "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                   "sourceCoordinateSystem":"WGS84",
+                  "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                   "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
+                   "enabledActiveSafetyModules":["ADAS","DMS"],
+                   "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                   "activeSafetyStandard":"T/JSATL12-2017",
                   "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7},
                  "warnings":[]}}
@@ -605,19 +845,39 @@ class OperationsTerminalRegistryClientTest {
     private static String approvedAuthenticationJson() {
         return """
                 {"data":{"approved":true,
-                 "context":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                 "context":{"contractVersion":2,
+                  "terminalId":"11111111-1111-1111-1111-111111111111",
                   "onboardSystemId":"22222222-2222-2222-2222-222222222222",
                   "vehicleId":"33333333-3333-3333-3333-333333333333",
+                  "onboardConfigurationVersion":4,
                   "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                   "sourceCoordinateSystem":"WGS84",
+                  "protocolProfile":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                   "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
+                   "enabledActiveSafetyModules":["ADAS","DMS"],
+                   "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                   "activeSafetyStandard":"T/JSATL12-2017",
                   "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7}}}
                 """;
     }
 
+    private static TerminalSessionContext.SessionProtocolProfile profile(
+            String safetyProfile, List<String> modules) {
+        return new TerminalSessionContext.SessionProtocolProfile(
+                "JT808_2019", "NONE", safetyProfile,
+                "NONE".equals(safetyProfile) ? "NONE" : "JT1078_2016",
+                modules, 30, 60);
+    }
+
     private static TerminalRegistrationIdentity syntheticIdentity() {
+        return syntheticIdentity(
+                com.idavy.drtops.jt.protocol.codec.ProtocolVersion.JT808_2019);
+    }
+
+    private static TerminalRegistrationIdentity syntheticIdentity(
+            com.idavy.drtops.jt.protocol.codec.ProtocolVersion protocolVersion) {
         return new TerminalRegistrationIdentity(
-                com.idavy.drtops.jt.protocol.codec.ProtocolVersion.JT808_2019,
+                protocolVersion,
                 "00000000000000000001", "MFG01", "MODEL-X", "T-001", "TEST-A10001");
     }
 

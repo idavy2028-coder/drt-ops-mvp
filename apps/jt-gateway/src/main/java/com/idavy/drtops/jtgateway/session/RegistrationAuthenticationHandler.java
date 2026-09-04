@@ -28,6 +28,8 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
     private static final int HEARTBEAT_MESSAGE_ID = 0x0002;
     private static final String PRIVATE_CAPTURE_CONFIGURATION_INVALID_REASON =
             "PRIVATE_CAPTURE_CONFIGURATION_INVALID";
+    private static final String TRANSPORT_PROFILE_MISMATCH_REASON =
+            "SESSION_TRANSPORT_PROFILE_MISMATCH";
     private static final AtomicInteger PLATFORM_SERIAL = new AtomicInteger();
 
     private final TerminalRegistryPort registryPort;
@@ -235,6 +237,11 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             throw closeOnRegistrationInfrastructureFailure(frame, exception);
         }
         if (!decision.approved()) {
+            if (decision.rejection()
+                    == RegistrationRejection.SESSION_TRANSPORT_PROFILE_MISMATCH) {
+                failRegistrationTransportMismatch(context, frame);
+                return;
+            }
             if (decision.rejection() == RegistrationRejection.VEHICLE_IDENTIFIER_MISMATCH) {
                 try {
                     privateVehicleIdentifierCapture.capture(
@@ -251,6 +258,12 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
                 }
             }
             rejectRegistration(context, frame, decision.rejection(), null);
+            return;
+        }
+
+        if (!acceptsTransport(decision.context(), frame.header().protocolVersion())) {
+            decision.destroyAuthenticationToken();
+            failRegistrationTransportMismatch(context, frame);
             return;
         }
 
@@ -323,6 +336,18 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         return exception;
     }
 
+    private void failRegistrationTransportMismatch(
+            ChannelHandlerContext context, Jt808Frame frame) {
+        try {
+            audit(context, SessionAuditType.SESSION_IDENTITY_MISMATCH,
+                    TRANSPORT_PROFILE_MISMATCH_REASON);
+        } catch (RuntimeException exception) {
+            throw closeOnRegistrationInfrastructureFailure(frame, exception);
+        }
+        release(frame);
+        session.close();
+    }
+
     private static RegistrationRejection invalidRegistrationField(TerminalRegistrationIdentity identity) {
         if (identity.terminalNumber().isBlank()) {
             return RegistrationRejection.REGISTRATION_TERMINAL_PHONE_EMPTY;
@@ -385,6 +410,19 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             return;
         }
 
+        if (!acceptsTransport(decision.context(), frame.header().protocolVersion())) {
+            try {
+                audit(context, SessionAuditType.SESSION_IDENTITY_MISMATCH,
+                        TRANSPORT_PROFILE_MISMATCH_REASON);
+            } catch (RuntimeException exception) {
+                throw closeOnAuthenticationInfrastructureFailure(frame, exception);
+            }
+            release(frame);
+            sessionRegistry.remove(session);
+            session.close();
+            return;
+        }
+
         try {
             if (restoreIdentity) {
                 session.restoreAuthenticatedIdentity(
@@ -405,6 +443,14 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
     }
 
     private void handleAuthenticated(ChannelHandlerContext context, Jt808Frame frame) {
+        if (!session.acceptsTransport(frame.header().protocolVersion())) {
+            release(frame);
+            audit(context, SessionAuditType.SESSION_IDENTITY_MISMATCH,
+                    TRANSPORT_PROFILE_MISMATCH_REASON);
+            sessionRegistry.remove(session);
+            session.close();
+            return;
+        }
         session.touch(clock.instant());
         if (frame.header().messageId() == HEARTBEAT_MESSAGE_ID) {
             writeGeneralReply(context, frame.header(), 0);
@@ -562,6 +608,14 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             end++;
         }
         return new String(value, 0, end, charset).trim();
+    }
+
+    private static boolean acceptsTransport(
+            TerminalSessionContext context, ProtocolVersion protocolVersion) {
+        return context != null
+                && protocolVersion != null
+                && context.protocolProfile().transportProfile()
+                        .equals(protocolVersion.name());
     }
 
     private static String maskedAlias(String terminalIdentity) {

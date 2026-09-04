@@ -347,7 +347,7 @@ public class OnboardReadinessService {
                 Role.ACTIVE_SAFETY,
                 terminalId -> snapshot.hasCapability(terminalId, Capability.ADAS)
                         || snapshot.hasCapability(terminalId, Capability.DMS),
-                profile -> profile.safetyProfile() != SafetyProfile.NONE);
+                profile -> profile.safetyProfile() == SafetyProfile.JSATL12_2017);
     }
 
     private ReadinessState video(Snapshot snapshot) {

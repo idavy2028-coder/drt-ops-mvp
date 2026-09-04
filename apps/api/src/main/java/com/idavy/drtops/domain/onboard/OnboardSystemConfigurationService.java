@@ -985,6 +985,8 @@ public class OnboardSystemConfigurationService {
         validatePrimaryAndBackup(desiredByCode.values());
         validateOperatingMode(command.operatingMode(), desiredByCode.values());
         validateRoleEvidence(desiredByCode.values());
+        desiredByCode.values().forEach(
+                OnboardSystemConfigurationService::validateRoleProtocolCompatibility);
 
         CurrentConfiguration current = loadCurrent(system.getId());
         List<String> changedFields = diff(
@@ -1128,6 +1130,26 @@ public class OnboardSystemConfigurationService {
             case VIDEO -> capabilities.contains(Capability.VIDEO);
             case WAN_UPLINK -> true;
         };
+    }
+
+    private static void validateRoleProtocolCompatibility(DesiredDevice device) {
+        String terminalTransport = JtTerminalRepository.canonicalProtocolVersion(
+                device.terminal().getProtocolVersion());
+        if (!device.profiles().transportProfile().name().equals(terminalTransport)) {
+            throw conflict("TRANSPORT_PROFILE_IDENTITY_MISMATCH");
+        }
+        if (device.roles().contains(Role.DISPATCH)
+                && device.profiles().businessProfile() == BusinessProfile.NONE) {
+            throw conflict("ROLE_PROTOCOL_PROFILE_MISMATCH:DISPATCH");
+        }
+        if (device.roles().contains(Role.ACTIVE_SAFETY)
+                && device.profiles().safetyProfile() == SafetyProfile.NONE) {
+            throw conflict("ROLE_PROTOCOL_PROFILE_MISMATCH:ACTIVE_SAFETY");
+        }
+        if (device.roles().contains(Role.VIDEO)
+                && device.profiles().mediaProfile() == MediaProfile.NONE) {
+            throw conflict("ROLE_PROTOCOL_PROFILE_MISMATCH:VIDEO");
+        }
     }
 
     private CurrentConfiguration loadCurrent(UUID onboardSystemId) {

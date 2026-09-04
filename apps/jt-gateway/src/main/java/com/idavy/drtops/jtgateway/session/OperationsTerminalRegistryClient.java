@@ -89,8 +89,15 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                     .body(RegistrationResponse.class);
             RegistrationPayload approved = response == null ? null : response.data();
             TerminalSessionContext context = approved == null ? null : approved.context();
+            if (registrationTransportMismatch(
+                    approved, context, identity.protocolVersion())) {
+                apiStatus.success(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
+                return RegistrationDecision.rejected(
+                        RegistrationRejection.SESSION_TRANSPORT_PROFILE_MISMATCH);
+            }
             if (approved == null || !approved.approved()
-                    || !registrationContextIsConsistent(approved, context)) {
+                    || !registrationContextIsConsistent(
+                            approved, context, identity.protocolVersion())) {
                 if (approved == null) {
                     apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "REGISTRATION_VERIFY");
                 } else {
@@ -251,20 +258,40 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     }
 
     private static boolean registrationContextIsConsistent(
-            RegistrationPayload payload, TerminalSessionContext context) {
+            RegistrationPayload payload,
+            TerminalSessionContext context,
+            ProtocolVersion requestedProtocol) {
         return context != null
                 && payload.reasonCode() == null
+                && context.protocolProfile().transportProfile()
+                        .equals(requestedProtocol.name())
+                && payload.contractVersion() == context.contractVersion()
                 && Objects.equals(payload.terminalId(), context.terminalId())
                 && Objects.equals(payload.onboardSystemId(), context.onboardSystemId())
                 && Objects.equals(payload.vehicleId(), context.vehicleId())
+                && payload.onboardConfigurationVersion()
+                        == context.onboardConfigurationVersion()
                 && Objects.equals(payload.roles(), context.roles())
                 && Objects.equals(
                         payload.sourceCoordinateSystem(), context.sourceCoordinateSystem())
+                && Objects.equals(payload.protocolProfile(), context.protocolProfile())
                 && Objects.equals(
                         payload.activeSafetyStandard(), context.activeSafetyStandard())
                 && Objects.equals(
                         payload.activeSafetyModules(), context.activeSafetyModules())
                 && payload.tokenVersion() == context.tokenVersion();
+    }
+
+    private static boolean registrationTransportMismatch(
+            RegistrationPayload payload,
+            TerminalSessionContext context,
+            ProtocolVersion requestedProtocol) {
+        return payload != null
+                && payload.approved()
+                && payload.reasonCode() == null
+                && context != null
+                && !context.protocolProfile().transportProfile()
+                        .equals(requestedProtocol.name());
     }
 
     private static AuditMapping auditMapping(SessionAuditType type) {
@@ -306,11 +333,14 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
 
     private record RegistrationPayload(
             boolean approved,
+            int contractVersion,
             UUID terminalId,
             UUID onboardSystemId,
             UUID vehicleId,
+            long onboardConfigurationVersion,
             Set<String> roles,
             String sourceCoordinateSystem,
+            TerminalSessionContext.SessionProtocolProfile protocolProfile,
             String activeSafetyStandard,
             List<String> activeSafetyModules,
             int tokenVersion,

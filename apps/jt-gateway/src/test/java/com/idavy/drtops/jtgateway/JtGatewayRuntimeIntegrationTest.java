@@ -907,13 +907,17 @@ class JtGatewayRuntimeIntegrationTest {
         private final CountDownLatch releaseProbe = new CountDownLatch(1);
         private final CountDownLatch ingressReceived = new CountDownLatch(1);
         private final Map<UUID, String> registeredTokenDigests = new ConcurrentHashMap<>();
+        private final Map<UUID, DeviceContext> verifiedContexts = new ConcurrentHashMap<>();
 
         private OperationsApiStub() throws IOException {
             server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
             server.createContext("/internal/jt-gateway/registrations/verify", exchange -> {
                 JsonNode request = read(exchange);
-                respond(exchange, 200, approvedRegistrationResponse(contextFor(
-                        request.required("terminalPhone").asText())));
+                DeviceContext context = contextFor(
+                        request.required("terminalPhone").asText(),
+                        request.required("protocolVersion").asText());
+                verifiedContexts.put(context.terminalId(), context);
+                respond(exchange, 200, approvedRegistrationResponse(context));
             });
             server.createContext("/internal/jt-gateway/registrations/", exchange -> {
                 JsonNode request = read(exchange);
@@ -924,10 +928,12 @@ class JtGatewayRuntimeIntegrationTest {
             server.createContext("/internal/jt-gateway/authentications/verify", exchange -> {
                 JsonNode request = read(exchange);
                 UUID terminalId = UUID.fromString(request.required("terminalId").asText());
-                boolean approved = registeredTokenDigests.containsKey(terminalId)
+                DeviceContext context = verifiedContexts.get(terminalId);
+                boolean approved = context != null
+                        && registeredTokenDigests.containsKey(terminalId)
                         && registeredTokenDigests.get(terminalId).equals(request.required("tokenSha256").asText())
                         && request.required("tokenVersion").asInt() == 3;
-                respond(exchange, 200, authenticationResponse(approved, contextFor(terminalId)));
+                respond(exchange, 200, authenticationResponse(approved, context));
             });
             server.createContext("/internal/jt-gateway/audit-events", exchange -> {
                 JsonNode request = read(exchange);
@@ -977,24 +983,36 @@ class JtGatewayRuntimeIntegrationTest {
 
         private static String approvedRegistrationResponse(DeviceContext context) {
             return """
-                    {"data":{"approved":true,
+                    {"data":{"approved":true,"contractVersion":2,
                      "terminalId":"%s",
                      "onboardSystemId":"66666666-6666-6666-6666-666666666666",
                      "vehicleId":"55555555-5555-5555-5555-555555555555",
+                     "onboardConfigurationVersion":4,
                      "roles":%s,
                      "sourceCoordinateSystem":"WGS84",
+                     "protocolProfile":{"transportProfile":"%s","businessProfile":"NONE",
+                      "safetyProfile":"JSATL12_2017","mediaProfile":"%s",
+                      "enabledActiveSafetyModules":["ADAS"],
+                      "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                      "activeSafetyStandard":"T/JSATL12-2017",
                      "activeSafetyModules":["ADAS"],"tokenVersion":3,
-                     "context":{"terminalId":"%s",
+                     "context":{"contractVersion":2,"terminalId":"%s",
                       "onboardSystemId":"66666666-6666-6666-6666-666666666666",
                       "vehicleId":"55555555-5555-5555-5555-555555555555",
+                      "onboardConfigurationVersion":4,
                       "roles":%s,
                       "sourceCoordinateSystem":"WGS84",
+                      "protocolProfile":{"transportProfile":"%s","businessProfile":"NONE",
+                       "safetyProfile":"JSATL12_2017","mediaProfile":"%s",
+                       "enabledActiveSafetyModules":["ADAS"],
+                       "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                       "activeSafetyStandard":"T/JSATL12-2017",
                       "activeSafetyModules":["ADAS"],"tokenVersion":3},
                      "warnings":[],"reasonCode":null}}
                     """.formatted(context.terminalId(), context.rolesJson(),
-                    context.terminalId(), context.rolesJson());
+                    context.transportProfile(), context.mediaProfile(),
+                    context.terminalId(), context.rolesJson(),
+                    context.transportProfile(), context.mediaProfile());
         }
 
         private static String authenticationResponse(boolean approved, DeviceContext context) {
@@ -1005,28 +1023,31 @@ class JtGatewayRuntimeIntegrationTest {
             }
             return """
                     {"data":{"approved":true,
-                     "context":{"terminalId":"%s",
+                     "context":{"contractVersion":2,"terminalId":"%s",
                       "onboardSystemId":"66666666-6666-6666-6666-666666666666",
                       "vehicleId":"55555555-5555-5555-5555-555555555555",
+                      "onboardConfigurationVersion":4,
                       "roles":%s,
                       "sourceCoordinateSystem":"WGS84",
+                      "protocolProfile":{"transportProfile":"%s","businessProfile":"NONE",
+                       "safetyProfile":"JSATL12_2017","mediaProfile":"%s",
+                       "enabledActiveSafetyModules":["ADAS"],
+                       "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                       "activeSafetyStandard":"T/JSATL12-2017",
                       "activeSafetyModules":["ADAS"],"tokenVersion":3},
                      "reasonCode":null}}
-                    """.formatted(context.terminalId(), context.rolesJson());
+                    """.formatted(context.terminalId(), context.rolesJson(),
+                    context.transportProfile(), context.mediaProfile());
         }
 
-        private static DeviceContext contextFor(String terminalPhone) {
+        private static DeviceContext contextFor(String terminalPhone, String transportProfile) {
             return RECORDER_IDENTITY.equals(terminalPhone)
                     ? new DeviceContext(RECORDER_TERMINAL_ID,
-                    "[\"LOCATION_BACKUP\",\"ACTIVE_SAFETY\",\"VIDEO\"]")
-                    : new DeviceContext(TERMINAL_ID, "[\"LOCATION_PRIMARY\",\"ACTIVE_SAFETY\"]");
-        }
-
-        private static DeviceContext contextFor(UUID terminalId) {
-            return RECORDER_TERMINAL_ID.equals(terminalId)
-                    ? contextFor(RECORDER_IDENTITY)
-                    : contextFor(TERMINAL_IDENTITY);
+                    "[\"LOCATION_BACKUP\",\"ACTIVE_SAFETY\",\"VIDEO\"]",
+                    transportProfile, "JT1078_2016")
+                    : new DeviceContext(TERMINAL_ID,
+                    "[\"LOCATION_PRIMARY\",\"ACTIVE_SAFETY\"]",
+                    transportProfile, "NONE");
         }
 
         private static UUID terminalIdFromCompletionPath(String path) {
@@ -1147,6 +1168,10 @@ class JtGatewayRuntimeIntegrationTest {
             httpWorkers.shutdownNow();
         }
 
-        private record DeviceContext(UUID terminalId, String rolesJson) { }
+        private record DeviceContext(
+                UUID terminalId,
+                String rolesJson,
+                String transportProfile,
+                String mediaProfile) { }
     }
 }

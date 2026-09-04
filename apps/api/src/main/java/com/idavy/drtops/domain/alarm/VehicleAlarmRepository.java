@@ -32,10 +32,13 @@ interface VehicleAlarmRepository extends JpaRepository<VehicleAlarm, UUID> {
             @Param("module") String module,
             @Param("hasAttachment") Boolean hasAttachment,
             Pageable pageable);
-    Optional<VehicleAlarm> findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdAndEndedAtIsNull(
-            UUID terminalId, UUID vehicleId, String standard, String module, int alarmTypeCode,
-            long terminalAlarmId);
-    Optional<VehicleAlarm> findFirstByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdOrderByOccurredAtDesc(
-            UUID terminalId, UUID vehicleId, String standard, String module, int alarmTypeCode,
-            long terminalAlarmId);
+    Optional<VehicleAlarm> findFirstByOnboardSystemIdAndTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdAndEndedAtIsNull(
+            UUID onboardSystemId, UUID terminalId, UUID vehicleId, String standard,
+            String module, int alarmTypeCode, long terminalAlarmId);
+    boolean existsByTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdAndEndedAtIsNull(
+            UUID terminalId, UUID vehicleId, String standard, String module,
+            int alarmTypeCode, long terminalAlarmId);
+    Optional<VehicleAlarm> findFirstByOnboardSystemIdAndTerminalIdAndVehicleIdAndStandardAndModuleAndAlarmTypeCodeAndTerminalAlarmIdOrderByOccurredAtDesc(
+            UUID onboardSystemId, UUID terminalId, UUID vehicleId, String standard,
+            String module, int alarmTypeCode, long terminalAlarmId);
 }

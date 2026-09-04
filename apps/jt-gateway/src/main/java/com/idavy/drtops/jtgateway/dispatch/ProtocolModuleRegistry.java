@@ -86,6 +86,7 @@ public final class ProtocolModuleRegistry {
     private DispatchResult dispatchCurrent(TerminalSession session, Jt808Frame frame) {
         if (session.vehicleId() == null
                 || session.sourceCoordinateSystem() == null
+                || !session.acceptsTransport(frame.header().protocolVersion())
                 || !session.matchesTerminalIdentity(frame.header().terminalIdentity())
                 || frame.header().encryptionType() != 0) {
             return DispatchResult.REJECTED;

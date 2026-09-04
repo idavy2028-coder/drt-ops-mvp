@@ -36,11 +36,12 @@ public final class ActiveSafetyAlarmRouter {
         if (!hasActiveSafetyItem) {
             return new Result(List.of(), List.of());
         }
-        ActiveSafetyDecodeResult decoded = extensions.decode(
-                new ActiveSafetyCapabilityProfile(session.activeSafetyStandard(), session.activeSafetyModules()), position);
+        ActiveSafetyCapabilityProfile capability = session.activeSafetyCapabilityProfile();
+        ActiveSafetyDecodeResult decoded = extensions.decode(capability, position);
         List<CanonicalVehicleAlarm> alarms = decoded.alarms().stream()
-                .map(alarm -> new CanonicalVehicleAlarm(session.terminalId(), session.vehicleId(),
-                        session.activeSafetyStandard(), alarm.module(), alarm.alarmId(), alarm.typeCode(), alarm.alarmType(),
+                .map(alarm -> new CanonicalVehicleAlarm(
+                        session.terminalId(), session.onboardSystemId(), session.vehicleId(),
+                        capability.standardCode(), alarm.module(), alarm.alarmId(), alarm.typeCode(), alarm.alarmType(),
                         alarm.state(), alarm.level(), alarm.terminalAlarmIdentifier(), alarm.occurredAt(), gatewayReceivedAt,
                         alarm.longitude(), alarm.latitude(), alarm.speedKph(), alarm.vehicleStatus(),
                         alarm.alarmSequenceNumber(), alarm.attachmentCount(), positionIdempotencyKey, "UNASSESSED",
