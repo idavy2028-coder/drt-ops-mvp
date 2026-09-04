@@ -15,6 +15,7 @@ import com.idavy.drtops.jtgateway.session.OperationsTerminalRegistryClient;
 import com.idavy.drtops.jtgateway.session.RegistrationAuthenticationTokenPolicy;
 import com.idavy.drtops.jtgateway.session.RegistrationBodyLayoutPolicy;
 import com.idavy.drtops.jtgateway.session.RegistrationMaintenancePolicy;
+import com.idavy.drtops.jtgateway.session.SessionLeaseReporter;
 import com.idavy.drtops.jtgateway.session.PrivateVehicleIdentifierCapture;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
@@ -32,6 +33,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Locale;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.actuate.health.Health;
@@ -178,6 +183,29 @@ public class JtGatewayRuntimeConfiguration {
                 auditBuffer, objectMapper, authenticationTokens);
     }
 
+    @Bean(destroyMethod = "shutdown")
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    ExecutorService sessionLeaseExecutor() {
+        return new ThreadPoolExecutor(
+                1,
+                1,
+                0,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1024),
+                runnable -> new Thread(runnable, "jt-session-lease-reporter"),
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
+    SessionLeaseReporter sessionLeaseReporter(
+            TerminalRegistryPort registryPort,
+            ExecutorService sessionLeaseExecutor,
+            Clock gatewayClock) {
+        return new SessionLeaseReporter(
+                registryPort, sessionLeaseExecutor, gatewayClock);
+    }
+
     @Bean
     @ConditionalOnProperty(name = "jt.gateway.tcp.enabled", havingValue = "true")
     OperationsApiClient operationsApiClient(
@@ -250,6 +278,7 @@ public class JtGatewayRuntimeConfiguration {
             RegistrationMaintenancePolicy maintenancePolicy,
             PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
             RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy,
+            SessionLeaseReporter sessionLeaseReporter,
             Environment environment) {
         try {
             InetAddress address = InetAddress.getByName(
@@ -266,7 +295,8 @@ public class JtGatewayRuntimeConfiguration {
                             environment, "jt.gateway.tcp.maximum-congestion-ms", 5000)));
             return new JtGatewayServer(
                     configuration, registryPort, sessions, protocolModules, maintenancePolicy,
-                    privateVehicleIdentifierCapture, registrationBodyLayoutPolicy);
+                    privateVehicleIdentifierCapture, registrationBodyLayoutPolicy,
+                    sessionLeaseReporter);
         } catch (UnknownHostException exception) {
             throw new IllegalArgumentException("JT gateway bind address is invalid", exception);
         }

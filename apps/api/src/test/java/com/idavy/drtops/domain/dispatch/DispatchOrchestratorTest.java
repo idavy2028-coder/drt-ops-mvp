@@ -26,6 +26,7 @@ import com.idavy.drtops.domain.task.TaskStop;
 import com.idavy.drtops.domain.task.TaskStatus;
 import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseRepository;
 import com.idavy.drtops.integration.algorithm.AlgorithmClient;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
@@ -129,6 +130,9 @@ class DispatchOrchestratorTest {
     PlatformTransactionManager transactionManager;
 
     @Autowired
+    JtTerminalSessionLeaseRepository leaseRepository;
+
+    @Autowired
     MeterRegistry meterRegistry;
 
     @BeforeEach
@@ -199,6 +203,31 @@ class DispatchOrchestratorTest {
                 .extracting(DispatchEvaluateRequest.CandidateTask::vehicleId)
                 .containsExactly(vehicleId)
                 .doesNotContain(unreadyVehicleId);
+    }
+
+    @Test
+    void excludesHistoricallyAuthenticatedVehicleWhenDispatchLeaseExpiredButBackupLocationIsFresh() {
+        UUID expiredLeaseVehicleId = vehicleId;
+        leaseRepository.deleteAll();
+        UUID readyNeighbor = onboardFixtures.readyDispatchSystemVehicleId();
+        driverRepository.save(Driver.create(
+                UUID.randomUUID(),
+                "租约邻车驾驶员",
+                "13900002009",
+                "QUALIFIED",
+                OffsetDateTime.parse("2026-07-08T08:00:00+08:00"),
+                OffsetDateTime.parse("2026-07-08T18:00:00+08:00"),
+                "AVAILABLE",
+                "演示车队"));
+        UUID orderId = createPendingOrder();
+        algorithmClient.stubAutoDispatch(readyNeighbor);
+
+        orchestrator.dispatchOrder(orderId);
+
+        assertThat(algorithmClient.lastRequest().candidateTasks())
+                .extracting(DispatchEvaluateRequest.CandidateTask::vehicleId)
+                .containsExactly(readyNeighbor)
+                .doesNotContain(expiredLeaseVehicleId);
     }
 
     @Test

@@ -44,7 +44,7 @@ describe("TerminalManagementPage", () => {
     expect(await screen.findByText("JT-001")).toBeInTheDocument();
     expect(screen.getByText("****9012")).toBeInTheDocument();
     expect(screen.getByText("JT/T 1078：支持")).toBeInTheDocument();
-    expect(screen.getByText("最近鉴权：尚无数据")).toBeInTheDocument();
+    expect(screen.getByText("最近成功鉴权（历史）：尚无数据")).toBeInTheDocument();
     expect(screen.getByText("SESSION_ESTABLISHED")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "当前车载系统归属" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "历史 legacy 绑定" })).toBeInTheDocument();
@@ -55,6 +55,22 @@ describe("TerminalManagementPage", () => {
     expect(screen.queryByText("auth-token-digest")).not.toBeInTheDocument();
     expect(screen.queryByText("raw-payload")).not.toBeInTheDocument();
     expect(screen.queryByText("11111111-1111-1111-1111-111111111111")).not.toBeInTheDocument();
+  });
+
+  it("terminalDetailUsesTheSameCurrentSessionStateAsOnboardDetail", async () => {
+    terminalApi.getTerminalDetail.mockResolvedValue({
+      ...detail(),
+      onlineStatus: "OFFLINE",
+      lastAuthenticatedAt: "2026-08-29T08:01:00Z",
+      lastValidMessageAt: "2026-08-29T08:02:00Z",
+      offlineAt: "2026-08-29T08:05:00Z"
+    });
+
+    render(TerminalManagementPage);
+
+    expect(await screen.findByText("当前会话：当前：离线")).toBeInTheDocument();
+    expect(screen.getByText(/最近成功鉴权（历史）：/)).toBeInTheDocument();
+    expect(screen.getByText(/会话最近有效消息：/)).toBeInTheDocument();
   });
 
   it("keeps physical-device operations on the compatibility route with an aggregate-page banner", async () => {

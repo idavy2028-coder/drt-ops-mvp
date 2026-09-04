@@ -35,6 +35,7 @@ public class TerminalManagementService {
             java.util.Set.of("T/JSATL12-2017", "T/GD-ACTIVE-SAFETY");
 
     private final JtTerminalRepository terminalRepository;
+    private final JtTerminalSessionLeaseRepository leaseRepository;
     private final JtTerminalVehicleBindingRepository bindingRepository;
     private final VehicleRepository vehicleRepository;
     private final OnboardDeviceMembershipRepository membershipRepository;
@@ -50,6 +51,7 @@ public class TerminalManagementService {
 
     public TerminalManagementService(
             JtTerminalRepository terminalRepository,
+            JtTerminalSessionLeaseRepository leaseRepository,
             JtTerminalVehicleBindingRepository bindingRepository,
             VehicleRepository vehicleRepository,
             OnboardDeviceMembershipRepository membershipRepository,
@@ -63,6 +65,7 @@ public class TerminalManagementService {
             OnboardSystemConfigurationService onboardConfigurationService,
             OnboardRegistrationResolver onboardRegistrationResolver) {
         this.terminalRepository = terminalRepository;
+        this.leaseRepository = leaseRepository;
         this.bindingRepository = bindingRepository;
         this.vehicleRepository = vehicleRepository;
         this.membershipRepository = membershipRepository;
@@ -118,11 +121,22 @@ public class TerminalManagementService {
                 .map(event -> new GatewayAuditSummary(event.getEventType().name(), event.getResult().name(),
                         event.getReasonCode(), event.getProtocolVersion(), event.getMessageId(), event.getOccurredAt()))
                 .toList();
-        OffsetDateTime lastSeenAt = terminal.getLastSeenAt();
-        OnlineStatus onlineStatus = lastSeenAt == null ? OnlineStatus.NEVER_SEEN
-                : lastSeenAt.isBefore(OffsetDateTime.now(clock).minusSeconds(180)) ? OnlineStatus.OFFLINE : OnlineStatus.ONLINE;
-        return new TerminalDetail(terminal, onlineStatus, lastSeenAt,
-                onlineStatus == OnlineStatus.OFFLINE ? lastSeenAt.plusSeconds(180) : null,
+        JtTerminalSessionLease lease = leaseRepository.findById(terminal.getId()).orElse(null);
+        OffsetDateTime now = OffsetDateTime.now(clock);
+        boolean live = terminal.getStatus() == JtTerminal.Status.ACTIVE
+                && lease != null
+                && lease.isLiveAt(terminal.getAuthTokenVersion(), now);
+        OnlineStatus onlineStatus = live
+                ? OnlineStatus.ONLINE
+                : lease == null ? OnlineStatus.NEVER_SEEN : OnlineStatus.OFFLINE;
+        OffsetDateTime lastValidMessageAt = lease == null
+                ? null : lease.getLastValidMessageAt();
+        OffsetDateTime offlineAt = onlineStatus != OnlineStatus.OFFLINE
+                ? null
+                : lease.getReleasedAt() == null
+                        ? lease.getExpiresAt() : lease.getReleasedAt();
+        return new TerminalDetail(terminal, onlineStatus, lastValidMessageAt,
+                offlineAt,
                 null, legacyBindings, currentMembership, legacyBindings, audits);
     }
 
@@ -299,10 +313,15 @@ public class TerminalManagementService {
 
     @Transactional
     public AuthenticationDecision verifyAuthentication(
-            UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
+            UUID terminalId,
+            int tokenVersion,
+            String tokenSha256,
+            String gatewayInstance,
+            UUID connectionId) {
         OnboardRegistrationResolver.AuthenticationDecision decision =
                 onboardRegistrationResolver.authenticateByTerminalId(
-                        terminalId, tokenVersion, tokenSha256, gatewayInstance);
+                        terminalId, tokenVersion, tokenSha256,
+                        gatewayInstance, connectionId);
         return new AuthenticationDecision(decision.approved(), decision.reasonCode());
     }
 
@@ -326,18 +345,25 @@ public class TerminalManagementService {
     }
 
     public OnboardRegistrationResolver.AuthenticationDecision verifyCompositeAuthentication(
-            UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) {
+            UUID terminalId,
+            int tokenVersion,
+            String tokenSha256,
+            String gatewayInstance,
+            UUID connectionId) {
         return onboardRegistrationResolver.authenticateByTerminalId(
-                terminalId, tokenVersion, tokenSha256, gatewayInstance);
+                terminalId, tokenVersion, tokenSha256,
+                gatewayInstance, connectionId);
     }
 
     public OnboardRegistrationResolver.AuthenticationDecision verifyCompositeAuthenticationByIdentity(
             String protocolVersion,
             String terminalPhone,
             String tokenSha256,
-            String gatewayInstance) {
+            String gatewayInstance,
+            UUID connectionId) {
         return onboardRegistrationResolver.authenticateByIdentity(
-                protocolVersion, terminalPhone, tokenSha256, gatewayInstance);
+                protocolVersion, terminalPhone, tokenSha256,
+                gatewayInstance, connectionId);
     }
 
     public GatewayAuditResult recordGatewayAudit(JtGatewayAuditEvent event) {

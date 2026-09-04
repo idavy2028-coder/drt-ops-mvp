@@ -132,7 +132,7 @@ class JtGatewayRuntimeIntegrationTest {
                             "default registration reply must retain a 43-character token");
                     terminal.sendAuthentication();
                     SimulatedTerminal.ReplyRecord authentication = terminal.awaitReply(Duration.ofSeconds(3));
-                    assertNotNull(authentication);
+                    assertNotNull(authentication, api::diagnostic);
                     assertEquals(0, authentication.result());
                     await(() -> sessions.current(TERMINAL_ID).isPresent(), Duration.ofSeconds(1));
                     assertTrue(sessions.current(TERMINAL_ID).isPresent(),
@@ -933,7 +933,23 @@ class JtGatewayRuntimeIntegrationTest {
                         && registeredTokenDigests.containsKey(terminalId)
                         && registeredTokenDigests.get(terminalId).equals(request.required("tokenSha256").asText())
                         && request.required("tokenVersion").asInt() == 3;
-                respond(exchange, 200, authenticationResponse(approved, context));
+                respond(exchange, 200, authenticationResponse(
+                        approved, context,
+                        request.required("connectionId").asText(),
+                        request.required("gatewayInstance").asText()));
+            });
+            server.createContext("/internal/jt-gateway/session-leases/renew", exchange -> {
+                JsonNode request = read(exchange);
+                java.time.Instant renewedAt = java.time.Instant.now();
+                respond(exchange, 200, "{\"data\":{" +
+                        "\"owner\":" + request.toString() + "," +
+                        "\"authenticatedAt\":\"" + renewedAt.minusSeconds(30) + "\"," +
+                        "\"lastValidMessageAt\":\"" + renewedAt + "\"," +
+                        "\"expiresAt\":\"" + renewedAt.plusSeconds(180) + "\"}}");
+            });
+            server.createContext("/internal/jt-gateway/session-leases/release", exchange -> {
+                read(exchange);
+                respond(exchange, 200, "{\"data\":{\"status\":\"RELEASED\"}}");
             });
             server.createContext("/internal/jt-gateway/audit-events", exchange -> {
                 JsonNode request = read(exchange);
@@ -1015,12 +1031,17 @@ class JtGatewayRuntimeIntegrationTest {
                     context.transportProfile(), context.mediaProfile());
         }
 
-        private static String authenticationResponse(boolean approved, DeviceContext context) {
+        private static String authenticationResponse(
+                boolean approved,
+                DeviceContext context,
+                String connectionId,
+                String gatewayInstance) {
             if (!approved) {
                 return "{\"data\":{\"approved\":false,"
                         + "\"context\":null,"
                         + "\"reasonCode\":\"AUTHENTICATION_REJECTED\"}}";
             }
+            java.time.Instant leaseAt = java.time.Instant.now();
             return """
                     {"data":{"approved":true,
                      "context":{"contractVersion":2,"terminalId":"%s",
@@ -1035,9 +1056,16 @@ class JtGatewayRuntimeIntegrationTest {
                        "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                       "activeSafetyStandard":"T/JSATL12-2017",
                       "activeSafetyModules":["ADAS"],"tokenVersion":3},
+                     "lease":{"owner":{"terminalId":"%s","gatewayInstance":"%s",
+                      "connectionId":"%s","tokenVersion":3,"leaseGeneration":1},
+                      "authenticatedAt":"%s",
+                      "lastValidMessageAt":"%s",
+                      "expiresAt":"%s"},
                      "reasonCode":null}}
                     """.formatted(context.terminalId(), context.rolesJson(),
-                    context.transportProfile(), context.mediaProfile());
+                    context.transportProfile(), context.mediaProfile(),
+                    context.terminalId(), gatewayInstance, connectionId,
+                    leaseAt, leaseAt, leaseAt.plusSeconds(180));
         }
 
         private static DeviceContext contextFor(String terminalPhone, String transportProfile) {

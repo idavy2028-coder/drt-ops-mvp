@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -39,6 +40,7 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
     private final RegistrationMaintenancePolicy maintenancePolicy;
     private final PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture;
     private final RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy;
+    private final SessionLeaseReporter leaseReporter;
     private TerminalSession session;
     private String observedTerminalAlias = "unknown";
 
@@ -46,22 +48,12 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             TerminalRegistryPort registryPort,
             TerminalSessionRegistry sessionRegistry,
             Clock clock,
-            Duration authenticationWindow) {
+            Duration authenticationWindow,
+            SessionLeaseReporter leaseReporter) {
         this(registryPort, sessionRegistry, clock, authenticationWindow,
                 RegistrationMaintenancePolicy.disabled(),
                 PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
-    }
-
-    public RegistrationAuthenticationHandler(
-            TerminalRegistryPort registryPort,
-            TerminalSessionRegistry sessionRegistry,
-            Clock clock,
-            Duration authenticationWindow,
-            RegistrationMaintenancePolicy maintenancePolicy) {
-        this(registryPort, sessionRegistry, clock, authenticationWindow, maintenancePolicy,
-                PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
+                RegistrationBodyLayoutPolicy.disabled(), leaseReporter);
     }
 
     public RegistrationAuthenticationHandler(
@@ -70,9 +62,10 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             Clock clock,
             Duration authenticationWindow,
             RegistrationMaintenancePolicy maintenancePolicy,
-            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture) {
+            SessionLeaseReporter leaseReporter) {
         this(registryPort, sessionRegistry, clock, authenticationWindow, maintenancePolicy,
-                privateVehicleIdentifierCapture, RegistrationBodyLayoutPolicy.disabled());
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled(), leaseReporter);
     }
 
     public RegistrationAuthenticationHandler(
@@ -82,7 +75,21 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             Duration authenticationWindow,
             RegistrationMaintenancePolicy maintenancePolicy,
             PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
-            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy) {
+            SessionLeaseReporter leaseReporter) {
+        this(registryPort, sessionRegistry, clock, authenticationWindow, maintenancePolicy,
+                privateVehicleIdentifierCapture, RegistrationBodyLayoutPolicy.disabled(),
+                leaseReporter);
+    }
+
+    public RegistrationAuthenticationHandler(
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            Clock clock,
+            Duration authenticationWindow,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
+            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy,
+            SessionLeaseReporter leaseReporter) {
         this.registryPort = java.util.Objects.requireNonNull(registryPort, "registryPort");
         this.sessionRegistry = java.util.Objects.requireNonNull(sessionRegistry, "sessionRegistry");
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
@@ -92,6 +99,7 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
                 privateVehicleIdentifierCapture, "privateVehicleIdentifierCapture");
         this.registrationBodyLayoutPolicy = java.util.Objects.requireNonNull(
                 registrationBodyLayoutPolicy, "registrationBodyLayoutPolicy");
+        this.leaseReporter = java.util.Objects.requireNonNull(leaseReporter, "leaseReporter");
     }
 
     @Override
@@ -118,9 +126,10 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         observedTerminalAlias = maskedAlias(terminalIdentity);
         if (session.terminalId() != null && !session.matchesTerminalIdentity(terminalIdentity)) {
             release(frame);
-            audit(context, SessionAuditType.SESSION_IDENTITY_MISMATCH,
+            auditThenCleanup(
+                    context,
+                    SessionAuditType.SESSION_IDENTITY_MISMATCH,
                     "TERMINAL_IDENTITY_CHANGED_WITHIN_SESSION");
-            session.close();
             return;
         }
         if (session.state() == TerminalSessionState.CONNECTED_UNAUTHENTICATED
@@ -144,9 +153,10 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
     @Override
     public void userEventTriggered(ChannelHandlerContext context, Object event) throws Exception {
         if (event instanceof IdleStateEvent idle && idle.state() == IdleState.READER_IDLE) {
-            audit(context, SessionAuditType.SESSION_OFFLINE, "READER_IDLE_180_SECONDS");
-            sessionRegistry.remove(session);
-            session.close();
+            auditThenCleanup(
+                    context,
+                    SessionAuditType.SESSION_OFFLINE,
+                    "READER_IDLE_180_SECONDS");
             return;
         }
         super.userEventTriggered(context, event);
@@ -382,9 +392,11 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
                     ? registryPort.verifyAuthenticationByIdentity(
                             frame.header().protocolVersion(),
                             frame.header().terminalIdentity(),
-                            digest)
+                            digest,
+                            session.connectionId())
                     : registryPort.verifyAuthentication(
-                            session.terminalId(), session.tokenVersion(), digest);
+                            session.terminalId(), session.tokenVersion(), digest,
+                            session.connectionId());
         } catch (RuntimeException exception) {
             throw closeOnAuthenticationInfrastructureFailure(frame, exception);
         } finally {
@@ -392,6 +404,21 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
         }
 
         if (!decision.approved()) {
+            if (decision.cleanupOwner().isPresent()) {
+                TerminalRegistryPort.SessionLeaseOwner cleanupOwner =
+                        decision.cleanupOwner().orElseThrow();
+                try {
+                    audit(context, SessionAuditType.AUTHENTICATION_REJECTED,
+                            "AUTHENTICATION_RESPONSE_INCONSISTENT");
+                } finally {
+                    release(frame);
+                    leaseReporter.release(
+                            cleanupOwner, "AUTHENTICATION_RESPONSE_INCONSISTENT");
+                    sessionRegistry.remove(session);
+                    session.close();
+                }
+                return;
+            }
             int nextFailureCount = session.authenticationFailures() + 1;
             try {
                 audit(context, SessionAuditType.AUTHENTICATION_REJECTED, decision.rejection().name());
@@ -410,7 +437,16 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             return;
         }
 
+        if (!leaseDecisionIsConsistent(decision, session.connectionId())) {
+            leaseReporter.release(decision.lease().owner(), "SESSION_IDENTITY_MISMATCH");
+            release(frame);
+            sessionRegistry.remove(session);
+            session.close();
+            return;
+        }
+
         if (!acceptsTransport(decision.context(), frame.header().protocolVersion())) {
+            leaseReporter.release(decision.lease().owner(), TRANSPORT_PROFILE_MISMATCH_REASON);
             try {
                 audit(context, SessionAuditType.SESSION_IDENTITY_MISMATCH,
                         TRANSPORT_PROFILE_MISMATCH_REASON);
@@ -430,28 +466,38 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             } else {
                 session.refreshAuthenticationContext(decision.context());
             }
+            session.installLease(decision.lease());
             audit(context, SessionAuditType.AUTHENTICATION_ACCEPTED, "APPROVED");
             session.authenticated(clock.instant());
             sessionRegistry.claim(session, previous ->
-                    audit(context, SessionAuditType.SESSION_TAKEN_OVER,
-                            "PREVIOUS_CONNECTION_REPLACED"));
+                    auditTakeoverThenCleanupPrevious(context, previous));
         } catch (RuntimeException exception) {
             throw closeOnAuthenticationInfrastructureFailure(frame, exception);
         }
         writeGeneralReply(context, frame.header(), 0);
         release(frame);
+        leaseReporter.renewIfDue(session, clock.instant());
     }
 
     private void handleAuthenticated(ChannelHandlerContext context, Jt808Frame frame) {
-        if (!session.acceptsTransport(frame.header().protocolVersion())) {
+        Instant now = clock.instant();
+        if (session.leaseExpired(now)) {
             release(frame);
-            audit(context, SessionAuditType.SESSION_IDENTITY_MISMATCH,
-                    TRANSPORT_PROFILE_MISMATCH_REASON);
             sessionRegistry.remove(session);
+            leaseReporter.release(session, "SESSION_LEASE_EXPIRED");
             session.close();
             return;
         }
-        session.touch(clock.instant());
+        if (!session.acceptsTransport(frame.header().protocolVersion())) {
+            release(frame);
+            auditThenCleanup(
+                    context,
+                    SessionAuditType.SESSION_IDENTITY_MISMATCH,
+                    TRANSPORT_PROFILE_MISMATCH_REASON);
+            return;
+        }
+        session.touch(now);
+        leaseReporter.renewIfDue(session, now);
         if (frame.header().messageId() == HEARTBEAT_MESSAGE_ID) {
             writeGeneralReply(context, frame.header(), 0);
             release(frame);
@@ -469,6 +515,7 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
 
     private void releaseSession() {
         if (session != null) {
+            leaseReporter.release(session, "SESSION_OFFLINE");
             sessionRegistry.remove(session);
             session.markClosed();
         }
@@ -595,9 +642,38 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             Jt808Frame frame,
             RuntimeException exception) {
         release(frame);
+        cleanupSession("AUTHENTICATION_INFRASTRUCTURE_FAILURE");
+        return exception;
+    }
+
+    private void auditThenCleanup(
+            ChannelHandlerContext context,
+            SessionAuditType type,
+            String reasonCode) {
+        try {
+            audit(context, type, reasonCode);
+        } finally {
+            cleanupSession(reasonCode);
+        }
+    }
+
+    private void auditTakeoverThenCleanupPrevious(
+            ChannelHandlerContext context,
+            TerminalSession previous) {
+        try {
+            audit(context, SessionAuditType.SESSION_TAKEN_OVER,
+                    "PREVIOUS_CONNECTION_REPLACED");
+        } finally {
+            leaseReporter.release(previous, "SESSION_TAKEN_OVER");
+            sessionRegistry.remove(previous);
+            previous.close();
+        }
+    }
+
+    private void cleanupSession(String reasonCode) {
+        leaseReporter.release(session, reasonCode);
         sessionRegistry.remove(session);
         session.close();
-        return exception;
     }
 
     private static String readFixed(ByteBuf body, int length, Charset charset) {
@@ -616,6 +692,19 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
                 && protocolVersion != null
                 && context.protocolProfile().transportProfile()
                         .equals(protocolVersion.name());
+    }
+
+    private static boolean leaseDecisionIsConsistent(
+            AuthenticationDecision decision, UUID connectionId) {
+        if (decision == null || decision.lease() == null
+                || decision.lease().owner() == null
+                || decision.context() == null) {
+            return false;
+        }
+        TerminalRegistryPort.SessionLeaseOwner owner = decision.lease().owner();
+        return owner.terminalId().equals(decision.context().terminalId())
+                && owner.tokenVersion() == decision.context().tokenVersion()
+                && owner.connectionId().equals(connectionId);
     }
 
     private static String maskedAlias(String terminalIdentity) {

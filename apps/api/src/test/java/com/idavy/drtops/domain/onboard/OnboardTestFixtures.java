@@ -16,6 +16,8 @@ import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService.DeviceC
 import com.idavy.drtops.domain.onboard.OnboardSystemConfigurationService.ProtocolProfiles;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBindingRepository;
 import java.time.OffsetDateTime;
 import java.time.Instant;
@@ -37,6 +39,8 @@ public class OnboardTestFixtures {
     private final OnboardDeviceProtocolProfileRepository profileRepository;
     private final OnboardDeviceRoleAssignmentRepository roleRepository;
     private final JtTerminalRepository terminalRepository;
+    private final JtTerminalSessionLeaseRepository leaseRepository;
+    private final JtTerminalSessionLeaseService leaseService;
     private final JtTerminalVehicleBindingRepository bindingRepository;
     private final VehicleRepository vehicleRepository;
     private final VehicleLocationEventRepository locationEventRepository;
@@ -51,6 +55,8 @@ public class OnboardTestFixtures {
             OnboardDeviceProtocolProfileRepository profileRepository,
             OnboardDeviceRoleAssignmentRepository roleRepository,
             JtTerminalRepository terminalRepository,
+            JtTerminalSessionLeaseRepository leaseRepository,
+            JtTerminalSessionLeaseService leaseService,
             JtTerminalVehicleBindingRepository bindingRepository,
             VehicleRepository vehicleRepository,
             VehicleLocationEventRepository locationEventRepository,
@@ -63,6 +69,8 @@ public class OnboardTestFixtures {
         this.profileRepository = profileRepository;
         this.roleRepository = roleRepository;
         this.terminalRepository = terminalRepository;
+        this.leaseRepository = leaseRepository;
+        this.leaseService = leaseService;
         this.bindingRepository = bindingRepository;
         this.vehicleRepository = vehicleRepository;
         this.locationEventRepository = locationEventRepository;
@@ -71,6 +79,7 @@ public class OnboardTestFixtures {
     }
 
     public void clear() {
+        leaseRepository.deleteAll();
         roleRepository.deleteAll();
         profileRepository.deleteAll();
         capabilityRepository.deleteAll();
@@ -272,6 +281,9 @@ public class OnboardTestFixtures {
         }
         terminal.recordSuccessfulAuthentication(OffsetDateTime.now());
         terminalRepository.saveAndFlush(terminal);
+        leaseService.acquire(
+                terminal.getId(), "gateway-onboard-fixture",
+                UUID.randomUUID(), terminal.getAuthTokenVersion());
     }
 
     private void makeLocationCurrent(UUID vehicleId, String terminalCode) {

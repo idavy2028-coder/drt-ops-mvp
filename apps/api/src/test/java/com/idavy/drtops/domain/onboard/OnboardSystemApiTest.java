@@ -144,12 +144,17 @@ class OnboardSystemApiTest {
                         dispatch.getId().toString(), recorder.getId().toString(),
                         dispatch.getTerminalCode(), recorder.getTerminalCode(),
                         dispatch.getTerminalPhone(), recorder.getTerminalPhone(),
-                        "SYNTH", "SYNTHETIC", "synthetic-evidence");
+                        "SYNTH", "SYNTHETIC", "synthetic-evidence",
+                        "gatewayInstance", "connectionId", "leaseGeneration");
 
-        mockMvc.perform(get("/api/onboard-systems/{vehicleId}", system.getVehicleId()))
+        String detailBody = mockMvc.perform(get(
+                            "/api/onboard-systems/{vehicleId}", system.getVehicleId()))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(alias)))
-                .andExpect(content().string(not(containsString(dispatch.getId().toString()))));
+                .andExpect(content().string(not(containsString(dispatch.getId().toString()))))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(detailBody).doesNotContain(
+                "gatewayInstance", "connectionId", "leaseGeneration");
 
         mockMvc.perform(get("/api/onboard-systems")
                         .with(user(ACTOR).authorities(new SimpleGrantedAuthority("TERMINAL_MANAGE"))))
@@ -742,7 +747,12 @@ class OnboardSystemApiTest {
     private static DeviceConfiguration device(
             String terminalCode, NetworkMode networkMode, Set<Role> roles) {
         return new DeviceConfiguration(terminalCode, networkMode, roles,
-                new ProtocolProfiles("JT808_2019", "NONE", "NONE", "NONE", 30, 60));
+                new ProtocolProfiles(
+                        "JT808_2019",
+                        roles.contains(Role.DISPATCH) ? "GBT28787_2023" : "NONE",
+                        roles.contains(Role.ACTIVE_SAFETY) ? "JSATL12_2017" : "NONE",
+                        roles.contains(Role.VIDEO) ? "JT1078_2016" : "NONE",
+                        30, 60));
     }
 
     private static String commandJson(long version, OperatingMode operatingMode) {
@@ -751,13 +761,13 @@ class OnboardSystemApiTest {
                  "devices":[
                    {"terminalCode":"dispatch-01","networkMode":"DIRECT_CELLULAR",
                     "roles":["DISPATCH","LOCATION_PRIMARY","WAN_UPLINK"],
-                    "protocolProfiles":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                    "protocolProfiles":{"transportProfile":"JT808_2019","businessProfile":"GBT28787_2023",
                       "safetyProfile":"NONE","mediaProfile":"NONE",
                       "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60}},
                    {"terminalCode":"recorder-01","networkMode":"SHARED_LAN_CLIENT",
                     "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                     "protocolProfiles":{"transportProfile":"JT808_2019","businessProfile":"NONE",
-                      "safetyProfile":"NONE","mediaProfile":"NONE",
+                      "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
                       "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60}}]}
                 """.formatted(version, operatingMode.name());
     }
@@ -772,13 +782,13 @@ class OnboardSystemApiTest {
                  "devices":[
                    {"deviceAlias":"%s","networkMode":"DIRECT_CELLULAR",
                     "roles":["DISPATCH","LOCATION_PRIMARY","WAN_UPLINK"],
-                    "protocolProfiles":{"transportProfile":"JT808_2019","businessProfile":"NONE",
+                    "protocolProfiles":{"transportProfile":"JT808_2019","businessProfile":"GBT28787_2023",
                       "safetyProfile":"NONE","mediaProfile":"NONE",
                       "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60}},
                    {"deviceAlias":"%s","networkMode":"SHARED_LAN_CLIENT",
                     "roles":["LOCATION_BACKUP","ACTIVE_SAFETY","VIDEO"],
                     "protocolProfiles":{"transportProfile":"JT808_2019","businessProfile":"NONE",
-                      "safetyProfile":"NONE","mediaProfile":"NONE",
+                      "safetyProfile":"JSATL12_2017","mediaProfile":"JT1078_2016",
                       "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60}}]}
                 """.formatted(version, operatingMode.name(), dispatchAlias, recorderAlias);
     }

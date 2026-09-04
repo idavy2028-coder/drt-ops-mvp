@@ -3,6 +3,9 @@ package com.idavy.drtops.domain.terminal;
 import com.idavy.drtops.common.ApiResponse;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
 import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService.SessionLeaseGrant;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService.SessionLeaseOwner;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService.SessionLeaseReleaseResult;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -12,6 +15,8 @@ import java.util.Map;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -23,9 +28,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class GatewayRegistryController {
 
     private final TerminalManagementService service;
+    private final JtTerminalSessionLeaseService leaseService;
 
-    public GatewayRegistryController(TerminalManagementService service) {
+    public GatewayRegistryController(
+            TerminalManagementService service,
+            JtTerminalSessionLeaseService leaseService) {
         this.service = service;
+        this.leaseService = leaseService;
     }
 
     @PostMapping("/registrations/verify")
@@ -42,7 +51,8 @@ public class GatewayRegistryController {
     ApiResponse<OnboardRegistrationResolver.AuthenticationDecision> verifyAuthentication(
             @Valid @RequestBody AuthenticationVerificationRequest request) {
         return ApiResponse.ok(service.verifyCompositeAuthentication(
-                request.terminalId(), request.tokenVersion(), request.tokenSha256(), request.gatewayInstance()));
+                request.terminalId(), request.tokenVersion(), request.tokenSha256(),
+                request.gatewayInstance(), request.connectionId()));
     }
 
     @PostMapping("/authentications/verify-by-identity")
@@ -50,7 +60,22 @@ public class GatewayRegistryController {
             @Valid @RequestBody IdentityAuthenticationVerificationRequest request) {
         return ApiResponse.ok(service.verifyCompositeAuthenticationByIdentity(
                 request.protocolVersion(), request.terminalPhone(),
-                request.tokenSha256(), request.gatewayInstance()));
+                request.tokenSha256(), request.gatewayInstance(), request.connectionId()));
+    }
+
+    @PostMapping("/session-leases/renew")
+    ResponseEntity<ApiResponse<SessionLeaseGrant>> renewSessionLease(
+            @Valid @RequestBody SessionLeaseOwner owner) {
+        return leaseService.renew(owner)
+                .map(grant -> ResponseEntity.ok(ApiResponse.ok(grant)))
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.CONFLICT).body(null));
+    }
+
+    @PostMapping("/session-leases/release")
+    ApiResponse<SessionLeaseReleaseResult> releaseSessionLease(
+            @Valid @RequestBody SessionLeaseReleaseRequest request) {
+        return ApiResponse.ok(leaseService.release(
+                request.owner(), request.reasonCode()));
     }
 
     @PostMapping("/registrations/{terminalId}/complete")
@@ -84,14 +109,21 @@ public class GatewayRegistryController {
             @NotNull UUID terminalId,
             @Positive int tokenVersion,
             @NotBlank String tokenSha256,
-            @NotBlank String gatewayInstance) {
+            @NotBlank String gatewayInstance,
+            @NotNull UUID connectionId) {
     }
 
     public record IdentityAuthenticationVerificationRequest(
             @NotBlank String protocolVersion,
             @NotBlank String terminalPhone,
             @NotBlank String tokenSha256,
-            @NotBlank String gatewayInstance) {
+            @NotBlank String gatewayInstance,
+            @NotNull UUID connectionId) {
+    }
+
+    public record SessionLeaseReleaseRequest(
+            @Valid @NotNull SessionLeaseOwner owner,
+            @NotBlank String reasonCode) {
     }
 
     public record RegistrationVerificationResponse(

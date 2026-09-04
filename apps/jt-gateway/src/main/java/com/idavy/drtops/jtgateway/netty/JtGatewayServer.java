@@ -5,6 +5,7 @@ import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.RegistrationMaintenancePolicy;
 import com.idavy.drtops.jtgateway.session.PrivateVehicleIdentifierCapture;
 import com.idavy.drtops.jtgateway.session.RegistrationBodyLayoutPolicy;
+import com.idavy.drtops.jtgateway.session.SessionLeaseReporter;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -42,6 +43,7 @@ public final class JtGatewayServer implements AutoCloseable {
     private final RegistrationMaintenancePolicy maintenancePolicy;
     private final PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture;
     private final RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy;
+    private final SessionLeaseReporter sessionLeaseReporter;
     private EventLoopGroup bossGroup;
     private EventLoopGroup ioGroup;
     private DefaultEventExecutorGroup businessWorkers;
@@ -51,22 +53,12 @@ public final class JtGatewayServer implements AutoCloseable {
     public JtGatewayServer(
             Configuration configuration,
             TerminalRegistryPort registryPort,
-            TerminalSessionRegistry sessionRegistry) {
+            TerminalSessionRegistry sessionRegistry,
+            SessionLeaseReporter sessionLeaseReporter) {
         this(configuration, registryPort, sessionRegistry, null,
                 RegistrationMaintenancePolicy.disabled(),
                 PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
-    }
-
-    public JtGatewayServer(
-            Configuration configuration,
-            TerminalRegistryPort registryPort,
-            TerminalSessionRegistry sessionRegistry,
-            ProtocolModuleRegistry protocolModuleRegistry) {
-        this(configuration, registryPort, sessionRegistry, protocolModuleRegistry,
-                RegistrationMaintenancePolicy.disabled(),
-                PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
     }
 
     public JtGatewayServer(
@@ -74,10 +66,11 @@ public final class JtGatewayServer implements AutoCloseable {
             TerminalRegistryPort registryPort,
             TerminalSessionRegistry sessionRegistry,
             ProtocolModuleRegistry protocolModuleRegistry,
-            RegistrationMaintenancePolicy maintenancePolicy) {
+            SessionLeaseReporter sessionLeaseReporter) {
         this(configuration, registryPort, sessionRegistry, protocolModuleRegistry,
-                maintenancePolicy, PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
     }
 
     public JtGatewayServer(
@@ -86,9 +79,10 @@ public final class JtGatewayServer implements AutoCloseable {
             TerminalSessionRegistry sessionRegistry,
             ProtocolModuleRegistry protocolModuleRegistry,
             RegistrationMaintenancePolicy maintenancePolicy,
-            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture) {
-        this(configuration, registryPort, sessionRegistry, protocolModuleRegistry, maintenancePolicy,
-                privateVehicleIdentifierCapture, RegistrationBodyLayoutPolicy.disabled());
+            SessionLeaseReporter sessionLeaseReporter) {
+        this(configuration, registryPort, sessionRegistry, protocolModuleRegistry,
+                maintenancePolicy, PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
     }
 
     public JtGatewayServer(
@@ -98,7 +92,21 @@ public final class JtGatewayServer implements AutoCloseable {
             ProtocolModuleRegistry protocolModuleRegistry,
             RegistrationMaintenancePolicy maintenancePolicy,
             PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
-            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy) {
+            SessionLeaseReporter sessionLeaseReporter) {
+        this(configuration, registryPort, sessionRegistry, protocolModuleRegistry, maintenancePolicy,
+                privateVehicleIdentifierCapture, RegistrationBodyLayoutPolicy.disabled(),
+                sessionLeaseReporter);
+    }
+
+    public JtGatewayServer(
+            Configuration configuration,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
+            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy,
+            SessionLeaseReporter sessionLeaseReporter) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         this.registryPort = Objects.requireNonNull(registryPort, "registryPort");
         this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
@@ -108,6 +116,8 @@ public final class JtGatewayServer implements AutoCloseable {
                 privateVehicleIdentifierCapture, "privateVehicleIdentifierCapture");
         this.registrationBodyLayoutPolicy = Objects.requireNonNull(
                 registrationBodyLayoutPolicy, "registrationBodyLayoutPolicy");
+        this.sessionLeaseReporter = Objects.requireNonNull(
+                sessionLeaseReporter, "sessionLeaseReporter");
     }
 
     public synchronized int start() {
@@ -139,7 +149,8 @@ public final class JtGatewayServer implements AutoCloseable {
                 acceptedChannels,
                 maintenancePolicy,
                 privateVehicleIdentifierCapture,
-                registrationBodyLayoutPolicy);
+                registrationBodyLayoutPolicy,
+                sessionLeaseReporter);
         try {
             serverChannel = new ServerBootstrap()
                     .group(bossGroup, ioGroup)

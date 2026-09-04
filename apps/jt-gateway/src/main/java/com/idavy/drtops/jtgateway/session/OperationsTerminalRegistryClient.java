@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
@@ -174,15 +175,22 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
 
     @Override
     public AuthenticationDecision verifyAuthentication(
-            UUID terminalId, int tokenVersion, String presentedTokenSha256) {
+            UUID terminalId,
+            int tokenVersion,
+            String presentedTokenSha256,
+            UUID connectionId) {
         AuthenticationDecision decision = verifyAuthentication(
                 "/internal/jt-gateway/authentications/verify",
                 new AuthenticationRequest(
-                        terminalId, tokenVersion, presentedTokenSha256, gatewayInstance));
+                        terminalId, tokenVersion, presentedTokenSha256,
+                        gatewayInstance, connectionId),
+                connectionId);
         return decision.approved()
                         && (!decision.context().terminalId().equals(terminalId)
                                 || decision.context().tokenVersion() != tokenVersion)
-                ? AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH)
+                ? AuthenticationDecision.rejectedWithCleanup(
+                        AuthenticationRejection.TOKEN_MISMATCH,
+                        decision.lease().owner())
                 : decision;
     }
 
@@ -190,16 +198,19 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
     public AuthenticationDecision verifyAuthenticationByIdentity(
             ProtocolVersion protocolVersion,
             String terminalPhone,
-            String presentedTokenSha256) {
+            String presentedTokenSha256,
+            UUID connectionId) {
         Objects.requireNonNull(protocolVersion, "protocolVersion");
         return verifyAuthentication(
                 "/internal/jt-gateway/authentications/verify-by-identity",
                 new IdentityAuthenticationRequest(
                         protocolVersion.name(), requireText(terminalPhone, "terminalPhone"),
-                        presentedTokenSha256, gatewayInstance));
+                        presentedTokenSha256, gatewayInstance, connectionId),
+                connectionId);
     }
 
-    private AuthenticationDecision verifyAuthentication(String path, Object request) {
+    private AuthenticationDecision verifyAuthentication(
+            String path, Object request, UUID connectionId) {
         try {
             AuthenticationResponse response = authenticatedPost(path)
                     .body(request)
@@ -211,18 +222,62 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                 apiStatus.success(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             }
             AuthenticationPayload payload = response == null ? null : response.data();
-            return payload != null
+            boolean accepted = payload != null
                             && payload.approved()
                             && payload.context() != null
-                            && payload.reasonCode() == null
-                    ? AuthenticationDecision.allow(payload.context())
-                    : AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+                            && leaseMatches(payload.lease(), payload.context(), connectionId)
+                            && payload.reasonCode() == null;
+            if (accepted) {
+                return AuthenticationDecision.allow(payload.context(), payload.lease());
+            }
+            if (payload != null && payload.approved()
+                    && payload.lease() != null && payload.lease().owner() != null) {
+                return AuthenticationDecision.rejectedWithCleanup(
+                        AuthenticationRejection.TOKEN_MISMATCH,
+                        payload.lease().owner());
+            }
+            return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         } catch (RestClientException unavailable) {
             apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         } catch (IllegalArgumentException invalidResponse) {
             apiStatus.failure(OperationsApiStatus.Source.REGISTRY, "AUTHENTICATION_VERIFY");
             return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+        }
+    }
+
+    @Override
+    public Optional<SessionLeaseGrant> renewSessionLease(SessionLeaseOwner owner) {
+        try {
+            SessionLeaseResponse response = authenticatedPost(
+                            "/internal/jt-gateway/session-leases/renew")
+                    .body(Objects.requireNonNull(owner, "owner"))
+                    .retrieve()
+                    .body(SessionLeaseResponse.class);
+            return response == null ? Optional.empty() : Optional.ofNullable(response.data());
+        } catch (RestClientResponseException conflict) {
+            return Optional.empty();
+        } catch (RestClientException | IllegalArgumentException unavailable) {
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public SessionLeaseReleaseResult releaseSessionLease(
+            SessionLeaseOwner owner, String reasonCode) {
+        try {
+            SessionLeaseReleaseResponse response = authenticatedPost(
+                            "/internal/jt-gateway/session-leases/release")
+                    .body(new SessionLeaseReleaseRequest(
+                            Objects.requireNonNull(owner, "owner"),
+                            requireText(reasonCode, "reasonCode")))
+                    .retrieve()
+                    .body(SessionLeaseReleaseResponse.class);
+            return response == null || response.data() == null
+                    ? new SessionLeaseReleaseResult("STALE_OWNER_IGNORED")
+                    : response.data();
+        } catch (RestClientException | IllegalArgumentException unavailable) {
+            return new SessionLeaseReleaseResult("STALE_OWNER_IGNORED");
         }
     }
 
@@ -294,6 +349,25 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
                         .equals(requestedProtocol.name());
     }
 
+    private boolean leaseMatches(
+            SessionLeaseGrant lease,
+            TerminalSessionContext context,
+            UUID connectionId) {
+        if (lease == null || lease.owner() == null || context == null) {
+            return false;
+        }
+        SessionLeaseOwner owner = lease.owner();
+        return Objects.equals(owner.terminalId(), context.terminalId())
+                && Objects.equals(owner.connectionId(), connectionId)
+                && Objects.equals(owner.gatewayInstance(), gatewayInstance)
+                && owner.tokenVersion() == context.tokenVersion()
+                && owner.leaseGeneration() > 0
+                && lease.authenticatedAt() != null
+                && lease.lastValidMessageAt() != null
+                && lease.expiresAt() != null
+                && lease.expiresAt().isAfter(lease.lastValidMessageAt());
+    }
+
     private static AuditMapping auditMapping(SessionAuditType type) {
         return switch (type) {
             case REGISTRATION_ACCEPTED -> new AuditMapping("REGISTERED", "ACCEPTED");
@@ -348,20 +422,34 @@ public final class OperationsTerminalRegistryClient implements TerminalRegistryP
             String reasonCode) { }
 
     private record AuthenticationRequest(
-            UUID terminalId, int tokenVersion, String tokenSha256, String gatewayInstance) { }
+            UUID terminalId,
+            int tokenVersion,
+            String tokenSha256,
+            String gatewayInstance,
+            UUID connectionId) { }
 
     private record IdentityAuthenticationRequest(
             String protocolVersion,
             String terminalPhone,
             String tokenSha256,
-            String gatewayInstance) { }
+            String gatewayInstance,
+            UUID connectionId) { }
 
     private record AuthenticationResponse(AuthenticationPayload data) { }
 
     private record AuthenticationPayload(
             boolean approved,
             TerminalSessionContext context,
+            SessionLeaseGrant lease,
             String reasonCode) { }
+
+    private record SessionLeaseResponse(SessionLeaseGrant data) { }
+
+    private record SessionLeaseReleaseRequest(
+            SessionLeaseOwner owner, String reasonCode) { }
+
+    private record SessionLeaseReleaseResponse(
+            SessionLeaseReleaseResult data) { }
 
     private record AuditRequest(
             UUID idempotencyKey, UUID terminalId, UUID vehicleId, String eventType, String result, String reasonCode,

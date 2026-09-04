@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.jt.protocol.core.Jt808CoreModule;
 import com.idavy.drtops.jt.protocol.core.LocationReportCodec;
+import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jtgateway.attachment.AttachmentCommandService;
 import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
 import com.idavy.drtops.jtgateway.ingress.GatewayIngressBuffer;
@@ -16,6 +17,7 @@ import com.idavy.drtops.jtgateway.session.AuthenticationRejection;
 import com.idavy.drtops.jtgateway.session.RegistrationDecision;
 import com.idavy.drtops.jtgateway.session.RegistrationRejection;
 import com.idavy.drtops.jtgateway.session.SessionAuditIngress;
+import com.idavy.drtops.jtgateway.session.SessionLeaseReporter;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalRegistrationIdentity;
 import com.idavy.drtops.jtgateway.session.TerminalSessionContext;
@@ -30,7 +32,9 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -104,11 +108,14 @@ final class GatewayTestRig implements AutoCloseable {
             GatewayOutboxDispatcher createdDispatcher = new GatewayOutboxDispatcher(
                     createdRepository, createdApiClient, Clock.systemUTC(), 10,
                     Duration.ofMillis(50), Duration.ofSeconds(1));
+            AllowlistRegistry allowlistRegistry = new AllowlistRegistry(capableTerminal);
             startedServer = new JtGatewayServer(
                     new JtGatewayServer.Configuration(
                             new InetSocketAddress(InetAddress.getLoopbackAddress(), 0),
                             10, 1_000, 2, 256, 80, 40, Duration.ofSeconds(5)),
-                    new AllowlistRegistry(capableTerminal), sessionRegistry, createdProtocolRegistry);
+                    allowlistRegistry, sessionRegistry, createdProtocolRegistry,
+                    new SessionLeaseReporter(
+                            allowlistRegistry, Runnable::run, Clock.systemUTC()));
             AttachmentCommandService createdAttachmentCommands =
                     new AttachmentCommandService(sessionRegistry);
             int startedPort = startedServer.start();
@@ -262,17 +269,58 @@ final class GatewayTestRig implements AutoCloseable {
 
         @Override
         public AuthenticationDecision verifyAuthentication(
-                UUID terminal, int tokenVersion, String presentedTokenSha256) {
+                UUID terminal,
+                int tokenVersion,
+                String presentedTokenSha256,
+                UUID connectionId) {
             return terminalId.equals(terminal)
                             && context.tokenVersion() == tokenVersion
                             && sha256(token).equals(presentedTokenSha256)
-                    ? AuthenticationDecision.allow(context)
+                    ? AuthenticationDecision.allow(
+                            context, lease(context, connectionId))
                     : AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+        }
+
+        @Override
+        public AuthenticationDecision verifyAuthenticationByIdentity(
+                ProtocolVersion protocolVersion,
+                String terminalPhone,
+                String presentedTokenSha256,
+                UUID connectionId) {
+            return AuthenticationDecision.rejected(AuthenticationRejection.REGISTRATION_REQUIRED);
+        }
+
+        @Override
+        public Optional<SessionLeaseGrant> renewSessionLease(SessionLeaseOwner owner) {
+            Instant now = Instant.now();
+            return Optional.of(new SessionLeaseGrant(
+                    owner, now.minusSeconds(1), now, now.plusSeconds(180)));
+        }
+
+        @Override
+        public SessionLeaseReleaseResult releaseSessionLease(
+                SessionLeaseOwner owner, String reasonCode) {
+            return new SessionLeaseReleaseResult("RELEASED");
         }
 
         @Override
         public void recordSessionAudit(SessionAuditIngress event) {
             // Session audits are covered by the session package tests; the rig stays silent.
+        }
+
+        private SessionLeaseGrant lease(
+                TerminalSessionContext leaseContext, UUID connectionId) {
+            Instant now = Instant.now();
+            return new SessionLeaseGrant(
+                    new SessionLeaseOwner(
+                            leaseContext.terminalId(),
+                            "gateway-rig",
+                            connectionId,
+                            leaseContext.tokenVersion(),
+                            1),
+                    now,
+                    now,
+                    now.plusSeconds(180));
         }
     }
 

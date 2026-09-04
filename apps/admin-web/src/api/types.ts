@@ -301,8 +301,11 @@ export interface OnboardDeviceView {
   networkMode: OnboardNetworkMode;
   terminalStatus: string;
   authenticationPresent: boolean;
+  currentlyAuthenticated: boolean;
   lastRegisteredAt: IsoDateTime | null;
   lastAuthenticatedAt: IsoDateTime | null;
+  sessionLastValidMessageAt: IsoDateTime | null;
+  sessionExpiresAt: IsoDateTime | null;
   lastSeenAt: IsoDateTime | null;
   roles: OnboardRole[];
   protocolProfiles: ProtocolProfiles | null;

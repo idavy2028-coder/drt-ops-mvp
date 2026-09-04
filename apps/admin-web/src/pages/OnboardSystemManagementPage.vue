@@ -361,9 +361,11 @@ function time(value: string | null): string {
             </summary>
             <div class="device-facts">
               <dl>
-                <div><dt>鉴权</dt><dd>{{ device.authenticationPresent ? "已鉴权" : "未接入" }}</dd></div>
+                <div><dt>当前会话</dt><dd>{{ device.currentlyAuthenticated ? "当前：在线且已鉴权" : "当前：离线" }}</dd></div>
                 <div><dt>最近注册</dt><dd>{{ time(device.lastRegisteredAt) }}</dd></div>
-                <div><dt>最近鉴权</dt><dd>{{ time(device.lastAuthenticatedAt) }}</dd></div>
+                <div><dt>最近成功鉴权（历史）</dt><dd>{{ time(device.lastAuthenticatedAt) }}</dd></div>
+                <div><dt>会话最近有效消息</dt><dd>{{ time(device.sessionLastValidMessageAt) }}</dd></div>
+                <div><dt>会话到期时间</dt><dd>{{ time(device.sessionExpiresAt) }}</dd></div>
                 <div><dt>最近可见</dt><dd>{{ time(device.lastSeenAt) }}</dd></div>
               </dl>
               <div><h5>当前角色</h5><p>{{ device.roles.map(roleLabel).join(" · ") || "—" }}</p></div>

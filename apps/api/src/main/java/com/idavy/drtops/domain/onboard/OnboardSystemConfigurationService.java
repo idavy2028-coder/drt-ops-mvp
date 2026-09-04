@@ -16,6 +16,8 @@ import com.idavy.drtops.domain.onboard.OnboardReadinessService.OnboardReadiness;
 import com.idavy.drtops.domain.onboard.OnboardSystem.OperatingMode;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLease;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseRepository;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.nio.charset.StandardCharsets;
@@ -62,6 +64,7 @@ public class OnboardSystemConfigurationService {
     private final OnboardSystemRuntimeStateRepository runtimeStateRepository;
     private final OnboardReadinessService readinessService;
     private final JtTerminalRepository terminalRepository;
+    private final JtTerminalSessionLeaseRepository leaseRepository;
     private final AuditLogRepository auditLogRepository;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -76,6 +79,7 @@ public class OnboardSystemConfigurationService {
             OnboardSystemRuntimeStateRepository runtimeStateRepository,
             OnboardReadinessService readinessService,
             JtTerminalRepository terminalRepository,
+            JtTerminalSessionLeaseRepository leaseRepository,
             AuditLogRepository auditLogRepository,
             ObjectMapper objectMapper,
             EntityManager entityManager,
@@ -88,6 +92,7 @@ public class OnboardSystemConfigurationService {
         this.runtimeStateRepository = runtimeStateRepository;
         this.readinessService = readinessService;
         this.terminalRepository = terminalRepository;
+        this.leaseRepository = leaseRepository;
         this.auditLogRepository = auditLogRepository;
         this.objectMapper = objectMapper;
         this.entityManager = entityManager;
@@ -813,6 +818,12 @@ public class OnboardSystemConfigurationService {
                         .setParameter("terminalIds", terminalIds)
                         .setParameter("status", OnboardDeviceProtocolProfile.Status.ACTIVE)
                         .getResultList();
+        Map<UUID, JtTerminalSessionLease> leaseByTerminal = terminalIds.isEmpty()
+                ? Map.of()
+                : leaseRepository.findAllByTerminalIdIn(terminalIds).stream()
+                        .collect(java.util.stream.Collectors.toMap(
+                                JtTerminalSessionLease::getTerminalId,
+                                java.util.function.Function.identity()));
 
         Map<UUID, List<OnboardDeviceMembership>> membershipsBySystem = memberships.stream()
                 .collect(java.util.stream.Collectors.groupingBy(
@@ -833,7 +844,7 @@ public class OnboardSystemConfigurationService {
                     .getOrDefault(system.getId(), List.of()).stream()
                     .map(membership -> toDeviceView(
                             membership, rolesByTerminal, capabilitiesByTerminal,
-                            profileByTerminal, terminalById))
+                            profileByTerminal, terminalById, leaseByTerminal))
                     .sorted(Comparator.comparing(DeviceView::deviceAlias))
                     .toList();
             Set<UUID> memberIds = membershipsBySystem
@@ -866,7 +877,8 @@ public class OnboardSystemConfigurationService {
             Map<UUID, List<OnboardDeviceRoleAssignment>> rolesByTerminal,
             Map<UUID, List<OnboardDeviceCapability>> capabilitiesByTerminal,
             Map<UUID, OnboardDeviceProtocolProfile> profileByTerminal,
-            Map<UUID, JtTerminal> terminalById) {
+            Map<UUID, JtTerminal> terminalById,
+            Map<UUID, JtTerminalSessionLease> leaseByTerminal) {
         UUID terminalId = membership.getTerminalId();
         JtTerminal terminal = Objects.requireNonNull(
                 terminalById.get(terminalId), "active membership terminal");
@@ -884,11 +896,19 @@ public class OnboardSystemConfigurationService {
         ProtocolProfiles profiles = java.util.Optional.ofNullable(profileByTerminal.get(terminalId))
                 .map(OnboardSystemConfigurationService::toProfiles)
                 .orElse(null);
+        JtTerminalSessionLease lease = leaseByTerminal.get(terminalId);
+        boolean currentlyAuthenticated = terminal.getStatus() == JtTerminal.Status.ACTIVE
+                && lease != null
+                && lease.isLiveAt(
+                        terminal.getAuthTokenVersion(), OffsetDateTime.now(clock));
         return new DeviceView(
                 safeDeviceAlias(terminalId), membership.getNetworkMode(),
                 roles, profiles, capabilities, terminal.getStatus(),
                 terminal.getLastAuthenticatedAt() != null,
+                currentlyAuthenticated,
                 terminal.getLastRegisteredAt(), terminal.getLastAuthenticatedAt(),
+                lease == null ? null : lease.getLastValidMessageAt(),
+                lease == null ? null : lease.getExpiresAt(),
                 terminal.getLastSeenAt());
     }
 
@@ -1512,9 +1532,12 @@ public class OnboardSystemConfigurationService {
             ProtocolProfiles protocolProfiles,
             List<String> verifiedCapabilities,
             JtTerminal.Status terminalStatus,
-            boolean authenticationPresent,
+            @Deprecated boolean authenticationPresent,
+            boolean currentlyAuthenticated,
             OffsetDateTime lastRegisteredAt,
             OffsetDateTime lastAuthenticatedAt,
+            OffsetDateTime sessionLastValidMessageAt,
+            OffsetDateTime sessionExpiresAt,
             OffsetDateTime lastSeenAt) {
         public DeviceView {
             roles = roles == null ? List.of() : List.copyOf(roles);

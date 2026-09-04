@@ -7,6 +7,7 @@ import com.idavy.drtops.jtgateway.session.RegistrationAuthenticationHandler;
 import com.idavy.drtops.jtgateway.session.RegistrationMaintenancePolicy;
 import com.idavy.drtops.jtgateway.session.PrivateVehicleIdentifierCapture;
 import com.idavy.drtops.jtgateway.session.RegistrationBodyLayoutPolicy;
+import com.idavy.drtops.jtgateway.session.SessionLeaseReporter;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.channel.Channel;
@@ -34,33 +35,7 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
     private final RegistrationMaintenancePolicy maintenancePolicy;
     private final PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture;
     private final RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy;
-
-    public JtChannelInitializer(
-            ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
-            TerminalRegistryPort registryPort,
-            TerminalSessionRegistry sessionRegistry,
-            EventExecutorGroup businessWorkers,
-            IntSupplier queuePressure,
-            Clock clock,
-            int highWatermark,
-            int lowWatermark,
-            Duration maximumCongestion) {
-        this(
-                admissionTracker,
-                registryPort,
-                sessionRegistry,
-                businessWorkers,
-                queuePressure,
-                clock,
-                highWatermark,
-                lowWatermark,
-                maximumCongestion,
-                null,
-                null,
-                RegistrationMaintenancePolicy.disabled(),
-                PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
-    }
+    private final SessionLeaseReporter sessionLeaseReporter;
 
     public JtChannelInitializer(
             ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
@@ -72,7 +47,7 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
             int highWatermark,
             int lowWatermark,
             Duration maximumCongestion,
-            ProtocolModuleRegistry protocolModuleRegistry) {
+            SessionLeaseReporter sessionLeaseReporter) {
         this(
                 admissionTracker,
                 registryPort,
@@ -83,14 +58,14 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                 highWatermark,
                 lowWatermark,
                 maximumCongestion,
-                protocolModuleRegistry,
+                null,
                 null,
                 RegistrationMaintenancePolicy.disabled(),
                 PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
     }
 
-    JtChannelInitializer(
+    public JtChannelInitializer(
             ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
             TerminalRegistryPort registryPort,
             TerminalSessionRegistry sessionRegistry,
@@ -101,7 +76,7 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
             int lowWatermark,
             Duration maximumCongestion,
             ProtocolModuleRegistry protocolModuleRegistry,
-            ChannelGroup acceptedChannels) {
+            SessionLeaseReporter sessionLeaseReporter) {
         this(
                 admissionTracker,
                 registryPort,
@@ -113,10 +88,10 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                 lowWatermark,
                 maximumCongestion,
                 protocolModuleRegistry,
-                acceptedChannels,
+                null,
                 RegistrationMaintenancePolicy.disabled(),
                 PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
     }
 
     JtChannelInitializer(
@@ -131,12 +106,22 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
             Duration maximumCongestion,
             ProtocolModuleRegistry protocolModuleRegistry,
             ChannelGroup acceptedChannels,
-            RegistrationMaintenancePolicy maintenancePolicy) {
+            SessionLeaseReporter sessionLeaseReporter) {
         this(
-                admissionTracker, registryPort, sessionRegistry, businessWorkers, queuePressure,
-                clock, highWatermark, lowWatermark, maximumCongestion, protocolModuleRegistry,
-                acceptedChannels, maintenancePolicy, PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.disabled());
+                admissionTracker,
+                registryPort,
+                sessionRegistry,
+                businessWorkers,
+                queuePressure,
+                clock,
+                highWatermark,
+                lowWatermark,
+                maximumCongestion,
+                protocolModuleRegistry,
+                acceptedChannels,
+                RegistrationMaintenancePolicy.disabled(),
+                PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
     }
 
     JtChannelInitializer(
@@ -152,11 +137,12 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
             ProtocolModuleRegistry protocolModuleRegistry,
             ChannelGroup acceptedChannels,
             RegistrationMaintenancePolicy maintenancePolicy,
-            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture) {
-        this(admissionTracker, registryPort, sessionRegistry, businessWorkers, queuePressure,
+            SessionLeaseReporter sessionLeaseReporter) {
+        this(
+                admissionTracker, registryPort, sessionRegistry, businessWorkers, queuePressure,
                 clock, highWatermark, lowWatermark, maximumCongestion, protocolModuleRegistry,
-                acceptedChannels, maintenancePolicy, privateVehicleIdentifierCapture,
-                RegistrationBodyLayoutPolicy.disabled());
+                acceptedChannels, maintenancePolicy, PrivateVehicleIdentifierCapture.disabled(),
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
     }
 
     JtChannelInitializer(
@@ -173,7 +159,29 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
             ChannelGroup acceptedChannels,
             RegistrationMaintenancePolicy maintenancePolicy,
             PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
-            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy) {
+            SessionLeaseReporter sessionLeaseReporter) {
+        this(admissionTracker, registryPort, sessionRegistry, businessWorkers, queuePressure,
+                clock, highWatermark, lowWatermark, maximumCongestion, protocolModuleRegistry,
+                acceptedChannels, maintenancePolicy, privateVehicleIdentifierCapture,
+                RegistrationBodyLayoutPolicy.disabled(), sessionLeaseReporter);
+    }
+
+    JtChannelInitializer(
+            ConnectionAdmissionHandler.AdmissionTracker admissionTracker,
+            TerminalRegistryPort registryPort,
+            TerminalSessionRegistry sessionRegistry,
+            EventExecutorGroup businessWorkers,
+            IntSupplier queuePressure,
+            Clock clock,
+            int highWatermark,
+            int lowWatermark,
+            Duration maximumCongestion,
+            ProtocolModuleRegistry protocolModuleRegistry,
+            ChannelGroup acceptedChannels,
+            RegistrationMaintenancePolicy maintenancePolicy,
+            PrivateVehicleIdentifierCapture privateVehicleIdentifierCapture,
+            RegistrationBodyLayoutPolicy registrationBodyLayoutPolicy,
+            SessionLeaseReporter sessionLeaseReporter) {
         this.admissionTracker = java.util.Objects.requireNonNull(admissionTracker, "admissionTracker");
         this.registryPort = java.util.Objects.requireNonNull(registryPort, "registryPort");
         this.sessionRegistry = java.util.Objects.requireNonNull(sessionRegistry, "sessionRegistry");
@@ -190,6 +198,8 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
                 privateVehicleIdentifierCapture, "privateVehicleIdentifierCapture");
         this.registrationBodyLayoutPolicy = java.util.Objects.requireNonNull(
                 registrationBodyLayoutPolicy, "registrationBodyLayoutPolicy");
+        this.sessionLeaseReporter = java.util.Objects.requireNonNull(
+                sessionLeaseReporter, "sessionLeaseReporter");
     }
 
     @Override
@@ -210,7 +220,8 @@ public final class JtChannelInitializer extends ChannelInitializer<Channel> {
         RegistrationAuthenticationHandler registrationAuthentication =
                 new RegistrationAuthenticationHandler(
                         registryPort, sessionRegistry, clock, Duration.ofSeconds(30), maintenancePolicy,
-                        privateVehicleIdentifierCapture, registrationBodyLayoutPolicy);
+                        privateVehicleIdentifierCapture, registrationBodyLayoutPolicy,
+                        sessionLeaseReporter);
         channel.pipeline().addLast(
                 businessWorkers,
                 "registrationAuthentication",

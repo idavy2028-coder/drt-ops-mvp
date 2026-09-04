@@ -10,6 +10,7 @@ import com.idavy.drtops.jt.protocol.codec.ProtocolVersion;
 import com.idavy.drtops.jtgateway.session.AuthenticationDecision;
 import com.idavy.drtops.jtgateway.session.RegistrationDecision;
 import com.idavy.drtops.jtgateway.session.SessionAuditIngress;
+import com.idavy.drtops.jtgateway.session.SessionLeaseReporter;
 import com.idavy.drtops.jtgateway.session.TerminalRegistrationIdentity;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSession;
@@ -31,9 +32,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -56,16 +59,18 @@ class JtGatewayServerIntegrationTest {
     void buildsHandlersInSecurityAndProtocolOrderWithReaderIdleTimeout() {
         DefaultEventLoopGroup businessWorkers = new DefaultEventLoopGroup(1);
         try {
+            ApprovingRegistry registry = new ApprovingRegistry();
             JtChannelInitializer initializer = new JtChannelInitializer(
                     new ConnectionAdmissionHandler.AdmissionTracker(4, 100),
-                    new ApprovingRegistry(),
+                    registry,
                     new TerminalSessionRegistry(),
                     businessWorkers,
                     () -> 0,
                     Clock.systemUTC(),
                     80,
                     40,
-                    Duration.ofSeconds(5));
+                    Duration.ofSeconds(5),
+                    reporter(registry));
             EmbeddedChannel channel = new EmbeddedChannel(initializer);
 
             List<String> names = channel.pipeline().names();
@@ -92,8 +97,9 @@ class JtGatewayServerIntegrationTest {
     @Test
     void enforcesPerIpConnectionLimitOnRealLoopbackPort() throws Exception {
         JtGatewayServer.Configuration configuration = configuration(1, 100);
+        ApprovingRegistry registry = new ApprovingRegistry();
         try (JtGatewayServer server = new JtGatewayServer(
-                configuration, new ApprovingRegistry(), new TerminalSessionRegistry())) {
+                configuration, registry, new TerminalSessionRegistry(), reporter(registry))) {
             int port = server.start();
             try (Socket first = socket(port); Socket second = socket(port)) {
                 second.setSoTimeout(2_000);
@@ -198,7 +204,8 @@ class JtGatewayServerIntegrationTest {
     void invokesBlockingRegistryPortOnlyOnBoundedBusinessWorker() throws Exception {
         ThreadCapturingRegistry registry = new ThreadCapturingRegistry();
         try (JtGatewayServer server = new JtGatewayServer(
-                configuration(4, 100), registry, new TerminalSessionRegistry())) {
+                configuration(4, 100), registry, new TerminalSessionRegistry(),
+                reporter(registry))) {
             int port = server.start();
             try (Socket terminal = socket(port)) {
                 terminal.getOutputStream().write(registrationPacket());
@@ -216,7 +223,7 @@ class JtGatewayServerIntegrationTest {
         TerminalSessionRegistry sessions = new TerminalSessionRegistry();
         DualIdentityRegistry registry = new DualIdentityRegistry();
         try (JtGatewayServer server = new JtGatewayServer(
-                configuration(4, 100), registry, sessions)) {
+                configuration(4, 100), registry, sessions, reporter(registry))) {
             int port = server.start();
             try (Socket dispatch = socket(port);
                     Socket recorder = socket(port);
@@ -269,8 +276,10 @@ class JtGatewayServerIntegrationTest {
         ListAppender<ILoggingEvent> warnings = new ListAppender<>();
         warnings.start();
         nettyContextLogger.addAppender(warnings);
+        ApprovingRegistry registry = new ApprovingRegistry();
         JtGatewayServer server = new JtGatewayServer(
-                configuration(4, 100), new ApprovingRegistry(), new TerminalSessionRegistry());
+                configuration(4, 100), registry, new TerminalSessionRegistry(),
+                reporter(registry));
         try {
             int port = server.start();
             try (Socket terminal = socket(port)) {
@@ -301,7 +310,8 @@ class JtGatewayServerIntegrationTest {
         rootLogger.addAppender(warnings);
         BlockingRegistrationRegistry registry = new BlockingRegistrationRegistry();
         JtGatewayServer server = new JtGatewayServer(
-                configuration(4, 100), registry, new TerminalSessionRegistry());
+                configuration(4, 100), registry, new TerminalSessionRegistry(),
+                reporter(registry));
         try {
             int port = server.start();
             Socket terminal = socket(port);
@@ -330,7 +340,8 @@ class JtGatewayServerIntegrationTest {
     void closeReturnsWithinBoundWhenRegistryCallDoesNotReturn() throws Exception {
         BlockingRegistrationRegistry registry = new BlockingRegistrationRegistry();
         JtGatewayServer server = new JtGatewayServer(
-                configuration(4, 100), registry, new TerminalSessionRegistry());
+                configuration(4, 100), registry, new TerminalSessionRegistry(),
+                reporter(registry));
         CompletableFuture<Void> closing = null;
         try {
             int port = server.start();
@@ -480,6 +491,22 @@ class JtGatewayServerIntegrationTest {
         }
     }
 
+    private static SessionLeaseReporter reporter(TerminalRegistryPort registry) {
+        return new SessionLeaseReporter(registry, Runnable::run, Clock.systemUTC());
+    }
+
+    private static AuthenticationDecision approvedAuthentication(
+            TerminalSessionContext context, UUID connectionId) {
+        Instant now = Instant.parse("2026-08-21T10:00:00Z");
+        return AuthenticationDecision.allow(
+                context,
+                new TerminalRegistryPort.SessionLeaseGrant(
+                        new TerminalRegistryPort.SessionLeaseOwner(
+                                context.terminalId(), "gateway-server-test", connectionId,
+                                context.tokenVersion(), 1),
+                        now, now, now.plusSeconds(180)));
+    }
+
     private static class ApprovingRegistry implements TerminalRegistryPort {
         @Override
         public RegistrationDecision verifyRegistration(TerminalRegistrationIdentity identity) {
@@ -492,9 +519,33 @@ class JtGatewayServerIntegrationTest {
 
         @Override
         public AuthenticationDecision verifyAuthentication(
-                UUID terminalId, int tokenVersion, String presentedTokenSha256) {
-            return AuthenticationDecision.allow(
-                    context(terminalId, Set.of("LOCATION_PRIMARY")));
+                UUID terminalId,
+                int tokenVersion,
+                String presentedTokenSha256,
+                UUID connectionId) {
+            return approvedAuthentication(
+                    context(terminalId, Set.of("LOCATION_PRIMARY")), connectionId);
+        }
+
+        @Override
+        public AuthenticationDecision verifyAuthenticationByIdentity(
+                ProtocolVersion protocolVersion,
+                String terminalPhone,
+                String presentedTokenSha256,
+                UUID connectionId) {
+            return AuthenticationDecision.rejected(
+                    com.idavy.drtops.jtgateway.session.AuthenticationRejection.TOKEN_MISMATCH);
+        }
+
+        @Override
+        public Optional<SessionLeaseGrant> renewSessionLease(SessionLeaseOwner owner) {
+            return Optional.empty();
+        }
+
+        @Override
+        public SessionLeaseReleaseResult releaseSessionLease(
+                SessionLeaseOwner owner, String reasonCode) {
+            return new SessionLeaseReleaseResult("STALE_OWNER_IGNORED");
         }
 
         @Override
@@ -514,7 +565,8 @@ class JtGatewayServerIntegrationTest {
         public AuthenticationDecision verifyAuthenticationByIdentity(
                 ProtocolVersion protocolVersion,
                 String terminalPhone,
-                String presentedTokenSha256) {
+                String presentedTokenSha256,
+                UUID connectionId) {
             TerminalSessionContext context = contexts.get(terminalPhone);
             if (protocolVersion != ProtocolVersion.JT808_2013
                     || context == null
@@ -523,7 +575,7 @@ class JtGatewayServerIntegrationTest {
                 return AuthenticationDecision.rejected(
                         com.idavy.drtops.jtgateway.session.AuthenticationRejection.TOKEN_MISMATCH);
             }
-            return AuthenticationDecision.allow(context);
+            return approvedAuthentication(context, connectionId);
         }
     }
 

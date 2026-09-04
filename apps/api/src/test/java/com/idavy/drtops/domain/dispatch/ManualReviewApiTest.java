@@ -34,6 +34,7 @@ import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseRepository;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -123,6 +124,9 @@ class ManualReviewApiTest {
 
     @Autowired
     JtTerminalRepository terminalRepository;
+
+    @Autowired
+    JtTerminalSessionLeaseRepository leaseRepository;
 
     @Autowired
     PlatformTransactionManager transactionManager;
@@ -284,6 +288,24 @@ class ManualReviewApiTest {
                 .doesNotContain(terminal.getTerminalPhone())
                 .doesNotContain(terminal.getTerminalCode())
                 .doesNotContain(terminal.getAuthTokenHash());
+    }
+
+    @Test
+    void rejectsApprovalWhenDispatchLeaseExpiresAfterCandidateWasCreated() throws Exception {
+        UUID decisionId = createManualReviewDecision();
+        UUID orderId = dispatchDecisionRepository.findById(decisionId)
+                .orElseThrow().getRideOrderId();
+        leaseRepository.deleteAll();
+
+        mockMvc.perform(post("/api/dispatch-decisions/" + decisionId + "/approve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + dispatcherToken))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.data.message")
+                        .value("DISPATCH_ONBOARD_SYSTEM_NOT_READY"));
+
+        assertThat(rideOrderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.PENDING_MANUAL_REVIEW);
+        assertThat(vehicleTaskRepository.findAll()).isEmpty();
     }
 
     @Test

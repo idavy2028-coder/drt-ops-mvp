@@ -15,6 +15,7 @@ import com.idavy.drtops.jtgateway.session.AuthenticationDecision;
 import com.idavy.drtops.jtgateway.session.RegistrationAuthenticationHandler;
 import com.idavy.drtops.jtgateway.session.RegistrationDecision;
 import com.idavy.drtops.jtgateway.session.SessionAuditIngress;
+import com.idavy.drtops.jtgateway.session.SessionLeaseReporter;
 import com.idavy.drtops.jtgateway.session.TerminalRegistrationIdentity;
 import com.idavy.drtops.jtgateway.session.TerminalRegistryPort;
 import com.idavy.drtops.jtgateway.session.TerminalSession;
@@ -27,6 +28,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -80,8 +82,10 @@ class ProtocolDispatchHandlerOwnershipTest {
 
     private static Fixture fixture() {
         TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        NoOpRegistry registry = new NoOpRegistry();
         RegistrationAuthenticationHandler authentication = new RegistrationAuthenticationHandler(
-                new NoOpRegistry(), sessions, CLOCK, Duration.ofSeconds(30));
+                registry, sessions, CLOCK, Duration.ofSeconds(30),
+                new SessionLeaseReporter(registry, Runnable::run, CLOCK));
         ProtocolModuleRegistry modules = new ProtocolModuleRegistry(
                 new Jt808CoreModule(new LocationReportCodec()),
                 ignored -> GatewayIngressBuffer.WriteResult.STORED,
@@ -104,6 +108,10 @@ class ProtocolDispatchHandlerOwnershipTest {
                 null,
                 List.of(),
                 1), IDENTITY);
+        session.installLease(new TerminalRegistryPort.SessionLeaseGrant(
+                new TerminalRegistryPort.SessionLeaseOwner(
+                        TERMINAL_ID, "gateway-ownership-test", session.connectionId(), 1, 1),
+                CLOCK.instant(), CLOCK.instant(), CLOCK.instant().plusSeconds(180)));
         session.authenticated(CLOCK.instant());
         sessions.claim(session);
         return new Fixture(channel);
@@ -127,8 +135,31 @@ class ProtocolDispatchHandlerOwnershipTest {
 
         @Override
         public AuthenticationDecision verifyAuthentication(
-                UUID terminalId, int tokenVersion, String presentedTokenSha256) {
+                UUID terminalId,
+                int tokenVersion,
+                String presentedTokenSha256,
+                UUID connectionId) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public AuthenticationDecision verifyAuthenticationByIdentity(
+                ProtocolVersion protocolVersion,
+                String terminalPhone,
+                String presentedTokenSha256,
+                UUID connectionId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Optional<SessionLeaseGrant> renewSessionLease(SessionLeaseOwner owner) {
+            return Optional.empty();
+        }
+
+        @Override
+        public SessionLeaseReleaseResult releaseSessionLease(
+                SessionLeaseOwner owner, String reasonCode) {
+            return new SessionLeaseReleaseResult("STALE_OWNER_IGNORED");
         }
 
         @Override

@@ -15,6 +15,8 @@ import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.TransportPro
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService.SessionLeaseGrant;
 import com.idavy.drtops.domain.terminal.TerminalConflictException;
 import jakarta.persistence.EntityManager;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +43,7 @@ public class OnboardRegistrationResolver {
     public static final int SESSION_CONTRACT_VERSION = 2;
 
     private final JtTerminalRepository terminalRepository;
+    private final JtTerminalSessionLeaseService leaseService;
     private final OnboardDeviceMembershipRepository membershipRepository;
     private final OnboardSystemRepository systemRepository;
     private final OnboardSystemRuntimeStateRepository runtimeRepository;
@@ -55,6 +58,7 @@ public class OnboardRegistrationResolver {
 
     public OnboardRegistrationResolver(
             JtTerminalRepository terminalRepository,
+            JtTerminalSessionLeaseService leaseService,
             OnboardDeviceMembershipRepository membershipRepository,
             OnboardSystemRepository systemRepository,
             OnboardSystemRuntimeStateRepository runtimeRepository,
@@ -67,6 +71,7 @@ public class OnboardRegistrationResolver {
             ObjectMapper objectMapper,
             ObjectProvider<Clock> clocks) {
         this.terminalRepository = terminalRepository;
+        this.leaseService = leaseService;
         this.membershipRepository = membershipRepository;
         this.systemRepository = systemRepository;
         this.runtimeRepository = runtimeRepository;
@@ -206,10 +211,12 @@ public class OnboardRegistrationResolver {
             UUID terminalId,
             int tokenVersion,
             String tokenSha256,
-            String gatewayInstance) {
+            String gatewayInstance,
+            UUID connectionId) {
         requireGatewayInstance(gatewayInstance);
         return authenticateLocked(
-                terminalId, tokenVersion, null, null, tokenSha256);
+                terminalId, tokenVersion, null, null, tokenSha256,
+                gatewayInstance, connectionId);
     }
 
     @Transactional
@@ -217,7 +224,8 @@ public class OnboardRegistrationResolver {
             String protocolVersion,
             String terminalPhone,
             String tokenSha256,
-            String gatewayInstance) {
+            String gatewayInstance,
+            UUID connectionId) {
         requireGatewayInstance(gatewayInstance);
         String canonicalProtocol = JtTerminalRepository.canonicalProtocolVersion(protocolVersion);
         if (canonicalProtocol == null) {
@@ -230,7 +238,7 @@ public class OnboardRegistrationResolver {
         }
         return authenticateLocked(
                 terminals.getFirst().getId(), null, canonicalProtocol,
-                terminalPhone, tokenSha256);
+                terminalPhone, tokenSha256, gatewayInstance, connectionId);
     }
 
     private AuthenticationDecision authenticateLocked(
@@ -238,9 +246,12 @@ public class OnboardRegistrationResolver {
             Integer expectedTokenVersion,
             String expectedProtocolVersion,
             String expectedTerminalPhone,
-            String tokenSha256) {
+            String tokenSha256,
+            String gatewayInstance,
+            UUID connectionId) {
         if (terminalId == null || tokenSha256 == null
-                || !tokenSha256.matches("[0-9a-f]{64}")) {
+                || !tokenSha256.matches("[0-9a-f]{64}")
+                || connectionId == null) {
             return AuthenticationDecision.rejected("AUTHENTICATION_REJECTED");
         }
         List<OnboardDeviceMembership> memberships = activeMemberships(terminalId);
@@ -271,9 +282,12 @@ public class OnboardRegistrationResolver {
             return AuthenticationDecision.rejected("AUTHENTICATION_REJECTED");
         }
         TerminalSessionContext context = context(locked);
+        SessionLeaseGrant lease = leaseService.acquire(
+                terminal.getId(), gatewayInstance, connectionId,
+                terminal.getAuthTokenVersion());
         terminal.recordSuccessfulAuthentication(OffsetDateTime.now(clock));
         terminalRepository.saveAndFlush(terminal);
-        return AuthenticationDecision.approved(context);
+        return AuthenticationDecision.approved(context, lease);
     }
 
     private boolean registrationIdentityStillMatches(
@@ -624,23 +638,25 @@ public class OnboardRegistrationResolver {
     public record AuthenticationDecision(
             boolean approved,
             TerminalSessionContext context,
+            SessionLeaseGrant lease,
             String reasonCode) {
         public AuthenticationDecision {
-            if (approved && (context == null || reasonCode != null)) {
+            if (approved && (context == null || lease == null || reasonCode != null)) {
                 throw new IllegalArgumentException("approved authentication decision is invalid");
             }
-            if (!approved && (context != null || reasonCode == null
+            if (!approved && (context != null || lease != null || reasonCode == null
                     || !reasonCode.matches("[A-Z][A-Z0-9_]{2,79}"))) {
                 throw new IllegalArgumentException("rejected authentication decision is invalid");
             }
         }
 
-        static AuthenticationDecision approved(TerminalSessionContext context) {
-            return new AuthenticationDecision(true, context, null);
+        static AuthenticationDecision approved(
+                TerminalSessionContext context, SessionLeaseGrant lease) {
+            return new AuthenticationDecision(true, context, lease, null);
         }
 
         static AuthenticationDecision rejected(String reasonCode) {
-            return new AuthenticationDecision(false, null, reasonCode);
+            return new AuthenticationDecision(false, null, null, reasonCode);
         }
     }
 

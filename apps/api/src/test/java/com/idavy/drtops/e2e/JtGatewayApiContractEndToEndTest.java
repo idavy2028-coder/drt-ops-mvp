@@ -42,6 +42,7 @@ import com.idavy.drtops.jtgateway.ingress.OperationsApiClient;
 import com.idavy.drtops.jtgateway.ingress.OperationsApiStatus;
 import com.idavy.drtops.jtgateway.netty.JtGatewayServer;
 import com.idavy.drtops.jtgateway.session.OperationsTerminalRegistryClient;
+import com.idavy.drtops.jtgateway.session.SessionLeaseReporter;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import com.idavy.drtops.jtsimulator.SimulatedTerminal;
 import com.sun.net.httpserver.HttpExchange;
@@ -69,6 +70,9 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.flywaydb.core.Flyway;
@@ -532,6 +536,7 @@ class JtGatewayApiContractEndToEndTest {
         final GatewayOutboxRepository repository;
         final GatewayIngressBuffer buffer;
         final GatewayOutboxDispatcher dispatcher;
+        final ExecutorService leaseExecutor;
         final JtGatewayServer server;
         final int port;
 
@@ -576,11 +581,17 @@ class JtGatewayApiContractEndToEndTest {
             TerminalSessionRegistry sessions = new TerminalSessionRegistry();
             ProtocolModuleRegistry protocol = new ProtocolModuleRegistry(
                     new Jt808CoreModule(new LocationReportCodec()), buffer, mapper, sessions, clock);
+            leaseExecutor = new ThreadPoolExecutor(
+                    1, 1, 0, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(16),
+                    runnable -> new Thread(runnable, "synthetic-api-contract-lease"),
+                    new ThreadPoolExecutor.AbortPolicy());
             server = new JtGatewayServer(
                     new JtGatewayServer.Configuration(
                             new InetSocketAddress(InetAddress.getLoopbackAddress(), 0),
                             4, 100, 2, 256, 80, 40, Duration.ofSeconds(5)),
-                    registry, sessions, protocol);
+                    registry, sessions, protocol,
+                    new SessionLeaseReporter(registry, leaseExecutor, clock));
             port = server.start();
         }
 
@@ -612,6 +623,7 @@ class JtGatewayApiContractEndToEndTest {
             try {
                 server.close();
             } finally {
+                leaseExecutor.shutdownNow();
                 dataSource.close();
             }
         }

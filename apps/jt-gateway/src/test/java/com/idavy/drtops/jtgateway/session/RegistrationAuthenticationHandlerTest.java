@@ -28,11 +28,14 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -41,6 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class RegistrationAuthenticationHandlerTest {
     private static final UUID TERMINAL_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
@@ -142,7 +146,8 @@ class RegistrationAuthenticationHandlerTest {
                 Duration.ofSeconds(60),
                 clock);
         RegistrationAuthenticationHandler handler = new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock));
         EmbeddedChannel channel = channel(handler);
 
         assertFalse(channel.writeInbound(registrationFrame("999999999999")));
@@ -168,7 +173,8 @@ class RegistrationAuthenticationHandlerTest {
                 Duration.ofSeconds(60),
                 clock);
         RegistrationAuthenticationHandler handler = new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock));
         EmbeddedChannel channel = channel(handler);
 
         assertFalse(channel.writeInbound(registrationFrame()));
@@ -194,7 +200,8 @@ class RegistrationAuthenticationHandlerTest {
                 clock);
         Jt808Frame firstRegistration = registrationFrame("999999999999");
         EmbeddedChannel first = channel(new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy));
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock)));
 
         IllegalStateException thrown = assertThrows(
                 IllegalStateException.class,
@@ -207,7 +214,8 @@ class RegistrationAuthenticationHandlerTest {
         assertEquals(1, port.auditAttempts());
 
         EmbeddedChannel retry = channel(new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy));
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock)));
         assertFalse(retry.writeInbound(registrationFrame("999999999999")));
 
         assertEquals(2, port.auditAttempts(),
@@ -236,9 +244,11 @@ class RegistrationAuthenticationHandlerTest {
         AuditBlock blockedAudit = port.blockNextAudit(
                 SessionAuditType.REGISTRATION_REJECTED, persistenceFailure);
         RegistrationAuthenticationHandler handlerA = new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock));
         RegistrationAuthenticationHandler handlerB = new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock));
         EmbeddedChannel channelA = channel(handlerA);
         EmbeddedChannel channelB = channel(handlerB);
         Jt808Frame frameA = registrationFrame("999999999999");
@@ -264,7 +274,8 @@ class RegistrationAuthenticationHandlerTest {
             assertNull(channelA.readOutbound());
 
             RegistrationAuthenticationHandler handlerC = new RegistrationAuthenticationHandler(
-                    port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                    port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                    testReporter(port, clock));
             EmbeddedChannel channelC = channel(handlerC);
             try {
                 assertFalse(channelC.writeInbound(registrationFrame("777777777777")));
@@ -306,9 +317,11 @@ class RegistrationAuthenticationHandlerTest {
                 clock);
         AuditBlock blockedAudit = port.blockNextAudit(SessionAuditType.REGISTRATION_REJECTED, null);
         RegistrationAuthenticationHandler handlerA = new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock));
         RegistrationAuthenticationHandler handlerB = new RegistrationAuthenticationHandler(
-                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                testReporter(port, clock));
         EmbeddedChannel channelA = channel(handlerA);
         EmbeddedChannel channelB = channel(handlerB);
         Jt808Frame frameA = registrationFrame("999999999999");
@@ -332,7 +345,8 @@ class RegistrationAuthenticationHandlerTest {
             release(firstRejection);
 
             RegistrationAuthenticationHandler handlerC = new RegistrationAuthenticationHandler(
-                    port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy);
+                    port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), policy,
+                    testReporter(port, clock));
             EmbeddedChannel channelC = channel(handlerC);
             try {
                 assertFalse(channelC.writeInbound(registrationFrame("777777777777")));
@@ -398,7 +412,8 @@ class RegistrationAuthenticationHandlerTest {
                 Duration.ofSeconds(30),
                 RegistrationMaintenancePolicy.disabled(),
                 PrivateVehicleIdentifierCapture.disabled(),
-                layoutPolicy);
+                layoutPolicy,
+                testReporter(allowedPort, new MutableClock()));
         EmbeddedChannel allowed = channel(allowedHandler);
 
         assertFalse(allowed.writeInbound(jt8082019LegacyRegistrationFrame(
@@ -418,7 +433,8 @@ class RegistrationAuthenticationHandlerTest {
                 Duration.ofSeconds(30),
                 RegistrationMaintenancePolicy.disabled(),
                 PrivateVehicleIdentifierCapture.disabled(),
-                layoutPolicy);
+                layoutPolicy,
+                testReporter(otherPort, new MutableClock()));
         EmbeddedChannel other = channel(otherHandler);
         assertFalse(other.writeInbound(jt8082019LegacyRegistrationFrame(
                 "MFG01", "PILOT-MODEL", "TERM001", "PILOT-A", "00000000999999999999")));
@@ -443,7 +459,8 @@ class RegistrationAuthenticationHandlerTest {
                 Duration.ofSeconds(30),
                 RegistrationMaintenancePolicy.disabled(),
                 PrivateVehicleIdentifierCapture.disabled(),
-                RegistrationBodyLayoutPolicy.fromCommaSeparated(allowedDigest));
+                RegistrationBodyLayoutPolicy.fromCommaSeparated(allowedDigest),
+                testReporter(port, new MutableClock()));
         EmbeddedChannel channel = channel(handler);
 
         assertFalse(channel.writeInbound(jt8082019LegacyRegistrationFrame(
@@ -506,7 +523,8 @@ class RegistrationAuthenticationHandlerTest {
                 clock,
                 Duration.ofSeconds(30),
                 policy,
-                capture);
+                capture,
+                testReporter(port, clock));
         EmbeddedChannel channel = channel(handler);
 
         assertFalse(channel.writeInbound(registrationFrame()));
@@ -604,7 +622,8 @@ class RegistrationAuthenticationHandlerTest {
                 clock,
                 Duration.ofSeconds(30),
                 policy,
-                capture);
+                capture,
+                testReporter(registrySpy, clock));
         EmbeddedChannel channel = channel(handler);
         Jt808Frame registration = registrationFrame();
         Jt808Frame unexpectedResponse = null;
@@ -913,8 +932,12 @@ class RegistrationAuthenticationHandlerTest {
             assertEquals(0, authentication.body().refCnt());
             assertFalse(second.isActive());
             assertEquals(TerminalSessionState.CLOSED, secondHandler.session().state());
-            assertTrue(first.isActive(), "the durable audit gate must preserve the current session");
-            assertSame(firstHandler.session(), sessions.current(TERMINAL_ID).orElseThrow());
+            assertFalse(first.isActive(), "audit failure must still close the stale generation");
+            assertEquals(TerminalSessionState.CLOSED, firstHandler.session().state());
+            assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+            assertThat(port.releasedOwners()).containsExactlyInAnyOrder(
+                    firstHandler.session().leaseOwner().orElseThrow(),
+                    secondHandler.session().leaseOwner().orElseThrow());
             assertNull(second.readOutbound());
         } finally {
             if (authentication.body().refCnt() > 0) {
@@ -925,6 +948,78 @@ class RegistrationAuthenticationHandlerTest {
             first.finishAndReleaseAll();
             second.finishAndReleaseAll();
         }
+    }
+
+    @Test
+    void authenticatedIdentityMismatchAuditFailureStillReleasesOwnerAndClosesSession() {
+        IllegalStateException failure = new IllegalStateException("synthetic identity audit failure");
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        RegistrationAuthenticationHandler handler = handler(port, sessions, new MutableClock());
+        EmbeddedChannel channel = channel(handler);
+        authenticate(channel);
+        TerminalRegistryPort.SessionLeaseOwner owner =
+                handler.session().leaseOwner().orElseThrow();
+        port.failAudit(SessionAuditType.SESSION_IDENTITY_MISMATCH, failure);
+        Jt808Frame changedIdentity = frame(0x0200, new byte[] {1}, "777777777777");
+
+        assertSame(failure, assertThrows(
+                IllegalStateException.class,
+                () -> channel.writeInbound(changedIdentity)));
+
+        assertEquals(0, changedIdentity.body().refCnt());
+        assertFalse(channel.isOpen());
+        assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        assertThat(port.releasedOwners()).containsExactly(owner);
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void readerIdleAuditFailureStillReleasesOwnerAndClosesSession() {
+        IllegalStateException failure = new IllegalStateException("synthetic idle audit failure");
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        RegistrationAuthenticationHandler handler = handler(port, sessions, new MutableClock());
+        EmbeddedChannel channel = channel(handler);
+        authenticate(channel);
+        TerminalRegistryPort.SessionLeaseOwner owner =
+                handler.session().leaseOwner().orElseThrow();
+        port.failAudit(SessionAuditType.SESSION_OFFLINE, failure);
+
+        channel.pipeline().fireUserEventTriggered(
+                io.netty.handler.timeout.IdleStateEvent.READER_IDLE_STATE_EVENT);
+        assertSame(failure, assertThrows(
+                IllegalStateException.class, channel::checkException));
+
+        assertFalse(channel.isOpen());
+        assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        assertThat(port.releasedOwners()).containsExactly(owner);
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void authenticatedTransportMismatchAuditFailureStillReleasesFrameOwnerAndSession() {
+        IllegalStateException failure = new IllegalStateException("synthetic transport audit failure");
+        FakeTerminalRegistry port = FakeTerminalRegistry.approved();
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        RegistrationAuthenticationHandler handler = handler(port, sessions, new MutableClock());
+        EmbeddedChannel channel = channel(handler);
+        authenticate(channel);
+        TerminalRegistryPort.SessionLeaseOwner owner =
+                handler.session().leaseOwner().orElseThrow();
+        port.failAudit(SessionAuditType.SESSION_IDENTITY_MISMATCH, failure);
+        Jt808Frame mismatched = frame(
+                ProtocolVersion.JT808_2019, 0x0002, new byte[] {1}, TERMINAL_NUMBER);
+
+        assertSame(failure, assertThrows(
+                IllegalStateException.class,
+                () -> channel.writeInbound(mismatched)));
+
+        assertEquals(0, mismatched.body().refCnt());
+        assertFalse(channel.isOpen());
+        assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        assertThat(port.releasedOwners()).containsExactly(owner);
+        channel.finishAndReleaseAll();
     }
 
     @Test
@@ -1033,6 +1128,227 @@ class RegistrationAuthenticationHandlerTest {
     }
 
     @Test
+    void validMessagesCoalesceRenewalsToAtMostOnePerThirtySeconds() throws Exception {
+        MutableClock clock = new MutableClock();
+        LeaseRegistry port = new LeaseRegistry();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        EmbeddedChannel channel = new EmbeddedChannel();
+        try {
+            TerminalSession session = authenticatedLeaseSession(channel, clock.instant(), 1);
+            SessionLeaseReporter reporter = new SessionLeaseReporter(port, executor, clock);
+            port.blockRenewal();
+            clock.advance(Duration.ofSeconds(30));
+
+            reporter.renewIfDue(session, clock.instant());
+            reporter.renewIfDue(session, clock.instant());
+            reporter.renewIfDue(session, clock.instant());
+
+            assertTrue(port.awaitRenewal());
+            assertEquals(1, port.renewCalls.get());
+            port.releaseRenewal();
+        } finally {
+            port.releaseRenewal();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void renewalRunsOutsideTheNettyEventLoop() throws Exception {
+        MutableClock clock = new MutableClock();
+        LeaseRegistry port = new LeaseRegistry();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        EmbeddedChannel channel = new EmbeddedChannel();
+        try {
+            TerminalSession session = authenticatedLeaseSession(channel, clock.instant(), 1);
+            SessionLeaseReporter reporter = new SessionLeaseReporter(port, executor, clock);
+            clock.advance(Duration.ofSeconds(30));
+            port.renewalResponse = Optional.of(leaseGrant(
+                    session, 1, clock.instant(), clock.instant().plusSeconds(180)));
+            AtomicReference<String> callerThread = new AtomicReference<>();
+
+            channel.eventLoop().execute(() -> {
+                callerThread.set(Thread.currentThread().getName());
+                reporter.renewIfDue(session, clock.instant());
+            });
+            channel.runPendingTasks();
+
+            assertTrue(port.awaitRenewal());
+            assertNotEquals(callerThread.get(), port.renewThread.get());
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void failedRenewalNeverExtendsLocalExpiryAndClosesAtExpiry() throws Exception {
+        MutableClock clock = new MutableClock();
+        LeaseRegistry port = new LeaseRegistry();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        EmbeddedChannel channel = new EmbeddedChannel();
+        try {
+            TerminalSession session = authenticatedLeaseSession(channel, clock.instant(), 1);
+            SessionLeaseReporter reporter = new SessionLeaseReporter(port, executor, clock);
+            Instant originalExpiry = clock.instant().plusSeconds(180);
+            clock.advance(Duration.ofSeconds(30));
+
+            reporter.renewIfDue(session, clock.instant());
+            assertTrue(port.awaitRenewal());
+            channel.runPendingTasks();
+
+            assertFalse(session.leaseExpired(originalExpiry.minusNanos(1)));
+            assertTrue(session.leaseExpired(originalExpiry));
+            clock.advance(Duration.ofSeconds(150));
+            reporter.renewIfDue(session, clock.instant());
+            channel.runPendingTasks();
+            assertFalse(channel.isOpen());
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void failedRenewalAttemptsAreThrottledForThirtySecondsWithoutExtendingExpiry()
+            throws Exception {
+        MutableClock clock = new MutableClock();
+        LeaseRegistry port = new LeaseRegistry();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        EmbeddedChannel channel = new EmbeddedChannel();
+        try {
+            Instant originalExpiry = clock.instant().plusSeconds(180);
+            TerminalSession session = authenticatedLeaseSession(channel, clock.instant(), 1);
+            SessionLeaseReporter reporter = new SessionLeaseReporter(port, executor, clock);
+            clock.advance(Duration.ofSeconds(30));
+
+            reporter.renewIfDue(session, clock.instant());
+            executor.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            channel.runPendingTasks();
+            assertEquals(1, port.renewCalls.get());
+            assertFalse(session.leaseExpired(originalExpiry.minusNanos(1)));
+
+            clock.advance(Duration.ofSeconds(29));
+            for (int index = 0; index < 5; index++) {
+                reporter.renewIfDue(session, clock.instant());
+            }
+            executor.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            channel.runPendingTasks();
+            assertEquals(1, port.renewCalls.get());
+            assertTrue(session.leaseExpired(originalExpiry));
+
+            clock.advance(Duration.ofSeconds(1));
+            reporter.renewIfDue(session, clock.instant());
+            executor.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            channel.runPendingTasks();
+            assertEquals(2, port.renewCalls.get());
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void rejectedRenewalSubmissionStillThrottlesTheNextAttemptForThirtySeconds() {
+        MutableClock clock = new MutableClock();
+        LeaseRegistry port = new LeaseRegistry();
+        AtomicBoolean rejectFirst = new AtomicBoolean(true);
+        Executor executor = command -> {
+            if (rejectFirst.compareAndSet(true, false)) {
+                throw new java.util.concurrent.RejectedExecutionException("synthetic saturation");
+            }
+            command.run();
+        };
+        EmbeddedChannel channel = new EmbeddedChannel();
+        try {
+            Instant originalExpiry = clock.instant().plusSeconds(180);
+            TerminalSession session = authenticatedLeaseSession(channel, clock.instant(), 1);
+            SessionLeaseReporter reporter = new SessionLeaseReporter(port, executor, clock);
+            clock.advance(Duration.ofSeconds(30));
+
+            reporter.renewIfDue(session, clock.instant());
+            assertEquals(0, port.renewCalls.get());
+
+            clock.advance(Duration.ofSeconds(29));
+            reporter.renewIfDue(session, clock.instant());
+            channel.runPendingTasks();
+            assertEquals(0, port.renewCalls.get());
+            assertFalse(session.leaseExpired(originalExpiry.minusNanos(1)));
+
+            clock.advance(Duration.ofSeconds(1));
+            reporter.renewIfDue(session, clock.instant());
+            channel.runPendingTasks();
+            assertEquals(1, port.renewCalls.get());
+            assertTrue(session.leaseExpired(originalExpiry));
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void channelInactiveReleasesOnlyItsCurrentLeaseOwner() throws Exception {
+        MutableClock clock = new MutableClock();
+        LeaseRegistry port = new LeaseRegistry();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        SessionLeaseReporter reporter = new SessionLeaseReporter(port, executor, clock);
+        RegistrationAuthenticationHandler handler = new RegistrationAuthenticationHandler(
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), reporter);
+        EmbeddedChannel channel = channel(handler);
+        try {
+            TerminalRegistryPort.SessionLeaseGrant grant = leaseGrant(
+                    handler.session(), 1, clock.instant(), clock.instant().plusSeconds(180));
+            authenticateLeaseSession(handler.session(), grant, clock.instant());
+
+            channel.close().syncUninterruptibly();
+
+            assertTrue(port.awaitRelease());
+            assertEquals(List.of(grant.owner()), port.releasedOwners);
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void takeoverOldChannelReleaseCannotClearNewOwner() throws Exception {
+        MutableClock clock = new MutableClock();
+        LeaseRegistry port = new LeaseRegistry();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        SessionLeaseReporter reporter = new SessionLeaseReporter(port, executor, clock);
+        RegistrationAuthenticationHandler oldHandler = new RegistrationAuthenticationHandler(
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), reporter);
+        RegistrationAuthenticationHandler newHandler = new RegistrationAuthenticationHandler(
+                port, new TerminalSessionRegistry(), clock, Duration.ofSeconds(30), reporter);
+        EmbeddedChannel oldChannel = channel(oldHandler);
+        EmbeddedChannel newChannel = channel(newHandler);
+        try {
+            TerminalRegistryPort.SessionLeaseGrant oldGrant = leaseGrant(
+                    oldHandler.session(), 1, clock.instant(), clock.instant().plusSeconds(180));
+            TerminalRegistryPort.SessionLeaseGrant newGrant = leaseGrant(
+                    newHandler.session(), 2, clock.instant(), clock.instant().plusSeconds(180));
+            authenticateLeaseSession(oldHandler.session(), oldGrant, clock.instant());
+            authenticateLeaseSession(newHandler.session(), newGrant, clock.instant());
+            port.currentOwner.set(newGrant.owner());
+
+            oldChannel.close().syncUninterruptibly();
+
+            assertTrue(port.awaitRelease());
+            assertEquals(newGrant.owner(), port.currentOwner.get());
+            assertEquals(List.of(oldGrant.owner()), port.releasedOwners);
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            oldChannel.finishAndReleaseAll();
+            newChannel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
     void crossConnectionBusinessRejectionInstallsNoContextAndLeaksNoIdentity() {
         FakeTerminalRegistry port = FakeTerminalRegistry.approved();
         port.rejectIdentity(AuthenticationRejection.TOKEN_MISMATCH);
@@ -1136,11 +1452,11 @@ class RegistrationAuthenticationHandlerTest {
             assertEquals(TerminalSessionState.CLOSED, handler.session().state());
             assertSame(peer, sessions.current(PEER_TERMINAL_ID).orElseThrow());
             assertTrue(peerChannel.isActive());
+            assertTrue(sessions.current(TERMINAL_ID).isEmpty());
             if (failedAudit == SessionAuditType.SESSION_TAKEN_OVER) {
-                assertSame(current, sessions.current(TERMINAL_ID).orElseThrow());
-                assertTrue(currentChannel.isActive());
-            } else {
-                assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+                assertFalse(currentChannel.isActive(),
+                        "takeover audit failure must still close the stale generation");
+                assertEquals(TerminalSessionState.CLOSED, current.state());
             }
             failing.finishAndReleaseAll();
             currentChannel.finishAndReleaseAll();
@@ -1538,7 +1854,30 @@ class RegistrationAuthenticationHandlerTest {
 
     private static RegistrationAuthenticationHandler handler(
             TerminalRegistryPort port, TerminalSessionRegistry sessions, Clock clock) {
-        return new RegistrationAuthenticationHandler(port, sessions, clock, Duration.ofSeconds(30));
+        return new RegistrationAuthenticationHandler(
+                port, sessions, clock, Duration.ofSeconds(30), testReporter(port, clock));
+    }
+
+    private static SessionLeaseReporter testReporter(
+            TerminalRegistryPort port, Clock clock) {
+        return new SessionLeaseReporter(port, Runnable::run, clock);
+    }
+
+    private static AuthenticationDecision allowWithSyntheticLease(
+            TerminalSessionContext context, UUID connectionId) {
+        Instant authenticatedAt = Instant.parse("2026-08-12T00:00:00Z");
+        return AuthenticationDecision.allow(
+                context,
+                new TerminalRegistryPort.SessionLeaseGrant(
+                        new TerminalRegistryPort.SessionLeaseOwner(
+                                context.terminalId(),
+                                "gateway-handler-test",
+                                connectionId,
+                                context.tokenVersion(),
+                                1),
+                        authenticatedAt,
+                        authenticatedAt,
+                        authenticatedAt.plusSeconds(180)));
     }
 
     private static TerminalSessionContext terminalContext(
@@ -1757,7 +2096,8 @@ class RegistrationAuthenticationHandlerTest {
                 clock,
                 Duration.ofSeconds(30),
                 policy,
-                PrivateVehicleIdentifierCapture.enabled(output.getParent(), output));
+                PrivateVehicleIdentifierCapture.enabled(output.getParent(), output),
+                testReporter(port, clock));
     }
 
     private static Jt808Frame authenticationFrame(String token) {
@@ -1821,6 +2161,128 @@ class RegistrationAuthenticationHandlerTest {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
     }
 
+    private static TerminalSession authenticatedLeaseSession(
+            EmbeddedChannel channel, Instant now, long generation) {
+        TerminalSession session = new TerminalSession(channel, now);
+        TerminalRegistryPort.SessionLeaseGrant grant = leaseGrant(
+                session, generation, now, now.plusSeconds(180));
+        authenticateLeaseSession(session, grant, now);
+        return session;
+    }
+
+    private static void authenticateLeaseSession(
+            TerminalSession session,
+            TerminalRegistryPort.SessionLeaseGrant grant,
+            Instant now) {
+        session.restoreAuthenticatedIdentity(
+                terminalContext(TERMINAL_ID, Set.of("LOCATION_PRIMARY")),
+                TERMINAL_NUMBER);
+        session.installLease(grant);
+        session.authenticated(now);
+    }
+
+    private static TerminalRegistryPort.SessionLeaseGrant leaseGrant(
+            TerminalSession session,
+            long generation,
+            Instant lastValidMessageAt,
+            Instant expiresAt) {
+        return new TerminalRegistryPort.SessionLeaseGrant(
+                new TerminalRegistryPort.SessionLeaseOwner(
+                        TERMINAL_ID,
+                        "gateway-lease-test",
+                        session.connectionId(),
+                        5,
+                        generation),
+                lastValidMessageAt.minusSeconds(30),
+                lastValidMessageAt,
+                expiresAt);
+    }
+
+    private static final class LeaseRegistry implements TerminalRegistryPort {
+        private final AtomicInteger renewCalls = new AtomicInteger();
+        private final AtomicReference<String> renewThread = new AtomicReference<>();
+        private final CountDownLatch renewalEntered = new CountDownLatch(1);
+        private final CountDownLatch renewalRelease = new CountDownLatch(1);
+        private final CountDownLatch leaseReleased = new CountDownLatch(1);
+        private final List<TerminalRegistryPort.SessionLeaseOwner> releasedOwners =
+                new CopyOnWriteArrayList<>();
+        private final AtomicReference<TerminalRegistryPort.SessionLeaseOwner> currentOwner =
+                new AtomicReference<>();
+        private volatile Optional<TerminalRegistryPort.SessionLeaseGrant> renewalResponse =
+                Optional.empty();
+        private volatile boolean blockRenewal;
+
+        @Override
+        public RegistrationDecision verifyRegistration(TerminalRegistrationIdentity identity) {
+            return RegistrationDecision.rejected(RegistrationRejection.NOT_PREPROVISIONED);
+        }
+
+        @Override
+        public AuthenticationDecision verifyAuthentication(
+                UUID terminalId,
+                int tokenVersion,
+                String presentedTokenSha256,
+                UUID connectionId) {
+            return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+        }
+
+        @Override
+        public AuthenticationDecision verifyAuthenticationByIdentity(
+                ProtocolVersion protocolVersion,
+                String terminalPhone,
+                String presentedTokenSha256,
+                UUID connectionId) {
+            return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
+        }
+
+        @Override
+        public void recordSessionAudit(SessionAuditIngress event) {
+        }
+
+        @Override
+        public Optional<TerminalRegistryPort.SessionLeaseGrant> renewSessionLease(
+                TerminalRegistryPort.SessionLeaseOwner owner) {
+            renewCalls.incrementAndGet();
+            renewThread.set(Thread.currentThread().getName());
+            renewalEntered.countDown();
+            if (blockRenewal) {
+                try {
+                    renewalRelease.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return Optional.empty();
+                }
+            }
+            return renewalResponse;
+        }
+
+        @Override
+        public TerminalRegistryPort.SessionLeaseReleaseResult releaseSessionLease(
+                TerminalRegistryPort.SessionLeaseOwner owner, String reasonCode) {
+            releasedOwners.add(owner);
+            boolean released = currentOwner.compareAndSet(owner, null);
+            leaseReleased.countDown();
+            return new TerminalRegistryPort.SessionLeaseReleaseResult(
+                    released ? "RELEASED" : "STALE_OWNER_IGNORED");
+        }
+
+        void blockRenewal() {
+            blockRenewal = true;
+        }
+
+        boolean awaitRenewal() throws InterruptedException {
+            return renewalEntered.await(5, TimeUnit.SECONDS);
+        }
+
+        void releaseRenewal() {
+            renewalRelease.countDown();
+        }
+
+        boolean awaitRelease() throws InterruptedException {
+            return leaseReleased.await(5, TimeUnit.SECONDS);
+        }
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.parse("2026-08-12T00:00:00Z");
 
@@ -1880,6 +2342,8 @@ class RegistrationAuthenticationHandlerTest {
         private final String activeSafetyStandard;
         private final List<String> activeSafetyModules;
         private final List<SessionAuditIngress> audits = new ArrayList<>();
+        private final List<TerminalRegistryPort.SessionLeaseOwner> releasedOwners =
+                new ArrayList<>();
         private RuntimeException registrationFailure;
         private RuntimeException authenticationFailure;
         private TerminalSessionContext terminalAuthenticationContext;
@@ -2034,26 +2498,31 @@ class RegistrationAuthenticationHandlerTest {
 
         @Override
         public AuthenticationDecision verifyAuthentication(
-                UUID terminalId, int tokenVersion, String presentedTokenSha256) {
+                UUID terminalId,
+                int tokenVersion,
+                String presentedTokenSha256,
+                UUID connectionId) {
             if (authenticationFailure != null) {
                 throw authenticationFailure;
             }
             return uncheckedSha256(AUTHENTICATION_TOKEN.getBytes(StandardCharsets.US_ASCII))
                     .equals(presentedTokenSha256)
-                    ? AuthenticationDecision.allow(
+                    ? allowWithSyntheticLease(
                             terminalAuthenticationContext == null
                                     ? terminalContext(
                                             terminalId,
                                             Set.of("LOCATION_PRIMARY", "ACTIVE_SAFETY"))
-                                    : terminalAuthenticationContext)
+                                    : terminalAuthenticationContext,
+                            connectionId)
                     : AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
         }
 
         @Override
         public AuthenticationDecision verifyAuthenticationByIdentity(
-                ProtocolVersion protocolVersion,
-                String terminalPhone,
-                String presentedTokenSha256) {
+            ProtocolVersion protocolVersion,
+            String terminalPhone,
+            String presentedTokenSha256,
+            UUID connectionId) {
             lastIdentityProtocol = protocolVersion;
             lastIdentityPhone = terminalPhone;
             lastIdentityDigest = presentedTokenSha256;
@@ -2069,7 +2538,20 @@ class RegistrationAuthenticationHandlerTest {
                     .equals(presentedTokenSha256)) {
                 return AuthenticationDecision.rejected(AuthenticationRejection.TOKEN_MISMATCH);
             }
-            return AuthenticationDecision.allow(context);
+            return allowWithSyntheticLease(context, connectionId);
+        }
+
+        @Override
+        public Optional<TerminalRegistryPort.SessionLeaseGrant> renewSessionLease(
+                TerminalRegistryPort.SessionLeaseOwner owner) {
+            return Optional.empty();
+        }
+
+        @Override
+        public TerminalRegistryPort.SessionLeaseReleaseResult releaseSessionLease(
+                TerminalRegistryPort.SessionLeaseOwner owner, String reasonCode) {
+            releasedOwners.add(owner);
+            return new TerminalRegistryPort.SessionLeaseReleaseResult("STALE_OWNER_IGNORED");
         }
 
         @Override
@@ -2115,6 +2597,10 @@ class RegistrationAuthenticationHandlerTest {
 
         TerminalRegistrationIdentity lastRegistrationIdentity() {
             return lastRegistrationIdentity;
+        }
+
+        List<TerminalRegistryPort.SessionLeaseOwner> releasedOwners() {
+            return List.copyOf(releasedOwners);
         }
 
         RegistrationDecision lastRegistrationDecision() {

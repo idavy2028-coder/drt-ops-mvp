@@ -10,6 +10,7 @@ import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.MediaProfile
 import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile.SafetyProfile;
 import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment.Role;
 import com.idavy.drtops.domain.terminal.JtTerminal;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseRepository;
 import jakarta.persistence.EntityManager;
 import java.time.Clock;
 import java.time.DateTimeException;
@@ -39,6 +40,7 @@ public class OnboardReadinessService {
     private final OnboardSystemRuntimeStateRepository runtimeRepository;
     private final VehicleRepository vehicleRepository;
     private final EntityManager entityManager;
+    private final JtTerminalSessionLeaseRepository leaseRepository;
     private final Clock clock;
 
     public OnboardReadinessService(
@@ -46,11 +48,13 @@ public class OnboardReadinessService {
             OnboardSystemRuntimeStateRepository runtimeRepository,
             VehicleRepository vehicleRepository,
             EntityManager entityManager,
+            JtTerminalSessionLeaseRepository leaseRepository,
             ObjectProvider<Clock> clocks) {
         this.systemRepository = systemRepository;
         this.runtimeRepository = runtimeRepository;
         this.vehicleRepository = vehicleRepository;
         this.entityManager = entityManager;
+        this.leaseRepository = leaseRepository;
         this.clock = clocks.getIfAvailable(Clock::systemUTC);
     }
 
@@ -132,6 +136,7 @@ public class OnboardReadinessService {
                 roles,
                 runtime,
                 vehicle,
+                clock.instant(),
                 Map.copyOf(terminals),
                 Map.copyOf(verifiedCapabilities),
                 Map.copyOf(profiles));
@@ -182,8 +187,18 @@ public class OnboardReadinessService {
         if (terminalIds.isEmpty()) {
             return Map.of();
         }
+        Map<UUID, SessionLeaseFact> leases = leaseRepository
+                .findAllByTerminalIdIn(terminalIds).stream()
+                .collect(Collectors.toMap(
+                        lease -> lease.getTerminalId(),
+                        lease -> new SessionLeaseFact(
+                                lease.getTokenVersion(),
+                                lease.getLastValidMessageAt(),
+                                lease.getExpiresAt(),
+                                lease.getReleasedAt())));
         return entityManager.createQuery("""
-                        select terminal.id, terminal.status, terminal.lastAuthenticatedAt
+                        select terminal.id, terminal.status, terminal.authTokenVersion,
+                               terminal.lastAuthenticatedAt
                         from JtTerminal terminal
                         where terminal.id in :terminalIds
                         order by terminal.id
@@ -194,7 +209,9 @@ public class OnboardReadinessService {
                         row -> (UUID) row[0],
                         row -> new TerminalFact(
                                 (JtTerminal.Status) row[1],
-                                (OffsetDateTime) row[2]),
+                                (Integer) row[2],
+                                (OffsetDateTime) row[3],
+                                leases.get((UUID) row[0])),
                         (first, ignored) -> first,
                         LinkedHashMap::new));
     }
@@ -492,6 +509,7 @@ public class OnboardReadinessService {
             List<RoleFact> roleAssignments,
             OnboardSystemRuntimeState runtime,
             Vehicle vehicle,
+            Instant evaluatedAt,
             Map<UUID, TerminalFact> terminals,
             Map<UUID, Set<Capability>> verifiedCapabilities,
             Map<UUID, List<ProfileFact>> profiles) {
@@ -517,7 +535,9 @@ public class OnboardReadinessService {
             TerminalFact terminal = terminals.get(terminalId);
             return terminal != null
                     && terminal.status() == JtTerminal.Status.ACTIVE
-                    && terminal.lastAuthenticatedAt() != null;
+                    && terminal.lease() != null
+                    && terminal.lease().liveAt(
+                            terminal.tokenVersion(), evaluatedAt);
         }
 
         boolean operationalRole(RoleFact assignment) {
@@ -555,7 +575,21 @@ public class OnboardReadinessService {
 
     private record TerminalFact(
             JtTerminal.Status status,
-            OffsetDateTime lastAuthenticatedAt) {
+            int tokenVersion,
+            OffsetDateTime lastAuthenticatedAt,
+            SessionLeaseFact lease) {
+    }
+
+    private record SessionLeaseFact(
+            int tokenVersion,
+            OffsetDateTime lastValidMessageAt,
+            OffsetDateTime expiresAt,
+            OffsetDateTime releasedAt) {
+        boolean liveAt(int terminalTokenVersion, Instant now) {
+            return releasedAt == null
+                    && tokenVersion == terminalTokenVersion
+                    && now.isBefore(expiresAt.toInstant());
+        }
     }
 
     private record ProfileFact(

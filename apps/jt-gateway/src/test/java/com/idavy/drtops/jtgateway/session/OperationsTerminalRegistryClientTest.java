@@ -39,12 +39,17 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -58,6 +63,7 @@ class OperationsTerminalRegistryClientTest {
     private static final UUID TERMINAL_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID SYSTEM_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final UUID VEHICLE_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final UUID CONNECTION_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
     private static final String PRESENTED_DIGEST = "c".repeat(64);
 
     @Test
@@ -186,7 +192,10 @@ class OperationsTerminalRegistryClientTest {
                 fixture.registry(),
                 new TerminalSessionRegistry(),
                 Clock.fixed(NOW, ZoneOffset.UTC),
-                Duration.ofSeconds(30));
+                Duration.ofSeconds(30),
+                new SessionLeaseReporter(
+                        fixture.registry(), Runnable::run,
+                        Clock.fixed(NOW, ZoneOffset.UTC)));
         EmbeddedChannel channel = new EmbeddedChannel(handler);
         Jt808Frame registration = jt8082013RegistrationFrame();
         Object outbound = null;
@@ -311,16 +320,142 @@ class OperationsTerminalRegistryClientTest {
                 .andRespond(withSuccess(approvedAuthenticationJson(), MediaType.APPLICATION_JSON));
 
         AuthenticationDecision byTerminal = registry.verifyAuthentication(
-                TERMINAL_ID, 7, PRESENTED_DIGEST);
+                TERMINAL_ID, 7, PRESENTED_DIGEST, CONNECTION_ID);
         AuthenticationDecision byIdentity = registry.verifyAuthenticationByIdentity(
                 com.idavy.drtops.jt.protocol.codec.ProtocolVersion.JT808_2019,
-                "00000000000000000001", PRESENTED_DIGEST);
+                "00000000000000000001", PRESENTED_DIGEST, CONNECTION_ID);
 
         assertTrue(byTerminal.approved());
         assertTrue(byIdentity.approved());
         assertEquals(byTerminal.context(), byIdentity.context());
         assertEquals(SYSTEM_ID, byIdentity.context().onboardSystemId());
         server.verify();
+    }
+
+    @Test
+    void authenticationSendsThePhysicalConnectionIdAndInstallsTheLeaseGrant() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        OperationsTerminalRegistryClient registry = newRegistry(
+                builder, "authentication_connection_lease");
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/authentications/verify"))
+                .andExpect(jsonPath("$.terminalId").value(TERMINAL_ID.toString()))
+                .andExpect(jsonPath("$.connectionId").value(CONNECTION_ID.toString()))
+                .andExpect(jsonPath("$.gatewayInstance").value("gateway-registration-test"))
+                .andRespond(withSuccess(approvedAuthenticationJson(), MediaType.APPLICATION_JSON));
+
+        AuthenticationDecision decision = registry.verifyAuthentication(
+                TERMINAL_ID, 7, PRESENTED_DIGEST, CONNECTION_ID);
+
+        assertTrue(decision.approved());
+        assertEquals(TERMINAL_ID, decision.lease().owner().terminalId());
+        assertEquals(CONNECTION_ID, decision.lease().owner().connectionId());
+        assertEquals("gateway-registration-test", decision.lease().owner().gatewayInstance());
+        assertEquals(7, decision.lease().owner().tokenVersion());
+        assertEquals(1, decision.lease().owner().leaseGeneration());
+        assertEquals(Instant.parse("2026-08-21T10:03:00Z"), decision.lease().expiresAt());
+        server.verify();
+    }
+
+    @Test
+    void locallyRejectedApprovedPayloadRetainsOnlyItsFencedCleanupOwner() {
+        List<String> malformedApprovedPayloads = List.of(
+                approvedAuthenticationJson().replaceFirst("\\\"context\\\":", "\"wrongContext\":"),
+                approvedAuthenticationJson().replace(
+                        TERMINAL_ID.toString(),
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                approvedAuthenticationJson().replace(
+                        "\"tokenVersion\":7,\"leaseGeneration\":1",
+                        "\"tokenVersion\":8,\"leaseGeneration\":1"),
+                approvedAuthenticationJson().replace(
+                        "gateway-registration-test", "gateway-wrong"),
+                approvedAuthenticationJson().replace(
+                        CONNECTION_ID.toString(),
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                approvedAuthenticationJson().replace(
+                        "\"leaseGeneration\":1", "\"leaseGeneration\":0"));
+
+        for (int index = 0; index < malformedApprovedPayloads.size(); index++) {
+            RestClient.Builder builder = RestClient.builder();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+            OperationsTerminalRegistryClient registry = newRegistry(
+                    builder, "cleanup_owner_" + index);
+            server.expect(requestTo(
+                            "http://operations.invalid/internal/jt-gateway/authentications/verify"))
+                    .andRespond(withSuccess(
+                            malformedApprovedPayloads.get(index), MediaType.APPLICATION_JSON));
+
+            AuthenticationDecision decision = registry.verifyAuthentication(
+                    TERMINAL_ID, 7, PRESENTED_DIGEST, CONNECTION_ID);
+
+            assertFalse(decision.approved());
+            assertNull(decision.context());
+            assertNull(decision.lease());
+            assertTrue(decision.cleanupOwner().isPresent());
+            assertFalse(decision.toString().contains(CONNECTION_ID.toString()));
+            server.verify();
+        }
+    }
+
+    @Test
+    void realClientHandlerReporterReleasesLocallyRejectedApprovedOwnerWithoutAckOrSession()
+            throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RegistryFixture fixture = newRegistryFixture(builder, "cleanup_owner_handler");
+        AtomicReference<UUID> connectionId = new AtomicReference<>();
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/authentications/verify-by-identity"))
+                .andExpect(request -> {
+                    var json = fixture.mapper().readTree(
+                            ((MockClientHttpRequest) request).getBodyAsString());
+                    connectionId.set(UUID.fromString(json.required("connectionId").asText()));
+                })
+                .andRespond(request -> withSuccess(
+                        approvedAuthenticationJson()
+                                .replace(CONNECTION_ID.toString(), connectionId.get().toString())
+                                .replace("gateway-registration-test", "gateway-wrong"),
+                        MediaType.APPLICATION_JSON).createResponse(request));
+        server.expect(requestTo(
+                        "http://operations.invalid/internal/jt-gateway/session-leases/release"))
+                .andExpect(request -> {
+                    var json = fixture.mapper().readTree(
+                            ((MockClientHttpRequest) request).getBodyAsString());
+                    assertEquals(connectionId.get().toString(),
+                            json.at("/owner/connectionId").asText());
+                    assertEquals("gateway-wrong",
+                            json.at("/owner/gatewayInstance").asText());
+                    assertEquals("AUTHENTICATION_RESPONSE_INCONSISTENT",
+                            json.path("reasonCode").asText());
+                })
+                .andRespond(withSuccess("{\"data\":{\"status\":\"RELEASED\"}}",
+                        MediaType.APPLICATION_JSON));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        TerminalSessionRegistry sessions = new TerminalSessionRegistry();
+        SessionLeaseReporter reporter = new SessionLeaseReporter(
+                fixture.registry(), executor, Clock.fixed(NOW, ZoneOffset.UTC));
+        RegistrationAuthenticationHandler handler = new RegistrationAuthenticationHandler(
+                fixture.registry(), sessions, Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(30), reporter);
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        try {
+            Jt808Frame authentication = jt8082013AuthenticationFrame(PRESENTED_DIGEST);
+
+            assertFalse(channel.writeInbound(authentication));
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            server.verify();
+
+            assertEquals(0, authentication.body().refCnt());
+            assertNull(channel.readOutbound());
+            assertFalse(channel.isOpen());
+            assertNull(handler.session().terminalId());
+            assertTrue(sessions.current(TERMINAL_ID).isEmpty());
+        } finally {
+            executor.shutdownNow();
+            channel.finishAndReleaseAll();
+        }
     }
 
     @Test
@@ -343,12 +478,19 @@ class OperationsTerminalRegistryClientTest {
                            "safetyProfile":"NONE","mediaProfile":"NONE",
                            "enabledActiveSafetyModules":[],
                            "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
-                          "activeSafetyStandard":null,"activeSafetyModules":[],"tokenVersion":7}}}
+                          "activeSafetyStandard":null,"activeSafetyModules":[],"tokenVersion":7},
+                         "lease":{"owner":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                          "gatewayInstance":"gateway-registration-test",
+                          "connectionId":"44444444-4444-4444-4444-444444444444",
+                          "tokenVersion":7,"leaseGeneration":1},
+                          "authenticatedAt":"2026-08-21T10:00:00Z",
+                          "lastValidMessageAt":"2026-08-21T10:00:00Z",
+                          "expiresAt":"2026-08-21T10:03:00Z"}}}
                         """, MediaType.APPLICATION_JSON));
 
         AuthenticationDecision decision = registry.verifyAuthenticationByIdentity(
                 com.idavy.drtops.jt.protocol.codec.ProtocolVersion.JT808_2019,
-                "00000000000000000001", PRESENTED_DIGEST);
+                "00000000000000000001", PRESENTED_DIGEST, CONNECTION_ID);
 
         assertTrue(decision.approved());
         assertTrue(decision.context().roles().isEmpty());
@@ -366,7 +508,7 @@ class OperationsTerminalRegistryClientTest {
                         "{\"data\":{\"approved\":true}}", MediaType.APPLICATION_JSON));
 
         AuthenticationDecision decision = registry.verifyAuthentication(
-                TERMINAL_ID, 7, PRESENTED_DIGEST);
+                TERMINAL_ID, 7, PRESENTED_DIGEST, CONNECTION_ID);
 
         assertFalse(decision.approved());
         assertNull(decision.context());
@@ -450,7 +592,7 @@ class OperationsTerminalRegistryClientTest {
                         """, MediaType.APPLICATION_JSON));
 
         AuthenticationDecision decision = registry.verifyAuthentication(
-                TERMINAL_ID, 7, PRESENTED_DIGEST);
+                TERMINAL_ID, 7, PRESENTED_DIGEST, CONNECTION_ID);
 
         assertFalse(decision.approved());
         assertNull(decision.context());
@@ -800,6 +942,23 @@ class OperationsTerminalRegistryClientTest {
         return new Jt808Frame(header, body, (byte) 0);
     }
 
+    private static Jt808Frame jt8082013AuthenticationFrame(String token) {
+        byte[] bytes = token.getBytes(StandardCharsets.US_ASCII);
+        Jt808MessageHeader header = new Jt808MessageHeader(
+                0x0102,
+                bytes.length,
+                bytes.length,
+                0,
+                false,
+                ProtocolVersion.JT808_2013,
+                0,
+                "000000000001",
+                10,
+                null,
+                null);
+        return new Jt808Frame(header, Unpooled.wrappedBuffer(bytes), (byte) 0);
+    }
+
     private static void writeFixedAscii(ByteBuf target, String value, int length) {
         byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
         target.writeBytes(bytes);
@@ -857,7 +1016,14 @@ class OperationsTerminalRegistryClientTest {
                    "enabledActiveSafetyModules":["ADAS","DMS"],
                    "activePositionIntervalSeconds":30,"idlePositionIntervalSeconds":60},
                   "activeSafetyStandard":"T/JSATL12-2017",
-                  "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7}}}
+                  "activeSafetyModules":["ADAS","DMS"],"tokenVersion":7},
+                 "lease":{"owner":{"terminalId":"11111111-1111-1111-1111-111111111111",
+                  "gatewayInstance":"gateway-registration-test",
+                  "connectionId":"44444444-4444-4444-4444-444444444444",
+                  "tokenVersion":7,"leaseGeneration":1},
+                  "authenticatedAt":"2026-08-21T10:00:00Z",
+                  "lastValidMessageAt":"2026-08-21T10:00:00Z",
+                  "expiresAt":"2026-08-21T10:03:00Z"}}}
                 """;
     }
 

@@ -28,7 +28,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.temporal.ChronoUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -86,6 +85,12 @@ class TerminalApiTest {
 
     @Autowired
     JtTerminalRepository terminalRepository;
+
+    @Autowired
+    JtTerminalSessionLeaseRepository leaseRepository;
+
+    @Autowired
+    JtTerminalSessionLeaseService leaseService;
 
     @Autowired
     JtTerminalVehicleBindingRepository bindingRepository;
@@ -416,15 +421,21 @@ class TerminalApiTest {
                 .andExpect(status().isOk());
 
         internalPost("/internal/jt-gateway/authentications/verify", """
-                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a",
+                 "connectionId":"11111111-1111-1111-1111-111111111111"}
                 """.formatted(terminalId, TOKEN_HASH))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.approved").value(true));
+                .andExpect(jsonPath("$.data.approved").value(true))
+                .andExpect(jsonPath("$.data.lease.owner.terminalId").value(terminalId.toString()))
+                .andExpect(jsonPath("$.data.lease.owner.connectionId")
+                        .value("11111111-1111-1111-1111-111111111111"));
         internalPost("/internal/jt-gateway/authentications/verify", """
-                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a",
+                 "connectionId":"22222222-2222-2222-2222-222222222222"}
                 """.formatted(terminalId, sha256(UUID.randomUUID().toString())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.approved").value(false));
+                .andExpect(jsonPath("$.data.approved").value(false))
+                .andExpect(jsonPath("$.data.lease").doesNotExist());
     }
 
     @Test
@@ -501,7 +512,8 @@ class TerminalApiTest {
 
         String byId = internalPost("/internal/jt-gateway/authentications/verify", """
                 {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s",
-                 "gatewayInstance":"gateway-a"}
+                 "gatewayInstance":"gateway-a",
+                 "connectionId":"33333333-3333-3333-3333-333333333333"}
                 """.formatted(terminal.getId(), TOKEN_HASH))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(true))
@@ -510,7 +522,8 @@ class TerminalApiTest {
         String byIdentity = internalPost(
                         "/internal/jt-gateway/authentications/verify-by-identity", """
                 {"protocolVersion":"JT808_2019","terminalPhone":"PHONE-RECORDER",
-                 "tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                 "tokenSha256":"%s","gatewayInstance":"gateway-a",
+                 "connectionId":"44444444-4444-4444-4444-444444444444"}
                 """.formatted(TOKEN_HASH))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(true))
@@ -548,7 +561,8 @@ class TerminalApiTest {
         String rejected = internalPost(
                         "/internal/jt-gateway/authentications/verify-by-identity", """
                 {"protocolVersion":"JT808_2019","terminalPhone":"PHONE-RECORDER",
-                 "tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                 "tokenSha256":"%s","gatewayInstance":"gateway-a",
+                 "connectionId":"55555555-5555-5555-5555-555555555555"}
                 """.formatted(sha256("wrong-secret")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(false))
@@ -568,7 +582,8 @@ class TerminalApiTest {
         onboardMembershipRepository.saveAndFlush(membership);
         internalPost("/internal/jt-gateway/authentications/verify", """
                 {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s",
-                 "gatewayInstance":"gateway-a"}
+                 "gatewayInstance":"gateway-a",
+                 "connectionId":"66666666-6666-6666-6666-666666666666"}
                 """.formatted(recorder.getId(), TOKEN_HASH))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(false));
@@ -582,7 +597,8 @@ class TerminalApiTest {
         Instant beforeAuthentication = terminalClock.instant();
 
         internalPost("/internal/jt-gateway/authentications/verify", """
-                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a",
+                 "connectionId":"77777777-7777-7777-7777-777777777777"}
                 """.formatted(terminal.getId(), TOKEN_HASH))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(true));
@@ -599,7 +615,8 @@ class TerminalApiTest {
         JtTerminal terminal = registerBindAndActivate("T-AUTH-REJECT", "PHONE-AUTH-REJECT");
 
         internalPost("/internal/jt-gateway/authentications/verify", """
-                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a"}
+                {"terminalId":"%s","tokenVersion":1,"tokenSha256":"%s","gatewayInstance":"gateway-a",
+                 "connectionId":"88888888-8888-8888-8888-888888888888"}
                 """.formatted(terminal.getId(), sha256(UUID.randomUUID().toString())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.approved").value(false));
@@ -835,27 +852,32 @@ class TerminalApiTest {
     @Test
     void reportsOnlineBoundaryAndOnlyExposesOfflineTimeWhenOffline() throws Exception {
         JtTerminal terminal = presetAndBind("T-DETAIL-CLOCK", "PHONE-CLOCK");
-        OffsetDateTime onlineSeenAt = OffsetDateTime.now(terminalClock).minusMinutes(2);
-        org.springframework.test.util.ReflectionTestUtils.setField(
-                terminal, "lastSeenAt", onlineSeenAt);
+        terminal.completeRegistration(terminal.getAuthTokenVersion(), TOKEN_HASH);
+        terminal.activate(true);
         terminalRepository.saveAndFlush(terminal);
-        mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
+        JtTerminalSessionLeaseService.SessionLeaseGrant grant = leaseService.acquire(
+                terminal.getId(), "gateway-terminal-detail", UUID.randomUUID(),
+                terminal.getAuthTokenVersion());
+        OffsetDateTime persistedLastValid = leaseRepository.findById(terminal.getId())
+                .orElseThrow().getLastValidMessageAt();
+        String onlineBody = mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.onlineStatus").value("ONLINE"))
-                .andExpect(jsonPath("$.data.offlineAt").doesNotExist());
-        terminal = terminalRepository.findByTerminalCode("T-DETAIL-CLOCK").orElseThrow();
-        OffsetDateTime offlineSeenAt = OffsetDateTime.now(terminalClock)
-                .minusMinutes(4)
-                .truncatedTo(ChronoUnit.MICROS);
-        org.springframework.test.util.ReflectionTestUtils.setField(
-                terminal, "lastSeenAt", offlineSeenAt);
-        terminalRepository.saveAndFlush(terminal);
+                .andExpect(jsonPath("$.data.lastValidMessageAt").isString())
+                .andExpect(jsonPath("$.data.offlineAt").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(OffsetDateTime.parse(
+                JsonPath.read(onlineBody, "$.data.lastValidMessageAt")).toInstant())
+                .isEqualTo(persistedLastValid.toInstant());
+        leaseService.release(grant.owner(), "SESSION_OFFLINE");
+        OffsetDateTime releasedAt = leaseRepository.findById(terminal.getId())
+                .orElseThrow().getReleasedAt();
         String offlineBody = mockMvc.perform(get("/api/terminals/T-DETAIL-CLOCK"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.onlineStatus").value("OFFLINE"))
                 .andExpect(jsonPath("$.data.offlineAt").isString())
                 .andReturn().getResponse().getContentAsString();
         String actualOfflineAt = JsonPath.read(offlineBody, "$.data.offlineAt");
         assertThat(OffsetDateTime.parse(actualOfflineAt).toInstant())
-                .isEqualTo(offlineSeenAt.plusMinutes(3).toInstant());
+                .isEqualTo(releasedAt.toInstant());
     }
 
     @Test
@@ -1084,7 +1106,8 @@ class TerminalApiTest {
     }
 
     private boolean serviceAuthentication(UUID terminalId, int version, String hash) {
-        return service.verifyAuthentication(terminalId, version, hash, "gateway-a").approved();
+        return service.verifyAuthentication(
+                terminalId, version, hash, "gateway-a", UUID.randomUUID()).approved();
     }
 
     private String action(long version, String reason) {

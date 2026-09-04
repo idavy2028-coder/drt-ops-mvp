@@ -63,7 +63,7 @@ describe("OnboardSystemManagementPage", () => {
     expect(screen.getByText("已安装 2 台")).toBeInTheDocument();
     expect(screen.getByText("device-aaaaaaaaaaaa")).toBeInTheDocument();
     expect(screen.getByText("共享网络客户端")).toBeInTheDocument();
-    expect(screen.getByText("未接入")).toBeInTheDocument();
+    expect(screen.getByText("当前：离线")).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent("JT-RAW-001");
     expect(document.body).not.toHaveTextContent("13800000000");
     expect(document.body).not.toHaveTextContent("secret-auth-token");
@@ -81,6 +81,45 @@ describe("OnboardSystemManagementPage", () => {
     expect(screen.queryByRole("button", { name: "编辑期望配置" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("运行模式")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "应用配置" })).not.toBeInTheDocument();
+  });
+
+  it("showsCurrentOfflineWhileKeepingHistoricalAuthenticationTime", async () => {
+    const detail = detailFixture();
+    Object.assign(detail.devices[0]!, {
+      authenticationPresent: true,
+      currentlyAuthenticated: false,
+      lastAuthenticatedAt: "2026-08-29T08:01:00Z",
+      sessionLastValidMessageAt: "2026-08-29T08:02:00Z",
+      sessionExpiresAt: "2026-08-29T08:05:00Z"
+    });
+    onboardApi.getOnboardSystem.mockResolvedValue(detail);
+
+    render(OnboardSystemManagementPage);
+
+    expect(await screen.findAllByText("当前：离线")).not.toHaveLength(0);
+    expect(screen.getAllByText("最近成功鉴权（历史）")).not.toHaveLength(0);
+    expect(screen.getAllByText("会话最近有效消息")).not.toHaveLength(0);
+    expect(document.body).not.toHaveTextContent("当前已鉴权");
+  });
+
+  it("neverRendersGatewayInstanceConnectionIdOrLeaseGeneration", async () => {
+    const detail = detailFixture();
+    const device = detail.devices[0] as (typeof detail.devices)[number] & {
+      gatewayInstance?: string;
+      connectionId?: string;
+      leaseGeneration?: number;
+    };
+    device.gatewayInstance = "gateway-private-instance";
+    device.connectionId = "99999999-9999-9999-9999-999999999999";
+    device.leaseGeneration = 42;
+    onboardApi.getOnboardSystem.mockResolvedValue(detail);
+
+    render(OnboardSystemManagementPage);
+    await screen.findByText("整体：DEGRADED");
+
+    expect(document.body).not.toHaveTextContent("gateway-private-instance");
+    expect(document.body).not.toHaveTextContent("99999999-9999-9999-9999-999999999999");
+    expect(document.body).not.toHaveTextContent("leaseGeneration");
   });
 
   it("requires reason and confirmation then reloads and applies the fresh version with aliases only", async () => {
@@ -403,8 +442,11 @@ function detailFixture(
         networkMode: "DIRECT_CELLULAR",
         terminalStatus: "ACTIVE",
         authenticationPresent: true,
+        currentlyAuthenticated: true,
         lastRegisteredAt: "2026-08-29T08:00:00Z",
         lastAuthenticatedAt: "2026-08-29T08:01:00Z",
+        sessionLastValidMessageAt: "2026-08-29T08:02:00Z",
+        sessionExpiresAt: "2026-08-29T08:05:00Z",
         lastSeenAt: "2026-08-29T08:02:00Z",
         roles: ["DISPATCH", "LOCATION_PRIMARY", "WAN_UPLINK"],
         verifiedCapabilities: ["GBT28787_DISPATCH", "JT808_LOCATION"],
@@ -422,8 +464,11 @@ function detailFixture(
         networkMode: "SHARED_LAN_CLIENT",
         terminalStatus: "ACTIVE",
         authenticationPresent: false,
+        currentlyAuthenticated: false,
         lastRegisteredAt: null,
         lastAuthenticatedAt: null,
+        sessionLastValidMessageAt: null,
+        sessionExpiresAt: null,
         lastSeenAt: null,
         roles: ["LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO"],
         verifiedCapabilities: ["JT808_LOCATION", "ADAS", "VIDEO"],

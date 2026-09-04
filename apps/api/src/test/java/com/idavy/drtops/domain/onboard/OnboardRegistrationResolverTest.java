@@ -13,12 +13,15 @@ import com.idavy.drtops.domain.onboard.OnboardRegistrationResolver.RegistrationR
 import com.idavy.drtops.domain.onboard.OnboardTestFixtures.RolelessMemberFixture;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService;
 import jakarta.persistence.EntityManager;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,6 +31,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.aopalliance.intercept.MethodInterceptor;
+import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -70,6 +75,9 @@ class OnboardRegistrationResolverTest {
     JtTerminalRepository terminalRepository;
 
     @Autowired
+    JtTerminalSessionLeaseRepository leaseRepository;
+
+    @Autowired
     AuditLogRepository auditLogRepository;
 
     @Autowired
@@ -81,8 +89,12 @@ class OnboardRegistrationResolverTest {
     @Autowired
     IdentityRacePause identityRacePause;
 
+    @Autowired
+    LeaseAcquireFailure leaseAcquireFailure;
+
     @BeforeEach
     void setUp() {
+        leaseAcquireFailure.reset();
         fixtures.clear();
     }
 
@@ -150,6 +162,79 @@ class OnboardRegistrationResolverTest {
         assertThat(decision.approved()).isTrue();
         assertThat(decision.context().roles()).isEmpty();
         assertThat(decision.context().protocolProfile().enabledActiveSafetyModules()).isEmpty();
+    }
+
+    @Test
+    void successfulAuthenticationAtomicallyReturnsALeaseForThatPhysicalTerminal() {
+        fixtures.configureRecorderSystem("recorder-lease", "LEASE-VEHICLE");
+        JtTerminal terminal = terminalRepository.findByTerminalCode("recorder-lease")
+                .orElseThrow();
+        String token = "c".repeat(64);
+        registerAndActivate(terminal.getId(), token);
+        UUID rejectedConnection =
+                UUID.fromString("55555555-5555-5555-5555-555555555555");
+        UUID firstConnection =
+                UUID.fromString("66666666-6666-6666-6666-666666666666");
+        UUID takeoverConnection =
+                UUID.fromString("77777777-7777-7777-7777-777777777777");
+
+        OnboardRegistrationResolver.AuthenticationDecision rejected =
+                resolver.authenticateByTerminalId(
+                        terminal.getId(), 1, "d".repeat(64),
+                        "gateway-rejected", rejectedConnection);
+
+        assertThat(rejected.approved()).isFalse();
+        assertThat(rejected.lease()).isNull();
+        assertThat(leaseRepository.findById(terminal.getId())).isEmpty();
+
+        OnboardRegistrationResolver.AuthenticationDecision accepted =
+                resolver.authenticateByTerminalId(
+                        terminal.getId(), 1, token,
+                        "gateway-a", firstConnection);
+
+        assertThat(accepted.approved()).isTrue();
+        assertThat(accepted.lease()).isNotNull();
+        assertThat(accepted.lease().owner().terminalId()).isEqualTo(terminal.getId());
+        assertThat(accepted.lease().owner().tokenVersion()).isEqualTo(1);
+        assertThat(accepted.lease().owner().gatewayInstance()).isEqualTo("gateway-a");
+        assertThat(accepted.lease().owner().connectionId()).isEqualTo(firstConnection);
+        assertThat(accepted.context().terminalId())
+                .isEqualTo(accepted.lease().owner().terminalId());
+        assertThat(accepted.context().tokenVersion())
+                .isEqualTo(accepted.lease().owner().tokenVersion());
+
+        OnboardRegistrationResolver.AuthenticationDecision takeover =
+                resolver.authenticateByTerminalId(
+                        terminal.getId(), 1, token,
+                        "gateway-b", takeoverConnection);
+
+        assertThat(takeover.lease().owner().leaseGeneration())
+                .isEqualTo(accepted.lease().owner().leaseGeneration() + 1);
+        assertThat(takeover.lease().owner().connectionId())
+                .isEqualTo(takeoverConnection);
+        assertThat(takeover.toString()).doesNotContain(
+                token, "PHONE-RECORDER", "LEASE-VEHICLE");
+    }
+
+    @Test
+    void failureAfterLeaseAcquireRollsBackLeaseAndHistoricalAuthenticationTogether() {
+        fixtures.configureRecorderSystem("recorder-rollback", "ROLLBACK-VEHICLE");
+        JtTerminal terminal = terminalRepository.findByTerminalCode("recorder-rollback")
+                .orElseThrow();
+        String token = "e".repeat(64);
+        registerAndActivate(terminal.getId(), token);
+        leaseAcquireFailure.arm(new IllegalStateException(
+                "synthetic post-acquire authentication failure"));
+
+        assertThatThrownBy(() -> resolver.authenticateByTerminalId(
+                terminal.getId(), 1, token, "gateway-rollback",
+                UUID.fromString("99999999-9999-9999-9999-999999999999")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("synthetic post-acquire authentication failure");
+
+        assertThat(leaseRepository.findById(terminal.getId())).isEmpty();
+        assertThat(terminalRepository.findById(terminal.getId()).orElseThrow()
+                .getLastAuthenticatedAt()).isNull();
     }
 
     @Test
@@ -323,7 +408,9 @@ class OnboardRegistrationResolverTest {
                     executor.submit(() -> {
                         Thread.currentThread().setName("authentication-identity-race-thread");
                         return resolver.authenticateByIdentity(
-                                "JT808_2019", "PHONE-RECORDER", originalToken, "gateway-a");
+                                "JT808_2019", "PHONE-RECORDER", originalToken,
+                                "gateway-a",
+                                UUID.fromString("88888888-8888-8888-8888-888888888888"));
                     });
             assertThat(identityResolved.await(5, TimeUnit.SECONDS)).isTrue();
             reuseActivePhoneIdentity(original.getId(), replacement.getId());
@@ -530,12 +617,39 @@ class OnboardRegistrationResolverTest {
         }
     }
 
+    static final class LeaseAcquireFailure {
+        private final java.util.concurrent.atomic.AtomicReference<RuntimeException> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        void arm(RuntimeException exception) {
+            if (!failure.compareAndSet(null, exception)) {
+                throw new IllegalStateException("lease acquire failure is already armed");
+            }
+        }
+
+        void afterAcquire() {
+            RuntimeException armed = failure.getAndSet(null);
+            if (armed != null) {
+                throw armed;
+            }
+        }
+
+        void reset() {
+            failure.set(null);
+        }
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class IdentityRaceConfiguration {
 
         @Bean
         IdentityRacePause identityRacePause() {
             return new IdentityRacePause();
+        }
+
+        @Bean
+        LeaseAcquireFailure leaseAcquireFailure() {
+            return new LeaseAcquireFailure();
         }
 
         @Bean
@@ -555,6 +669,29 @@ class OnboardRegistrationResolverTest {
                                 identityRacePause.afterLookup(method.getName());
                                 return result;
                             });
+                }
+            };
+        }
+
+        @Bean
+        static BeanPostProcessor leaseAcquireFailurePostProcessor(
+                LeaseAcquireFailure leaseAcquireFailure) {
+            return new BeanPostProcessor() {
+                @Override
+                public Object postProcessAfterInitialization(Object bean, String beanName) {
+                    if (!(bean instanceof JtTerminalSessionLeaseService)) {
+                        return bean;
+                    }
+                    ProxyFactory proxyFactory = new ProxyFactory(bean);
+                    proxyFactory.setProxyTargetClass(true);
+                    proxyFactory.addAdvice((MethodInterceptor) invocation -> {
+                        Object result = invocation.proceed();
+                        if (invocation.getMethod().getName().equals("acquire")) {
+                            leaseAcquireFailure.afterAcquire();
+                        }
+                        return result;
+                    });
+                    return proxyFactory.getProxy();
                 }
             };
         }

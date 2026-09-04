@@ -537,7 +537,8 @@ class TerminalManagementServiceTest {
         String replacementHash = replacement.getAuthTokenHash();
         int replacementTokenVersion = replacement.getAuthTokenVersion();
         assertThat(service.verifyAuthentication(
-                replacement.getId(), replacementTokenVersion, replacementHash, "gateway-a").approved())
+                replacement.getId(), replacementTokenVersion, replacementHash, "gateway-a",
+                UUID.fromString("11111111-2222-3333-4444-555555555555")).approved())
                 .isFalse();
 
         TerminalManagementService.ReplacementResult result = service.replace(
@@ -557,7 +558,8 @@ class TerminalManagementServiceTest {
         assertThat(pending.getAuthTokenVersion()).isEqualTo(replacementTokenVersion + 1);
         assertThat(pending.getAuthTokenHash()).isNotEqualTo(replacementHash);
         assertThat(service.verifyAuthentication(
-                pending.getId(), pending.getAuthTokenVersion(), pending.getAuthTokenHash(), "gateway-a").approved())
+                pending.getId(), pending.getAuthTokenVersion(), pending.getAuthTokenHash(), "gateway-a",
+                UUID.fromString("22222222-3333-4444-5555-666666666666")).approved())
                 .isFalse();
         assertThat(service.verifyRegistration(
                 pending.getTerminalPhone(), pending.getTerminalCode(), "MFG01", "MODEL-X",
@@ -590,7 +592,9 @@ class TerminalManagementServiceTest {
     @Test
     void verifiesAuthenticationOnlyWhileAnActiveMembershipExists() {
         JtTerminal terminal = activate("T-010", "PHONE-010");
-        assertThat(service.verifyAuthentication(terminal.getId(), 1, INITIAL_HASH, "gateway-a").approved()).isTrue();
+        assertThat(service.verifyAuthentication(
+                terminal.getId(), 1, INITIAL_HASH, "gateway-a",
+                UUID.fromString("33333333-4444-5555-6666-777777777777")).approved()).isTrue();
 
         OnboardDeviceMembership membership = membershipRepository
                 .findActiveByTerminalId(terminal.getId())
@@ -598,7 +602,9 @@ class TerminalManagementServiceTest {
         membership.remove("解除成员关系", ACTOR_ID, OffsetDateTime.now());
         membershipRepository.saveAndFlush(membership);
 
-        assertThat(service.verifyAuthentication(terminal.getId(), 1, INITIAL_HASH, "gateway-a").approved()).isFalse();
+        assertThat(service.verifyAuthentication(
+                terminal.getId(), 1, INITIAL_HASH, "gateway-a",
+                UUID.fromString("44444444-5555-6666-7777-888888888888")).approved()).isFalse();
     }
 
     @Test

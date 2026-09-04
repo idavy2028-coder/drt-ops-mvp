@@ -22,6 +22,8 @@ import com.idavy.drtops.domain.onboard.OnboardReadinessService.OnboardReadiness;
 import com.idavy.drtops.domain.onboard.OnboardReadinessService.ReadinessState;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import java.math.BigDecimal;
@@ -76,6 +78,8 @@ class OnboardReadinessServiceTest {
     @Autowired OnboardDeviceCapabilityRepository capabilityRepository;
     @Autowired OnboardDeviceProtocolProfileRepository profileRepository;
     @Autowired JtTerminalRepository terminalRepository;
+    @Autowired JtTerminalSessionLeaseRepository leaseRepository;
+    @Autowired JtTerminalSessionLeaseService leaseService;
     @Autowired VehicleRepository vehicleRepository;
     @Autowired VehicleLocationEventRepository locationEventRepository;
     @Autowired JdbcTemplate jdbcTemplate;
@@ -144,6 +148,39 @@ class OnboardReadinessServiceTest {
         assertThat(ready.location()).isEqualTo(ReadinessState.READY);
         assertThat(ready.dispatchEligible()).isTrue();
         assertThat(ready.overallStatus()).isEqualTo("OPERATIONAL");
+    }
+
+    @Test
+    void historicalAuthenticationWithoutALiveLeaseIsNotDispatchReady() {
+        UUID vehicleId = fixtures.readyDispatchSystemVehicleId();
+        UUID dispatchTerminalId = terminalForRole(vehicleId, Role.DISPATCH).getId();
+        leaseRepository.deleteById(dispatchTerminalId);
+
+        OnboardReadiness readiness = service.evaluate(vehicleId);
+
+        assertThat(readiness.dispatch()).isEqualTo(ReadinessState.UNAVAILABLE);
+        assertThat(readiness.dispatchEligible()).isFalse();
+        assertThat(readiness.overallStatus()).isEqualTo("OFFLINE");
+    }
+
+    @Test
+    void anotherDeviceLeaseCannotAuthenticateTheDispatchRoleDevice() {
+        UUID vehicleId = fixtures.readyDispatchSystemVehicleId();
+        UUID dispatchTerminalId = terminalForRole(vehicleId, Role.DISPATCH).getId();
+        JtTerminal backup = addOperationalBackup(vehicleId, "other");
+        makeCurrentLocation(
+                vehicleId,
+                backup.getId(),
+                Role.LOCATION_BACKUP,
+                clock.instant(),
+                LocationQualityStatus.GOOD);
+        leaseRepository.deleteById(dispatchTerminalId);
+
+        OnboardReadiness readiness = service.evaluate(vehicleId);
+
+        assertThat(readiness.connectivity()).isEqualTo(ReadinessState.DEGRADED);
+        assertThat(readiness.dispatch()).isEqualTo(ReadinessState.UNAVAILABLE);
+        assertThat(readiness.dispatchEligible()).isFalse();
     }
 
     @Test
@@ -457,15 +494,16 @@ class OnboardReadinessServiceTest {
 
     @Test
     void evaluationRefreshesTerminalPreloadedBeforeTheSystemLock() {
-        // Mutation caught: using terminal authentication cached before the system lock was acquired.
+        // Mutation caught: using a session lease cached before the system lock was acquired.
         UUID vehicleId = fixtures.readyDispatchSystemVehicleId();
         UUID terminalId = terminalForRole(vehicleId, Role.DISPATCH).getId();
         TransactionTemplate transactions = new TransactionTemplate(transactionManager);
 
         OnboardReadiness readiness = transactions.execute(status -> {
             terminalRepository.findById(terminalId).orElseThrow();
+            leaseRepository.findById(terminalId).orElseThrow();
             jdbcTemplate.update(
-                    "update jt_terminals set last_authenticated_at = null where id = ?",
+                    "delete from jt_terminal_session_leases where terminal_id = ?",
                     terminalId);
             return service.evaluate(vehicleId);
         });
@@ -569,6 +607,9 @@ class OnboardReadinessServiceTest {
         jdbcTemplate.update(
                 "update jt_terminals set last_authenticated_at = null where id = ?",
                 terminalId);
+        jdbcTemplate.update(
+                "delete from jt_terminal_session_leases where terminal_id = ?",
+                terminalId);
         entityManager.clear();
         return vehicleId;
     }
@@ -652,6 +693,9 @@ class OnboardReadinessServiceTest {
         }
         terminal.recordSuccessfulAuthentication(now());
         terminalRepository.saveAndFlush(terminal);
+        leaseService.acquire(
+                terminal.getId(), "gateway-readiness-fixture",
+                UUID.randomUUID(), terminal.getAuthTokenVersion());
     }
 
     private void makeCurrentLocation(
