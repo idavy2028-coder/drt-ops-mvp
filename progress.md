@@ -893,3 +893,130 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - Windows 当前环境对 Spring/H2/PowerShell 固定时限存在明显调度波动。仅调整测试专用预算：runtime loopback HTTP 100ms→500ms；功能型 file-backed H2 E2E 的四个应答步骤显式 5000ms。生产超时、P95/P99 合同、业务断言和附件边界均未改变；失败的历史 XML 保留用于诊断，最终成功集通过类集合机械核对，无遗漏或重复。
 - `git diff --check` 退出码 0，Java 残留进程 0；内容与 HEAD 一致的 `JtTerminalRepository` 伪修改已通过索引 stat 刷新清除。最后有证据的云端状态仍是 gateway 停止、7611 无监听，本轮未访问云端或真实流量。
 - 待本节与规格状态完成 F 组提交后，产生的 `HEAD` 才是 Task 0 最终基线；其精确 SHA 由提交后的 `git rev-parse HEAD` 固化在 Subagent-Driven ledger 和任务交付中。下一入口改为：从该干净基线创建 `codex/p6-2-composite-onboard-system` 隔离 worktree，执行 Task 1 的 V19 RED；跨 TCP 鉴权继续属于计划 Task 3/4，附件/媒体继续延期。
+
+### P6-2 R2 紧急暂停检查点（2026-09-03）
+
+- 状态：**PAUSED_BY_USER_QUOTA**。用户要求在额度仅余约 2% 时立即停止开发，不启动新测试、不再修改业务代码、不 stage/commit/push、不关闭终端会话。
+- 用户消息中的“8 个文件、+283/-18、R2 第 3/8 步”属于更早快照；暂停时只读核验的权威状态为 **49 个未提交 tracked 文件、2,125 insertions、431 deletions**。恢复时以本节实测状态为准，不回退或重做已完成工作。
+- 分支：`codex/p6-2-composite-onboard-system`；HEAD：`b38502d3412ba447adbdde759aa8c5099963f574`；staged=0；Java=0。当前可见 Node 进程总数 5，未在权限边界内确认归属，未停止任何 Node 或终端会话。
+- V21 冻结 SHA-256：`EC6FEC3C8E38B9B4A48054E89220434B4B606F69147C01234E337E9758E33FA3`；V19/V20/V21 均无 R2 修改。此前检查点中的 `B4D178...` 为记录笔误，当前值与 HEAD 及 Task 1 独立复审基线一致。
+- 已批准修复策略：不新增会伪造 authority 的默认/兼容构造器；测试 fixture 必须显式提供 `contractVersion=2`、`protocolProfile`、`onboardSystemId`。除原 R2 清单外，已批准 12 个 testCompile consumer，随后批准第 13 个 `GpsLocationIngressIntegrationTest.java`；这些仅用于显式迁移测试 fixture。
+- 已完成、恢复后不得重复：入口 56/56；API resolver 11/11；readiness 22/22；gateway authority 92/92；alarm unit 14/14；TerminalApi 30/30；TerminalManagementService 34/34；OnboardSystemConfigurationService 27/27；管理端 Vitest 13/13；真实 H2 纵向 E2E 5/5；R2 聚焦组合 244/244；GPS integration 两层 RED 后 61/61 GREEN；gateway runtime v2 stub 修正后 13/13 GREEN。
+- 外部 PostgreSQL/PostGIS：Testcontainers npipe 两次均 9/9 skip，不计 GREEN；严格 external-ephemeral loopback 入口先以“9/9 skip”形成 RED，再暴露并修复测试 fixture 的 V20 全局合同，最终本地独立 PostgreSQL/PostGIS **9/9、0 skip**，`pg_ctl stop=0`，临时实例/目录已清理。
+- 暂停点：原计划步骤 13 聚焦 GREEN 已有 244/244；步骤 14 最终 167 项模块回归先出现 8 个 gateway v2 stub 失败，修复后单类 13/13；随后 GPS alarm fixture 先 8 个、再 5 个预期 RED，显式补齐后单类 61/61。**修复后的最终 167 项整组复跑在暂停时没有可审计最终结果，视为未完成/未知，不能假定通过。**
+- 剩余任务：1）只读复核本检查点、`task-2-brief.md`、`task-2-report.md` 与当前 49 文件；2）确认无 Maven/Java 后仅重跑修复后的步骤 14 最终 167 项并保存新鲜结果；3）运行 admin-web typecheck（Vitest 13/13 已完成）；4）完成 allowlist、V21 SHA、diff-check、staged/process 门禁；5）把 external 9/9、244/244、61/61、13/13 与最终 167/typecheck 追加到 `task-2-report.md`；6）生成 review package 并独立复审；7）Critical/Important 清零后才提交 R2 并进入 R3。
+- 当前未提交文件完整列表：
+
+```text
+ M apps/admin-web/src/api/types.ts
+ M apps/admin-web/src/pages/TerminalManagementPage.vue
+ M apps/admin-web/src/pages/terminal-management-page.test.ts
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/AlarmStore.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/JpaAlarmStore.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/VehicleAlarm.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/VehicleAlarmIngressService.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/location/GatewayIngressRouter.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/onboard/OnboardReadinessService.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/onboard/OnboardRegistrationResolver.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/onboard/OnboardSystemConfigurationService.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/terminal/GatewayRegistryController.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/terminal/TerminalController.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/terminal/TerminalManagementService.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmAttachmentServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmEventStreamIntegrationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmEventStreamPaginationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmOutboxPublisherConcurrencyTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/InMemoryAlarmStore.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/MediaCallbackSecurityTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/PostgisVehicleAlarmIngressIntegrationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmActionServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmApiTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmAttachmentApiTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmIngressServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/location/GpsLocationIngressIntegrationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/CompositeOnboardEndToEndTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardReadinessServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardRegistrationResolverTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardSystemConfigurationServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardTestFixtures.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/terminal/TerminalApiTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/terminal/TerminalManagementServiceTest.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/dispatch/ProtocolModuleRegistry.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/ingress/ActiveSafetyAlarmRouter.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/ingress/CanonicalVehicleAlarm.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/OperationsTerminalRegistryClient.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/RegistrationAuthenticationHandler.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/TerminalSession.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/TerminalSessionContext.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/JtGatewayRuntimeIntegrationTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/dispatch/ProtocolModuleRegistryActiveSafetyDispatchTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/e2e/GatewayTestRig.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/ingress/ActiveSafetyAlarmRouterTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/ingress/CanonicalPositionIngressTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/netty/JtGatewayServerIntegrationTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/netty/ProtocolDispatchHandlerOwnershipTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/session/OperationsTerminalRegistryClientTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/session/RegistrationAuthenticationHandlerTest.java
+```
+
+- 检查点写入后的最终只读确认：`progress.md` 本身成为第 50 个未提交 tracked 文件，因此 `git status` 为 50 项、总 diff 为 2,192 insertions / 431 deletions；其中 R2 业务与测试仍是上述 49 项、2,125 / 431，新增 67 行仅为本紧急检查点。staged=0、HEAD/branch 不变、Java=0。
+
+### P6-2 R2 恢复、复审修复与提交前门禁（2026-09-04）
+
+- 从暂停点只重跑最终 Step 14，初次恢复结果为 167/167、0 failure/error/skip；admin-web typecheck exit 0，allowlist/V19-V21/diff/staged/process 门禁通过。
+- 独立复审初始结论为 Critical 0 / Important 2 / Minor 1：注册/鉴权 ACK 前 transport fail-close 不完整；alarm lifecycle 查询未以 `onboardSystemId` 精确取数。两项均按测试先行修复。
+- Fix round 1：I1 3 fail→3 pass；I2 InMemory 1 fail→1 pass，真实 PostgreSQL 2 fail→2 pass；四完整类 102/102。Scoped re-review 判定 I2 ADDRESSED、I1 尚有 client 分类降级缺口。
+- Fix round 2：真实 client→handler 组合 2 fail→2 pass，完整类 78/78；专用 transport mismatch 分类贯通至安全审计和无 ACK fail-close，正常业务拒绝语义不变。Scoped re-review 判定 I1 ADDRESSED，新 Critical/Important/Minor=0/0/0，Task quality=Approved。
+- 修复后新鲜门禁：Step 13 共 252 项、failure/error=0（11 个条件 PostGIS skip 由同代码 external 11/11、0 skip 证据补足）；Step 14 167/167、0 failure/error/skip；frontend typecheck exit 0。最终业务/测试改动 51 项，批准 allowlist 52、unexpected 0；V19/V20/V21 不变；diff-check/staged/Java/worktree-Node 均为 0。
+- R2 本地提交已完成：`3917c7e6f600cbc95bd4e56b6c523d58fc564dbc`（parent `b38502d3412ba447adbdde759aa8c5099963f574`，subject `fix: align onboard session and alarm authority`），51 路径、2,602 insertions / 445 deletions。提交中 `progress.md`、V19/V20/V21、private/temp/SDD evidence 均为 0；commit diff-check=0。
+- 当前状态：`R2_COMPLETE_LOCAL`。提交后 staged=0，tracked 未提交只剩本 `progress.md`；Java/工作树 Node=0。未 push、未部署、未进入 R3；下一入口为 Task R3“当前会话租约与统一就绪度”，需后续明确继续指令。
+
+### P6-2 R3 物理终端 current session lease（2026-09-05）
+
+- R3 从 HEAD `3917c7e6f600cbc95bd4e56b6c523d58fc564dbc` 开始；V21 冻结 lease schema 未改。实现 terminal-keyed persistent lease、API Clock 180 秒 TTL、token/generation/owner fencing、gateway 有界异步 renew/release、统一 readiness/自动/人工/UI current-session 门禁。
+- 测试先行证据覆盖生命周期、鉴权原子性、非 Netty executor、单 in-flight、expiry close、stale owner、历史鉴权不冒充、另一 terminal lease 不冒充、自动/人工拒绝和 UI 当前/历史分离。
+- 独立初审发现 2 Critical / 2 Important / 1 Minor：malformed approved response orphan lease、audit failure cleanup、failed-renew 30 秒节流、并发/回滚测试不足、UI 字段注入层级错误。两轮 fix/scoped re-review 后全部 ADDRESSED，新 Critical/Important/Minor=0/0/0。
+- 受控 mutation 证据：generation 不递增、resolver `noRollbackFor` 和 terminal `FOR UPDATE` 移除均被对应测试杀死；每次 mutation 均精确恢复生产文件 SHA。无预存 lease 并发首建测试在移除 terminal lock 后稳定产生 H2 23505，恢复后完整 lease 类 5/5。
+- 修复后最终门禁：Java 216/216、failure/error/skip=0；frontend 26/26；typecheck=0。task-owned 38 路径全部位于 39 项批准 allowlist，unexpected=0；V19/V20/V21 SHA 不变；diff/staged/Java/worktree-Node=0。
+- R3 本地提交已完成：`5543054af40afb95cd338e971c6f8cbefaed6c46`（parent `3917c7e6f600cbc95bd4e56b6c523d58fc564dbc`，subject `fix: require live terminal session leases`），38 路径、2,796 insertions / 209 deletions、新文件 5。提交中 `progress.md`、V19/V20/V21、private/temp/SDD evidence 均为 0；commit diff-check=0。
+- 当前状态：`R3_COMPLETE_LOCAL`。提交后 staged=0，tracked 未提交只剩本 `progress.md`；Java/工作树 Node=0。未 push、未部署、未进入 R4；下一入口为 Task R4“位置时钟域与配置/运行态/快照协调”，需后续明确继续指令。
+
+### P6-2 R4 位置双时钟、迟到质量与 provenance（2026-09-05）
+
+- R4 从 HEAD `5543054af40afb95cd338e971c6f8cbefaed6c46` 开始；实现 primary/backup terminal cursor 与 gateway cursor 分离、迟到顺序门禁先于质量运行态变更、跨终端速度只比较 gateway 时钟，以及 Vehicle snapshot 的 onboard-system/terminal/event provenance。
+- 配置 apply/retire/replace/legacy adapter 统一按 system→terminals→membership/role/profile/capability→runtime→vehicle 锁序协调来源；合法 active source 保留，非法来源与 cursor 重置，同系统旧 GPS snapshot 标 stale；readiness 要求当前 snapshot system 与当前车载系统一致。V19/V20/V21 未修改。
+- 独立初审发现 2 个 Important：恢复期 gateway cursor 可回退；配置-vs-ingress 测试不足以证明 whole-old/whole-new。三轮测试先行修复后，gateway cursor 改为同域 max；两个真实事务方向具备精确 system-lock before/after 信号、结果/provenance/history/有效期断言；外部 PostgreSQL 清理加入 pre-context opt-in、loopback、唯一库名、nonce/sentinel 门禁并强制 `ddl-auto=none`。最终 scoped re-review `APPROVED`，未关闭 finding=0。
+- 新鲜最终门禁：Step 11 为 182 项、180 实际通过、2 个条件 PostGIS skip（已有同一代码独立 PostgreSQL/PostGIS 2/2 零跳过证据）；Step 12 为 gateway 13 + API 185 = 198/198，零失败/错误/跳过。另有 configuration-vs-ingress 在合规临时 PostgreSQL/PostGIS 上 2/2；所有临时实例均停止、端口关闭、精确目录删除。
+- 最终范围：14 个允许路径中实际修改 12、允许但未改 2、unexpected 0；diff-check/staged/Java/worktree Node=0；V19/V20/V21 diff=0 且 SHA 保持 `9E9D50...5775`、`C1FED7...5DD3`、`EC6FEC3...3FA3`。
+- R4 本地提交已完成：`a61e8eb6e6c10a330812c6c4cad8fa4ba4cf2e40`（parent `5543054af40afb95cd338e971c6f8cbefaed6c46`，subject `fix: coordinate location runtime provenance`），12 路径、1,961 insertions / 165 deletions。提交严格排除本 `progress.md`、V19/V20/V21、private/temp/SDD evidence；commit diff-check=0。
+- 当前状态：`R4_COMPLETE_LOCAL`。提交后 staged=0，tracked 未提交只剩本 `progress.md`；Java/工作树 Node=0。未 push、未部署、未进入 R5；下一入口为 Task R5，需后续明确继续指令。
+
+### P6-2 R5 换机审计脱敏与历史只读边界（2026-09-05）
+
+- 状态：`R5_COMPLETE_LOCAL`。提交 `14ab97baf19f768244134fa3c8a0e187b78ce8c1`，parent `a61e8eb6e6c10a330812c6c4cad8fa4ba4cf2e40`，subject `fix: redact terminal replacement audit metadata`；精确两个Java文件 +146/-24，commit diff-check=0。
+- 新换机审计 metadata 仅写7键：两个不可逆设备别名、迁移角色及数量、两个令牌版本、固定reasonCode。移除为审计读取车牌的代码，禁止terminal code/phone/UUID/plate/换机前后token hash；gateway审计及自由文本reason原语义未扩展。
+- 行为RED准确复现旧明文三键；新增精确值/禁止值和合成历史sentinel重载比较。另修正同一测试文件中R4漏掉的旧consumer断言：无新合法位置event时replacement不得直接成为位置源，active source及三个cursor为空，保留角色迁移和legacy历史检查。
+- 聚焦三类105/105通过（service35/API30/configuration40），增强定向1/1及最终服务类35/35通过；全部零failure/error/skip。独立规格/质量复核 APPROVED，Critical/Important/Minor=0/0/0。
+- 历史边界：真实数据库零访问、历史audit零修改。未来另获只读授权后仅执行报告中的count/timestamp/action聚合盘点，不输出metadata原值；任何历史UPDATE/DELETE/替换另行批准。此结果不表示真实历史明文已清理。
+- V19/V20/V21未改；暂存为0，仅本progress.md未提交。未push/deploy；报告及复核见本计划SDD目录task-5-report.md/task-5-review.md。R6尚未开始。
+
+### P6-2 R6 车载系统可访问分页（2026-09-05）
+
+- 状态：`R6_COMPLETE_LOCAL`。提交 `4518c675a7db5b6a783ad74409fb51006bd8118c`，parent `14ab97baf19f768244134fa3c8a0e187b78ce8c1`，subject `fix: paginate onboard system management`；精确页面/测试两文件+293/-10，commit diff-check=0。
+- 管理端沿用现有每页20条API，提供上一页/下一页、服务端总数、页码及aria标签；21+系统可达，TERMINAL_READ可分页，管理权限不变。
+- 列表/详情分别用请求序号隔离迟到成功和失败；跨页草稿失效，应用配置期间导航锁定且旧请求不得覆盖权威状态；越界空页最多补一次请求，后页刷新归零时显示0/0并禁用双按钮。
+- 初始RED为20项中新增8项预期失败；独立初审发现1项零页按钮问题，补22项中1项精确RED后最小修复。最终三文件38/38、typecheck/build均exit0，191 modules；保留既有>500kB chunk提示。独立复审APPROVED，无未关闭C/I/M。
+- 暂存0，仅本progress.md仍未提交；Java/工作树Node=0，V19/V20/V21哈希未变，API/client/types/backend未改。未push/deploy。详细证据位于当前计划SDD的task-6-report.md及task-6-fix-round1-rereview.md。
+- 下一步为R1–R6新鲜完整回归与全分支独立复核；当前仅六个整改任务分别完成，不能宣称P6-2整阶段或云端/真实流量验收已收口。最终文档进度另行单独提交。
+
+### R1–R6 最终完整回归与全分支独立复核（2026-09-05）
+
+- 状态：`R1_R6_FINAL_REVIEW_APPROVED_LOCAL`。独立广域审阅加统一修复后的定向复核通过，当前整改范围未关闭Critical/Important为0，新增Minor为0。真实环境准入仍NO-GO。
+- 代码基线 `39494f3e3e459a7c5ac842f73ad99967baf3119b`；R6 `4518c675a7db5b6a783ad74409fb51006bd8118c`；统一测试合同修复提交 `cfd18b330b79b597ff73115305cdcb056a6f4a1a`（4文件+65/-13）。提交差异SHA `D57027F0B4972F43D3CE0504D601673A33E03F0C1D2218B079B609D083925F87` 与测试/复核包一致，无生产/迁移变更。
+- 首轮Java292执行中5失败：GatewayTestRig 2019档案与2013帧不符、历史固定lease过期；外部62项中3errors：当前JPA用例只迁V19而需要V21列。均按真实RED修正测试合同，未弱化生产门禁或冻结迁移。定向gateway16/16、post-fix外部P6迁移59/59证明修复；失败历史保留。
+- 修复后完整Java于UTC04:59:40.4612861–05:11:48.7105541执行，exit0：126测试类/126新XML，无漏报；1042 total=948实际通过+94条件跳过，0failure/error。协议48/48、gateway220/220、API750(656通过94跳过)、模拟器24/24。
+- 独立外部迁移PG17.9/PostGIS3.6.1：62 total=61实际通过+1独立Docker条件skip，0failure/error、exit0。前端54文件317/317、typecheck/build0（191 modules）；private迁移43/43及Task12 6/6。不同门禁有重叠，不相加为唯一测试总数，不将条件跳过算passed。
+- 外部首helper因PowerShell继承管道句柄卡在pg_ctl启动后，未运行测试；仅修ignored helper后按新实例复验。所有本轮临时PG已停、端口关闭、data及合成密码文件清理；最终Java/本工作树Node/taskPGdata=0。V19/V20零diff，V21自R1冻结SHA不变。未访问业务数据库或历史audit数据。
+- 保留门禁：Task10 ByteBuf释放及runner首失败诊断未重新关闭；Task11 library missing/ACL/syntax安全加载未关闭；Task12 count==4与cleanup selector/match-count fail-closed未关闭；cloud V20全库只读盘点未完成。本地APPROVED不授予push/merge/PR/部署或真实设备/流量操作。
+- 最终可复核交付物：`docs/pilot/evidence/p6-2/final-remediation-regression-2026-09-05.md`、`docs/pilot/evidence/p6-2/final-remediation-review-2026-09-05.md`。本进度和两份报告独立文档提交，过程日志/SDD证据保留，后续无需重做本轮已完成门禁。
+- 下一步：关闭已列真实环境/运维前置门禁后再进入相应授权流程；本轮工作到本地整改验证与文档收口为止。
