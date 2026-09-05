@@ -85,6 +85,8 @@ public class VehicleLocationEvent {
     private boolean outsideServiceArea;
 
     private UUID terminalId;
+    private UUID onboardSystemId;
+    @Column(length = 30) private String sourceRole;
     @Column(length = 40) private String protocolVersion;
     private Integer messageSerialNo;
     @Column(precision = 10, scale = 7) private BigDecimal rawLongitude;
@@ -223,6 +225,8 @@ public class VehicleLocationEvent {
     public boolean isSnapshotApplied() { return snapshotApplied; }
     public boolean isOutsideServiceArea() { return outsideServiceArea; }
     public UUID getTerminalId() { return terminalId; }
+    public UUID getOnboardSystemId() { return onboardSystemId; }
+    public String getSourceRole() { return sourceRole; }
     public String getProtocolVersion() { return protocolVersion; }
     public Integer getMessageSerialNo() { return messageSerialNo; }
     public BigDecimal getRawLongitude() { return rawLongitude; }
@@ -237,16 +241,33 @@ public class VehicleLocationEvent {
     public LocationQualityStatus getQualityStatus() { return qualityStatus; }
     public String getQualityReasons() { return qualityReasons; }
 
+    public void markSnapshotApplied() {
+        if (qualityStatus != LocationQualityStatus.GOOD
+                && qualityStatus != LocationQualityStatus.WARNING) {
+            throw new IllegalStateException("only eligible GPS quality can apply a snapshot");
+        }
+        this.snapshotApplied = true;
+    }
+
     public static VehicleLocationEvent recordGps(UUID vehicleId, UUID terminalId, CanonicalPositionIngress ingress,
             CoordinateTransformer.StandardizedCoordinate coordinate, LocationQualityDecision decision,
             UUID idempotencyKey, String fingerprint, OffsetDateTime recordedAt, java.time.Instant gatewayReceivedAt,
             boolean outsideServiceArea) {
+        if (!java.util.Objects.equals(terminalId, ingress.terminalId())
+                || !java.util.Objects.equals(vehicleId, ingress.vehicleId())) {
+            throw new IllegalArgumentException("GPS provenance IDs must match the accepted ingress");
+        }
+        if (!"LOCATION_PRIMARY".equals(ingress.sourceRole())
+                && !"LOCATION_BACKUP".equals(ingress.sourceRole())) {
+            throw new IllegalArgumentException("GPS sourceRole is invalid");
+        }
         VehicleLocationEvent event = record(vehicleId, null, null, null, LocationEventType.GPS_REPORT, LocationSource.GPS_DEVICE,
                 "POINT(" + coordinate.longitude().toPlainString() + " " + coordinate.latitude().toPlainString() + ")",
                 coordinate.longitude(), coordinate.latitude(), "GCJ02", null,
                 ingress.terminalLocatedAt().atOffset(java.time.ZoneOffset.UTC), recordedAt, null, null, null, null,
-                idempotencyKey, fingerprint, decision.applySnapshot(), outsideServiceArea);
-        event.terminalId = terminalId; event.protocolVersion = ingress.protocolVersion(); event.messageSerialNo = ingress.messageSerialNo();
+                idempotencyKey, fingerprint, false, outsideServiceArea);
+        event.terminalId = terminalId; event.onboardSystemId = ingress.onboardSystemId(); event.sourceRole = ingress.sourceRole();
+        event.protocolVersion = ingress.protocolVersion(); event.messageSerialNo = ingress.messageSerialNo();
         event.rawLongitude = ingress.rawLongitude(); event.rawLatitude = ingress.rawLatitude(); event.rawCoordinateSystem = ingress.rawCoordinateSystem();
         event.gatewayReceivedAt = gatewayReceivedAt.atOffset(java.time.ZoneOffset.UTC); event.payloadDigest = ingress.payloadDigest();
         event.speedKph = ingress.speedKph(); event.directionDegrees = ingress.directionDegrees();

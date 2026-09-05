@@ -2,13 +2,18 @@ package com.idavy.drtops.domain.location;
 
 import com.idavy.drtops.domain.terminal.JtGatewayAuditEvent;
 import com.idavy.drtops.domain.terminal.JtGatewayAuditEventRepository;
+import com.idavy.drtops.domain.terminal.JtTerminalRepository;
+import com.idavy.drtops.domain.fleet.VehicleRepository;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Persists sanitized gateway protocol rejections exactly once using the shared ingress receipt. */
 @Service
@@ -19,14 +24,24 @@ public class ProtocolAuditIngressService {
     private final JtGatewayAuditEventRepository audits;
     private final JtGatewayIngressReceiptRepository receipts;
     private final JtGatewayIngressReceiptClaimer receiptClaimer;
+    private final TransactionTemplate itemTransaction;
+    private final JtTerminalRepository terminals;
+    private final VehicleRepository vehicles;
 
     public ProtocolAuditIngressService(
             JtGatewayAuditEventRepository audits,
             JtGatewayIngressReceiptRepository receipts,
-            JtGatewayIngressReceiptClaimer receiptClaimer) {
+            JtGatewayIngressReceiptClaimer receiptClaimer,
+            JtTerminalRepository terminals,
+            VehicleRepository vehicles,
+            PlatformTransactionManager transactionManager) {
         this.audits = audits;
         this.receipts = receipts;
         this.receiptClaimer = receiptClaimer;
+        this.terminals = terminals;
+        this.vehicles = vehicles;
+        this.itemTransaction = new TransactionTemplate(transactionManager);
+        this.itemTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @Transactional
@@ -40,13 +55,50 @@ public class ProtocolAuditIngressService {
                 continue;
             }
             audits.save(JtGatewayAuditEvent.record(
-                    fact.terminalId(), fact.vehicleId(), JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
+                    fact.idempotencyKey(), fact.terminalId(), fact.vehicleId(),
+                    JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
                     JtGatewayAuditEvent.Result.REJECTED, fact.reasonCode(), fact.protocolVersion(),
                     fact.messageId(), fact.payloadDigest(), null,
                     OffsetDateTime.ofInstant(fact.occurredAt(), ZoneOffset.UTC), "JT_GATEWAY_SERVICE"));
             JtGatewayIngressReceipt receipt = receipts.findById(fact.idempotencyKey()).orElseThrow();
             receipt.complete("ACCEPTED", List.of(fact.reasonCode()), OffsetDateTime.now(ZoneOffset.UTC));
         }
+    }
+    public Result ingest(ProtocolAuditFact fact) {
+        if (fact == null || fact.idempotencyKey() == null) {
+            throw new IllegalArgumentException("protocol audit item must be correlatable");
+        }
+        return itemTransaction.execute(status -> ingestClaimed(fact));
+    }
+    private Result ingestClaimed(ProtocolAuditFact fact) {
+        if (receiptClaimer.claim(fact.idempotencyKey()) == 0) {
+            JtGatewayIngressReceipt receipt = receipts.findById(fact.idempotencyKey()).orElseThrow();
+            return new Result(fact.idempotencyKey(),
+                    "ACCEPTED".equals(receipt.getFinalStatus()) ? "REPLAYED" : "REJECTED",
+                    receipt.getReasonCodes());
+        }
+        try {
+            validate(fact);
+        } catch (IllegalArgumentException invalid) {
+            return reject(fact, "INVALID_PAYLOAD");
+        }
+        if (!terminals.existsById(fact.terminalId()) || !vehicles.existsById(fact.vehicleId())) {
+            return reject(fact, "INVALID_PAYLOAD");
+        }
+        audits.save(JtGatewayAuditEvent.record(
+                fact.idempotencyKey(), fact.terminalId(), fact.vehicleId(),
+                JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
+                JtGatewayAuditEvent.Result.REJECTED, fact.reasonCode(), fact.protocolVersion(),
+                fact.messageId(), fact.payloadDigest(), null,
+                OffsetDateTime.ofInstant(fact.occurredAt(), ZoneOffset.UTC), "JT_GATEWAY_SERVICE"));
+        JtGatewayIngressReceipt receipt = receipts.findById(fact.idempotencyKey()).orElseThrow();
+        receipt.complete("ACCEPTED", List.of(fact.reasonCode()), OffsetDateTime.now(ZoneOffset.UTC));
+        return new Result(fact.idempotencyKey(), "ACCEPTED", List.of(fact.reasonCode()));
+    }
+    private Result reject(ProtocolAuditFact fact, String reason) {
+        JtGatewayIngressReceipt receipt = receipts.findById(fact.idempotencyKey()).orElseThrow();
+        receipt.complete("REJECTED", List.of(reason), OffsetDateTime.now(ZoneOffset.UTC));
+        return new Result(fact.idempotencyKey(), "REJECTED", List.of(reason));
     }
 
     private static void validate(ProtocolAuditFact fact) {
@@ -74,4 +126,5 @@ public class ProtocolAuditIngressService {
             String payloadDigest,
             Instant occurredAt) {
     }
+    public record Result(UUID idempotencyKey, String status, List<String> reasonCodes) { }
 }

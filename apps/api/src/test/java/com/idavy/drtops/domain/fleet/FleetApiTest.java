@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.location.LocationEventType;
 import com.idavy.drtops.domain.location.LocationSource;
 import com.idavy.drtops.domain.location.IdempotencyKeyLock;
@@ -49,11 +50,33 @@ class FleetApiTest {
     @Autowired
     VehicleLocationEventRepository locationEventRepository;
 
+    @Autowired
+    AuditLogRepository auditLogRepository;
+
     @BeforeEach
     void setUp() {
+        auditLogRepository.deleteAll();
         locationEventRepository.deleteAll();
         vehicleRepository.deleteAll();
         driverRepository.deleteAll();
+    }
+
+    @Test
+    void persistsVehicleCreationAuditReasonWhenProvided() throws Exception {
+        mockMvc.perform(post("/api/vehicles")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"plateNumber":"DRT-PRE-101","vehicleType":"Microbus","capacity":8,
+                                 "currentStatus":"IDLE","lng":116.3180000,"lat":39.9290000,
+                                 "fleetName":"P6-2 PRE-ACCEPTANCE","dispatchable":false,
+                                 "reason":"PRE_ACCEPTANCE"}
+                                """))
+                .andExpect(status().isCreated());
+
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(audit -> "VEHICLE_CREATED".equals(audit.getAction()))
+                .singleElement()
+                .satisfies(audit -> assertThat(audit.getReason()).isEqualTo("PRE_ACCEPTANCE"));
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.idavy.drtops.domain.terminal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -58,9 +59,52 @@ class TerminalPersistenceConflictHandlerTest {
     }
 
     @Test
+    void mapsSemanticTerminalPhoneIdentityConstraintToHttpConflict() {
+        DataIntegrityViolationException postgres = violation(
+                "duplicate key violates unique constraint "
+                        + "\"uq_jt_terminals_terminal_phone_identity\"");
+        DataIntegrityViolationException h2 = violation(
+                "Unique index or primary key violation: "
+                        + "PUBLIC.UQ_JT_TERMINALS_TERMINAL_PHONE_IDENTITY_INDEX_D");
+
+        assertThatCode(() -> handler.handleDataIntegrity(postgres)).doesNotThrowAnyException();
+        assertThat(handler.handleDataIntegrity(postgres).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(handler.handleDataIntegrity(h2).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void mapsKnownRawTerminalAndVehicleIdentifierConstraintsToSafeHttpConflicts() {
+        java.util.Map<String, String> expectedMessages = java.util.Map.of(
+                "jt_terminals_terminal_phone_key", "terminal identity is already in use",
+                "jt_terminals_terminal_code_key", "terminal identity is already in use",
+                "vehicles_plate_number_key", "vehicle identifier is already in use");
+
+        expectedMessages.forEach((constraint, expectedMessage) -> {
+            DataIntegrityViolationException postgres = violation(
+                    "duplicate key violates unique constraint \"" + constraint + "\"");
+
+            assertThatCode(() -> handler.handleDataIntegrity(postgres)).doesNotThrowAnyException();
+            var response = handler.handleDataIntegrity(postgres);
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().data()).containsEntry("message", expectedMessage);
+        });
+    }
+
+    @Test
     void preservesOriginalSemanticsForUnrelatedIntegrityViolations() {
         DataIntegrityViolationException unrelated = violation(
                 "duplicate key violates unique constraint \"unrelated_unique_constraint\"");
+
+        assertThatThrownBy(() -> handler.handleDataIntegrity(unrelated)).isSameAs(unrelated);
+    }
+
+    @Test
+    void doesNotTreatKnownConstraintTextInsideAnUnrelatedKeyValueAsTheConstraintName() {
+        DataIntegrityViolationException unrelated = violation(
+                "duplicate key violates unique constraint \"unrelated_unique_constraint\" "
+                        + "Detail: Key (note)=(uq_jt_terminals_terminal_phone_identity)");
 
         assertThatThrownBy(() -> handler.handleDataIntegrity(unrelated)).isSameAs(unrelated);
     }

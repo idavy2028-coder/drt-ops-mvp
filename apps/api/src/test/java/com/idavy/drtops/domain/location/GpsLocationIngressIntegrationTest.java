@@ -6,29 +6,56 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.domain.audit.AuditLog;
+import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapabilityRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystem;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeState;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeStateRepository;
 import com.idavy.drtops.domain.terminal.JtGatewayAuditEventRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBinding;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBindingRepository;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
@@ -51,6 +78,11 @@ class GpsLocationIngressIntegrationTest {
     private static final UUID VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000001");
     private static final UUID OTHER_VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000002");
     private static final UUID TERMINAL_ID = UUID.fromString("bb000000-0000-0000-0000-000000000001");
+    private static final UUID OTHER_TERMINAL_ID = UUID.fromString("bb000000-0000-0000-0000-000000000002");
+    private static final UUID CONFIGURATION_ACTOR_ID =
+            UUID.fromString("cc000000-0000-0000-0000-000000000001");
+    private static final OffsetDateTime CONFIGURED_AT =
+            OffsetDateTime.parse("2026-08-12T00:00:00Z");
     private static final Instant POSTGRES_TIMESTAMPTZ_MIN = Instant.ofEpochSecond(-210_866_803_200L);
     private static final Instant POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE = Instant.ofEpochSecond(9_224_318_016_000L);
     @Autowired MockMvc mockMvc;
@@ -59,12 +91,24 @@ class GpsLocationIngressIntegrationTest {
     @Autowired VehicleLocationEventRepository eventRepository;
     @Autowired JtTerminalRepository terminalRepository;
     @Autowired JtTerminalVehicleBindingRepository bindingRepository;
+    @Autowired OnboardSystemRepository onboardSystemRepository;
+    @Autowired OnboardDeviceCapabilityRepository capabilityRepository;
+    @Autowired OnboardDeviceMembershipRepository membershipRepository;
+    @Autowired OnboardDeviceProtocolProfileRepository profileRepository;
+    @Autowired OnboardDeviceRoleAssignmentRepository roleRepository;
+    @Autowired OnboardSystemRuntimeStateRepository runtimeRepository;
+    @Autowired AuditLogRepository auditLogRepository;
     @Autowired JtGatewayAuditEventRepository gatewayAuditRepository;
     @Autowired JtGatewayIngressReceiptRepository receiptRepository;
     @Autowired VehicleLocationSnapshotService snapshotService;
     @Autowired PlatformTransactionManager transactionManager;
+    @Autowired EntityManager entityManager;
     @Autowired JdbcTemplate jdbc;
     @Autowired TestServiceAreaLocationChecker locationChecker;
+    @Autowired GatewayIngressRouter ingressRouter;
+    @Autowired FaultInjectingObjectMapper faultInjectingObjectMapper;
+    @Autowired ArbitrationPersistenceFailure arbitrationPersistenceFailure;
+    private UUID onboardSystemId;
 
     @DynamicPropertySource
     static void credential(DynamicPropertyRegistry registry) {
@@ -75,9 +119,15 @@ class GpsLocationIngressIntegrationTest {
     @BeforeEach
     void setUp() {
         locationChecker.reset();
+        arbitrationPersistenceFailure.reset();
         jdbc.update("delete from vehicle_alarm_outbox");
         jdbc.update("delete from vehicle_alarms");
-        receiptRepository.deleteAll(); gatewayAuditRepository.deleteAll(); eventRepository.deleteAll(); bindingRepository.deleteAll(); terminalRepository.deleteAll(); vehicleRepository.deleteAll();
+        receiptRepository.deleteAll(); gatewayAuditRepository.deleteAll(); eventRepository.deleteAll();
+        auditLogRepository.deleteAll();
+        roleRepository.deleteAll(); capabilityRepository.deleteAll();
+        profileRepository.deleteAll(); membershipRepository.deleteAll();
+        runtimeRepository.deleteAll(); onboardSystemRepository.deleteAll();
+        bindingRepository.deleteAll(); terminalRepository.deleteAll(); vehicleRepository.deleteAll();
         vehicleRepository.save(Vehicle.create(VEHICLE_ID, "甘G001", "Microbus", 8, "IDLE", "POINT(105.2421 35.2103)", "测试", true));
         vehicleRepository.save(Vehicle.create(OTHER_VEHICLE_ID, "甘G002", "Microbus", 8, "IDLE", "POINT(105.2421 35.2103)", "测试", true));
         JtTerminal terminal = terminalRepository.save(JtTerminal.preset(TERMINAL_ID, "GPS-PHONE", "GPS-001", "MFG", "M", "JT808_2019", "WGS84", UUID.randomUUID()));
@@ -86,6 +136,995 @@ class GpsLocationIngressIntegrationTest {
         org.springframework.test.util.ReflectionTestUtils.setField(
                 binding, "validFrom", OffsetDateTime.parse("2026-08-12T00:00:00Z"));
         bindingRepository.save(binding);
+        OnboardSystem system = onboardSystemRepository.save(OnboardSystem.create(
+                VEHICLE_ID, OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                CONFIGURATION_ACTOR_ID, CONFIGURED_AT));
+        onboardSystemId = system.getId();
+        runtimeRepository.save(OnboardSystemRuntimeState.initialize(onboardSystemId, CONFIGURED_AT));
+        addLocationMember(
+                onboardSystemId, TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        addActiveSafetyAuthority(onboardSystemId, TERMINAL_ID);
+        activateProfile(
+                TERMINAL_ID, 60, 10,
+                OnboardDeviceProtocolProfile.SafetyProfile.JSATL12_2017);
+    }
+
+    @Test
+    void storesBothDeviceEventsWithTheirOnboardSourceRoles() throws Exception {
+        terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", CONFIGURATION_ACTOR_ID));
+        addLocationMember(
+                onboardSystemId, OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP);
+
+        UUID primaryKey = UUID.randomUUID();
+        UUID backupKey = UUID.randomUUID();
+        CanonicalPositionIngress primary = provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"), "1".repeat(64));
+        CanonicalPositionIngress backup = provenancePayload(
+                OTHER_TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_BACKUP",
+                Instant.parse("2026-08-12T08:59:51Z"), "2".repeat(64));
+
+        postIngress(List.of(envelope(primaryKey, primary), envelope(backupKey, backup)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+
+        List<VehicleLocationEvent> events = eventRepository.findAllByOrderByDriverReportedAtAsc();
+        assertThat(events).extracting(VehicleLocationEvent::getTerminalId)
+                .containsExactly(TERMINAL_ID, OTHER_TERMINAL_ID);
+        assertThat(events).extracting(VehicleLocationEvent::getOnboardSystemId)
+                .containsOnly(onboardSystemId);
+        assertThat(events).extracting(VehicleLocationEvent::getVehicleId)
+                .containsOnly(VEHICLE_ID);
+        assertThat(events).extracting(VehicleLocationEvent::getSourceRole)
+                .containsExactly("LOCATION_PRIMARY", "LOCATION_BACKUP");
+        assertThat(events).extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isEqualTo(events.getFirst().getId());
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(locationSwitchAudits()).singleElement().satisfies(audit ->
+                assertThat(audit.getReason()).isEqualTo("PRIMARY_SELECTED"));
+    }
+
+    @Test
+    void persistsSeparatedPrimaryGatewayAndTerminalCursorsAcrossEntityManagerClear()
+            throws Exception {
+        installBackup();
+        Instant primaryGatewayAt = Instant.parse("2026-08-12T09:00:00Z");
+        Instant primaryTerminalAt = primaryGatewayAt.plusSeconds(29);
+        Instant backupGatewayAt = primaryGatewayAt.plusSeconds(30);
+        Instant backupTerminalAt = primaryGatewayAt.minusSeconds(29);
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                primaryTerminalAt,
+                primaryGatewayAt,
+                0x02L,
+                "1".repeat(64))))).andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID,
+                "LOCATION_BACKUP",
+                backupTerminalAt,
+                backupGatewayAt,
+                0x02L,
+                "2".repeat(64))))).andExpect(status().isOk());
+
+        OnboardSystemRuntimeState runtime = new TransactionTemplate(transactionManager)
+                .execute(status -> {
+                    entityManager.flush();
+                    entityManager.clear();
+                    return runtimeRepository.findById(onboardSystemId).orElseThrow();
+                });
+        assertThat(runtime.getLastPrimaryValidGatewayReceivedAt())
+                .isEqualTo(primaryGatewayAt.atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getPrimaryTerminalCursorAt())
+                .isEqualTo(primaryTerminalAt.atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getBackupTerminalCursorAt())
+                .isEqualTo(backupTerminalAt.atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getLastPrimaryValidAt())
+                .isEqualTo(primaryTerminalAt.atOffset(ZoneOffset.UTC));
+    }
+
+    @Test
+    void lateRejectedPrimaryDoesNotMutateRuntimeOrEnableBackupTakeover()
+            throws Exception {
+        installBackup();
+        OnboardSystemRuntimeState runtime = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        OffsetDateTime primaryGateway = OffsetDateTime.parse("2026-08-12T09:00:21Z");
+        OffsetDateTime primaryCursor = OffsetDateTime.parse("2026-08-12T09:00:20Z");
+        OffsetDateTime backupCursor = OffsetDateTime.parse("2026-08-12T09:00:20Z");
+        runtime.applyLocationArbitration(
+                OTHER_TERMINAL_ID,
+                true,
+                2,
+                primaryGateway,
+                primaryCursor,
+                backupCursor,
+                true,
+                OffsetDateTime.parse("2026-08-12T09:00:21Z"));
+        runtimeRepository.saveAndFlush(runtime);
+        entityManager.clear();
+        OnboardSystemRuntimeState before = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        long beforeVersion = before.getRuntimeVersion();
+        OffsetDateTime beforeUpdatedAt = before.getUpdatedAt();
+
+        CanonicalPositionIngress lateRejected = arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T09:00:19Z"),
+                Instant.parse("2026-08-12T09:00:22Z"),
+                0x02L,
+                "3".repeat(64),
+                BigDecimal.ZERO);
+        postIngress(List.of(envelope(UUID.randomUUID(), lateRejected)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"));
+
+        OnboardSystemRuntimeState after = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(after.getRuntimeVersion()).isEqualTo(beforeVersion);
+        assertThat(after.getUpdatedAt()).isEqualTo(beforeUpdatedAt);
+        assertThat(after.getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(after.isPrimaryEligible()).isTrue();
+        assertThat(after.getPrimaryRecoveryStreak()).isEqualTo(2);
+        assertThat(after.getLastPrimaryValidGatewayReceivedAt()).isEqualTo(primaryGateway);
+        assertThat(after.getPrimaryTerminalCursorAt()).isEqualTo(primaryCursor);
+        assertThat(after.getBackupTerminalCursorAt()).isEqualTo(backupCursor);
+    }
+
+    @Test
+    void terminalClockSkewDoesNotChangeThePlatformStalenessBoundary() throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                base.plusSeconds(29),
+                base,
+                0x02L,
+                "4".repeat(64),
+                new BigDecimal("105.2384988"))))).andExpect(status().isOk());
+        UUID backupKey = UUID.randomUUID();
+        postIngress(List.of(envelope(backupKey, arbitrationPayload(
+                OTHER_TERMINAL_ID,
+                "LOCATION_BACKUP",
+                base.plusSeconds(1),
+                base.plusSeconds(30),
+                0x02L,
+                "5".repeat(64),
+                new BigDecimal("105.2394988"))))).andExpect(status().isOk());
+
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        VehicleLocationEvent backupEvent = eventRepository
+                .findByIdempotencyKey(backupKey).orElseThrow();
+        assertThat(vehicle.getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(vehicle.getCurrentLocation()).isEqualTo(backupEvent.getLocation());
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, true);
+    }
+
+    @Test
+    void crossDeviceImpliedSpeedUsesGatewayIntervalNotTwoTerminalClocks()
+            throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                base.plusSeconds(29),
+                base,
+                0x02L,
+                "6".repeat(64),
+                new BigDecimal("105.2384988"))))).andExpect(status().isOk());
+        UUID backupKey = UUID.randomUUID();
+        postIngress(List.of(envelope(backupKey, arbitrationPayload(
+                OTHER_TERMINAL_ID,
+                "LOCATION_BACKUP",
+                base.plusSeconds(31),
+                base.plusSeconds(60),
+                0x02L,
+                "7".repeat(64),
+                new BigDecimal("105.2394988")))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].reasonCodes",
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem(
+                                "IMPLIED_SPEED_EXCEEDED"))))
+                .andExpect(jsonPath("$.data[0].reasonCodes",
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem(
+                                "OUT_OF_ORDER"))));
+
+        assertThat(eventRepository.findByIdempotencyKey(backupKey).orElseThrow()
+                .getQualityReasons()).doesNotContain(
+                        "IMPLIED_SPEED_EXCEEDED",
+                        "OUT_OF_ORDER");
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+    }
+
+    @Test
+    void recoveryWithIncreasingTerminalCursorAndEarlierGatewayDoesNotRegressRuntime()
+            throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base,
+                0x02L, "8".repeat(64))))).andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                base.plusSeconds(1), 0L, "9".repeat(64)))))
+                .andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(2),
+                base.plusSeconds(2), 0x02L, "a".repeat(64)))))
+                .andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(3),
+                base.plusSeconds(10), 0x02L, "b".repeat(64)))))
+                .andExpect(status().isOk());
+
+        UUID reorderedGatewayKey = UUID.randomUUID();
+        postIngress(List.of(envelope(reorderedGatewayKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                base.plusSeconds(5), 0x02L, "c".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        OnboardSystemRuntimeState runtime = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(runtime.getPrimaryRecoveryStreak()).isEqualTo(2);
+        assertThat(runtime.getLastPrimaryValidGatewayReceivedAt())
+                .isEqualTo(base.plusSeconds(10).atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getPrimaryTerminalCursorAt())
+                .isEqualTo(base.plusSeconds(4).atOffset(ZoneOffset.UTC));
+        assertThat(eventRepository.findByIdempotencyKey(reorderedGatewayKey)
+                .orElseThrow().isSnapshotApplied()).isFalse();
+    }
+
+    @Test
+    void usesIdleProfileIntervalAndAuditsTheExactThresholdSwitchWithSafeAliases() throws Exception {
+        installBackup();
+        replacePrimaryProfile(60, 20);
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "a".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(39),
+                base.plusSeconds(40), 0x02L, "b".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        List<VehicleLocationEvent> events = eventRepository.findAllByOrderByDriverReportedAtAsc();
+        assertThat(events).extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, true);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+
+        AuditLog staleSwitch = locationSwitchAudits().stream()
+                .filter(audit -> "PRIMARY_STALE".equals(audit.getReason()))
+                .findFirst().orElseThrow();
+        JsonNode metadata = objectMapper.readTree(staleSwitch.getMetadataJson());
+        assertThat(metadata.path("previousDeviceAlias").asText()).isEqualTo("device-d61e5c0ecb0f");
+        assertThat(metadata.path("nextDeviceAlias").asText()).isEqualTo("device-3cf85ecc7851");
+        assertThat(metadata.path("previousRole").asText()).isEqualTo("LOCATION_PRIMARY");
+        assertThat(metadata.path("nextRole").asText()).isEqualTo("LOCATION_BACKUP");
+        assertThat(metadata.path("reasonCode").asText()).isEqualTo("PRIMARY_STALE");
+        assertThat(metadata.path("switchedAt").asText()).isNotBlank();
+        assertThat(staleSwitch.getMetadataJson())
+                .doesNotContain(TERMINAL_ID.toString(), OTHER_TERMINAL_ID.toString(),
+                        "GPS-PHONE", "GPS-001", "甘G001");
+    }
+
+    @Test
+    void usesActiveProfileIntervalWhenVehicleIsNotIdle() throws Exception {
+        installBackup();
+        replacePrimaryProfile(60, 20);
+        jdbc.update("update vehicles set current_status = 'IN_SERVICE' where id = ?", VEHICLE_ID);
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "c".repeat(64)))))
+                .andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(118),
+                base.plusSeconds(119), 0x02L, "d".repeat(64)))))
+                .andExpect(status().isOk());
+
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false);
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(119),
+                base.plusSeconds(120), 0x02L, "e".repeat(64)))))
+                .andExpect(status().isOk());
+
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, true);
+    }
+
+    @Test
+    void quarantinedPrimaryFallsBackThenRequiresThreeReportsAndOneRecoveryAudit() throws Exception {
+        installBackup();
+        OnboardSystemRuntimeState runtime = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtimeRepository.saveAndFlush(runtime);
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        List<CanonicalPositionIngress> reports = List.of(
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "1".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                        base.plusSeconds(1), 0L, "2".repeat(64)),
+                arbitrationPayload(OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(2),
+                        base.plusSeconds(2), 0x02L, "3".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(3),
+                        base.plusSeconds(3), 0x02L, "4".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                        base.plusSeconds(4), 0x02L, "5".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(5),
+                        base.plusSeconds(5), 0x02L, "6".repeat(64)));
+        for (CanonicalPositionIngress report : reports) {
+            postIngress(List.of(envelope(UUID.randomUUID(), report)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        }
+
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, true, false, false, true);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        OnboardSystemRuntimeState recovered = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(recovered.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.isPrimaryEligible()).isTrue();
+        assertThat(recovered.getPrimaryRecoveryStreak()).isZero();
+        assertThat(recovered.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED", "PRIMARY_RECOVERED");
+    }
+
+    @Test
+    void keepsRejectedPrimaryIneligibleDuringRecoverySoBackupTakesOverThenRequiresANewThreeReportRun()
+            throws Exception {
+        installBackup();
+        OnboardSystemRuntimeState runtime = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtimeRepository.saveAndFlush(runtime);
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        List<CanonicalPositionIngress> beforeBackup = List.of(
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "a".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                        base.plusSeconds(1), 0L, "b".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(2),
+                        base.plusSeconds(2), 0x02L, "c".repeat(64)));
+        for (CanonicalPositionIngress report : beforeBackup) {
+            postIngress(List.of(envelope(UUID.randomUUID(), report)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        }
+
+        OnboardSystemRuntimeState afterRecoveryOne = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(afterRecoveryOne.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(afterRecoveryOne.isPrimaryEligible()).isFalse();
+        assertThat(afterRecoveryOne.getPrimaryRecoveryStreak()).isEqualTo(1);
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(3),
+                base.plusSeconds(3), 0x02L, "d".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        OnboardSystemRuntimeState afterBackup = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterBackup.getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(afterBackup.isPrimaryEligible()).isFalse();
+        assertThat(afterBackup.getPrimaryRecoveryStreak()).isZero();
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED");
+
+        List<CanonicalPositionIngress> failback = List.of(
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                        base.plusSeconds(4), 0x02L, "e".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(5),
+                        base.plusSeconds(5), 0x02L, "f".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(5),
+                        base.plusSeconds(5), 0x02L, "1".repeat(64)),
+                arbitrationPayload(TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(6),
+                        base.plusSeconds(6), 0x02L, "2".repeat(64)));
+        for (CanonicalPositionIngress report : failback) {
+            postIngress(List.of(envelope(UUID.randomUUID(), report)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        }
+
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, false, true, false, false, false, true);
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        OnboardSystemRuntimeState recovered = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(vehicle.getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.isPrimaryEligible()).isTrue();
+        assertThat(recovered.getPrimaryRecoveryStreak()).isZero();
+        assertThat(recovered.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED", "PRIMARY_RECOVERED");
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void rejectedPrimaryQualityChangesRuntimeSoFreshBackupCanTakeOverWithoutRejectedEvent() throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "7".repeat(64)))))
+                .andExpect(status().isOk());
+        CanonicalPositionIngress rejected = arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                base.plusSeconds(1), 0x02L, "8".repeat(64), BigDecimal.ZERO);
+        postIngress(List.of(envelope(UUID.randomUUID(), rejected)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_COORDINATE"));
+
+        assertThat(eventRepository.count()).isOne();
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow().isPrimaryEligible())
+                .isFalse();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(2),
+                base.plusSeconds(2), 0x02L, "9".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        assertThat(eventRepository.count()).isEqualTo(2);
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED", "PRIMARY_QUALITY_REJECTED");
+    }
+
+    @Test
+    void missingPrimaryProfileFailsClosedBeforeLocationOrConfigurationMutation() throws Exception {
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        profileRepository.deleteAll();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "a".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void missingRuntimeFailsClosedBeforeLocationOrConfigurationMutation() throws Exception {
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        runtimeRepository.deleteAll();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "b".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void rejectsSameTerminalPrimaryBackupTopologyWithoutMutatingLocationState() throws Exception {
+        roleRepository.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                onboardSystemId,
+                TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP,
+                "malformed same-terminal backup",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT.plusSeconds(1)));
+        OnboardSystemRuntimeState before = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = before.getRuntimeVersion();
+        OffsetDateTime runtimeUpdatedAt = before.getUpdatedAt();
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "3".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+        OnboardSystemRuntimeState after = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(after.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(after.getUpdatedAt()).isEqualTo(runtimeUpdatedAt);
+        assertThat(after.getActiveLocationTerminalId()).isNull();
+        assertThat(after.isPrimaryEligible()).isTrue();
+        assertThat(after.getPrimaryRecoveryStreak()).isZero();
+        assertThat(locationSwitchAudits()).isEmpty();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void rejectsPersistedRecoveryStreakAboveDomainMaximumWithoutRepairingRuntimeOrWritingLocation()
+            throws Exception {
+        jdbc.update("""
+                update onboard_system_runtime_state
+                set primary_recovery_streak = 3
+                where onboard_system_id = ?
+                """, onboardSystemId);
+        entityManager.clear();
+        OnboardSystemRuntimeState corrupted = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = corrupted.getRuntimeVersion();
+        OffsetDateTime runtimeUpdatedAt = corrupted.getUpdatedAt();
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+        UUID idempotencyKey = UUID.randomUUID();
+
+        postIngress(List.of(envelope(idempotencyKey, arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"),
+                0x02L,
+                "0".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]")
+                        .value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        JtGatewayIngressReceipt receipt = receiptRepository.findById(idempotencyKey).orElseThrow();
+        assertThat(receipt.getFinalStatus()).isEqualTo("REJECTED");
+        assertThat(receipt.getReasonCodes()).containsExactly("ONBOARD_PROVENANCE_MISMATCH");
+        assertNoLocationStateWasWritten();
+        OnboardSystemRuntimeState after = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(after.getPrimaryRecoveryStreak()).isEqualTo(3);
+        assertThat(after.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(after.getUpdatedAt()).isEqualTo(runtimeUpdatedAt);
+        assertThat(after.getActiveLocationTerminalId()).isNull();
+        assertThat(after.isPrimaryEligible()).isTrue();
+        assertThat(after.getLastPrimaryValidAt()).isNull();
+        assertThat(after.getLastLocationSwitchAt()).isNull();
+        assertThat(locationSwitchAudits()).isEmpty();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+    }
+
+    @Test
+    void replayDoesNotAdvanceRuntimeRecoveryOrDuplicateSwitchAudit() throws Exception {
+        UUID key = UUID.randomUUID();
+        GatewayIngressEnvelope report = envelope(key, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "c".repeat(64)));
+
+        postIngress(List.of(report)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        OnboardSystemRuntimeState afterFirst = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = afterFirst.getRuntimeVersion();
+        int recoveryStreak = afterFirst.getPrimaryRecoveryStreak();
+        long auditCount = locationSwitchAudits().size();
+
+        postIngress(List.of(report)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"));
+
+        OnboardSystemRuntimeState afterReplay = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterReplay.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(afterReplay.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(afterReplay.getPrimaryRecoveryStreak()).isEqualTo(recoveryStreak);
+        assertThat(locationSwitchAudits()).hasSize((int) auditCount);
+        assertThat(eventRepository.count()).isOne();
+    }
+
+    @Test
+    void singlePrimaryRecoversOnlyOnThirdReportWithoutFakePhysicalSwitchOrReplayProgress()
+            throws Exception {
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        UUID initialKey = UUID.randomUUID();
+        UUID invalidKey = UUID.randomUUID();
+        UUID recoveryOneKey = UUID.randomUUID();
+        UUID recoveryTwoKey = UUID.randomUUID();
+        UUID recoveryThreeKey = UUID.randomUUID();
+
+        postIngress(List.of(envelope(initialKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "4".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        postIngress(List.of(envelope(invalidKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                base.plusSeconds(1), 0L, "5".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        OnboardSystemRuntimeState invalidated = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(invalidated.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(invalidated.isPrimaryEligible()).isFalse();
+        assertThat(invalidated.getPrimaryRecoveryStreak()).isZero();
+
+        GatewayIngressEnvelope recoveryOne = envelope(recoveryOneKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(2),
+                base.plusSeconds(2), 0x02L, "6".repeat(64)));
+        postIngress(List.of(recoveryOne)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        OnboardSystemRuntimeState afterOne = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long versionAfterOne = afterOne.getRuntimeVersion();
+        assertThat(afterOne.isPrimaryEligible()).isFalse();
+        assertThat(afterOne.getPrimaryRecoveryStreak()).isEqualTo(1);
+        long auditCountAfterOne = locationSwitchAudits().size();
+
+        postIngress(List.of(recoveryOne)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"));
+        OnboardSystemRuntimeState afterReplay = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterReplay.getRuntimeVersion()).isEqualTo(versionAfterOne);
+        assertThat(afterReplay.isPrimaryEligible()).isFalse();
+        assertThat(afterReplay.getPrimaryRecoveryStreak()).isEqualTo(1);
+        assertThat(locationSwitchAudits()).hasSize((int) auditCountAfterOne);
+
+        postIngress(List.of(envelope(recoveryTwoKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(3),
+                base.plusSeconds(3), 0x02L, "7".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        OnboardSystemRuntimeState afterTwo = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(afterTwo.isPrimaryEligible()).isFalse();
+        assertThat(afterTwo.getPrimaryRecoveryStreak()).isEqualTo(2);
+
+        postIngress(List.of(envelope(recoveryThreeKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                base.plusSeconds(4), 0x02L, "8".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        List<VehicleLocationEvent> events = eventRepository.findAllByOrderByDriverReportedAtAsc();
+        assertThat(events).extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, false, false, false, true);
+        VehicleLocationEvent recoveredEvent = eventRepository
+                .findByIdempotencyKey(recoveryThreeKey).orElseThrow();
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isEqualTo(recoveredEvent.getId());
+        OnboardSystemRuntimeState recovered = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(recovered.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(recovered.isPrimaryEligible()).isTrue();
+        assertThat(recovered.getPrimaryRecoveryStreak()).isZero();
+        assertThat(locationSwitchAudits()).extracting(AuditLog::getReason)
+                .containsExactly("PRIMARY_SELECTED");
+    }
+
+    @Test
+    void concurrentPrimaryAndBackupProduceOneMonotonicSnapshotAndConsistentRuntime() throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        GatewayIngressEnvelope primary = envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base, 0x02L, "d".repeat(64)));
+        GatewayIngressEnvelope backup = envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(1),
+                base.plusSeconds(1), 0x02L, "e".repeat(64)));
+        CountDownLatch workersReady = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<GpsLocationIngressService.Result> primaryResult = executor.submit(
+                    () -> ingestAfter(workersReady, start, primary));
+            Future<GpsLocationIngressService.Result> backupResult = executor.submit(
+                    () -> ingestAfter(workersReady, start, backup));
+            assertThat(workersReady.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            assertThat(primaryResult.get(20, TimeUnit.SECONDS).status()).isEqualTo("ACCEPTED");
+            assertThat(backupResult.get(20, TimeUnit.SECONDS).status()).isEqualTo("ACCEPTED");
+        }
+
+        List<VehicleLocationEvent> events = eventRepository.findAll();
+        VehicleLocationEvent applied = events.stream()
+                .filter(VehicleLocationEvent::isSnapshotApplied)
+                .reduce((first, second) -> {
+                    throw new AssertionError("more than one concurrent event applied the snapshot");
+                })
+                .orElseThrow();
+        assertThat(events).hasSize(2);
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        OnboardSystemRuntimeState runtimeState = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        assertThat(vehicle.getCurrentLocationEventId()).isEqualTo(applied.getId());
+        assertThat(vehicle.getCurrentLocationTerminalId()).isEqualTo(applied.getTerminalId());
+        assertThat(runtimeState.getActiveLocationTerminalId()).isEqualTo(applied.getTerminalId());
+        assertThat(locationSwitchAudits()).hasSize(1);
+    }
+
+    @Test
+    void gpsEventStartsUnappliedAndOnlyEligibleQualityCanBeMarkedSnapshotApplied() {
+        CanonicalPositionIngress ingress = arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"), 0x02L, "f".repeat(64));
+        CoordinateTransformer.StandardizedCoordinate coordinate =
+                new CoordinateTransformer.StandardizedCoordinate(
+                        new BigDecimal("105.2384988"), new BigDecimal("35.2109657"),
+                        "GCJ02", "TEST_TRANSFORM");
+        VehicleLocationEvent eligible = VehicleLocationEvent.recordGps(
+                VEHICLE_ID, TERMINAL_ID, ingress, coordinate,
+                new LocationQualityDecision(LocationQualityStatus.GOOD, Set.of(), true, true),
+                UUID.randomUUID(), ingress.payloadDigest(), CONFIGURED_AT,
+                ingress.gatewayReceivedAt(), false);
+        VehicleLocationEvent quarantined = VehicleLocationEvent.recordGps(
+                VEHICLE_ID, TERMINAL_ID, ingress, coordinate,
+                new LocationQualityDecision(
+                        LocationQualityStatus.QUARANTINED,
+                        Set.of(LocationQualityReason.POSITION_INVALID), true, false),
+                UUID.randomUUID(), "0".repeat(64), CONFIGURED_AT,
+                ingress.gatewayReceivedAt(), false);
+
+        assertThat(eligible.isSnapshotApplied()).isFalse();
+        eligible.markSnapshotApplied();
+        eligible.markSnapshotApplied();
+        assertThat(eligible.isSnapshotApplied()).isTrue();
+        assertThatThrownBy(quarantined::markSnapshotApplied)
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(quarantined.isSnapshotApplied()).isFalse();
+    }
+
+    @Test
+    void runtimeArbitrationValidatesBeforeAtomicMutationAndPreservesWarnings() {
+        OnboardSystemRuntimeState runtime = OnboardSystemRuntimeState.initialize(
+                onboardSystemId, CONFIGURED_AT);
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtime.applyLocationArbitration(
+                TERMINAL_ID,
+                true,
+                0,
+                CONFIGURED_AT.plusSeconds(2),
+                CONFIGURED_AT.plusSeconds(2),
+                null,
+                true,
+                CONFIGURED_AT.plusSeconds(3));
+
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(runtime.getLastPrimaryValidAt()).isEqualTo(CONFIGURED_AT.plusSeconds(2));
+        assertThat(runtime.getLastLocationSwitchAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+
+        assertThatThrownBy(() -> runtime.applyLocationArbitration(
+                OTHER_TERMINAL_ID,
+                false,
+                -1,
+                CONFIGURED_AT.plusSeconds(1),
+                CONFIGURED_AT.plusSeconds(1),
+                null,
+                true,
+                CONFIGURED_AT.plusSeconds(4)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(runtime.isPrimaryEligible()).isTrue();
+        assertThat(runtime.getPrimaryRecoveryStreak()).isZero();
+        assertThat(runtime.getLastPrimaryValidAt()).isEqualTo(CONFIGURED_AT.plusSeconds(2));
+        assertThat(runtime.getLastLocationSwitchAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getUpdatedAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+
+    }
+
+    @ParameterizedTest(name = "runtime apply rejects recovery streak {0}")
+    @ValueSource(ints = {3, Integer.MAX_VALUE})
+    void runtimeArbitrationRejectsRecoveryStreakAboveTwoWithoutMutation(int invalidStreak) {
+        OnboardSystemRuntimeState runtime = OnboardSystemRuntimeState.initialize(
+                UUID.randomUUID(), CONFIGURED_AT);
+        runtime.replaceWarningCodes(List.of("UNRELATED_WARNING"), CONFIGURED_AT.plusSeconds(1));
+        runtime.applyLocationArbitration(
+                TERMINAL_ID,
+                true,
+                0,
+                CONFIGURED_AT.plusSeconds(2),
+                CONFIGURED_AT.plusSeconds(2),
+                null,
+                true,
+                CONFIGURED_AT.plusSeconds(3));
+        long runtimeVersion = runtime.getRuntimeVersion();
+
+        assertThatThrownBy(() -> runtime.applyLocationArbitration(
+                TERMINAL_ID,
+                true,
+                invalidStreak,
+                CONFIGURED_AT.plusSeconds(2),
+                CONFIGURED_AT.plusSeconds(2),
+                null,
+                false,
+                CONFIGURED_AT.plusSeconds(4)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("primaryRecoveryStreak");
+        assertThat(runtime.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(runtime.isPrimaryEligible()).isTrue();
+        assertThat(runtime.getPrimaryRecoveryStreak()).isZero();
+        assertThat(runtime.getLastPrimaryValidAt()).isEqualTo(CONFIGURED_AT.plusSeconds(2));
+        assertThat(runtime.getLastLocationSwitchAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getUpdatedAt()).isEqualTo(CONFIGURED_AT.plusSeconds(3));
+        assertThat(runtime.getWarningCodes()).containsExactly("UNRELATED_WARNING");
+    }
+
+    @Test
+    void recoveryCounterRejectsIncrementFromTwoWithoutMutation() {
+        OnboardSystemRuntimeState runtime = OnboardSystemRuntimeState.initialize(
+                UUID.randomUUID(), CONFIGURED_AT);
+        assertThat(runtime.recordPrimaryRecovery()).isEqualTo(1);
+        assertThat(runtime.recordPrimaryRecovery()).isEqualTo(2);
+        long runtimeVersion = runtime.getRuntimeVersion();
+        OffsetDateTime updatedAt = runtime.getUpdatedAt();
+
+        assertThatThrownBy(runtime::recordPrimaryRecovery)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("primaryRecoveryStreak");
+        assertThat(runtime.getPrimaryRecoveryStreak()).isEqualTo(2);
+        assertThat(runtime.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(runtime.getUpdatedAt()).isEqualTo(updatedAt);
+        assertThat(runtime.getActiveLocationTerminalId()).isNull();
+        assertThat(runtime.isPrimaryEligible()).isTrue();
+        assertThat(runtime.getLastPrimaryValidAt()).isNull();
+        assertThat(runtime.getLastLocationSwitchAt()).isNull();
+        assertThat(runtime.getWarningCodes()).isEmpty();
+    }
+
+    @Test
+    void replayKeepsOneEventWithItsOriginalProvenance() throws Exception {
+        UUID key = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelope(key, provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"), "3".repeat(64)));
+
+        postIngress(List.of(position)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        postIngress(List.of(position)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"));
+
+        assertThat(eventRepository.findAll()).singleElement().satisfies(event -> {
+            assertThat(event.getTerminalId()).isEqualTo(TERMINAL_ID);
+            assertThat(event.getOnboardSystemId()).isEqualTo(onboardSystemId);
+            assertThat(event.getVehicleId()).isEqualTo(VEHICLE_ID);
+            assertThat(event.getSourceRole()).isEqualTo("LOCATION_PRIMARY");
+        });
+    }
+
+    @Test
+    void persistsNullableAlarmAndStatusBitsWithoutLosingProvenance() throws Exception {
+        CanonicalPositionIngress base = provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"), "9".repeat(64));
+        CanonicalPositionIngress nullableBits = new CanonicalPositionIngress(
+                base.terminalId(),
+                base.onboardSystemId(),
+                base.vehicleId(),
+                base.sourceRole(),
+                base.protocolVersion(),
+                base.messageSerialNo(),
+                base.rawLongitude(),
+                base.rawLatitude(),
+                base.rawCoordinateSystem(),
+                base.terminalLocatedAt(),
+                base.gatewayReceivedAt(),
+                null,
+                null,
+                base.speedKph(),
+                base.directionDegrees(),
+                base.altitudeMeters(),
+                base.satelliteCount(),
+                base.payloadDigest());
+
+        postIngress(List.of(envelope(UUID.randomUUID(), nullableBits)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        java.util.Map<String, Object> stored = jdbc.queryForMap(
+                "select onboard_system_id, source_role, alarm_bits, status_bits "
+                        + "from vehicle_location_events");
+        assertThat(stored.get("ONBOARD_SYSTEM_ID")).isEqualTo(onboardSystemId);
+        assertThat(stored.get("SOURCE_ROLE")).isEqualTo("LOCATION_PRIMARY");
+        assertThat(stored.get("ALARM_BITS")).isNull();
+        assertThat(stored.get("STATUS_BITS")).isNull();
+    }
+
+    @Test
+    void rejectsWrongSystemVehicleAndRoleClaimsWithoutWritingLocationState() throws Exception {
+        List<GatewayIngressEnvelope> spoofed = List.of(
+                envelope(UUID.randomUUID(), provenancePayload(
+                        TERMINAL_ID, UUID.randomUUID(), VEHICLE_ID, "LOCATION_PRIMARY",
+                        Instant.parse("2026-08-12T08:59:50Z"), "4".repeat(64))),
+                envelope(UUID.randomUUID(), provenancePayload(
+                        TERMINAL_ID, onboardSystemId, OTHER_VEHICLE_ID, "LOCATION_PRIMARY",
+                        Instant.parse("2026-08-12T08:59:51Z"), "5".repeat(64))),
+                envelope(UUID.randomUUID(), provenancePayload(
+                        TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_BACKUP",
+                        Instant.parse("2026-08-12T08:59:52Z"), "6".repeat(64))));
+
+        postIngress(spoofed).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+
+        assertNoLocationStateWasWritten();
+    }
+
+    @Test
+    void rejectsLocationRoleOwnedByTheOtherPhysicalDevice() throws Exception {
+        terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", CONFIGURATION_ACTOR_ID));
+        addLocationMember(
+                onboardSystemId, OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP);
+
+        GatewayIngressEnvelope spoofed = envelope(UUID.randomUUID(), provenancePayload(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "LOCATION_BACKUP",
+                Instant.parse("2026-08-12T08:59:50Z"), "7".repeat(64)));
+
+        postIngress(List.of(spoofed)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+        assertNoLocationStateWasWritten();
+    }
+
+    @Test
+    void rejectsRemovedMembershipBeforeWritingLocationState() throws Exception {
+        OnboardDeviceMembership membership = membershipRepository.findActiveByTerminalId(TERMINAL_ID)
+                .orElseThrow();
+        membership.remove(
+                "remove GPS member", CONFIGURATION_ACTOR_ID, CONFIGURED_AT.plusMinutes(1));
+        membershipRepository.saveAndFlush(membership);
+
+        assertCompositeAuthorityRejected();
+    }
+
+    @Test
+    void rejectsInactiveSystemBeforeWritingLocationState() throws Exception {
+        OnboardSystem system = onboardSystemRepository.findById(onboardSystemId).orElseThrow();
+        system.suspend(CONFIGURATION_ACTOR_ID, CONFIGURED_AT.plusMinutes(1));
+        onboardSystemRepository.saveAndFlush(system);
+
+        assertCompositeAuthorityRejected();
+    }
+
+    @Test
+    void rejectsCompositeMemberWithoutAnActiveLocationRole() throws Exception {
+        OnboardDeviceRoleAssignment role = roleRepository.findActiveByOnboardSystemIdAndRole(
+                onboardSystemId, OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY).orElseThrow();
+        role.revoke("remove location role", CONFIGURATION_ACTOR_ID, CONFIGURED_AT.plusMinutes(1));
+        roleRepository.saveAndFlush(role);
+
+        assertCompositeAuthorityRejected();
     }
 
     @Test
@@ -94,9 +1133,11 @@ class GpsLocationIngressIntegrationTest {
         Instant envelopeReceivedAt = Instant.parse("2026-08-12T09:00:00Z");
         GatewayIngressEnvelope quarantined = envelopeAt(positionKey, VEHICLE_ID, 0,
                 "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), envelopeReceivedAt);
-        GatewayIngressEnvelope adas = alarmEnvelope(positionKey, "ADAS", 1, "FORWARD_COLLISION", "1".repeat(64),
+        GatewayIngressEnvelope adas = alarmEnvelope(onboardSystemId, positionKey,
+                "ADAS", 1, "FORWARD_COLLISION", "1".repeat(64),
                 Instant.parse("2026-08-12T01:00:00Z"), envelopeReceivedAt);
-        GatewayIngressEnvelope dms = alarmEnvelope(positionKey, "DMS", 2, "PHONE", "2".repeat(64),
+        GatewayIngressEnvelope dms = alarmEnvelope(onboardSystemId, positionKey,
+                "DMS", 2, "PHONE", "2".repeat(64),
                 Instant.parse("2026-08-12T01:00:00Z"), envelopeReceivedAt);
 
         postIngress(List.of(quarantined, adas, dms)).andExpect(status().isOk())
@@ -122,25 +1163,23 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
-    void preservesAlarmFactsWithRejectedQualityWhenThePositionCannotBePersisted() throws Exception {
+    void rejectsAnAlarmWhenItsPositionCannotBePersisted() throws Exception {
         UUID positionKey = UUID.randomUUID();
         Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
         GatewayIngressEnvelope rejected = envelopeAt(positionKey, VEHICLE_ID, 0x02,
                 "181.0000000", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
-        GatewayIngressEnvelope alarm = alarmEnvelope(positionKey, "ADAS", 1, "FORWARD_COLLISION", "3".repeat(64),
+        GatewayIngressEnvelope alarm = alarmEnvelope(onboardSystemId, positionKey,
+                "ADAS", 1, "FORWARD_COLLISION", "3".repeat(64),
                 receivedAt, receivedAt);
 
         postIngress(List.of(rejected, alarm)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("REJECTED"));
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"));
 
         assertThat(eventRepository.findByIdempotencyKey(positionKey)).isEmpty();
-        assertThat(jdbc.queryForObject("select location_event_id from vehicle_alarms", UUID.class)).isNull();
-        assertThat(jdbc.queryForObject("select location_quality_status from vehicle_alarms", String.class))
-                .isEqualTo("REJECTED");
-        assertThat(jdbc.queryForObject(
-                "select cast(location_quality_reasons as varchar) from vehicle_alarms", String.class))
-                .contains("INVALID_COORDINATE");
-        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(1);
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
     }
 
     @Test
@@ -165,12 +1204,507 @@ class GpsLocationIngressIntegrationTest {
 
         assertThat(eventRepository.findByIdempotencyKey(positionKey)).isPresent();
         assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(event -> {
+            assertThat(event.getIdempotencyKey()).isEqualTo(auditKey);
             assertThat(event.getTerminalId()).isEqualTo(TERMINAL_ID);
             assertThat(event.getVehicleId()).isEqualTo(VEHICLE_ID);
             assertThat(event.getReasonCode()).isEqualTo("ACTIVE_SAFETY_EXTENSION_REJECTED");
             assertThat(event.getMessageId()).isEqualTo(0x0200);
         });
         assertThat(receiptRepository.findById(auditKey)).isPresent();
+    }
+
+    @Test
+    void returnsOneOrderedResultPerMixedItemWithoutLettingOneBadAlarmHideItsNeighbors() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID firstPositionKey = UUID.randomUUID();
+        UUID badAlarmKey = UUID.randomUUID();
+        UUID auditKey = UUID.randomUUID();
+        UUID attachmentKey = UUID.randomUUID();
+        UUID secondPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope firstPosition = envelopeAt(firstPositionKey, VEHICLE_ID, 0x02,
+                "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope badAlarm = new GatewayIngressEnvelope(
+                1, badAlarmKey, "ALARM", receivedAt, "{");
+        GatewayIngressEnvelope audit = protocolAuditEnvelope(auditKey, receivedAt);
+        GatewayIngressEnvelope attachment = new GatewayIngressEnvelope(
+                1, attachmentKey, "ATTACHMENT_METADATA", receivedAt, "{}");
+        GatewayIngressEnvelope secondPosition = envelopeAt(secondPositionKey, VEHICLE_ID, 0x02,
+                "105.2384989", "35.2109658", Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        var response = postIngress(List.of(
+                firstPosition, badAlarm, audit, attachment, secondPosition))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(data).hasSize(5);
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("idempotencyKey").asText()).toList())
+                .containsExactly(firstPositionKey.toString(), badAlarmKey.toString(), auditKey.toString(),
+                        attachmentKey.toString(), secondPositionKey.toString());
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("ACCEPTED", "REJECTED", "ACCEPTED", "REJECTED", "ACCEPTED");
+        assertThat(data.get(1).path("reasonCodes").get(0).asText()).isEqualTo("INVALID_PAYLOAD");
+        assertThat(data.get(3).path("reasonCodes").get(0).asText())
+                .isEqualTo("ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE");
+        postIngress(List.of(attachment)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]")
+                        .value("ATTACHMENT_METADATA_CONTRACT_UNAVAILABLE"));
+        postIngress(List.of(badAlarm)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"));
+        assertThat(eventRepository.findByIdempotencyKey(firstPositionKey)).isPresent();
+        assertThat(eventRepository.findByIdempotencyKey(secondPositionKey)).isPresent();
+    }
+
+    @Test
+    void reportsAlarmAndProtocolAuditAcceptanceThenTheirOwnReplaySemantics() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID positionKey = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelopeAt(positionKey, VEHICLE_ID, 0x02,
+                "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope alarm = alarmEnvelope(onboardSystemId, positionKey,
+                "ADAS", 1, "FORWARD_COLLISION",
+                "7".repeat(64), receivedAt, receivedAt);
+        GatewayIngressEnvelope alarmBusinessReplay = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", receivedAt, alarm.payloadJson());
+        GatewayIngressEnvelope audit = protocolAuditEnvelope(UUID.randomUUID(), receivedAt);
+
+        postIngress(List.of(position, alarm, audit)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(3))
+                .andExpect(jsonPath("$.data[0].idempotencyKey").value(positionKey.toString()))
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].idempotencyKey").value(alarm.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[2].idempotencyKey").value(audit.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[2].status").value("ACCEPTED"));
+
+        postIngress(List.of(alarmBusinessReplay, audit)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].idempotencyKey")
+                        .value(alarmBusinessReplay.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"))
+                .andExpect(jsonPath("$.data[1].idempotencyKey").value(audit.idempotencyKey().toString()))
+                .andExpect(jsonPath("$.data[1].status").value("REPLAYED"));
+
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarms", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void acceptsTheGatewayLocationKindWithTheExistingGpsSemantics() throws Exception {
+        UUID key = UUID.randomUUID();
+        GatewayIngressEnvelope historicalPosition = envelope(
+                key, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+        GatewayIngressEnvelope gatewayLocation = new GatewayIngressEnvelope(
+                historicalPosition.schemaVersion(), historicalPosition.idempotencyKey(), "LOCATION",
+                historicalPosition.gatewayReceivedAt(), historicalPosition.payloadJson());
+
+        postIngress(List.of(gatewayLocation)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].idempotencyKey").value(key.toString()))
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        assertThat(eventRepository.findByIdempotencyKey(key)).isPresent();
+    }
+
+    @Test
+    void rejectsAnUncorrelatableBatchBeforePersistingItsEarlierValidItem() throws Exception {
+        GatewayIngressEnvelope valid = envelope(
+                UUID.randomUUID(), VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+        GatewayIngressEnvelope missingKey = new GatewayIngressEnvelope(
+                1, null, "UNKNOWN", Instant.parse("2026-08-12T09:00:00Z"), "{}");
+
+        postIngress(List.of(valid, missingKey)).andExpect(status().isBadRequest());
+
+        assertThat(eventRepository.findAll()).isEmpty();
+        assertThat(receiptRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void rejectsCrossVehicleAcceptedAndRejectedPositionDependenciesWithoutHidingANeighbor() throws Exception {
+        JtTerminal otherTerminal = terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", UUID.randomUUID()));
+        JtTerminalVehicleBinding otherBinding = JtTerminalVehicleBinding.bind(
+                otherTerminal, OTHER_VEHICLE_ID, "测试绑定2", UUID.randomUUID());
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                otherBinding, "validFrom", OffsetDateTime.parse("2026-08-12T00:00:00Z"));
+        bindingRepository.save(otherBinding);
+
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID acceptedPositionKey = UUID.randomUUID();
+        UUID rejectedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope acceptedPosition = envelopeAt(
+                acceptedPositionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope rejectedPosition = envelopeAt(
+                rejectedPositionKey, VEHICLE_ID, 0x02, "181.0000000", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope crossAccepted = alarmFor(
+                OTHER_TERMINAL_ID, onboardSystemId, OTHER_VEHICLE_ID, acceptedPositionKey,
+                "ADAS", 1, "FORWARD_COLLISION", "8".repeat(64), receivedAt);
+        GatewayIngressEnvelope crossRejected = alarmFor(
+                OTHER_TERMINAL_ID, onboardSystemId, OTHER_VEHICLE_ID, rejectedPositionKey,
+                "DMS", 2, "PHONE", "9".repeat(64), receivedAt);
+        UUID manualPositionKey = UUID.randomUUID();
+        OffsetDateTime manualAt = OffsetDateTime.parse("2026-08-12T08:59:50Z");
+        VehicleLocationEvent manual = VehicleLocationEvent.record(
+                VEHICLE_ID, null, null, null, LocationEventType.MANUAL_REPORT,
+                LocationSource.MANUAL_DISPATCHER,
+                "POINT(105.2384988 35.2109657)", new BigDecimal("105.2384988"),
+                new BigDecimal("35.2109657"), "GCJ02", "人工测试位置", manualAt,
+                manualAt.plusSeconds(1), UUID.randomUUID(), "测试", null, null,
+                manualPositionKey, "e".repeat(64), true, false);
+        org.springframework.test.util.ReflectionTestUtils.setField(manual, "terminalId", TERMINAL_ID);
+        eventRepository.saveAndFlush(manual);
+        GatewayIngressEnvelope manualDependency = alarmFor(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, manualPositionKey,
+                "ADAS", 3, "LANE_DEPARTURE", "e".repeat(64), receivedAt);
+        UUID wrongKindKey = UUID.randomUUID();
+        GatewayIngressEnvelope attachment = new GatewayIngressEnvelope(
+                1, wrongKindKey, "ATTACHMENT_METADATA", receivedAt, "{}");
+        postIngress(List.of(attachment)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"));
+        JtGatewayIngressReceipt wrongKindReceipt = receiptRepository.findById(wrongKindKey).orElseThrow();
+        wrongKindReceipt.identify("ATTACHMENT_METADATA", TERMINAL_ID, VEHICLE_ID);
+        receiptRepository.saveAndFlush(wrongKindReceipt);
+        GatewayIngressEnvelope wrongKindDependency = alarmFor(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, wrongKindKey,
+                "DMS", 4, "DISTRACTION", "f".repeat(64), receivedAt);
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(acceptedPosition, rejectedPosition, crossAccepted, crossRejected,
+                        manualDependency, wrongKindDependency, neighbor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[3].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[3].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[4].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[4].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[5].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[5].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[6].status").value("ACCEPTED"));
+        postIngress(List.of(crossAccepted, crossRejected)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"));
+
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsSameVehicleRejectedAndMissingPositionsBeforeCreatingAnAlarm() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID rejectedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope rejectedPosition = envelopeAt(
+                rejectedPositionKey, VEHICLE_ID, 0x02, "181", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope rejectedDependency = alarmEnvelope(
+                onboardSystemId, rejectedPositionKey, "ADAS", 11,
+                "FORWARD_COLLISION", "1".repeat(64), receivedAt, receivedAt);
+        GatewayIngressEnvelope missingDependency = alarmEnvelope(
+                onboardSystemId, UUID.randomUUID(), "DMS", 12,
+                "PHONE", "2".repeat(64), receivedAt, receivedAt);
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(rejectedPosition, rejectedDependency, missingDependency, neighbor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("POSITION_DEPENDENCY_MISMATCH"))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].reasonCodes[0]").value("POSITION_INGRESS_NOT_SETTLED"))
+                .andExpect(jsonPath("$.data[3].status").value("ACCEPTED"));
+
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsEveryUntrustedPositionBeforeEndingAnOpenAlarm() throws Exception {
+        JtTerminal otherTerminal = terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", UUID.randomUUID()));
+        JtTerminalVehicleBinding otherBinding = JtTerminalVehicleBinding.bind(
+                otherTerminal, OTHER_VEHICLE_ID, "测试绑定2", UUID.randomUUID());
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                otherBinding, "validFrom", OffsetDateTime.parse("2026-08-12T00:00:00Z"));
+        bindingRepository.save(otherBinding);
+        OnboardSystem otherSystem = onboardSystemRepository.save(OnboardSystem.create(
+                OTHER_VEHICLE_ID,
+                OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+        runtimeRepository.save(OnboardSystemRuntimeState.initialize(
+                otherSystem.getId(), CONFIGURED_AT));
+        addLocationMember(
+                otherSystem.getId(), OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
+        activateProfile(
+                OTHER_TERMINAL_ID, 60, 10,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE);
+
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID trustedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope trustedPosition = envelopeAt(
+                trustedPositionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        UUID rejectedPositionKey = UUID.randomUUID();
+        GatewayIngressEnvelope rejectedPosition = envelopeAt(
+                rejectedPositionKey, VEHICLE_ID, 0x02, "181", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        UUID crossVehiclePositionKey = UUID.randomUUID();
+        CanonicalPositionIngress crossVehiclePayload = provenancePayload(
+                OTHER_TERMINAL_ID,
+                otherSystem.getId(),
+                OTHER_VEHICLE_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"),
+                "a".repeat(64));
+        GatewayIngressEnvelope crossVehiclePosition = new GatewayIngressEnvelope(
+                1, crossVehiclePositionKey, "POSITION", receivedAt,
+                objectMapper.writeValueAsString(crossVehiclePayload));
+        UUID manualPositionKey = UUID.randomUUID();
+        OffsetDateTime manualAt = OffsetDateTime.parse("2026-08-12T08:59:50Z");
+        VehicleLocationEvent manual = VehicleLocationEvent.record(
+                VEHICLE_ID, null, null, null, LocationEventType.MANUAL_REPORT,
+                LocationSource.MANUAL_DISPATCHER,
+                "POINT(105.2384988 35.2109657)", new BigDecimal("105.2384988"),
+                new BigDecimal("35.2109657"), "GCJ02", "人工测试位置", manualAt,
+                manualAt.plusSeconds(1), UUID.randomUUID(), "测试", null, null,
+                manualPositionKey, "e".repeat(64), true, false);
+        org.springframework.test.util.ReflectionTestUtils.setField(manual, "terminalId", TERMINAL_ID);
+        eventRepository.saveAndFlush(manual);
+        UUID wrongKindKey = UUID.randomUUID();
+        GatewayIngressEnvelope wrongKind = new GatewayIngressEnvelope(
+                1, wrongKindKey, "ATTACHMENT_METADATA", receivedAt, "{}");
+
+        GatewayIngressEnvelope start = alarmEnvelope(
+                onboardSystemId, trustedPositionKey, "ADAS", 21,
+                "FORWARD_COLLISION", "3".repeat(64),
+                receivedAt, receivedAt);
+        postIngress(List.of(trustedPosition, rejectedPosition, crossVehiclePosition, wrongKind, start))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[3].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[4].status").value("ACCEPTED"));
+        JtGatewayIngressReceipt wrongKindReceipt = receiptRepository.findById(wrongKindKey).orElseThrow();
+        wrongKindReceipt.identify("ATTACHMENT_METADATA", TERMINAL_ID, VEHICLE_ID);
+        receiptRepository.saveAndFlush(wrongKindReceipt);
+
+        List<UUID> untrustedPositions = List.of(
+                rejectedPositionKey, crossVehiclePositionKey, manualPositionKey,
+                wrongKindKey, UUID.randomUUID());
+        List<GatewayIngressEnvelope> ends = new ArrayList<>();
+        for (int index = 0; index < untrustedPositions.size(); index++) {
+            com.fasterxml.jackson.databind.node.ObjectNode payload =
+                    (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(start.payloadJson());
+            payload.put("state", "END");
+            payload.put("occurredAt", receivedAt.plusSeconds(index + 1).toString());
+            payload.put("positionIdempotencyKey", untrustedPositions.get(index).toString());
+            payload.put("extensionPayloadDigest", Integer.toString(index + 4).repeat(64));
+            ends.add(new GatewayIngressEnvelope(
+                    1, UUID.randomUUID(), "ALARM", receivedAt.plusSeconds(index + 1),
+                    objectMapper.writeValueAsString(payload)));
+        }
+
+        var response = postIngress(ends).andExpect(status().isOk()).andReturn();
+        var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED");
+        assertThat(java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(item -> item.path("reasonCodes").get(0).asText()).toList())
+                .containsExactly(
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_DEPENDENCY_MISMATCH",
+                        "POSITION_INGRESS_NOT_SETTLED");
+        assertThat(apiAlarmCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select ended_at from vehicle_alarms", OffsetDateTime.class)).isNull();
+    }
+
+    @Test
+    void rejectsAnEndBeforeItsStartWithoutHidingTheNextValidItem() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID positionKey = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelopeAt(
+                positionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope start = alarmEnvelope(
+                onboardSystemId, positionKey, "ADAS", 1,
+                "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
+        postIngress(List.of(position, start)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+        com.fasterxml.jackson.databind.node.ObjectNode endPayload =
+                (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(start.payloadJson());
+        endPayload.put("state", "END");
+        endPayload.put("occurredAt", "2026-08-12T08:59:49Z");
+        endPayload.put("extensionPayloadDigest", "b".repeat(64));
+        GatewayIngressEnvelope earlyEnd = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", receivedAt, objectMapper.writeValueAsString(endPayload));
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(earlyEnd, neighbor)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+        postIngress(List.of(earlyEnd)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"));
+
+        assertThat(jdbc.queryForObject(
+                "select ended_at from vehicle_alarms", OffsetDateTime.class)).isNull();
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsAnEarlyEndAfterTheLifecycleClosedAndOnlyReplaysALegalEnd() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        Instant actualStartAt = Instant.parse("2026-08-12T08:59:50Z");
+        Instant endAt = receivedAt.plusSeconds(10);
+        UUID positionKey = UUID.randomUUID();
+        GatewayIngressEnvelope position = envelopeAt(
+                positionKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope start = alarmEnvelope(
+                onboardSystemId, positionKey, "ADAS", 31,
+                "FORWARD_COLLISION", "a".repeat(64), receivedAt, receivedAt);
+        com.fasterxml.jackson.databind.node.ObjectNode endPayload =
+                (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(start.payloadJson());
+        endPayload.put("state", "END");
+        endPayload.put("occurredAt", endAt.toString());
+        endPayload.put("extensionPayloadDigest", "b".repeat(64));
+        GatewayIngressEnvelope end = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", endAt, objectMapper.writeValueAsString(endPayload));
+        postIngress(List.of(position, start, end)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[2].status").value("ACCEPTED"));
+
+        com.fasterxml.jackson.databind.node.ObjectNode earlyPayload = endPayload.deepCopy();
+        earlyPayload.put("occurredAt", actualStartAt.minusSeconds(1).toString());
+        earlyPayload.put("extensionPayloadDigest", "c".repeat(64));
+        GatewayIngressEnvelope earlyEnd = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", endAt.plusSeconds(1),
+                objectMapper.writeValueAsString(earlyPayload));
+        com.fasterxml.jackson.databind.node.ObjectNode replayPayload = endPayload.deepCopy();
+        replayPayload.put("occurredAt", endAt.plusSeconds(1).toString());
+        replayPayload.put("extensionPayloadDigest", "d".repeat(64));
+        GatewayIngressEnvelope legalReplay = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "ALARM", endAt.plusSeconds(2),
+                objectMapper.writeValueAsString(replayPayload));
+
+        postIngress(List.of(earlyEnd, legalReplay)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"))
+                .andExpect(jsonPath("$.data[1].status").value("REPLAYED"));
+        postIngress(List.of(earlyEnd)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ALARM_STATE_INVALID"));
+
+        assertThat(apiAlarmCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select ended_at from vehicle_alarms", OffsetDateTime.class))
+                .isEqualTo(endAt.atOffset(ZoneOffset.UTC));
+    }
+
+    @Test
+    void rejectsAProtocolAuditWithUnknownForeignKeysWithoutHidingANeighbor() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        UUID auditKey = UUID.randomUUID();
+        GatewayIngressEnvelope invalidAudit = new GatewayIngressEnvelope(
+                1, auditKey, "PROTOCOL_AUDIT", receivedAt,
+                objectMapper.writeValueAsString(java.util.Map.of(
+                        "terminalId", UUID.fromString("bb000000-0000-0000-0000-000000000099"),
+                        "vehicleId", UUID.fromString("aa000000-0000-0000-0000-000000000099"),
+                        "reasonCode", "SYNTHETIC_PROTOCOL_REJECTION",
+                        "protocolVersion", "JT808_2013",
+                        "messageId", 0x0200,
+                        "payloadDigest", "c".repeat(64))));
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope neighbor = envelopeAt(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), receivedAt);
+
+        postIngress(List.of(invalidAudit, neighbor)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].idempotencyKey").value(auditKey.toString()))
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+        postIngress(List.of(invalidAudit)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"));
+
+        assertThat(gatewayAuditRepository.findAll())
+                .noneMatch(audit -> "SYNTHETIC_PROTOCOL_REJECTION".equals(audit.getReasonCode()));
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+    }
+
+    @Test
+    void rejectsUnparseableEnvelopeFieldsPerItemWithoutHidingValidNeighbors() throws Exception {
+        UUID firstKey = UUID.randomUUID();
+        UUID badTimeKey = UUID.randomUUID();
+        UUID badSchemaKey = UUID.randomUUID();
+        UUID objectPayloadKey = UUID.randomUUID();
+        UUID lastKey = UUID.randomUUID();
+        com.fasterxml.jackson.databind.node.ArrayNode batch = objectMapper.createArrayNode();
+        batch.add(objectMapper.valueToTree(envelopeAt(
+                firstKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), Instant.parse("2026-08-12T09:00:00Z"))));
+        com.fasterxml.jackson.databind.node.ObjectNode badTime = objectMapper.createObjectNode();
+        badTime.put("schemaVersion", 1).put("idempotencyKey", badTimeKey.toString())
+                .put("kind", "LOCATION").put("gatewayReceivedAt", "not-an-instant")
+                .put("payloadJson", "{}");
+        batch.add(badTime);
+        com.fasterxml.jackson.databind.node.ObjectNode badSchema = objectMapper.createObjectNode();
+        badSchema.put("schemaVersion", "one").put("idempotencyKey", badSchemaKey.toString())
+                .put("kind", "LOCATION").put("gatewayReceivedAt", "2026-08-12T09:00:00Z")
+                .put("payloadJson", "{}");
+        batch.add(badSchema);
+        com.fasterxml.jackson.databind.node.ObjectNode objectPayload = objectMapper.createObjectNode();
+        objectPayload.put("schemaVersion", 1).put("idempotencyKey", objectPayloadKey.toString())
+                .put("kind", "ALARM").put("gatewayReceivedAt", "2026-08-12T09:00:00Z")
+                .set("payloadJson", objectMapper.createObjectNode().put("unexpected", true));
+        batch.add(objectPayload);
+        batch.add(objectMapper.valueToTree(envelopeAt(
+                lastKey, VEHICLE_ID, 0x02, "105.2384990", "35.2109660",
+                Instant.parse("2026-08-12T08:59:51Z"), Instant.parse("2026-08-12T09:00:00Z"))));
+
+        internalPost(objectMapper.writeValueAsString(batch)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(5))
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data[1].idempotencyKey").value(badTimeKey.toString()))
+                .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[2].idempotencyKey").value(badSchemaKey.toString()))
+                .andExpect(jsonPath("$.data[2].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[3].idempotencyKey").value(objectPayloadKey.toString()))
+                .andExpect(jsonPath("$.data[3].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[4].status").value("ACCEPTED"));
+
+        assertThat(eventRepository.findByIdempotencyKey(firstKey)).isPresent();
+        assertThat(eventRepository.findByIdempotencyKey(lastKey)).isPresent();
     }
 
     @Test
@@ -239,7 +1773,10 @@ class GpsLocationIngressIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].status").value("REJECTED"))
                 .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_COORDINATE"));
         assertThat(eventRepository.findAll()).isEmpty();
-        assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(audit -> assertThat(audit.getReasonCode()).isEqualTo("INVALID_COORDINATE"));
+        assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(audit -> {
+            assertThat(audit.getIdempotencyKey()).isEqualTo(rejectedKey);
+            assertThat(audit.getReasonCode()).isEqualTo("INVALID_COORDINATE");
+        });
 
         UUID acceptedKey = UUID.randomUUID();
         GatewayIngressEnvelope accepted = envelope(acceptedKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"));
@@ -254,7 +1791,7 @@ class GpsLocationIngressIntegrationTest {
     void rejectsVehicleClaimThatDoesNotMatchCurrentTerminalBindingAndRejectsInvalidBatchShapes() throws Exception {
         postIngress(List.of(envelope(UUID.randomUUID(), OTHER_VEHICLE_ID, 0x02, "105.2384988", "35.2109657", Instant.parse("2026-08-12T08:59:50Z"))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("TERMINAL_BINDING_MISMATCH"));
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
         internalPost("[]").andExpect(status().isBadRequest());
         internalPost("{}").andExpect(status().isBadRequest());
         internalPost("{]").andExpect(status().isBadRequest());
@@ -274,38 +1811,63 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
-    void replaysRejectedIngressAcrossRequestsWithoutWritingAnotherAudit() throws Exception {
-        UUID idempotencyKey = UUID.randomUUID();
-        GatewayIngressEnvelope rejected = new GatewayIngressEnvelope(1, idempotencyKey, "UNKNOWN", Instant.parse("2026-08-12T09:00:00Z"), "{}");
+    void keepsEveryRejectedLocationAndOrdinaryItemRejectedAcrossRetries() throws Exception {
+        Instant receivedAt = Instant.parse("2026-08-12T09:00:00Z");
+        GatewayIngressEnvelope invalidCoordinate = envelopeAt(
+                UUID.randomUUID(), VEHICLE_ID, 0x02, "181", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope unsupportedSchema = new GatewayIngressEnvelope(
+                2, UUID.randomUUID(), "POSITION", receivedAt, "{}");
+        GatewayIngressEnvelope malformedPayload = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "POSITION", receivedAt, "{not-json");
+        GatewayIngressEnvelope unknownKind = new GatewayIngressEnvelope(
+                1, UUID.randomUUID(), "UNKNOWN", receivedAt, "{}");
+        GatewayIngressEnvelope bindingMismatch = envelopeAt(
+                UUID.randomUUID(), OTHER_VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        GatewayIngressEnvelope rejectedQuality = envelopeAt(
+                UUID.randomUUID(), VEHICLE_ID, 0, "0", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"), receivedAt);
+        List<GatewayIngressEnvelope> rejected = List.of(
+                invalidCoordinate, unsupportedSchema, malformedPayload,
+                unknownKind, bindingMismatch, rejectedQuality);
 
-        postIngress(List.of(rejected)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("UNSUPPORTED_ENVELOPE"));
-        postIngress(List.of(rejected)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("REPLAYED"))
-                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("UNSUPPORTED_ENVELOPE"));
+        var firstResponse = postIngress(rejected).andExpect(status().isOk()).andReturn();
+        var retryResponse = postIngress(rejected).andExpect(status().isOk()).andReturn();
+        var first = objectMapper.readTree(firstResponse.getResponse().getContentAsString()).path("data");
+        var retry = objectMapper.readTree(retryResponse.getResponse().getContentAsString()).path("data");
 
-        assertThat(gatewayAuditRepository.findAll()).singleElement()
-                .satisfies(audit -> assertThat(audit.getReasonCode()).isEqualTo("UNSUPPORTED_ENVELOPE"));
+        assertThat(java.util.stream.StreamSupport.stream(first.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED");
+        assertThat(java.util.stream.StreamSupport.stream(retry.spliterator(), false)
+                .map(item -> item.path("status").asText()).toList())
+                .containsExactly("REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED", "REJECTED");
+        assertThat(retry).isEqualTo(first);
+        assertThat(java.util.stream.StreamSupport.stream(retry.spliterator(), false)
+                .map(item -> item.path("reasonCodes").toString()).toList())
+                .containsExactly(
+                        "[\"INVALID_COORDINATE\"]",
+                        "[\"UNSUPPORTED_ENVELOPE\"]",
+                        "[\"INVALID_PAYLOAD\"]",
+                        "[\"UNSUPPORTED_ENVELOPE\"]",
+                        "[\"ONBOARD_PROVENANCE_MISMATCH\"]",
+                        "[\"INVALID_COORDINATE\",\"POSITION_INVALID\"]");
+        assertThat(eventRepository.findAll()).isEmpty();
+        assertThat(gatewayAuditRepository.findAll()).hasSize(6);
     }
 
     @Test
-    void replaysTheSameKeyInsideOneBatchWithoutDuplicatingTheEvent() throws Exception {
+    void rejectsDuplicateBatchKeysBeforePersistingAnyItem() throws Exception {
         UUID idempotencyKey = UUID.randomUUID();
         GatewayIngressEnvelope accepted = envelope(
                 idempotencyKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
                 Instant.parse("2026-08-12T08:59:50Z"));
 
-        postIngress(List.of(accepted, accepted)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
-                .andExpect(jsonPath("$.data[1].status").value("REPLAYED"))
-                .andExpect(jsonPath("$.data[1].reasonCodes").isEmpty());
+        postIngress(List.of(accepted, accepted)).andExpect(status().isBadRequest());
 
-        assertThat(eventRepository.findAll()).hasSize(1);
-        assertThat(receiptRepository.findAll()).singleElement().satisfies(receipt -> {
-            assertThat(receipt.getFinalStatus()).isEqualTo("ACCEPTED");
-            assertThat(receipt.getReasonCodes()).isEmpty();
-        });
+        assertThat(eventRepository.findAll()).isEmpty();
+        assertThat(receiptRepository.findAll()).isEmpty();
     }
 
     @Test
@@ -329,6 +1891,119 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
+    void rollsBackFlushedEventRuntimeVehicleAndReceiptWhenSwitchAuditPersistenceFailsThenRetries()
+            throws Exception {
+        UUID idempotencyKey = UUID.randomUUID();
+        GatewayIngressEnvelope accepted = envelope(idempotencyKey, arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T09:00:00Z"),
+                Instant.parse("2026-08-12T09:00:00Z"),
+                0x02L,
+                "9".repeat(64)));
+        OnboardSystemRuntimeState before = runtimeRepository.findById(onboardSystemId).orElseThrow();
+        long runtimeVersion = before.getRuntimeVersion();
+        OffsetDateTime runtimeUpdatedAt = before.getUpdatedAt();
+        long configurationVersion = onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion();
+
+        arbitrationPersistenceFailure.failNextAfter(() -> {
+            entityManager.flush();
+            VehicleLocationEvent persistedEvent = eventRepository
+                    .findByIdempotencyKey(idempotencyKey).orElseThrow();
+            Vehicle persistedVehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+            OnboardSystemRuntimeState persistedRuntime = runtimeRepository
+                    .findById(onboardSystemId).orElseThrow();
+            assertThat(persistedEvent.isSnapshotApplied())
+                    .as("event marker must be flushed before the injected audit failure")
+                    .isTrue();
+            assertThat(persistedVehicle.getCurrentLocationEventId())
+                    .as("vehicle snapshot must be flushed before the injected audit failure")
+                    .isEqualTo(persistedEvent.getId());
+            assertThat(persistedVehicle.getCurrentLocationTerminalId()).isEqualTo(TERMINAL_ID);
+            assertThat(persistedRuntime.getActiveLocationTerminalId())
+                    .as("runtime source must be flushed before the injected audit failure")
+                    .isEqualTo(TERMINAL_ID);
+        });
+
+        assertThatThrownBy(() -> postIngress(List.of(accepted)))
+                .hasStackTraceContaining("forced task6 arbitration persistence failure");
+
+        entityManager.clear();
+        assertThat(receiptRepository.findById(idempotencyKey)).isEmpty();
+        assertThat(eventRepository.findByIdempotencyKey(idempotencyKey)).isEmpty();
+        Vehicle rolledBackVehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        assertThat(rolledBackVehicle.getCurrentLocationEventId()).isNull();
+        assertThat(rolledBackVehicle.getCurrentLocationTerminalId()).isNull();
+        OnboardSystemRuntimeState rolledBackRuntime = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(rolledBackRuntime.getRuntimeVersion()).isEqualTo(runtimeVersion);
+        assertThat(rolledBackRuntime.getUpdatedAt()).isEqualTo(runtimeUpdatedAt);
+        assertThat(rolledBackRuntime.getActiveLocationTerminalId()).isNull();
+        assertThat(rolledBackRuntime.isPrimaryEligible()).isTrue();
+        assertThat(rolledBackRuntime.getPrimaryRecoveryStreak()).isZero();
+        assertThat(rolledBackRuntime.getLastPrimaryValidAt()).isNull();
+        assertThat(rolledBackRuntime.getLastLocationSwitchAt()).isNull();
+        assertThat(locationSwitchAudits()).isEmpty();
+        assertThat(onboardSystemRepository.findById(onboardSystemId).orElseThrow().getVersion())
+                .isEqualTo(configurationVersion);
+
+        postIngress(List.of(accepted)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+        assertThat(receiptRepository.findById(idempotencyKey).orElseThrow().getFinalStatus())
+                .isEqualTo("ACCEPTED");
+        VehicleLocationEvent retriedEvent = eventRepository
+                .findByIdempotencyKey(idempotencyKey).orElseThrow();
+        assertThat(retriedEvent.isSnapshotApplied()).isTrue();
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isEqualTo(retriedEvent.getId());
+        assertThat(runtimeRepository.findById(onboardSystemId).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(TERMINAL_ID);
+        assertThat(locationSwitchAudits()).singleElement().satisfies(audit ->
+                assertThat(audit.getReason()).isEqualTo("PRIMARY_SELECTED"));
+    }
+
+    @Test
+    void propagatesAnUnknownLocationDecoderFailureAndRollsBackTheClaim() throws Exception {
+        UUID idempotencyKey = UUID.randomUUID();
+        GatewayIngressEnvelope location = envelope(
+                idempotencyKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+        IllegalStateException failure = new IllegalStateException("forced location decoder failure");
+        faultInjectingObjectMapper.failReading(location.payloadJson(), failure);
+
+        try {
+            assertThatThrownBy(() -> ingressRouter.ingest(List.of(location))).isSameAs(failure);
+        } finally {
+            faultInjectingObjectMapper.resetFailure();
+        }
+
+        assertThat(receiptRepository.findById(idempotencyKey)).isEmpty();
+        assertThat(eventRepository.findByIdempotencyKey(idempotencyKey)).isEmpty();
+        assertThat(gatewayAuditRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void propagatesAnUnknownAlarmDecoderFailureWithoutWritingARejectedReceipt() throws Exception {
+        GatewayIngressEnvelope alarm = alarmEnvelope(
+                onboardSystemId, UUID.randomUUID(), "ADAS", 41,
+                "FORWARD_COLLISION", "f".repeat(64),
+                Instant.parse("2026-08-12T09:00:00Z"), Instant.parse("2026-08-12T09:00:00Z"));
+        IllegalArgumentException failure = new IllegalArgumentException("forced alarm decoder failure");
+        faultInjectingObjectMapper.failReading(alarm.payloadJson(), failure);
+
+        try {
+            assertThatThrownBy(() -> ingressRouter.ingest(List.of(alarm))).isSameAs(failure);
+        } finally {
+            faultInjectingObjectMapper.resetFailure();
+        }
+
+        assertThat(receiptRepository.findById(alarm.idempotencyKey())).isEmpty();
+        assertThat(gatewayAuditRepository.findAll()).isEmpty();
+        assertThat(apiAlarmCount()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
+    }
+
+    @Test
     void treatsOuterGatewayTimestampAsAuthoritativeAndRejectsMissingTerminalWithoutRollingBackNeighbor() throws Exception {
         UUID acceptedKey = UUID.randomUUID();
         UUID rejectedKey = UUID.randomUUID();
@@ -340,7 +2015,7 @@ class GpsLocationIngressIntegrationTest {
                 .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
                 .andExpect(jsonPath("$.data[0].reasonCodes").isEmpty())
                 .andExpect(jsonPath("$.data[1].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("TERMINAL_BINDING_MISMATCH"));
+                .andExpect(jsonPath("$.data[1].reasonCodes[0]").value("INVALID_PAYLOAD"));
         assertThat(eventRepository.findByIdempotencyKey(acceptedKey)).isPresent();
         assertThat(eventRepository.findByIdempotencyKey(rejectedKey)).isEmpty();
     }
@@ -444,6 +2119,16 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
+    void rejectsALiteralNullAlarmPayloadWithoutHidingItsNeighbor() throws Exception {
+        assertLiteralNullStructuredPayloadRejected("ALARM");
+    }
+
+    @Test
+    void rejectsALiteralNullProtocolAuditPayloadWithoutHidingItsNeighbor() throws Exception {
+        assertLiteralNullStructuredPayloadRejected("PROTOCOL_AUDIT");
+    }
+
+    @Test
     void countsConsecutiveQuarantinesByTrustedGatewayOrderAndLetsANormalPointBreakTheRun() throws Exception {
         UUID earlyDelay = UUID.randomUUID();
         UUID secondEarlyDelay = UUID.randomUUID();
@@ -477,8 +2162,9 @@ class GpsLocationIngressIntegrationTest {
                         "CONSECUTIVE_QUARANTINE")));
 
         assertThat(eventRepository.findByIdempotencyKey(thirdAfterNormal).orElseThrow().isSnapshotApplied()).isFalse();
+        assertThat(eventRepository.findByIdempotencyKey(normal).orElseThrow().isSnapshotApplied()).isFalse();
         assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
-                .isEqualTo(eventRepository.findByIdempotencyKey(normal).orElseThrow().getId());
+                .isNull();
         assertThatRepositoryUsesStableGatewayOrder();
     }
 
@@ -493,17 +2179,19 @@ class GpsLocationIngressIntegrationTest {
         GatewayIngressEnvelope invalidDirection = envelope(UUID.randomUUID(), copy(base, base.terminalLocatedAt(), base.speedKph(), 360, base.payloadDigest()));
         GatewayIngressEnvelope invalidDigest = envelope(UUID.randomUUID(), copy(base, base.terminalLocatedAt(), base.speedKph(), base.directionDegrees(), "invalid"));
         GatewayIngressEnvelope missingProtocol = envelope(UUID.randomUUID(), new CanonicalPositionIngress(
-                base.terminalId(), base.vehicleId(), null, base.messageSerialNo(), base.rawLongitude(), base.rawLatitude(),
+                base.terminalId(), base.onboardSystemId(), base.vehicleId(), base.sourceRole(),
+                null, base.messageSerialNo(), base.rawLongitude(), base.rawLatitude(),
                 base.rawCoordinateSystem(), base.terminalLocatedAt(), base.gatewayReceivedAt(), base.alarmBits(),
                 base.statusBits(), base.speedKph(), base.directionDegrees(), base.altitudeMeters(),
                 base.satelliteCount(), base.payloadDigest()));
         GatewayIngressEnvelope missingAltitude = envelope(UUID.randomUUID(), new CanonicalPositionIngress(
-                base.terminalId(), base.vehicleId(), base.protocolVersion(), base.messageSerialNo(), base.rawLongitude(),
+                base.terminalId(), base.onboardSystemId(), base.vehicleId(), base.sourceRole(),
+                base.protocolVersion(), base.messageSerialNo(), base.rawLongitude(),
                 base.rawLatitude(), base.rawCoordinateSystem(), base.terminalLocatedAt(), base.gatewayReceivedAt(),
                 base.alarmBits(), base.statusBits(), base.speedKph(), base.directionDegrees(), null,
                 base.satelliteCount(), base.payloadDigest()));
 
-        postIngress(java.util.Arrays.asList(valid, null, missingTerminalTime, missingGatewayTime, negativeSpeed,
+        postIngress(java.util.Arrays.asList(valid, missingTerminalTime, missingGatewayTime, negativeSpeed,
                         invalidDirection, invalidDigest, missingProtocol, missingAltitude))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"))
@@ -513,10 +2201,9 @@ class GpsLocationIngressIntegrationTest {
                 .andExpect(jsonPath("$.data[4].status").value("REJECTED"))
                 .andExpect(jsonPath("$.data[5].status").value("REJECTED"))
                 .andExpect(jsonPath("$.data[6].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[7].status").value("REJECTED"))
-                .andExpect(jsonPath("$.data[8].status").value("REJECTED"));
+                .andExpect(jsonPath("$.data[7].status").value("REJECTED"));
         assertThat(eventRepository.findAll()).hasSize(1);
-        assertThat(gatewayAuditRepository.findAll()).hasSize(8);
+        assertThat(gatewayAuditRepository.findAll()).hasSize(7);
     }
 
     @Test
@@ -680,8 +2367,8 @@ class GpsLocationIngressIntegrationTest {
 
         var data = objectMapper.readTree(response.getResponse().getContentAsString()).path("data");
         assertThat(data).hasSize(batch.size());
-        assertThat(data.get(0).path("reasonCodes").get(0).asText()).isEqualTo("TERMINAL_BINDING_MISMATCH");
-        assertThat(data.get(1).path("reasonCodes").get(0).asText()).isEqualTo("TERMINAL_BINDING_MISMATCH");
+        assertThat(data.get(0).path("reasonCodes").get(0).asText()).isEqualTo("ONBOARD_PROVENANCE_MISMATCH");
+        assertThat(data.get(1).path("reasonCodes").get(0).asText()).isEqualTo("ONBOARD_PROVENANCE_MISMATCH");
         for (int index = 2; index < rejectedKeys.size(); index++) {
             assertThat(data.get(index).path("reasonCodes").get(0).asText()).isEqualTo("INVALID_PAYLOAD");
         }
@@ -707,8 +2394,230 @@ class GpsLocationIngressIntegrationTest {
         assertThat(eventRepository.findAll()).hasSize(acceptedKeys.size());
     }
 
+    private void addLocationMember(
+            UUID systemId,
+            UUID terminalId,
+            OnboardDeviceRoleAssignment.Role role) {
+        membershipRepository.save(OnboardDeviceMembership.join(
+                systemId,
+                terminalId,
+                OnboardDeviceMembership.NetworkMode.DIRECT_CELLULAR,
+                "configure GPS member",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+        roleRepository.save(OnboardDeviceRoleAssignment.assign(
+                systemId,
+                terminalId,
+                role,
+                "configure GPS role",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+    }
+
+    private void installBackup() {
+        terminalRepository.save(JtTerminal.preset(
+                OTHER_TERMINAL_ID, "GPS-PHONE-2", "GPS-002", "MFG", "M",
+                "JT808_2019", "WGS84", CONFIGURATION_ACTOR_ID));
+        addLocationMember(
+                onboardSystemId,
+                OTHER_TERMINAL_ID,
+                OnboardDeviceRoleAssignment.Role.LOCATION_BACKUP);
+    }
+
+    private void addActiveSafetyAuthority(UUID systemId, UUID terminalId) {
+        roleRepository.save(OnboardDeviceRoleAssignment.assign(
+                systemId,
+                terminalId,
+                OnboardDeviceRoleAssignment.Role.ACTIVE_SAFETY,
+                "configure active-safety role",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+        for (OnboardDeviceCapability.Capability capability : List.of(
+                OnboardDeviceCapability.Capability.ADAS,
+                OnboardDeviceCapability.Capability.DMS)) {
+            OnboardDeviceCapability declared = OnboardDeviceCapability.declare(
+                    terminalId,
+                    capability,
+                    "declare active-safety capability",
+                    CONFIGURED_AT);
+            declared.verify(
+                    "synthetic location-ingress authority evidence",
+                    CONFIGURATION_ACTOR_ID,
+                    "verify active-safety capability",
+                    CONFIGURED_AT);
+            capabilityRepository.save(declared);
+        }
+    }
+
+    private void activateProfile(
+            UUID terminalId,
+            int activeIntervalSeconds,
+            int idleIntervalSeconds,
+            OnboardDeviceProtocolProfile.SafetyProfile safetyProfile) {
+        profileRepository.save(OnboardDeviceProtocolProfile.activate(
+                terminalId,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                safetyProfile,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                activeIntervalSeconds,
+                idleIntervalSeconds,
+                "configure GPS profile",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT));
+    }
+
+    private void replacePrimaryProfile(int activeIntervalSeconds, int idleIntervalSeconds) {
+        OnboardDeviceProtocolProfile current = profileRepository
+                .findActiveByTerminalId(TERMINAL_ID).orElseThrow();
+        current.supersede(
+                "replace GPS profile",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT.plusSeconds(1));
+        profileRepository.saveAndFlush(current);
+        profileRepository.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                TERMINAL_ID,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.NONE,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                activeIntervalSeconds,
+                idleIntervalSeconds,
+                "activate replacement GPS profile",
+                CONFIGURATION_ACTOR_ID,
+                CONFIGURED_AT.plusSeconds(1)));
+    }
+
+    private List<AuditLog> locationSwitchAudits() {
+        return auditLogRepository.findByEntityIdOrderByCreatedAtAsc(onboardSystemId).stream()
+                .filter(audit -> "LOCATION_SOURCE_SWITCHED".equals(audit.getAction()))
+                .toList();
+    }
+
+    private GpsLocationIngressService.Result ingestAfter(
+            CountDownLatch workersReady,
+            CountDownLatch start,
+            GatewayIngressEnvelope envelope) throws Exception {
+        workersReady.countDown();
+        if (!start.await(5, TimeUnit.SECONDS)) {
+            throw new AssertionError("timed out waiting to start concurrent GPS ingress");
+        }
+        return ingressRouter.ingest(List.of(envelope)).getFirst();
+    }
+
+    private void assertCompositeAuthorityRejected() throws Exception {
+        GatewayIngressEnvelope position = envelope(UUID.randomUUID(), provenancePayload(
+                TERMINAL_ID,
+                onboardSystemId,
+                VEHICLE_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T08:59:50Z"),
+                "8".repeat(64)));
+        postIngress(List.of(position)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("ONBOARD_PROVENANCE_MISMATCH"));
+        assertNoLocationStateWasWritten();
+    }
+
+    private void assertNoLocationStateWasWritten() {
+        assertThat(eventRepository.count()).isZero();
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow().getCurrentLocationEventId())
+                .isNull();
+    }
+
+    private CanonicalPositionIngress provenancePayload(
+            UUID terminalId,
+            UUID systemId,
+            UUID vehicleId,
+            String sourceRole,
+            Instant locatedAt,
+            String digest) {
+        return new CanonicalPositionIngress(
+                terminalId,
+                systemId,
+                vehicleId,
+                sourceRole,
+                "JT808_2019",
+                7,
+                new BigDecimal("105.2384988"),
+                new BigDecimal("35.2109657"),
+                "WGS84",
+                locatedAt,
+                locatedAt.plusSeconds(10),
+                0L,
+                0x02L,
+                new BigDecimal("50"),
+                90,
+                10,
+                8,
+                digest);
+    }
+
+    private CanonicalPositionIngress arbitrationPayload(
+            UUID terminalId,
+            String sourceRole,
+            Instant locatedAt,
+            Instant gatewayReceivedAt,
+            long statusBits,
+            String digest) {
+        return arbitrationPayload(
+                terminalId, sourceRole, locatedAt, gatewayReceivedAt,
+                statusBits, digest, new BigDecimal("105.2384988"));
+    }
+
+    private CanonicalPositionIngress arbitrationPayload(
+            UUID terminalId,
+            String sourceRole,
+            Instant locatedAt,
+            Instant gatewayReceivedAt,
+            long statusBits,
+            String digest,
+            BigDecimal longitude) {
+        return new CanonicalPositionIngress(
+                terminalId,
+                onboardSystemId,
+                VEHICLE_ID,
+                sourceRole,
+                "JT808_2019",
+                7,
+                longitude,
+                new BigDecimal("35.2109657"),
+                "WGS84",
+                locatedAt,
+                gatewayReceivedAt,
+                0L,
+                statusBits,
+                new BigDecimal("50"),
+                90,
+                10,
+                8,
+                digest);
+    }
+
     private org.springframework.test.web.servlet.ResultActions postIngress(List<GatewayIngressEnvelope> batch) throws Exception { return internalPost(objectMapper.writeValueAsString(batch)); }
+    private void assertLiteralNullStructuredPayloadRejected(String kind) throws Exception {
+        UUID rejectedKey = UUID.randomUUID();
+        UUID neighborKey = UUID.randomUUID();
+        GatewayIngressEnvelope literalNull = new GatewayIngressEnvelope(
+                1, rejectedKey, kind, Instant.parse("2026-08-12T09:00:00Z"), "null");
+        GatewayIngressEnvelope neighbor = envelope(
+                neighborKey, VEHICLE_ID, 0x02, "105.2384988", "35.2109657",
+                Instant.parse("2026-08-12T08:59:50Z"));
+
+        postIngress(List.of(literalNull, neighbor)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$.data[0].reasonCodes[0]").value("INVALID_PAYLOAD"))
+                .andExpect(jsonPath("$.data[1].status").value("ACCEPTED"));
+
+        assertThat(receiptRepository.findById(rejectedKey).orElseThrow()).satisfies(receipt -> {
+            assertThat(receipt.getFinalStatus()).isEqualTo("REJECTED");
+            assertThat(receipt.getReasonCodes()).containsExactly("INVALID_PAYLOAD");
+        });
+        assertThat(eventRepository.findByIdempotencyKey(neighborKey)).isPresent();
+        assertThat(apiAlarmCount()).isZero();
+    }
     private GatewayIngressEnvelope alarmEnvelope(
+            UUID alarmOnboardSystemId,
             UUID positionKey,
             String module,
             int typeCode,
@@ -718,6 +2627,7 @@ class GpsLocationIngressIntegrationTest {
             Instant envelopeGatewayReceivedAt) throws Exception {
         java.util.Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("terminalId", TERMINAL_ID);
+        payload.put("onboardSystemId", alarmOnboardSystemId);
         payload.put("vehicleId", VEHICLE_ID);
         payload.put("standard", "T/JSATL12-2017");
         payload.put("module", module);
@@ -740,6 +2650,41 @@ class GpsLocationIngressIntegrationTest {
         payload.put("extensionPayloadDigest", digest);
         return new GatewayIngressEnvelope(1, UUID.randomUUID(), "ALARM", envelopeGatewayReceivedAt,
                 objectMapper.writeValueAsString(payload));
+    }
+    private GatewayIngressEnvelope alarmFor(
+            UUID terminalId,
+            UUID alarmOnboardSystemId,
+            UUID vehicleId,
+            UUID positionKey,
+            String module,
+            int typeCode,
+            String alarmType,
+            String digest,
+            Instant receivedAt) throws Exception {
+        GatewayIngressEnvelope source = alarmEnvelope(
+                alarmOnboardSystemId, positionKey, module, typeCode,
+                alarmType, digest, receivedAt, receivedAt);
+        com.fasterxml.jackson.databind.node.ObjectNode payload =
+                (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(source.payloadJson());
+        payload.put("terminalId", terminalId.toString());
+        payload.put("vehicleId", vehicleId.toString());
+        payload.put("terminalAlarmIdentifier", module + "-CROSS-DEPENDENCY");
+        return new GatewayIngressEnvelope(
+                1, source.idempotencyKey(), "ALARM", receivedAt, objectMapper.writeValueAsString(payload));
+    }
+    private int apiAlarmCount() {
+        return jdbc.queryForObject("select count(*) from vehicle_alarms", Integer.class);
+    }
+    private GatewayIngressEnvelope protocolAuditEnvelope(UUID idempotencyKey, Instant receivedAt) throws Exception {
+        return new GatewayIngressEnvelope(
+                1, idempotencyKey, "PROTOCOL_AUDIT", receivedAt,
+                objectMapper.writeValueAsString(java.util.Map.of(
+                        "terminalId", TERMINAL_ID,
+                        "vehicleId", VEHICLE_ID,
+                        "reasonCode", "ACTIVE_SAFETY_EXTENSION_REJECTED",
+                        "protocolVersion", "JT808_2013",
+                        "messageId", 0x0200,
+                        "payloadDigest", "d".repeat(64))));
     }
     private org.springframework.test.web.servlet.ResultActions internalPost(String body) throws Exception {
         return mockMvc.perform(post("/internal/jt-gateway/ingress").header("Authorization", "Bearer " + CREDENTIAL)
@@ -769,12 +2714,16 @@ class GpsLocationIngressIntegrationTest {
         return payload(vehicleId, locatedAt, 0x02, new BigDecimal("105.2384988"), new BigDecimal("35.2109657"));
     }
     private CanonicalPositionIngress payload(UUID vehicleId, Instant locatedAt, long statusBits, BigDecimal longitude, BigDecimal latitude) {
-        return new CanonicalPositionIngress(TERMINAL_ID, vehicleId, "JT808_2019", 7, longitude, latitude, "WGS84", locatedAt,
+        return new CanonicalPositionIngress(
+                TERMINAL_ID, onboardSystemId, vehicleId, "LOCATION_PRIMARY", "JT808_2019", 7,
+                longitude, latitude, "WGS84", locatedAt,
                 Instant.parse("2026-08-12T09:00:00Z"), 0L, statusBits, new BigDecimal("50"), 90, 10, 8, "a".repeat(64));
     }
     private CanonicalPositionIngress copy(CanonicalPositionIngress source, Instant terminalLocatedAt, BigDecimal speedKph,
             Integer directionDegrees, String payloadDigest) {
-        return new CanonicalPositionIngress(source.terminalId(), source.vehicleId(), source.protocolVersion(), source.messageSerialNo(),
+        return new CanonicalPositionIngress(
+                source.terminalId(), source.onboardSystemId(), source.vehicleId(), source.sourceRole(),
+                source.protocolVersion(), source.messageSerialNo(),
                 source.rawLongitude(), source.rawLatitude(), source.rawCoordinateSystem(), terminalLocatedAt,
                 source.gatewayReceivedAt(), source.alarmBits(), source.statusBits(), speedKph, directionDegrees,
                 source.altitudeMeters(), source.satelliteCount(), payloadDigest);
@@ -783,14 +2732,17 @@ class GpsLocationIngressIntegrationTest {
             BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem, BigDecimal speedKph,
             int directionDegrees, int altitudeMeters, int satelliteCount, long alarmBits, long statusBits,
             String payloadDigest) {
-        return new CanonicalPositionIngress(source.terminalId(), source.vehicleId(), protocolVersion,
+        return new CanonicalPositionIngress(
+                source.terminalId(), source.onboardSystemId(), source.vehicleId(), source.sourceRole(), protocolVersion,
                 source.messageSerialNo(), rawLongitude, rawLatitude, rawCoordinateSystem, source.terminalLocatedAt(),
                 source.gatewayReceivedAt(), alarmBits, statusBits, speedKph, directionDegrees, altitudeMeters,
                 satelliteCount, payloadDigest);
     }
     private CanonicalPositionIngress identityAndTimes(CanonicalPositionIngress source, UUID terminalId,
             UUID vehicleId, Instant terminalLocatedAt, Instant gatewayReceivedAt) {
-        return new CanonicalPositionIngress(terminalId, vehicleId, source.protocolVersion(), source.messageSerialNo(),
+        return new CanonicalPositionIngress(
+                terminalId, source.onboardSystemId(), vehicleId, source.sourceRole(),
+                source.protocolVersion(), source.messageSerialNo(),
                 source.rawLongitude(), source.rawLatitude(), source.rawCoordinateSystem(), terminalLocatedAt,
                 gatewayReceivedAt, source.alarmBits(), source.statusBits(), source.speedKph(),
                 source.directionDegrees(), source.altitudeMeters(), source.satelliteCount(), source.payloadDigest());
@@ -803,10 +2755,107 @@ class GpsLocationIngressIntegrationTest {
                 .contains("findTop3ByVehicleIdAndGatewayReceivedAtIsNotNullOrderByGatewayReceivedAtDescIdDesc");
     }
 
-    @TestConfiguration
+    @TestConfiguration(proxyBeanMethods = false)
     static class LocationCheckerConfiguration {
+        @Bean @Primary FaultInjectingObjectMapper objectMapper(Jackson2ObjectMapperBuilder builder) {
+            FaultInjectingObjectMapper objectMapper = new FaultInjectingObjectMapper();
+            builder.configure(objectMapper);
+            return objectMapper;
+        }
+
         @Bean @Primary TestServiceAreaLocationChecker gpsIngressAreaChecker() {
             return new TestServiceAreaLocationChecker();
+        }
+
+        @Bean
+        ArbitrationPersistenceFailure arbitrationPersistenceFailure() {
+            return new ArbitrationPersistenceFailure();
+        }
+
+        @Bean
+        static org.springframework.beans.factory.config.BeanPostProcessor auditFailurePostProcessor(
+                ArbitrationPersistenceFailure failure) {
+            return new org.springframework.beans.factory.config.BeanPostProcessor() {
+                @Override
+                public Object postProcessAfterInitialization(Object bean, String beanName) {
+                    if (!(bean instanceof AuditLogRepository repository)) {
+                        return bean;
+                    }
+                    return java.lang.reflect.Proxy.newProxyInstance(
+                            AuditLogRepository.class.getClassLoader(),
+                            new Class<?>[] {AuditLogRepository.class},
+                            (proxy, method, arguments) -> {
+                                if (method.getName().equals("save")
+                                        && arguments != null
+                                        && arguments.length == 1
+                                        && arguments[0] instanceof AuditLog audit) {
+                                    failure.beforeAuditSave(audit);
+                                }
+                                return invokeRepository(repository, method, arguments);
+                            });
+                }
+            };
+        }
+
+        private static Object invokeRepository(
+                Object repository,
+                java.lang.reflect.Method method,
+                Object[] arguments) throws Throwable {
+            try {
+                return method.invoke(repository, arguments);
+            } catch (java.lang.reflect.InvocationTargetException invocation) {
+                throw invocation.getTargetException();
+            }
+        }
+    }
+
+    static final class ArbitrationPersistenceFailure {
+        private final java.util.concurrent.atomic.AtomicReference<Runnable> beforeFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        void failNextAfter(Runnable verification) {
+            if (!beforeFailure.compareAndSet(null, java.util.Objects.requireNonNull(verification))) {
+                throw new IllegalStateException("arbitration persistence failure is already armed");
+            }
+        }
+
+        void beforeAuditSave(AuditLog audit) {
+            if (!"LOCATION_SOURCE_SWITCHED".equals(audit.getAction())) {
+                return;
+            }
+            Runnable verification = beforeFailure.getAndSet(null);
+            if (verification == null) {
+                return;
+            }
+            verification.run();
+            throw new IllegalStateException("forced task6 arbitration persistence failure");
+        }
+
+        void reset() {
+            beforeFailure.set(null);
+        }
+    }
+
+    static final class FaultInjectingObjectMapper extends ObjectMapper {
+        private String failingPayload;
+        private RuntimeException failure;
+
+        void failReading(String payload, RuntimeException failure) {
+            this.failingPayload = payload;
+            this.failure = failure;
+        }
+
+        void resetFailure() {
+            failingPayload = null;
+            failure = null;
+        }
+
+        @Override
+        public <T> T readValue(String content, Class<T> valueType) throws JsonProcessingException {
+            if (failure != null && java.util.Objects.equals(failingPayload, content)) {
+                throw failure;
+            }
+            return super.readValue(content, valueType);
         }
     }
 

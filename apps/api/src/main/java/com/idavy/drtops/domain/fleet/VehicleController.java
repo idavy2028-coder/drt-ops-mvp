@@ -7,6 +7,7 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -41,7 +42,8 @@ public class VehicleController {
             Authentication authentication, @Valid @RequestBody CreateVehicleRequest request) {
         Vehicle vehicle = provisioningService.create(
                 request.plateNumber(), request.vehicleType(), request.capacity(), request.currentStatus(),
-                request.lng(), request.lat(), request.fleetName(), request.dispatchable(), actorId(authentication));
+                request.lng(), request.lat(), request.fleetName(), request.dispatchable(), request.reason(),
+                actorId(authentication));
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(VehicleView.from(vehicle)));
     }
 
@@ -61,6 +63,7 @@ public class VehicleController {
             @NotNull @DecimalMin("-180.0") @DecimalMax("180.0") BigDecimal lng,
             @NotNull @DecimalMin("-90.0") @DecimalMax("90.0") BigDecimal lat,
             @NotBlank String fleetName,
-            boolean dispatchable) {
+            boolean dispatchable,
+            @Size(max = 300) String reason) {
     }
 }

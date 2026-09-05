@@ -29,6 +29,13 @@ public class JtGatewayIngressReceipt {
 
     private OffsetDateTime completedAt;
 
+    private UUID terminalId;
+
+    private UUID vehicleId;
+
+    @Column(length = 32)
+    private String ingressKind;
+
     protected JtGatewayIngressReceipt() {
     }
 
@@ -39,6 +46,24 @@ public class JtGatewayIngressReceipt {
         this.finalStatus = status;
         this.reasonCodes = List.copyOf(reasons);
         this.completedAt = completedAt;
+    }
+
+    public void identify(String ingressKind, UUID terminalId, UUID vehicleId) {
+        this.ingressKind = ingressKind;
+        this.terminalId = terminalId;
+        this.vehicleId = vehicleId;
+    }
+
+    public boolean matchesLocationIdentity(UUID terminalId, UUID vehicleId) {
+        return ("LOCATION".equals(ingressKind) || "POSITION".equals(ingressKind))
+                && terminalId != null && vehicleId != null
+                && terminalId.equals(this.terminalId) && vehicleId.equals(this.vehicleId);
+    }
+
+    public boolean isAcceptedLocationFor(UUID terminalId, UUID vehicleId) {
+        return completedAt != null
+                && "ACCEPTED".equals(finalStatus)
+                && matchesLocationIdentity(terminalId, vehicleId);
     }
 
     public UUID getIdempotencyKey() {
@@ -52,4 +77,10 @@ public class JtGatewayIngressReceipt {
     public List<String> getReasonCodes() {
         return List.copyOf(reasonCodes);
     }
+
+    public UUID getTerminalId() { return terminalId; }
+
+    public UUID getVehicleId() { return vehicleId; }
+
+    public String getIngressKind() { return ingressKind; }
 }

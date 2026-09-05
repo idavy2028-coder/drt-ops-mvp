@@ -48,6 +48,8 @@ class GatewayOperationsFlowIntegrationTest {
     @Test
     void deliversFullJourneyWithAlarmsAndAttachmentMetadataAheadOfLocationBacklog() throws Exception {
         try (GatewayTestRig rig = new GatewayTestRig(tempDir, true)) {
+            // Dedicated performance gates own production P95/P99; this functional E2E gives
+            // Windows file-backed H2 scheduling room while still failing missing/error replies within 5s.
             ScenarioReport report = ScenarioRunner.run(Scenario.parse("""
                     {
                       "scenario": "gateway-full-journey",
@@ -56,10 +58,10 @@ class GatewayOperationsFlowIntegrationTest {
                         {"action": "connect"},
                         {"action": "register"},
                         {"action": "authenticate"},
-                        {"action": "burst", "message": "position", "count": 20, "intervalMillis": 2},
-                        {"action": "activeSafetyAlarm", "sampleId": "S01"},
-                        {"action": "attachmentInfo", "sampleId": "M01"},
-                        {"action": "fileUploadCompleteNotification", "sampleId": "A06"},
+                        {"action": "burst", "message": "position", "count": 20, "intervalMillis": 2, "timeoutMillis": 5000},
+                        {"action": "activeSafetyAlarm", "sampleId": "S01", "timeoutMillis": 5000},
+                        {"action": "attachmentInfo", "sampleId": "M01", "timeoutMillis": 5000},
+                        {"action": "fileUploadCompleteNotification", "sampleId": "A06", "timeoutMillis": 5000},
                         {"action": "disconnect"}
                       ]
                     }
@@ -131,6 +133,12 @@ class GatewayOperationsFlowIntegrationTest {
                 assertEquals(MSG_GENERAL_REPLY, authentication.messageId());
                 assertEquals(0, authentication.result());
 
+                var liveSession = rig.sessionRegistry.current(rig.terminalId).orElseThrow();
+                assertTrue(liveSession.acceptsTransport(ProtocolVersion.JT808_2013),
+                        "the provisioned transport profile must match the real 2013 TCP frames");
+                assertFalse(liveSession.acceptsTransport(ProtocolVersion.JT808_2019),
+                        "the fixture must not silently claim the 2019 transport profile");
+
                 AttachmentCommandService.Command command = new AttachmentCommandService.Command(
                         rig.terminalId,
                         GatewayTestRig.TERMINAL_IDENTITY,
@@ -200,7 +208,7 @@ class GatewayOperationsFlowIntegrationTest {
     }
 
     @Test
-    void attachmentSignalingRequiresDeclaredActiveSafetyCapability() throws Exception {
+    void attachmentSignalingWithoutVideoRoleProducesOneSafeAudit() throws Exception {
         try (GatewayTestRig rig = new GatewayTestRig(tempDir, false)) {
             ScenarioReport report = ScenarioRunner.run(Scenario.parse("""
                     {
@@ -222,7 +230,7 @@ class GatewayOperationsFlowIntegrationTest {
             assertEquals(0, rig.api.receivedOfKind("ATTACHMENT_METADATA").size());
             List<GatewayTestRig.ReceivedEnvelope> audits = rig.api.receivedOfKind("PROTOCOL_AUDIT");
             assertEquals(1, audits.size());
-            assertEquals("ACTIVE_SAFETY_ATTACHMENT_NOT_CAPABLE",
+            assertEquals("DEVICE_ROLE_VIOLATION",
                     rig.objectMapper.readTree(audits.get(0).payloadJson()).required("reasonCode").asText());
         }
     }

@@ -4,6 +4,7 @@ import com.idavy.drtops.common.ApiResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 import java.util.UUID;
@@ -73,6 +74,33 @@ public class TerminalController {
             @Valid @RequestBody ActionRequest request) {
         return ApiResponse.ok(TerminalView.from(service.activate(
                 terminalCode, request.expectedVersion(), request.reason(), actorId(authentication))));
+    }
+
+    @PostMapping("/{terminalCode}/identity-correction")
+    ApiResponse<TerminalManagementService.IdentityCorrectionResult> correctIdentity(
+            @PathVariable String terminalCode,
+            Authentication authentication,
+            @Valid @RequestBody IdentityCorrectionRequest request) {
+        return ApiResponse.ok(service.correctIdentity(
+                terminalCode,
+                request.expectedVersion(),
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        request.terminalPhone(), request.terminalCode(), request.manufacturerId(), request.model(),
+                        request.protocolVersion(), request.sourceCoordinateSystem(), request.vehicleIdentifier()),
+                actorId(authentication),
+                request.reason()));
+    }
+
+    @PostMapping("/{terminalCode}/identity-correction/preview")
+    ApiResponse<TerminalManagementService.IdentityCorrectionResult> previewIdentityCorrection(
+            @PathVariable String terminalCode,
+            @Valid @RequestBody IdentityCorrectionRequest request) {
+        return ApiResponse.ok(service.previewIdentityCorrection(
+                terminalCode,
+                request.expectedVersion(),
+                new TerminalManagementService.IdentityCorrectionCommand(
+                        request.terminalPhone(), request.terminalCode(), request.manufacturerId(), request.model(),
+                        request.protocolVersion(), request.sourceCoordinateSystem(), request.vehicleIdentifier())));
     }
 
     @PostMapping("/{terminalCode}/suspend")
@@ -148,6 +176,18 @@ public class TerminalController {
     }
 
     public record ActionRequest(@NotNull Long expectedVersion, @NotBlank @Size(max = 300) String reason) {
+    }
+
+    public record IdentityCorrectionRequest(
+            @NotNull @PositiveOrZero Long expectedVersion,
+            @NotBlank @Size(max = 30) String terminalPhone,
+            @NotBlank @Size(max = 80) String terminalCode,
+            @NotBlank @Size(max = 80) String manufacturerId,
+            @NotBlank @Size(max = 120) String model,
+            @NotBlank @Size(max = 40) String protocolVersion,
+            @NotBlank @Size(max = 20) String sourceCoordinateSystem,
+            @NotBlank @Size(max = 30) String vehicleIdentifier,
+            @NotBlank @Size(max = 300) String reason) {
     }
 
     public record BindRequest(
@@ -233,6 +273,8 @@ public class TerminalController {
             java.time.OffsetDateTime offlineAt,
             TerminalManagementService.BindingSummary currentBinding,
             java.util.List<TerminalManagementService.BindingSummary> bindingHistory,
+            TerminalManagementService.CurrentOnboardMembershipSummary currentOnboardMembership,
+            java.util.List<TerminalManagementService.BindingSummary> legacyBindingHistory,
             java.util.List<TerminalManagementService.GatewayAuditSummary> securityAudits) {
         static TerminalDetailView from(TerminalManagementService.TerminalDetail detail) {
             JtTerminal terminal = detail.terminal();
@@ -242,7 +284,9 @@ public class TerminalController {
                     parseModules(terminal.getActiveSafetyModules()), terminal.isJt1078Enabled(), terminal.getStatus().name(),
                     detail.onlineStatus().name(), terminal.getLastRegisteredAt() != null, terminal.getVersion(),
                     terminal.getLastRegisteredAt(), terminal.getLastAuthenticatedAt(), detail.lastValidMessageAt(),
-                    null, null, detail.offlineAt(), detail.currentBinding(), detail.bindingHistory(), detail.securityAudits());
+                    null, null, detail.offlineAt(), detail.currentBinding(), detail.bindingHistory(),
+                    detail.currentOnboardMembership(), detail.legacyBindingHistory(),
+                    detail.securityAudits());
         }
 
         private static java.util.List<String> parseModules(String serialized) {

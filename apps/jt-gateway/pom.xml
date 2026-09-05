@@ -83,6 +83,29 @@
   <build>
     <plugins>
       <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>attach-classes-only-test-support</id>
+            <phase>process-classes</phase>
+            <goals>
+              <goal>jar</goal>
+            </goals>
+            <configuration>
+              <classifier>classes-only</classifier>
+              <excludes>
+                <exclude>application.yml</exclude>
+                <exclude>db/**</exclude>
+                <exclude>com/idavy/drtops/jtgateway/JtGatewayApplication.class</exclude>
+                <exclude>com/idavy/drtops/jtgateway/JtGatewayRuntimeConfiguration*.class</exclude>
+                <exclude>com/idavy/drtops/jtgateway/attachment/**</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
       </plugin>

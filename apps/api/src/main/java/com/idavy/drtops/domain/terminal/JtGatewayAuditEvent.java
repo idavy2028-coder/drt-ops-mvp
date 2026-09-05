@@ -22,6 +22,8 @@ public class JtGatewayAuditEvent {
 
     @Id
     private UUID id;
+    @Column(nullable = false, unique = true)
+    private UUID idempotencyKey;
     private UUID terminalId;
     private UUID vehicleId;
 
@@ -60,6 +62,7 @@ public class JtGatewayAuditEvent {
     }
 
     private JtGatewayAuditEvent(
+            UUID idempotencyKey,
             UUID terminalId,
             UUID vehicleId,
             EventType eventType,
@@ -78,6 +81,7 @@ public class JtGatewayAuditEvent {
             throw new IllegalArgumentException("gatewayInstance must not be blank");
         }
         this.id = UUID.randomUUID();
+        this.idempotencyKey = java.util.Objects.requireNonNull(idempotencyKey, "idempotencyKey");
         this.terminalId = terminalId;
         this.vehicleId = vehicleId;
         this.eventType = java.util.Objects.requireNonNull(eventType, "eventType");
@@ -104,12 +108,30 @@ public class JtGatewayAuditEvent {
             String remoteAddress,
             OffsetDateTime occurredAt,
             String gatewayInstance) {
+        return record(UUID.randomUUID(), terminalId, vehicleId, eventType, result, reasonCode,
+                protocolVersion, messageId, payloadDigest, remoteAddress, occurredAt, gatewayInstance);
+    }
+
+    public static JtGatewayAuditEvent record(
+            UUID idempotencyKey,
+            UUID terminalId,
+            UUID vehicleId,
+            EventType eventType,
+            Result result,
+            String reasonCode,
+            String protocolVersion,
+            Integer messageId,
+            String payloadDigest,
+            String remoteAddress,
+            OffsetDateTime occurredAt,
+            String gatewayInstance) {
         return new JtGatewayAuditEvent(
-                terminalId, vehicleId, eventType, result, reasonCode, protocolVersion,
+                idempotencyKey, terminalId, vehicleId, eventType, result, reasonCode, protocolVersion,
                 messageId, payloadDigest, remoteAddress, occurredAt, gatewayInstance);
     }
 
     public UUID getId() { return id; }
+    public UUID getIdempotencyKey() { return idempotencyKey; }
     public UUID getTerminalId() { return terminalId; }
     public UUID getVehicleId() { return vehicleId; }
     public EventType getEventType() { return eventType; }

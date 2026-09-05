@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "fixtureStatus": "DERIVED_SYNTHETIC",
+  "provenance": {
+    "alarmSamples": "S01/S08 copied verbatim from libs/jt-protocol src/test/resources/protocol-fixtures/jsatl12-alarm-fixtures.json (DERIVED_SYNTHETIC; source file SHA-256 A4AAE759E2FFF613C8BE4C63354E365AABC22039DBD0483A0457D27DFE58937A; field basis task10-materials/source-audit.md)",
+    "attachmentSamples": "M01 derived from attachment-control-fixtures.json A02 by replacing the 16-byte alarm identifier with S01's extension bytes 31..46 so the 0x0200 alarm and its 0x1210 attachment metadata match end to end; A06/A06-FAIL copied verbatim from attachment-control-fixtures.json (DERIVED_SYNTHETIC; field basis task14-materials/source-audit.md)",
+    "containsRealTerminalCapture": false,
+    "policy": "DERIVED_SYNTHETIC; not a vendor interoperability claim; synthetic terminal identity placeholder 0000000 only"
+  },
+  "samples": [
+    {
+      "sampleId": "S01",
+      "messageId": "0x0200",
+      "provenance": "DERIVED_SYNTHETIC",
+      "description": "0x0200 with one ADAS extension: FORWARD_COLLISION START, attachmentCount=2",
+      "bodySha256": "5a95c07baa71a65488463f9b4bfd83a717cf61792573abcbab5758638f85e224",
+      "bodyHex": "000000000000000201e848000708898000140258005a260115100000642f0000100101010137080000003c001401e8480007088980260115100000000030303030303030260115100000010200"
+    },
+    {
+      "sampleId": "S08",
+      "messageId": "0x0200",
+      "provenance": "DERIVED_SYNTHETIC",
+      "description": "0x0200 with two extensions in one frame (ADAS 0x64 + DMS 0x65): PHONE START and LANE_DEPARTURE START",
+      "bodySha256": "76bbdf407c4829c2b49e383bd27b08bb7a31a4690a5195c98faa00be27a86d12",
+      "bodyHex": "000000000000000201e848000708898000140258005a260115100110642f0000100202020100000200003c001401e8480007088980260115100110000030303030303030260115100110080000652f0000200301020100000000003c001401e8480007088980260115100110000030303030303030260115100110090200"
+    },
+    {
+      "sampleId": "M01",
+      "messageId": "0x1210",
+      "provenance": "DERIVED_SYNTHETIC",
+      "description": "0x1210 attachment info matched to S01: alarm identifier = S01 extension bytes 31..46 (SHA-256 27f961e72c2f2548dfa8d8baf5e20c9e7e1e6a70ba943d93dabd7bed223a2fc5)",
+      "matchedAlarmSampleId": "S01",
+      "bodySha256": "25b202a6f83023661665860093babdb1ef1cad4b3eba5735f2da79a8825397e0",
+      "bodyHex": "3030303030303030303030303030260115100000010200414c41524d4e4f3030303030303030303030303030303030303030303030303100021f30305f36345f363430315f30315f53594e544845544943303030312e6a7067000190002030325f36345f363430315f30325f53594e544845544943303030312e6832363400100000"
+    },
+    {
+      "sampleId": "A06",
+      "messageId": "0x1206",
+      "provenance": "DERIVED_SYNTHETIC",
+      "description": "JT/T 1078 file upload complete notification, result 0 (success); metadata only, never creates an alarm",
+      "bodyHex": "000100"
+    },
+    {
+      "sampleId": "A06-FAIL",
+      "messageId": "0x1206",
+      "provenance": "DERIVED_SYNTHETIC",
+      "description": "JT/T 1078 file upload complete notification, result 1 (failure); metadata only, never creates an alarm",
+      "bodyHex": "000201"
+    }
+  ]
+}

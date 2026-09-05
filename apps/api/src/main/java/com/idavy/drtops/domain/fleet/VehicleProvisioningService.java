@@ -46,6 +46,7 @@ public class VehicleProvisioningService {
             BigDecimal latitude,
             String fleetName,
             boolean dispatchable,
+            String reason,
             UUID actorId) {
         Vehicle vehicle = vehicleRepository.save(Vehicle.create(
                 UUID.randomUUID(), plateNumber, vehicleType, capacity, currentStatus,
@@ -60,7 +61,7 @@ public class VehicleProvisioningService {
                 INITIAL_LOCATION_NOTE, null, null, UUID.randomUUID()));
         locationSnapshotService.apply(locationResult.event());
         auditLogRepository.save(AuditLog.record(
-                "VEHICLE", vehicle.getId(), "VEHICLE_CREATED", "USER", actorId.toString(), null,
+                "VEHICLE", vehicle.getId(), "VEHICLE_CREATED", "USER", actorId.toString(), reason,
                 "{\"locationEventId\":\"" + locationResult.event().getId() + "\"}"));
         return vehicle;
     }

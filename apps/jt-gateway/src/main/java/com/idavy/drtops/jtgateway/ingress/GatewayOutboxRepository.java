@@ -80,7 +80,7 @@ public final class GatewayOutboxRepository {
                 return List.of();
             }
             String kindPredicate = priority == Priority.HIGH
-                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_CONTROL') "
+                    ? "kind IN ('ALARM', 'PROTOCOL_AUDIT', 'ATTACHMENT_METADATA', 'ATTACHMENT_CONTROL') "
                             + "AND (dependency_idempotency_key IS NULL OR dependency_idempotency_key IN "
                             + "(SELECT idempotency_key FROM gateway_outbox dependency WHERE dependency.status = 'DELIVERED'))"
                     : "kind = 'LOCATION'";
@@ -108,6 +108,35 @@ public final class GatewayOutboxRepository {
                         UPDATE gateway_dispatch_state SET next_batch_at = ?
                         WHERE lane = 'LOCATION'
                         """, atOffset(now.plus(LOCATION_BATCH_INTERVAL)));
+            }
+            return List.copyOf(claimed);
+        });
+    }
+
+    public List<OutboxEntry> claimSessionAudits(Instant now, int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        return transactions.execute(status -> {
+            recoverExpiredClaims(now);
+            List<OutboxEntry> selected = jdbc.query("""
+                    SELECT idempotency_key, kind, schema_version, payload_json, status,
+                           attempt_count, next_attempt_at, created_at, delivered_at, last_error_code,
+                           dependency_idempotency_key
+                    FROM gateway_outbox
+                    WHERE status = 'PENDING' AND next_attempt_at <= ? AND kind = 'SESSION_AUDIT'
+                    ORDER BY created_at, idempotency_key
+                    LIMIT %d
+                    FOR UPDATE
+                    """.formatted(limit), ENTRY_MAPPER, atOffset(now));
+            List<OutboxEntry> claimed = new ArrayList<>(selected.size());
+            for (OutboxEntry entry : selected) {
+                int updated = jdbc.update("""
+                        UPDATE gateway_outbox SET status = 'DELIVERING', next_attempt_at = ?
+                        WHERE idempotency_key = ? AND status = 'PENDING'
+                        """, atOffset(now.plus(DELIVERY_LEASE)), entry.idempotencyKey());
+                requireSingleStateTransition(updated);
+                claimed.add(entry.claimedUntil(now.plus(DELIVERY_LEASE)));
             }
             return List.copyOf(claimed);
         });
@@ -275,6 +304,27 @@ public final class GatewayOutboxRepository {
         return count("SELECT COUNT(*) FROM gateway_outbox WHERE status = 'DELIVERED'");
     }
 
+    public OperationalSnapshot operationalSnapshot(Instant now) {
+        Objects.requireNonNull(now, "now");
+        return jdbc.queryForObject("""
+                SELECT
+                    SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN status = 'DELIVERING' THEN 1 ELSE 0 END) AS delivering_count,
+                    SUM(CASE WHEN status = 'DEAD_LETTER' THEN 1 ELSE 0 END) AS dead_letter_count,
+                    MIN(CASE WHEN status IN ('PENDING', 'DELIVERING', 'DEAD_LETTER')
+                             THEN created_at ELSE NULL END) AS oldest_unresolved_at
+                FROM gateway_outbox
+                """, (result, ignored) -> {
+            OffsetDateTime oldest = result.getObject("oldest_unresolved_at", OffsetDateTime.class);
+            long age = oldest == null ? 0 : Math.max(0, Duration.between(oldest.toInstant(), now).getSeconds());
+            return new OperationalSnapshot(
+                    result.getInt("pending_count"),
+                    result.getInt("delivering_count"),
+                    result.getInt("dead_letter_count"),
+                    age);
+        });
+    }
+
     private int count(String sql) {
         Integer value = jdbc.queryForObject(sql, Integer.class);
         return value == null ? 0 : value;
@@ -311,6 +361,9 @@ public final class GatewayOutboxRepository {
         HIGH,
         LOCATION
     }
+
+    public record OperationalSnapshot(
+            int pending, int delivering, int deadLetter, long oldestUnresolvedAgeSeconds) { }
 
     public record FailureUpdate(
             OutboxEntry entry,

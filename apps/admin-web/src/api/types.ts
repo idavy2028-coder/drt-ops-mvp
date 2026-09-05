@@ -268,11 +268,118 @@ export interface TerminalSummary {
   version: number;
 }
 
+export type OnboardReadinessState = "READY" | "DEGRADED" | "UNAVAILABLE" | "NOT_INSTALLED";
+export type OnboardOperatingMode = "DISPATCH_SERVICE" | "SAFETY_MONITOR_ONLY";
+export type OnboardNetworkMode = "DIRECT_CELLULAR" | "SHARED_LAN_CLIENT";
+export type OnboardRole =
+  | "DISPATCH"
+  | "LOCATION_PRIMARY"
+  | "LOCATION_BACKUP"
+  | "ACTIVE_SAFETY"
+  | "VIDEO"
+  | "WAN_UPLINK";
+export type OnboardCapability =
+  | "JT808_LOCATION"
+  | "GBT28787_DISPATCH"
+  | "VENDOR_DISPATCH"
+  | "ADAS"
+  | "DMS"
+  | "VIDEO"
+  | "JT1078_MEDIA";
+
+export interface ProtocolProfiles {
+  transportProfile: "JT808_2019" | "JT808_2013";
+  businessProfile: "GBT28787_2023" | "VENDOR_DISPATCH" | "NONE";
+  safetyProfile: "GBT28787_2023" | "JSATL12_2017" | "NONE";
+  mediaProfile: "JT1078_2016" | "NONE";
+  activePositionIntervalSeconds: number;
+  idlePositionIntervalSeconds: number;
+}
+
+export interface OnboardDeviceView {
+  deviceAlias: string;
+  networkMode: OnboardNetworkMode;
+  terminalStatus: string;
+  authenticationPresent: boolean;
+  currentlyAuthenticated: boolean;
+  lastRegisteredAt: IsoDateTime | null;
+  lastAuthenticatedAt: IsoDateTime | null;
+  sessionLastValidMessageAt: IsoDateTime | null;
+  sessionExpiresAt: IsoDateTime | null;
+  lastSeenAt: IsoDateTime | null;
+  roles: OnboardRole[];
+  protocolProfiles: ProtocolProfiles | null;
+  verifiedCapabilities: OnboardCapability[];
+}
+
+export interface OnboardReadiness {
+  connectivity: OnboardReadinessState;
+  dispatch: OnboardReadinessState;
+  location: OnboardReadinessState;
+  activeSafety: OnboardReadinessState;
+  video: OnboardReadinessState;
+  dispatchEligible: boolean;
+  overallStatus: "OPERATIONAL" | "DEGRADED" | "OFFLINE";
+}
+
+export interface OnboardSystemSummary {
+  onboardSystemId: UUID;
+  vehicleId: UUID;
+  status: string;
+  operatingMode: OnboardOperatingMode;
+  version: number;
+  activeLocationDeviceAlias: string | null;
+  wanDeviceAlias: string | null;
+  devices: OnboardDeviceView[];
+}
+
+export interface OnboardSystemDetail extends OnboardSystemSummary {
+  readiness: OnboardReadiness;
+}
+
+export interface OnboardSystemPage {
+  items: OnboardSystemSummary[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+}
+
+export interface OnboardDeviceConfigurationInput {
+  deviceAlias: string;
+  networkMode: OnboardNetworkMode;
+  roles: readonly OnboardRole[];
+  protocolProfiles: ProtocolProfiles;
+}
+
+export interface OnboardConfigurationInput {
+  expectedVersion: number;
+  operatingMode: OnboardOperatingMode;
+  devices: readonly OnboardDeviceConfigurationInput[];
+  reason: string;
+}
+
+export interface OnboardConfigurationResult {
+  onboardSystemId: UUID;
+  vehicleId: UUID;
+  currentVersion: number;
+  changedFields: string[];
+  warnings: string[];
+}
+
 export interface TerminalBindingSummary {
   plateNumber: string;
   status: string;
   validFrom: IsoDateTime;
   validTo: IsoDateTime | null;
+}
+
+export interface CurrentOnboardMembershipSummary {
+  onboardSystemId: UUID;
+  vehicleId: UUID;
+  plateNumber: string;
+  status: string;
+  validFrom: IsoDateTime;
 }
 
 export interface TerminalSecurityAudit {
@@ -295,6 +402,8 @@ export interface TerminalDetail extends TerminalSummary {
   lastHeartbeatAt: IsoDateTime | null;
   lastLocationAt: IsoDateTime | null;
   offlineAt: IsoDateTime | null;
+  currentOnboardMembership: CurrentOnboardMembershipSummary | null;
+  legacyBindingHistory: TerminalBindingSummary[];
   currentBinding: TerminalBindingSummary | null;
   bindingHistory: TerminalBindingSummary[];
   securityAudits: TerminalSecurityAudit[];

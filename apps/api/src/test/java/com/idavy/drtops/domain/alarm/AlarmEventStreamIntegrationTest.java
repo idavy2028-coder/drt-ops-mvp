@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,20 @@ import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.location.CanonicalPositionIngress;
 import com.idavy.drtops.domain.location.GatewayIngressEnvelope;
+import com.idavy.drtops.domain.location.ServiceAreaLocationChecker;
+import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembership;
+import com.idavy.drtops.domain.onboard.OnboardDeviceMembershipRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapability;
+import com.idavy.drtops.domain.onboard.OnboardDeviceCapabilityRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfile;
+import com.idavy.drtops.domain.onboard.OnboardDeviceProtocolProfileRepository;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignment;
+import com.idavy.drtops.domain.onboard.OnboardDeviceRoleAssignmentRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystem;
+import com.idavy.drtops.domain.onboard.OnboardSystemRepository;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeState;
+import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeStateRepository;
 import com.idavy.drtops.domain.terminal.JtTerminal;
 import com.idavy.drtops.domain.terminal.JtTerminalRepository;
 import com.idavy.drtops.domain.terminal.JtTerminalVehicleBinding;
@@ -46,6 +61,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -74,6 +93,7 @@ import org.springframework.test.context.DynamicPropertySource;
         "drt.auth.jwt-secret=alarm-event-stream-test-secret-123456789"
 })
 @AutoConfigureMockMvc
+@Import(AlarmEventStreamIntegrationTest.LocationCheckerConfiguration.class)
 class AlarmEventStreamIntegrationTest {
     private static final String GATEWAY_CREDENTIAL = "alarm-event-stream-gateway-credential";
 
@@ -96,6 +116,9 @@ class AlarmEventStreamIntegrationTest {
     VehicleAlarmOutboxRepository outbox;
 
     @Autowired
+    OnboardDeviceCapabilityRepository capabilities;
+
+    @Autowired
     JdbcTemplate jdbc;
 
     @Autowired
@@ -114,10 +137,28 @@ class AlarmEventStreamIntegrationTest {
     VehicleRepository vehicles;
 
     @Autowired
+    VehicleLocationEventRepository locationEvents;
+
+    @Autowired
     JtTerminalRepository terminals;
 
     @Autowired
     JtTerminalVehicleBindingRepository bindings;
+
+    @Autowired
+    OnboardSystemRepository onboardSystems;
+
+    @Autowired
+    OnboardDeviceMembershipRepository memberships;
+
+    @Autowired
+    OnboardDeviceProtocolProfileRepository protocolProfiles;
+
+    @Autowired
+    OnboardDeviceRoleAssignmentRepository roles;
+
+    @Autowired
+    OnboardSystemRuntimeStateRepository onboardRuntime;
 
     @Autowired
     PlatformTransactionManager transactions;
@@ -133,6 +174,15 @@ class AlarmEventStreamIntegrationTest {
         outbox.deleteAll();
         alarms.deleteAll();
         users.deleteAll();
+        locationEvents.deleteAll();
+        roles.deleteAll();
+        protocolProfiles.deleteAll();
+        memberships.deleteAll();
+        onboardRuntime.deleteAll();
+        onboardSystems.deleteAll();
+        bindings.deleteAll();
+        terminals.deleteAll();
+        vehicles.deleteAll();
         SecurityContextHolder.clearContext();
     }
 
@@ -196,7 +246,7 @@ class AlarmEventStreamIntegrationTest {
     void replaysPublishedEventsAfterLastEventIdInStableCursorOrderAndRedactsInternalFields() throws Exception {
         UUID actorId = authenticatePersistedReader();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         VehicleAlarmOutboxEvent first = published(alarm, "ALARM_CREATED", firstAt);
         VehicleAlarmOutboxEvent second = published(alarm, "ALARM_STATUS_CHANGED", firstAt.plusMillis(1));
         String cursor = cursor(firstAt, first.getId());
@@ -212,7 +262,7 @@ class AlarmEventStreamIntegrationTest {
     void buffersANewerLiveEventUntilReplayDeliversTheEarlierDatabaseEvent() throws Exception {
         UUID actorId = authenticatePersistedReader();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         VehicleAlarmOutboxEvent replayFirst = published(alarm, "ALARM_CREATED", firstAt);
         VehicleAlarmOutboxEvent replaySecond = published(alarm, "ALARM_STATUS_CHANGED", firstAt.plusMillis(1));
         VehicleAlarmOutboxEvent liveThird = VehicleAlarmOutboxEvent.pending(alarm, "ALARM_STATUS_CHANGED");
@@ -271,7 +321,7 @@ class AlarmEventStreamIntegrationTest {
         operator.assignRoles(Set.of(RoleCode.OPERATOR));
         UUID actorId = users.saveAndFlush(operator).getId();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         published(alarm, "ALARM_CREATED", firstAt);
         published(alarm, "ALARM_STATUS_CHANGED", firstAt.plusMillis(1));
 
@@ -305,7 +355,7 @@ class AlarmEventStreamIntegrationTest {
     void replaysImmutableSnapshotsAfterConsecutiveStateChangesAndAStreamRestart() {
         UUID actorId = authenticatePersistedReaderAndHandler();
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
-        Instant firstAt = Instant.parse("2026-08-14T10:00:00.000001Z");
+        Instant firstAt = withinReplayWindow();
         published(alarm, "ALARM_CREATED", firstAt);
 
         VehicleAlarm acknowledged = actionService.transition(alarm.getId(), alarm.getVersion(), actorId,
@@ -397,6 +447,58 @@ class AlarmEventStreamIntegrationTest {
                 terminal, vehicleId, "SSE P95 test", UUID.randomUUID());
         org.springframework.test.util.ReflectionTestUtils.setField(binding, "validFrom", OffsetDateTime.now().minusDays(1));
         bindings.saveAndFlush(binding);
+        UUID configurationActor = UUID.randomUUID();
+        OffsetDateTime configuredAt = OffsetDateTime.now().minusDays(1);
+        OnboardSystem onboardSystem = onboardSystems.saveAndFlush(OnboardSystem.create(
+                vehicleId,
+                OnboardSystem.OperatingMode.SAFETY_MONITOR_ONLY,
+                configurationActor,
+                configuredAt));
+        onboardRuntime.saveAndFlush(OnboardSystemRuntimeState.initialize(
+                onboardSystem.getId(), configuredAt));
+        protocolProfiles.saveAndFlush(OnboardDeviceProtocolProfile.activate(
+                terminalId,
+                OnboardDeviceProtocolProfile.TransportProfile.JT808_2019,
+                OnboardDeviceProtocolProfile.BusinessProfile.NONE,
+                OnboardDeviceProtocolProfile.SafetyProfile.JSATL12_2017,
+                OnboardDeviceProtocolProfile.MediaProfile.NONE,
+                10,
+                60,
+                "SSE P95 GPS protocol profile",
+                configurationActor,
+                configuredAt));
+        memberships.saveAndFlush(OnboardDeviceMembership.join(
+                onboardSystem.getId(),
+                terminalId,
+                OnboardDeviceMembership.NetworkMode.DIRECT_CELLULAR,
+                "SSE P95 GPS membership",
+                configurationActor,
+                configuredAt));
+        roles.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                onboardSystem.getId(),
+                terminalId,
+                OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY,
+                "SSE P95 GPS role",
+                configurationActor,
+                configuredAt));
+        roles.saveAndFlush(OnboardDeviceRoleAssignment.assign(
+                onboardSystem.getId(),
+                terminalId,
+                OnboardDeviceRoleAssignment.Role.ACTIVE_SAFETY,
+                "SSE P95 active-safety role",
+                configurationActor,
+                configuredAt));
+        OnboardDeviceCapability adas = OnboardDeviceCapability.declare(
+                terminalId,
+                OnboardDeviceCapability.Capability.ADAS,
+                "SSE P95 ADAS declaration",
+                configuredAt);
+        adas.verify(
+                "SSE-P95-ADAS-EVIDENCE",
+                configurationActor,
+                "SSE P95 ADAS verification",
+                configuredAt);
+        capabilities.saveAndFlush(adas);
 
         UserAccount operator = UserAccount.create("sse-p95-reader", "SSE P95 reader", "hash");
         operator.assignRoles(Set.of(RoleCode.OPERATOR));
@@ -411,8 +513,11 @@ class AlarmEventStreamIntegrationTest {
         for (int index = 0; index < 20; index++) {
             String identifier = "P95-" + index + "-" + UUID.randomUUID();
             Instant receivedAt = Instant.now();
-            GatewayIngressEnvelope position = rejectedPositionEnvelope(terminalId, vehicleId, receivedAt);
-            GatewayIngressEnvelope alarm = alarmEnvelope(terminalId, vehicleId, position.idempotencyKey(), identifier, index, receivedAt);
+            GatewayIngressEnvelope position = acceptedPositionEnvelope(
+                    terminalId, onboardSystem.getId(), vehicleId, receivedAt);
+            GatewayIngressEnvelope alarm = alarmEnvelope(
+                    terminalId, onboardSystem.getId(), vehicleId,
+                    position.idempotencyKey(), identifier, index, receivedAt);
             long started = System.nanoTime();
             mockMvc.perform(post("/internal/jt-gateway/ingress")
                             .header("Authorization", "Bearer " + GATEWAY_CREDENTIAL)
@@ -453,6 +558,7 @@ class AlarmEventStreamIntegrationTest {
     }
 
     @Test
+    @Transactional
     void cleansOnlyPublishedOutboxRowsOlderThanSevenDays() {
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
         VehicleAlarmOutboxEvent published = outbox.saveAndFlush(
@@ -467,11 +573,13 @@ class AlarmEventStreamIntegrationTest {
                 Instant.parse("2026-08-01T00:00:00Z"), pending.getId());
 
         assertThat(publisher.cleanupPublishedBefore(Instant.parse("2026-08-08T00:00:00Z"))).isEqualTo(1);
+        entityManager.clear();
         assertThat(outbox.findById(published.getId())).isEmpty();
         assertThat(outbox.findById(pending.getId()).orElseThrow().getStatus()).isEqualTo("PENDING");
     }
 
     @Test
+    @Transactional
     void schedulesSevenDayCleanupForPublishedOutboxRowsOnly() throws Exception {
         VehicleAlarm alarm = alarms.saveAndFlush(alarm());
         VehicleAlarmOutboxEvent published = outbox.saveAndFlush(
@@ -488,6 +596,7 @@ class AlarmEventStreamIntegrationTest {
         Method scheduledCleanup = AlarmOutboxPublisher.class.getDeclaredMethod("scheduledCleanup");
         assertThat(scheduledCleanup.getAnnotation(org.springframework.scheduling.annotation.Scheduled.class)).isNotNull();
         scheduledCleanup.invoke(publisher);
+        entityManager.clear();
 
         assertThat(outbox.findById(published.getId())).isEmpty();
         assertThat(outbox.findById(pending.getId()).orElseThrow().getStatus()).isEqualTo("PENDING");
@@ -495,28 +604,42 @@ class AlarmEventStreamIntegrationTest {
 
     private static VehicleAlarm alarm() {
         VehicleAlarmIngressService.AlarmFact fact = new VehicleAlarmIngressService.AlarmFact(
-                UUID.randomUUID(), UUID.randomUUID(), "T/JSATL12-2017", "ADAS", 1, "FORWARD_COLLISION",
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                "T/JSATL12-2017", "ADAS", 1, "FORWARD_COLLISION",
                 4097L, "START", 1, "ALARM-1", Instant.parse("2026-08-14T10:00:00Z"),
                 Instant.parse("2026-08-14T10:00:01Z"), new BigDecimal("118.0000000"),
                 new BigDecimal("32.0000000"), new BigDecimal("60.00"), UUID.randomUUID(), "UNASSESSED",
                 "a".repeat(64));
         return VehicleAlarm.start(fact, UUID.randomUUID().toString().replace("-", "")
                         + UUID.randomUUID().toString().replace("-", ""),
-                new AlarmStore.LocationReference(UUID.randomUUID(), "GOOD", "[]"));
+                new AlarmStore.LocationReference(
+                        UUID.randomUUID(), fact.onboardSystemId(), fact.occurredAt(), "GOOD", "[]"));
     }
 
-    private GatewayIngressEnvelope rejectedPositionEnvelope(UUID terminalId, UUID vehicleId, Instant receivedAt) throws Exception {
-        CanonicalPositionIngress position = new CanonicalPositionIngress(terminalId, vehicleId, "JT808-2019", 1,
-                new BigDecimal("181.0000000"), new BigDecimal("35.2103000"), "WGS84", receivedAt, receivedAt,
-                0L, 0L, new BigDecimal("60.00"), 90, 0, 8, "a".repeat(64));
+    private GatewayIngressEnvelope acceptedPositionEnvelope(
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            Instant receivedAt) throws Exception {
+        CanonicalPositionIngress position = new CanonicalPositionIngress(
+                terminalId, onboardSystemId, vehicleId, "LOCATION_PRIMARY", "JT808-2019", 1,
+                new BigDecimal("105.2384988"), new BigDecimal("35.2103000"), "WGS84", receivedAt, receivedAt,
+                0L, 0x02L, new BigDecimal("60.00"), 90, 0, 8, "a".repeat(64));
         return new GatewayIngressEnvelope(1, UUID.randomUUID(), "POSITION", receivedAt,
                 objectMapper.writeValueAsString(position));
     }
 
     private GatewayIngressEnvelope alarmEnvelope(
-            UUID terminalId, UUID vehicleId, UUID positionKey, String identifier, int index, Instant receivedAt) throws Exception {
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            UUID positionKey,
+            String identifier,
+            int index,
+            Instant receivedAt) throws Exception {
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("terminalId", terminalId);
+        payload.put("onboardSystemId", onboardSystemId);
         payload.put("vehicleId", vehicleId);
         payload.put("standard", "T/JSATL12-2017");
         payload.put("module", "ADAS");
@@ -662,6 +785,10 @@ class AlarmEventStreamIntegrationTest {
         }
     }
 
+    private static Instant withinReplayWindow() {
+        return Instant.now().minus(Duration.ofDays(1)).truncatedTo(ChronoUnit.MICROS);
+    }
+
     private static int occurrences(String value, String needle) {
         int count = 0;
         for (int offset = value.indexOf(needle); offset >= 0; offset = value.indexOf(needle, offset + needle.length())) {
@@ -726,4 +853,13 @@ class AlarmEventStreamIntegrationTest {
             return error;
         }
     }
+
+    @TestConfiguration
+    static class LocationCheckerConfiguration {
+        @Bean @Primary
+        ServiceAreaLocationChecker alarmIngressAreaChecker() {
+            return (longitude, latitude) -> true;
+        }
+    }
+
 }

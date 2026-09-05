@@ -10,6 +10,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
+import java.util.Objects;
 import java.util.UUID;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
@@ -55,6 +56,7 @@ public class Vehicle {
     private UUID currentLocationEventId;
 
     private UUID currentLocationTaskId;
+    private UUID currentLocationOnboardSystemId;
     private UUID currentLocationTerminalId;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) private LocationQualityStatus currentLocationQualityStatus;
     @org.hibernate.annotations.JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false) private String currentLocationQualityReasons;
@@ -144,6 +146,16 @@ public class Vehicle {
         return dispatchable;
     }
 
+    public void correctIdentifier(String plateNumber) {
+        if (dispatchable || !"IDLE".equals(currentStatus)) {
+            throw new IllegalStateException("vehicle identifier correction requires idle non-dispatchable vehicle");
+        }
+        if (plateNumber == null || plateNumber.isBlank()) {
+            throw new IllegalArgumentException("plateNumber must not be blank");
+        }
+        this.plateNumber = plateNumber;
+    }
+
     public void reserveForDispatch() {
         if (!dispatchable) {
             throw new IllegalStateException("Vehicle is not dispatchable");
@@ -197,6 +209,7 @@ public class Vehicle {
         this.currentLocationEventId = eventId;
         this.currentLocationTaskId = taskId;
         if (source == LocationSource.MANUAL_DISPATCHER) {
+            this.currentLocationOnboardSystemId = null;
             this.currentLocationTerminalId = null;
             this.currentLocationQualityStatus = LocationQualityStatus.GOOD;
             this.currentLocationQualityReasons = "[]";
@@ -235,6 +248,9 @@ public class Vehicle {
     public UUID getCurrentLocationTaskId() {
         return currentLocationTaskId;
     }
+    public UUID getCurrentLocationOnboardSystemId() {
+        return currentLocationOnboardSystemId;
+    }
     public UUID getCurrentLocationTerminalId() { return currentLocationTerminalId; }
     public LocationQualityStatus getCurrentLocationQualityStatus() { return currentLocationQualityStatus; }
     public String getCurrentLocationQualityReasons() { return currentLocationQualityReasons; }
@@ -244,12 +260,30 @@ public class Vehicle {
     public boolean isCurrentLocationStale() { return currentLocationStale; }
 
     public void applyGpsLocationSnapshot(com.idavy.drtops.domain.location.VehicleLocationEvent event) {
-        applyLocationSnapshot(event.getLocation(), null, LocationSource.GPS_DEVICE, "GCJ02", event.getDriverReportedAt(),
-                event.getRecordedAt(), event.getId(), null);
-        currentLocationTerminalId = event.getTerminalId(); currentLocationQualityStatus = event.getQualityStatus();
+        Objects.requireNonNull(event, "event");
+        currentLocation = GeographyPoint.fromWkt(event.getLocation());
+        currentLocationAddress = null;
+        currentLocationSource = LocationSource.GPS_DEVICE;
+        currentLocationCoordinateSystem = "GCJ02";
+        currentLocationReportedAt = event.getDriverReportedAt();
+        currentLocationRecordedAt = event.getRecordedAt();
+        currentLocationEventId = event.getId();
+        currentLocationTaskId = null;
+        currentLocationOnboardSystemId = Objects.requireNonNull(
+                event.getOnboardSystemId(), "onboardSystemId");
+        currentLocationTerminalId = Objects.requireNonNull(
+                event.getTerminalId(), "terminalId");
+        currentLocationQualityStatus = event.getQualityStatus();
         currentLocationQualityReasons = event.getQualityReasons(); currentLocationGatewayReceivedAt = event.getGatewayReceivedAt();
         currentLocationSpeedKph = event.getSpeedKph(); currentLocationDirectionDegrees = event.getDirectionDegrees();
         currentLocationStale = false;
+    }
+
+    public void invalidateGpsSnapshotForOnboardSystem(UUID onboardSystemId) {
+        if (currentLocationSource == LocationSource.GPS_DEVICE
+                && Objects.equals(currentLocationOnboardSystemId, onboardSystemId)) {
+            currentLocationStale = true;
+        }
     }
 
     private void requireStatus(String expectedStatus) {

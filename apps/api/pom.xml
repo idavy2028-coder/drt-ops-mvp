@@ -93,6 +93,19 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>com.idavy</groupId>
+      <artifactId>drt-ops-jt-gateway</artifactId>
+      <version>0.1.0-SNAPSHOT</version>
+      <classifier>classes-only</classifier>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.idavy</groupId>
+      <artifactId>drt-ops-jt-terminal-simulator</artifactId>
+      <version>0.1.0-SNAPSHOT</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>

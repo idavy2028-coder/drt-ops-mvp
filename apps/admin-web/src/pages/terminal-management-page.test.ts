@@ -3,6 +3,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authStore } from "../auth/authStore";
+import { routes } from "../router";
+import OnboardSystemManagementPage from "./OnboardSystemManagementPage.vue";
 import TerminalManagementPage from "./TerminalManagementPage.vue";
 
 const terminalApi = vi.hoisted(() => ({
@@ -42,13 +44,47 @@ describe("TerminalManagementPage", () => {
     expect(await screen.findByText("JT-001")).toBeInTheDocument();
     expect(screen.getByText("****9012")).toBeInTheDocument();
     expect(screen.getByText("JT/T 1078：支持")).toBeInTheDocument();
-    expect(screen.getByText("最近鉴权：尚无数据")).toBeInTheDocument();
+    expect(screen.getByText("最近成功鉴权（历史）：尚无数据")).toBeInTheDocument();
     expect(screen.getByText("SESSION_ESTABLISHED")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "当前车载系统归属" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "历史 legacy 绑定" })).toBeInTheDocument();
+    expect(screen.getByText("甘J-D001 · ACTIVE")).toBeInTheDocument();
+    expect(screen.getByText(/甘J-H001 · UNBOUND/)).toBeInTheDocument();
     expect(screen.getByText("所有操作须填写原因，并在提交前进行第二次确认；提交前会重新读取最新版本。")).toBeInTheDocument();
     expect(screen.queryByText("PHONE-9012")).not.toBeInTheDocument();
     expect(screen.queryByText("auth-token-digest")).not.toBeInTheDocument();
     expect(screen.queryByText("raw-payload")).not.toBeInTheDocument();
     expect(screen.queryByText("11111111-1111-1111-1111-111111111111")).not.toBeInTheDocument();
+  });
+
+  it("terminalDetailUsesTheSameCurrentSessionStateAsOnboardDetail", async () => {
+    terminalApi.getTerminalDetail.mockResolvedValue({
+      ...detail(),
+      onlineStatus: "OFFLINE",
+      lastAuthenticatedAt: "2026-08-29T08:01:00Z",
+      lastValidMessageAt: "2026-08-29T08:02:00Z",
+      offlineAt: "2026-08-29T08:05:00Z"
+    });
+
+    render(TerminalManagementPage);
+
+    expect(await screen.findByText("当前会话：当前：离线")).toBeInTheDocument();
+    expect(screen.getByText(/最近成功鉴权（历史）：/)).toBeInTheDocument();
+    expect(screen.getByText(/会话最近有效消息：/)).toBeInTheDocument();
+  });
+
+  it("keeps physical-device operations on the compatibility route with an aggregate-page banner", async () => {
+    // Mutations caught: routing /terminals back to the raw device page, removing the
+    // /terminals/devices compatibility route, or stranding operators without a safe return link.
+    expect(routes.find((route) => route.path === "/terminals")?.component)
+      .toBe(OnboardSystemManagementPage);
+    expect(routes.find((route) => route.path === "/terminals/devices")?.component)
+      .toBe(TerminalManagementPage);
+
+    render(TerminalManagementPage);
+    expect(await screen.findByText("物理设备兼容操作")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "返回车载系统总览" }))
+      .toHaveAttribute("href", "/terminals");
   });
 
   it("shows management actions only to a terminal manager", async () => {
@@ -180,8 +216,10 @@ function detail(terminalCode = "JT-001", version = 4) {
     lastHeartbeatAt: null,
     lastLocationAt: null,
     offlineAt: null,
-    currentBinding: { plateNumber: "甘J-D001", status: "ACTIVE", validFrom: "2026-08-11T08:00:00Z", validTo: null },
-    bindingHistory: [{ plateNumber: "甘J-D001", status: "ACTIVE", validFrom: "2026-08-11T08:00:00Z", validTo: null }],
+    currentOnboardMembership: { onboardSystemId: "system-1", vehicleId: "vehicle-1", plateNumber: "甘J-D001", status: "ACTIVE", validFrom: "2026-08-11T08:00:00Z" },
+    legacyBindingHistory: [{ plateNumber: "甘J-H001", status: "UNBOUND", validFrom: "2026-08-01T08:00:00Z", validTo: "2026-08-02T08:00:00Z" }],
+    currentBinding: null,
+    bindingHistory: [{ plateNumber: "甘J-H001", status: "UNBOUND", validFrom: "2026-08-01T08:00:00Z", validTo: "2026-08-02T08:00:00Z" }],
     securityAudits: [{ eventType: "ONLINE", result: "APPLIED", reasonCode: "SESSION_ESTABLISHED", protocolVersion: "JT808_2019", messageId: 2, occurredAt: "2026-08-12T08:00:00Z" }]
   };
 }

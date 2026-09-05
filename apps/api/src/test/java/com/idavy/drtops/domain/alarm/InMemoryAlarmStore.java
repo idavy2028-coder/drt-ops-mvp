@@ -11,27 +11,56 @@ final class InMemoryAlarmStore implements AlarmStore {
     private final List<VehicleAlarm> facts = new ArrayList<>();
     private final List<OutboxRecord> outbox = new ArrayList<>();
     private final java.util.Map<UUID, AlarmStore.LocationReference> positions = new java.util.HashMap<>();
-    private boolean bindingsAccepted = true;
-    private Instant historicalBindingValidUntil;
+    private final java.util.Set<UUID> untrustedPositions = new java.util.HashSet<>();
+    private boolean authorityAccepted = true;
 
-    @Override public void lockTerminal(UUID terminalId) { }
-    @Override public boolean matchesBindingAt(UUID terminalId, UUID vehicleId, Instant gatewayReceivedAt) {
-        return bindingsAccepted || historicalBindingValidUntil != null
-                && !gatewayReceivedAt.isAfter(historicalBindingValidUntil);
+    @Override public Optional<AlarmStore.LocationReference> findLocation(
+            UUID positionIdempotencyKey,
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId) {
+        return Optional.ofNullable(positions.get(positionIdempotencyKey))
+                .filter(location -> location.onboardSystemId().equals(onboardSystemId));
     }
-    @Override public Optional<AlarmStore.LocationReference> findLocation(UUID positionIdempotencyKey) {
-        return Optional.ofNullable(positions.get(positionIdempotencyKey));
+    @Override public AlarmStore.ActiveSafetyAuthorization lockAndAuthorizeActiveSafety(
+            VehicleAlarmIngressService.AlarmFact fact,
+            AlarmStore.LocationReference location) {
+        return authorityAccepted
+                ? AlarmStore.ActiveSafetyAuthorization.allowed()
+                : AlarmStore.ActiveSafetyAuthorization.rejected();
+    }
+    @Override public boolean hasLocationDependency(UUID positionIdempotencyKey) {
+        return positions.containsKey(positionIdempotencyKey) || untrustedPositions.contains(positionIdempotencyKey);
     }
     @Override public Optional<VehicleAlarm> findByDeduplicationKey(String key) {
         return facts.stream().filter(fact -> fact.getDeduplicationKey().equals(key)).findFirst();
     }
     @Override public Optional<VehicleAlarm> findOpenStart(VehicleAlarmIngressService.AlarmFact fact) {
         return facts.stream().filter(value -> value.getTerminalId().equals(fact.terminalId())
+                && java.util.Objects.equals(value.getOnboardSystemId(), fact.onboardSystemId())
                 && value.getVehicleId().equals(fact.vehicleId())
                 && value.getStandard().equals(fact.standard()) && value.getModule().equals(fact.module())
                 && value.getAlarmTypeCode() == fact.typeCode()
                 && value.getTerminalAlarmId() == fact.terminalAlarmId()
                 && value.getEndedAt() == null).findFirst();
+    }
+    @Override public boolean hasOpenStart(VehicleAlarmIngressService.AlarmFact fact) {
+        return facts.stream().anyMatch(value -> value.getTerminalId().equals(fact.terminalId())
+                && value.getVehicleId().equals(fact.vehicleId())
+                && value.getStandard().equals(fact.standard())
+                && value.getModule().equals(fact.module())
+                && value.getAlarmTypeCode() == fact.typeCode()
+                && value.getTerminalAlarmId() == fact.terminalAlarmId()
+                && value.getEndedAt() == null);
+    }
+    @Override public Optional<VehicleAlarm> findStart(VehicleAlarmIngressService.AlarmFact fact) {
+        return facts.stream().filter(value -> value.getTerminalId().equals(fact.terminalId())
+                && java.util.Objects.equals(value.getOnboardSystemId(), fact.onboardSystemId())
+                && value.getVehicleId().equals(fact.vehicleId())
+                && value.getStandard().equals(fact.standard()) && value.getModule().equals(fact.module())
+                && value.getAlarmTypeCode() == fact.typeCode()
+                && value.getTerminalAlarmId() == fact.terminalAlarmId())
+                .max(java.util.Comparator.comparing(VehicleAlarm::getOccurredAt));
     }
     @Override public VehicleAlarm save(VehicleAlarm alarm) { if (!facts.contains(alarm)) facts.add(alarm); return alarm; }
     @Override public void appendOutbox(VehicleAlarm alarm, String eventType) { outbox.add(new OutboxRecord(alarm.getId(), eventType)); }
@@ -42,15 +71,16 @@ final class InMemoryAlarmStore implements AlarmStore {
         position(key, eventId, qualityStatus, "[]");
     }
     void position(UUID key, UUID eventId, String qualityStatus, String qualityReasons) {
-        positions.put(key, new AlarmStore.LocationReference(eventId, qualityStatus, qualityReasons));
+        positions.put(key, new AlarmStore.LocationReference(
+                eventId,
+                VehicleAlarmIngressServiceTest.ONBOARD_SYSTEM_ID,
+                Instant.parse("2026-01-15T02:00:00Z"),
+                qualityStatus,
+                qualityReasons));
     }
     void rejectedPosition(UUID key) {
-        positions.put(key, new AlarmStore.LocationReference(null, "REJECTED", "[\"INVALID_COORDINATE\"]"));
+        untrustedPositions.add(key);
     }
-    void rejectBindings() { bindingsAccepted = false; }
-    void acceptHistoricalBindingUntil(Instant validUntil) {
-        bindingsAccepted = false;
-        historicalBindingValidUntil = validUntil;
-    }
+    void rejectAuthority() { authorityAccepted = false; }
     record OutboxRecord(UUID alarmId, String eventType) { }
 }

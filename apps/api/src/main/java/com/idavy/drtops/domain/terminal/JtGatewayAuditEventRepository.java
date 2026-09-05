@@ -5,4 +5,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface JtGatewayAuditEventRepository extends JpaRepository<JtGatewayAuditEvent, UUID> {
     java.util.List<JtGatewayAuditEvent> findByTerminalIdOrderByOccurredAtDesc(UUID terminalId);
+    java.util.Optional<JtGatewayAuditEvent> findByIdempotencyKey(UUID idempotencyKey);
+    boolean existsByIdempotencyKey(UUID idempotencyKey);
 }

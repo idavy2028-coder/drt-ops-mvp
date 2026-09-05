@@ -5,6 +5,7 @@ import com.idavy.drtops.domain.fleet.DriverRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.map.Coordinate;
+import com.idavy.drtops.domain.onboard.OnboardReadinessService;
 import com.idavy.drtops.domain.order.RideOrder;
 import com.idavy.drtops.domain.order.RideOrderRepository;
 import com.idavy.drtops.domain.task.TaskStatus;
@@ -12,6 +13,8 @@ import com.idavy.drtops.domain.task.VehicleTask;
 import com.idavy.drtops.domain.task.VehicleTaskRepository;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateRequest;
 import com.idavy.drtops.integration.algorithm.DispatchEvaluateResponse;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -22,10 +25,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 
 @Component
 public class CandidateTaskAssembler {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(CandidateTaskAssembler.class);
+    private static final String READINESS_FAILURE_METRIC =
+            "drt.dispatch.onboard.readiness.evaluation.failures";
 
     private final VehicleRepository vehicleRepository;
     private final DriverRepository driverRepository;
@@ -33,6 +43,8 @@ public class CandidateTaskAssembler {
     private final RideOrderRepository rideOrderRepository;
     private final TravelEstimateService travelEstimateService;
     private final TaskInsertionPlanner taskInsertionPlanner;
+    private final OnboardReadinessService onboardReadinessService;
+    private final Counter readinessEvaluationFailures;
 
     public CandidateTaskAssembler(
             VehicleRepository vehicleRepository,
@@ -40,13 +52,17 @@ public class CandidateTaskAssembler {
             VehicleTaskRepository vehicleTaskRepository,
             RideOrderRepository rideOrderRepository,
             TravelEstimateService travelEstimateService,
-            TaskInsertionPlanner taskInsertionPlanner) {
+            TaskInsertionPlanner taskInsertionPlanner,
+            OnboardReadinessService onboardReadinessService,
+            MeterRegistry meterRegistry) {
         this.vehicleRepository = vehicleRepository;
         this.driverRepository = driverRepository;
         this.vehicleTaskRepository = vehicleTaskRepository;
         this.rideOrderRepository = rideOrderRepository;
         this.travelEstimateService = travelEstimateService;
         this.taskInsertionPlanner = taskInsertionPlanner;
+        this.onboardReadinessService = onboardReadinessService;
+        this.readinessEvaluationFailures = meterRegistry.counter(READINESS_FAILURE_METRIC);
     }
 
     public DispatchEvaluateRequest assemble(RideOrder order, DispatchRuleSet ruleSet) {
@@ -123,6 +139,7 @@ public class CandidateTaskAssembler {
             List<String> manualReviewReasons) {
         List<Vehicle> dispatchableVehicles = vehicleRepository.findAll().stream()
                 .filter(Vehicle::isDispatchable)
+                .filter(this::onboardDispatchReady)
                 .toList();
         Map<UUID, Vehicle> vehiclesById = new HashMap<>();
         for (Vehicle vehicle : dispatchableVehicles) {
@@ -161,6 +178,18 @@ public class CandidateTaskAssembler {
             }
         }
         return candidates;
+    }
+
+    private boolean onboardDispatchReady(Vehicle vehicle) {
+        try {
+            return onboardReadinessService.evaluateIsolated(vehicle.getId()).dispatchEligible();
+        } catch (DataAccessException evaluationFailure) {
+            readinessEvaluationFailures.increment();
+            LOGGER.warn(
+                    "event=ONBOARD_READINESS_EVALUATION_FAILED failureType={}",
+                    evaluationFailure.getClass().getSimpleName());
+            return false;
+        }
     }
 
     private DispatchEvaluateRequest.CandidateTask toNewTaskCandidate(

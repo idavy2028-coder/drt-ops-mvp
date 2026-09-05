@@ -2,6 +2,7 @@ package com.idavy.drtops.jtgateway.session;
 
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -11,11 +12,19 @@ public final class TerminalSessionRegistry {
     private final ConcurrentMap<UUID, Object> terminalLocks = new ConcurrentHashMap<>();
 
     public Optional<TerminalSession> claim(TerminalSession session) {
+        return claim(session, ignored -> { });
+    }
+
+    public Optional<TerminalSession> claim(
+            TerminalSession session,
+            Consumer<TerminalSession> beforeReplacement) {
         UUID terminalId = java.util.Objects.requireNonNull(session.terminalId(), "terminalId");
+        java.util.Objects.requireNonNull(beforeReplacement, "beforeReplacement");
         TerminalSession previous;
         synchronized (lockFor(terminalId)) {
             previous = authenticatedSessions.get(terminalId);
             if (previous != null && previous != session) {
+                beforeReplacement.accept(previous);
                 previous.markClosed();
             }
             authenticatedSessions.put(terminalId, session);

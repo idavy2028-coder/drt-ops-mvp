@@ -8,6 +8,7 @@ import com.idavy.drtops.jt.protocol.core.LocationReportCodec;
 import com.idavy.drtops.jt.protocol.core.Jt808CoreModule;
 import com.idavy.drtops.jtgateway.dispatch.ProtocolModuleRegistry;
 import com.idavy.drtops.jtgateway.session.TerminalSession;
+import com.idavy.drtops.jtgateway.session.TerminalSessionContext;
 import com.idavy.drtops.jtgateway.session.TerminalSessionRegistry;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -20,6 +21,9 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -37,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CanonicalPositionIngressTest {
     private static final UUID TERMINAL_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID ONBOARD_SYSTEM_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final UUID VEHICLE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final Instant RECEIVED_AT = Instant.parse("2026-08-12T00:00:00Z");
 
@@ -54,6 +59,8 @@ class CanonicalPositionIngressTest {
         assertEquals(0, frame.body().refCnt());
         assertEquals(VEHICLE_ID, buffer.envelope().vehicleId());
         assertEquals(TERMINAL_ID, buffer.envelope().terminalId());
+        assertEquals(ONBOARD_SYSTEM_ID, buffer.envelope().onboardSystemId());
+        assertEquals("LOCATION_PRIMARY", buffer.envelope().sourceRole());
         assertEquals("GCJ02", buffer.envelope().rawCoordinateSystem());
     }
 
@@ -78,6 +85,18 @@ class CanonicalPositionIngressTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> session.registrationAccepted(TERMINAL_ID, VEHICLE_ID, "BD09", 5, "123456789012"));
+    }
+
+    @Test
+    void rejectsMissingOrInvalidOnboardProvenanceAndUnsignedShortSerials() {
+        assertThrows(NullPointerException.class, () -> positionWithProvenance(
+                TERMINAL_ID, null, VEHICLE_ID, "LOCATION_PRIMARY", 1));
+        assertThrows(IllegalArgumentException.class, () -> positionWithProvenance(
+                TERMINAL_ID, ONBOARD_SYSTEM_ID, VEHICLE_ID, "DISPATCH", 1));
+        assertThrows(IllegalArgumentException.class, () -> positionWithProvenance(
+                TERMINAL_ID, ONBOARD_SYSTEM_ID, VEHICLE_ID, "LOCATION_PRIMARY", -1));
+        assertThrows(IllegalArgumentException.class, () -> positionWithProvenance(
+                TERMINAL_ID, ONBOARD_SYSTEM_ID, VEHICLE_ID, "LOCATION_PRIMARY", 65_536));
     }
 
     @Test
@@ -176,18 +195,31 @@ class CanonicalPositionIngressTest {
         assertTrue(registry.dispatch(session, frame).mayAcknowledgeSuccess());
         assertEquals(1, repository.totalCount());
         assertEquals(0, frame.body().refCnt());
-        CanonicalPositionIngress payload = objectMapper.readValue(repository.find(ProtocolModuleRegistry.idempotencyKeyFor(position(
+        String payloadJson = repository.find(ProtocolModuleRegistry.idempotencyKeyFor(position(
                 TERMINAL_ID, "JT808_2013", 126, Instant.parse("2018-10-15T02:10:10Z"),
                 "35efad69597feac5fed7258bddb2bef840dede5ad8f9281951a3722077d107a4", RECEIVED_AT, VEHICLE_ID)))
-                .orElseThrow().payloadJson(), CanonicalPositionIngress.class);
+                .orElseThrow().payloadJson();
+        CanonicalPositionIngress payload = objectMapper.readValue(
+                payloadJson, CanonicalPositionIngress.class);
         assertEquals(TERMINAL_ID, payload.terminalId());
+        assertEquals(ONBOARD_SYSTEM_ID, payload.onboardSystemId());
         assertEquals(VEHICLE_ID, payload.vehicleId());
+        assertEquals("LOCATION_PRIMARY", payload.sourceRole());
         assertEquals(new BigDecimal("132.444444"), payload.rawLongitude());
         assertEquals(new BigDecimal("12.222222"), payload.rawLatitude());
         assertEquals(Instant.parse("2018-10-15T02:10:10Z"), payload.terminalLocatedAt());
         assertEquals(1, payload.alarmBits());
         assertEquals(2, payload.statusBits());
         assertEquals("35efad69597feac5fed7258bddb2bef840dede5ad8f9281951a3722077d107a4", payload.payloadDigest());
+        List<String> fieldOrder = new ArrayList<>();
+        objectMapper.readTree(payloadJson).fieldNames().forEachRemaining(fieldOrder::add);
+        assertEquals(List.of(
+                "terminalId", "onboardSystemId", "vehicleId", "sourceRole",
+                "protocolVersion", "messageSerialNo", "rawLongitude", "rawLatitude",
+                "rawCoordinateSystem", "terminalLocatedAt", "gatewayReceivedAt",
+                "alarmBits", "statusBits", "speedKph", "directionDegrees",
+                "altitudeMeters", "satelliteCount", "payloadDigest"), fieldOrder);
+        assertFalse(payloadJson.contains("123456789012"));
 
         Jt808Frame duplicate = locationFrame(126);
         assertTrue(registry.dispatch(session, duplicate).mayAcknowledgeSuccess());
@@ -331,7 +363,20 @@ class CanonicalPositionIngressTest {
     private static TerminalSession authenticatedSession(UUID vehicleId, String sourceCoordinateSystem) {
         EmbeddedChannel channel = new EmbeddedChannel();
         TerminalSession session = new TerminalSession(channel, RECEIVED_AT);
-        session.registrationAccepted(TERMINAL_ID, vehicleId, sourceCoordinateSystem, 5, "123456789012");
+        session.registrationAccepted(new TerminalSessionContext(
+                2,
+                TERMINAL_ID,
+                ONBOARD_SYSTEM_ID,
+                vehicleId,
+                4,
+                Set.of("LOCATION_PRIMARY"),
+                sourceCoordinateSystem,
+                new TerminalSessionContext.SessionProtocolProfile(
+                        "JT808_2013", "NONE", "NONE", "NONE",
+                        List.of(), 30, 60),
+                null,
+                List.of(),
+                5), "123456789012");
         session.authenticated(RECEIVED_AT);
         return session;
     }
@@ -394,9 +439,36 @@ class CanonicalPositionIngressTest {
             Instant receivedAt,
             UUID vehicleId) {
         return new CanonicalPositionIngress(
-                terminalId, vehicleId, protocolVersion, serialNo,
+                terminalId, ONBOARD_SYSTEM_ID, vehicleId, "LOCATION_PRIMARY", protocolVersion, serialNo,
                 new BigDecimal("132.444444"), new BigDecimal("12.222222"), "WGS84",
-                locatedAt, receivedAt, 1, 2, new BigDecimal("6.0"), 0, 40, null, payloadDigest);
+                locatedAt, receivedAt, 1L, 2L, new BigDecimal("6.0"), 0, 40, null, payloadDigest);
+    }
+
+    private static CanonicalPositionIngress positionWithProvenance(
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            String sourceRole,
+            int serialNo) {
+        return new CanonicalPositionIngress(
+                terminalId,
+                onboardSystemId,
+                vehicleId,
+                sourceRole,
+                "JT808_2019",
+                serialNo,
+                new BigDecimal("132.444444"),
+                new BigDecimal("12.222222"),
+                "WGS84",
+                RECEIVED_AT,
+                RECEIVED_AT,
+                0L,
+                0L,
+                new BigDecimal("6.0"),
+                0,
+                40,
+                null,
+                "a".repeat(64));
     }
 
     private static UUID key(CanonicalPositionIngress position) {

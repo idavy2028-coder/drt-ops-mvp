@@ -18,7 +18,10 @@ public class LocationQualityEvaluator {
         Duration ahead = Duration.between(input.gatewayReceivedAt(), input.terminalLocatedAt());
         if (ahead.compareTo(Duration.ofSeconds(120)) > 0) reasons.add(LocationQualityReason.TERMINAL_TIME_AHEAD_EXCEEDED);
         else if (ahead.compareTo(Duration.ZERO) > 0) reasons.add(LocationQualityReason.TERMINAL_TIME_AHEAD);
-        if (input.latestTrustedReportedAt() != null && input.terminalLocatedAt().isBefore(input.latestTrustedReportedAt())) reasons.add(LocationQualityReason.OUT_OF_ORDER);
+        if (input.latestSourceTerminalLocatedAt() != null
+                && input.terminalLocatedAt().isBefore(input.latestSourceTerminalLocatedAt())) {
+            reasons.add(LocationQualityReason.OUT_OF_ORDER);
+        }
         if ((input.statusBits() & 0x02) == 0) reasons.add(LocationQualityReason.POSITION_INVALID);
         if (input.speedKph() != null && input.speedKph().compareTo(new BigDecimal("140")) > 0) reasons.add(LocationQualityReason.SPEED_EXCEEDED);
         else if (input.speedKph() != null && input.speedKph().compareTo(new BigDecimal("120")) >= 0) reasons.add(LocationQualityReason.SPEED_WARNING);
@@ -48,7 +51,7 @@ public class LocationQualityEvaluator {
     }
 
     public record Input(BigDecimal longitude, BigDecimal latitude, Instant terminalLocatedAt, Instant gatewayReceivedAt,
-                        Instant now, Instant latestTrustedReportedAt, long statusBits, BigDecimal speedKph,
+                        Instant now, Instant latestSourceTerminalLocatedAt, long statusBits, BigDecimal speedKph,
                         Integer satelliteCount, boolean insideServiceArea, Double impliedSpeedKph,
                         int consecutiveQuarantines) { }
 }

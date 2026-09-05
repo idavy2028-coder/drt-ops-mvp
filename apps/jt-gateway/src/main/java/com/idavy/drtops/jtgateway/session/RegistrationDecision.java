@@ -8,57 +8,63 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 public final class RegistrationDecision {
     private final boolean approved;
-    private final UUID terminalId;
-    private final UUID vehicleId;
-    private final String sourceCoordinateSystem;
-    private final String activeSafetyStandard;
-    private final List<String> activeSafetyModules;
-    private final int tokenVersion;
+    private final TerminalSessionContext context;
     private final byte[] authenticationToken;
+    private boolean authenticationTokenConsumed;
     private final String authenticationTokenSha256;
     private final RegistrationRejection rejection;
 
     private RegistrationDecision(
             boolean approved,
-            UUID terminalId,
-            UUID vehicleId,
-            String sourceCoordinateSystem,
-            String activeSafetyStandard,
-            List<String> activeSafetyModules,
-            int tokenVersion,
+            TerminalSessionContext context,
             byte[] authenticationToken,
             String authenticationTokenSha256,
             RegistrationRejection rejection) {
         this.approved = approved;
-        this.terminalId = terminalId;
-        this.vehicleId = vehicleId;
-        this.sourceCoordinateSystem = sourceCoordinateSystem;
-        this.activeSafetyStandard = activeSafetyStandard;
-        this.activeSafetyModules = activeSafetyModules == null ? List.of() : List.copyOf(activeSafetyModules);
-        this.tokenVersion = tokenVersion;
+        this.context = context;
         this.authenticationToken = authenticationToken == null ? null : authenticationToken.clone();
         this.authenticationTokenSha256 = authenticationTokenSha256;
         this.rejection = rejection;
     }
 
     public static RegistrationDecision issue(
+            TerminalSessionContext context,
+            SecureRandom random) {
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(random, "random");
+        byte[] entropy = new byte[32];
+        byte[] token = null;
+        try {
+            random.nextBytes(entropy);
+            token = Base64.getUrlEncoder().withoutPadding().encode(entropy);
+            return approved(context, token, sha256(token));
+        } finally {
+            java.util.Arrays.fill(entropy, (byte) 0);
+            if (token != null) {
+                java.util.Arrays.fill(token, (byte) 0);
+            }
+        }
+    }
+
+    /** @deprecated approval without an onboard-system context is no longer valid. */
+    @Deprecated(forRemoval = false)
+    public static RegistrationDecision issue(
             UUID terminalId,
             UUID vehicleId,
             String sourceCoordinateSystem,
             int tokenVersion,
             SecureRandom random) {
-        Objects.requireNonNull(random, "random");
-        byte[] entropy = new byte[32];
-        random.nextBytes(entropy);
-        byte[] token = Base64.getUrlEncoder().withoutPadding().encode(entropy);
-        java.util.Arrays.fill(entropy, (byte) 0);
-        return approved(terminalId, vehicleId, sourceCoordinateSystem, null, List.of(), tokenVersion, token, sha256(token));
+        throw new IllegalArgumentException(
+                "approved registration requires an onboard-system context");
     }
 
+    /** @deprecated approval without an onboard-system context is no longer valid. */
+    @Deprecated(forRemoval = false)
     public static RegistrationDecision approved(
             UUID terminalId,
             UUID vehicleId,
@@ -66,10 +72,12 @@ public final class RegistrationDecision {
             int tokenVersion,
             byte[] authenticationToken,
             String tokenSha256) {
-        return approved(terminalId, vehicleId, sourceCoordinateSystem, null, List.of(), tokenVersion,
-                authenticationToken, tokenSha256);
+        throw new IllegalArgumentException(
+                "approved registration requires an onboard-system context");
     }
 
+    /** @deprecated approval without an onboard-system context is no longer valid. */
+    @Deprecated(forRemoval = false)
     public static RegistrationDecision approved(
             UUID terminalId,
             UUID vehicleId,
@@ -79,15 +87,19 @@ public final class RegistrationDecision {
             int tokenVersion,
             byte[] authenticationToken,
             String tokenSha256) {
-        Objects.requireNonNull(terminalId, "terminalId");
-        Objects.requireNonNull(vehicleId, "vehicleId");
-        if (!"WGS84".equals(sourceCoordinateSystem) && !"GCJ02".equals(sourceCoordinateSystem)) {
-            throw new IllegalArgumentException("sourceCoordinateSystem must be WGS84 or GCJ02");
-        }
+        throw new IllegalArgumentException(
+                "approved registration requires an onboard-system context");
+    }
+
+    public static RegistrationDecision approved(
+            TerminalSessionContext context,
+            byte[] authenticationToken,
+            String tokenSha256) {
+        Objects.requireNonNull(context, "context");
         Objects.requireNonNull(authenticationToken, "authenticationToken");
         Objects.requireNonNull(tokenSha256, "tokenSha256");
-        if (tokenVersion < 1 || authenticationToken.length < 1) {
-            throw new IllegalArgumentException("approved registration requires a token version and token");
+        if (authenticationToken.length < 1) {
+            throw new IllegalArgumentException("approved registration requires a token");
         }
         if (!MessageDigest.isEqual(
                 sha256(authenticationToken).getBytes(StandardCharsets.US_ASCII),
@@ -95,12 +107,11 @@ public final class RegistrationDecision {
             throw new IllegalArgumentException("token digest does not match");
         }
         return new RegistrationDecision(
-                true, terminalId, vehicleId, sourceCoordinateSystem,
-                activeSafetyStandard, activeSafetyModules, tokenVersion, authenticationToken, tokenSha256, null);
+                true, context, authenticationToken, tokenSha256, null);
     }
 
     public static RegistrationDecision rejected(RegistrationRejection rejection) {
-        return new RegistrationDecision(false, null, null, null, null, List.of(), 0, null, null,
+        return new RegistrationDecision(false, null, null, null,
                 Objects.requireNonNull(rejection, "rejection"));
     }
 
@@ -109,31 +120,70 @@ public final class RegistrationDecision {
     }
 
     public UUID terminalId() {
-        return terminalId;
+        return context == null ? null : context.terminalId();
+    }
+
+    public UUID onboardSystemId() {
+        return context == null ? null : context.onboardSystemId();
     }
 
     public UUID vehicleId() {
-        return vehicleId;
+        return context == null ? null : context.vehicleId();
     }
 
     public String sourceCoordinateSystem() {
-        return sourceCoordinateSystem;
+        return context == null ? null : context.sourceCoordinateSystem();
     }
 
     public String activeSafetyStandard() {
-        return activeSafetyStandard;
+        return context == null ? null : context.activeSafetyStandard();
     }
 
     public List<String> activeSafetyModules() {
-        return activeSafetyModules;
+        return context == null ? List.of() : context.activeSafetyModules();
+    }
+
+    public Set<String> roles() {
+        return context == null ? Set.of() : context.roles();
     }
 
     public int tokenVersion() {
-        return tokenVersion;
+        return context == null ? 0 : context.tokenVersion();
     }
 
-    public byte[] authenticationToken() {
-        return authenticationToken == null ? null : authenticationToken.clone();
+    public TerminalSessionContext context() {
+        return context;
+    }
+
+    public synchronized byte[] consumeAuthenticationToken() {
+        if (!approved || authenticationToken == null || authenticationTokenConsumed) {
+            throw new IllegalStateException("authentication token is not available");
+        }
+        authenticationTokenConsumed = true;
+        return authenticationToken;
+    }
+
+    public synchronized void destroyAuthenticationToken() {
+        if (authenticationToken != null) {
+            java.util.Arrays.fill(authenticationToken, (byte) 0);
+        }
+        authenticationTokenConsumed = true;
+    }
+
+    public synchronized boolean hasAvailableAuthenticationToken() {
+        return approved && authenticationToken != null && !authenticationTokenConsumed;
+    }
+
+    public synchronized boolean authenticationTokenDestroyed() {
+        if (authenticationToken == null) {
+            return true;
+        }
+        for (byte value : authenticationToken) {
+            if (value != 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public String authenticationTokenSha256() {
@@ -147,8 +197,9 @@ public final class RegistrationDecision {
     @Override
     public String toString() {
         return approved
-                ? "RegistrationDecision[approved=true, terminalId=" + terminalId
-                        + ", tokenVersion=" + tokenVersion + ", authenticationToken=REDACTED]"
+                ? "RegistrationDecision[approved=true, terminalId=" + context.terminalId()
+                        + ", tokenVersion=" + context.tokenVersion()
+                        + ", authenticationToken=REDACTED]"
                 : "RegistrationDecision[approved=false, rejection=" + rejection + "]";
     }
 

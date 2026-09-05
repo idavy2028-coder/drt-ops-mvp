@@ -31,10 +31,19 @@ public class SecurityConfiguration {
     }
 
     @Bean
+    FilterRegistrationBean<GatewayIngressResourceLimitFilter> gatewayIngressResourceLimitFilterRegistration(
+            GatewayIngressResourceLimitFilter filter) {
+        FilterRegistrationBean<GatewayIngressResourceLimitFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
+    }
+
+    @Bean
     @Order(1)
     SecurityFilterChain gatewaySecurityFilterChain(
             HttpSecurity http,
             GatewayServiceAuthenticationFilter gatewayServiceAuthenticationFilter,
+            GatewayIngressResourceLimitFilter gatewayIngressResourceLimitFilter,
             AuthenticationFailureHandler authenticationFailureHandler) throws Exception {
         http.securityMatcher("/internal/jt-gateway/**")
                 .csrf(AbstractHttpConfigurer::disable)
@@ -44,7 +53,8 @@ public class SecurityConfiguration {
                         .accessDeniedHandler((request, response, exception) -> response.sendError(403)))
                 .authorizeHttpRequests(authorize -> authorize
                         .anyRequest().hasAuthority(GatewayServiceAuthenticationFilter.PRINCIPAL))
-                .addFilterBefore(gatewayServiceAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(gatewayServiceAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(gatewayIngressResourceLimitFilter, GatewayServiceAuthenticationFilter.class);
         return http.build();
     }
 
@@ -92,6 +102,10 @@ public class SecurityConfiguration {
                         .requestMatchers("/api/users/**").hasAuthority("USER_MANAGE")
                         .requestMatchers(HttpMethod.GET, "/api/vehicles/location-reporting-candidates")
                         .hasAuthority("LOCATION_REPORT")
+                        .requestMatchers(HttpMethod.GET, "/api/onboard-systems", "/api/onboard-systems/**")
+                        .hasAuthority("TERMINAL_READ")
+                        .requestMatchers("/api/onboard-systems", "/api/onboard-systems/**")
+                        .hasAuthority("TERMINAL_MANAGE")
                         .requestMatchers(HttpMethod.GET, "/api/terminals/**").hasAuthority("TERMINAL_READ")
                         .requestMatchers("/api/terminals/**").hasAuthority("TERMINAL_MANAGE")
                         .requestMatchers(HttpMethod.POST, "/api/vehicles/*/location-reports").authenticated()

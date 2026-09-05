@@ -76,7 +76,7 @@
 
 - 测试订单：`7761fa69-98f1-4518-860c-3361fc85716d`
 - 已完成一次且仅一次调度，候选车辆数量为 4。
-- 最佳候选车辆：`甘J16396D`（`af0d7785-4606-4451-b451-6befa043890a`）。
+- 最佳候选车辆：`脱敏车辆-C`（`af0d7785-4606-4451-b451-6befa043890a`）。
 - 系统生成可确认的人工复核方案，订单状态为 `PENDING_MANUAL_REVIEW`。
 - 调度决策和审计记录各 1 条；人工确认前不生成车辆任务。
 
@@ -246,7 +246,7 @@ P3-5 状态：动作已完成；爽约订单关闭后任务仍待发车，存在
 - 订单页、任务页、位置历史和调度工作台已完成页面核对。
 - 主链订单、任务、节点、位置历史和审计状态一致。
 - 爽约订单 `9f9bec16…` 已异常关闭，但任务 `f41f370b…` 仍为 `DISPATCHED`。
-- 主链、爽约、故障、延误 4 个任务全部分配给甘J16396D，车辆仍显示 `IDLE`、可调度，未阻止冲突任务重复分配。
+- 主链、爽约、故障、延误 4 个任务全部分配给脱敏车辆-C，车辆仍显示 `IDLE`、可调度，未阻止冲突任务重复分配。
 - `dispatcher02` 不具备 `AUDIT_READ`、`METRICS_READ`，审计页和运营看板未完成该账号下的页面级复核。
 - `dispatcher02` 仍标记 `must_change_password=true`，但登录后未强制进入改密流程。
 - 已完成主链订单 `dc6a080d…` 仍保留 `failure_reason=MAP_ROUTE_UNAVAILABLE`，失败原因字段未随人工确认和任务完成清除。
@@ -351,7 +351,7 @@ P5 防误操作整改状态：代码与自动化验证完成；运行环境上�
 
 - 使用现有 `dispatcher01` 登录会话完成验收。
 - 地址修复通过：起点地图点选后坐标和推荐站点正常生成，地址框保持为空，没有再自动写入“地图点选位置”；补充实际地址后可正常提交。
-- 车牌展示通过：车辆任务 `b58b0427-af60-495e-9b0c-2e2e4df49ae6` 在车辆任务页显示 `甘J00856D`，不再显示车辆 UUID。
+- 车牌展示通过：车辆任务 `b58b0427-af60-495e-9b0c-2e2e4df49ae6` 在车辆任务页显示 `脱敏车辆-A`，不再显示车辆 UUID。
 - 创建三笔明确标注的本地验收单：
   - A：`27aeeecb-6599-4a3c-8307-6f83d3b0237d`，1 人。
   - B：`8f16c2fd-a2a2-472b-9d76-2fb543e83218`，2 人。
@@ -359,12 +359,12 @@ P5 防误操作整改状态：代码与自动化验证完成；运行环境上�
 - A 自动派单评分 86.11，创建新任务；B 自动派单评分 85.81，`candidateType=EXISTING_TASK`、`activationCost=0`、`selectionReason=EXISTING_TASK_PREFERRED`。
 - B 首次插单暴露任务站点序号唯一键冲突，事务完整回滚、订单保持待调度；补充 V12 并重新部署后，同一订单重试成功。
 - C 评分 81.70，按阈值进入人工复核；候选仍为同一任务、同一车辆，人工确认后成功插入。
-- 三笔订单最终共同使用任务 `b58b0427…` 和车辆 `甘J00856D`；共 6 个任务节点，序号 1–6 唯一，验证了优先插入、合乘容量、路线重算和零车辆启用成本路径。
+- 三笔订单最终共同使用任务 `b58b0427…` 和车辆 `脱敏车辆-A`；共 6 个任务节点，序号 1–6 唯一，验证了优先插入、合乘容量、路线重算和零车辆启用成本路径。
 - 人工复核审计完整：`ORDER_PENDING_MANUAL_REVIEW`、`MANUAL_REVIEW_APPROVED` 均已记录。
 
 ### 验收数据清理与审计说明
 
-- 三笔验收单已取消，验收任务已变为 `CANCELLED`，`甘J00856D` 已释放为 `IDLE`；未操作历史订单。
+- 三笔验收单已取消，验收任务已变为 `CANCELLED`，`脱敏车辆-A` 已释放为 `IDLE`；未操作历史订单。
 - 订单取消页的“确认乘客取消”会固定写入“乘客取消”。误点 A 后保留原始不可变审计，并追加 `ORDER_CANCELLATION_REASON_CORRECTED`，明确原因为“本地验收数据清理（非真实乘客取消）”；B、C 未执行乘客取消原因确认。
 
 ### 下一步计划
@@ -378,7 +378,7 @@ P5 防误操作整改状态：代码与自动化验证完成；运行环境上�
 
 - 本批按 5–10 笔/日节奏录入 3 笔真实试运行订单，登录账号为 `dispatcher02`：罗老师 `4aaf70da`、随缘 `40310924`、刘盛美 `86b745fc`。
 - 三笔订单均已完成调度并完成全流程，状态均为 `COMPLETED`；站点匹配分别为：高铁站→陇阳镇、姜滩小学→安川、中医院→陇阳镇。
-- 罗老师订单复核：关联车辆甘J18817D，任务状态 `COMPLETED`，高铁站上车节点 `BOARDED`、陇阳镇下车节点 `ALIGHTED`，无不可服务或异常关闭记录。
+- 罗老师订单复核：关联车辆脱敏车辆-D，任务状态 `COMPLETED`，高铁站上车节点 `BOARDED`、陇阳镇下车节点 `ALIGHTED`，无不可服务或异常关闭记录。
 - 本批未修改历史订单、车辆资源或调度规则；订单中心已保留为后续批次录入入口。
 
 ### 下一步计划
@@ -558,3 +558,465 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - [PR #18](https://github.com/idavy2028-coder/drt-ops-mvp/pull/18) 已在看板旧 head `60c4487` 处合并到 `codex/p6-2-jt-active-safety-spec`；目标分支最新提交为 `a3fb661`。本轮 9 个订单/任务优化提交未包含在 #18 中。
 - 已用三点差异核对新 PR 范围：相对 `origin/codex/p6-2-jt-active-safety-spec` 仅包含本轮 9 个实现提交及本进度记录，不重复夹带已合并的看板代码。Chrome 门禁完成前，新 PR 应保持草稿且不标记为 Ready。
 - 功能分支已推送到远端，实现 HEAD 为 `0f36fe2`，其后包含阶段验证与 PR 交接记录提交。最终只读核验确认该 head 当前无开放 PR。新草稿 PR 尚未创建：GitHub 应用写入返回 403；已认证环境中的 `gh pr create` 多次在权限审批阶段超时且未启动；沙箱内 `gh` 无法读取 Windows 凭据并返回 401。下一步需重新授权执行已认证环境中的 `gh pr create`，或由维护者从 GitHub compare 页面创建草稿 PR。
+
+## P6-2 方案 A 本机合成修复复验（2026-08-22）
+
+### 修复与测试先行结果
+
+- 工作树为 `D:\codex-projects\.worktrees\jt-gateway-deployment`，分支为 `feat/jt-gateway-deployment`，基线 HEAD 为 `2f690a255bbee3d3ffe29b5e9ed65d7c4447b1fa`；本轮未推送、未合并、未创建 PR。
+- 已用失败测试复现混合批污染：附件元数据被拒绝时，原调度器会阻止同批 session audit 成功；修复后 `SESSION_AUDIT` 使用独立 claim 和逐条 audit API 投递，普通 ingress 原子批次语义保持不变。
+- 已用失败测试复现鉴权成功后 `last_authenticated_at` 为空；修复后只在摘要校验成功后以注入时钟写入时间并持久化，错误令牌保持不写入。
+- 四模块最终串行回归退出码为 0：`jt-protocol` 48、模拟器 11、gateway 106、API 480，共 645 项，失败 0、错误 0、跳过 47；`git diff --check` 退出码为 0。
+- API、gateway、管理端、算法和路由模拟器 R2 镜像均从当前源码构建成功。
+
+### R2 新卷验收结果
+
+- 新项目为 `drt-ops-jt-acceptance-r2`；首次创建独立 PostgreSQL、Redis 和 `jt-gateway-data-acceptance-r2` 三个卷，未复用、删除或修改修复前 R1 项目与卷。
+- Flyway 最新版本为 `17:true`；session audit 幂等键非空、唯一约束有效，V17 ingress receipt 三列齐全。
+- 四台纯合成终端均按注册、管理员激活、鉴权、位置、主动安全报警、`0x1210`、`0x1206`、断开流程完成，每台 9/9 步骤通过、退出码 0。
+- R2 聚合事实：终端 4/4 为 `ACTIVE` 且已注册，`last_authenticated_at` 4/4 非空；GPS 8 条覆盖 4 台，前向碰撞报警 4 条覆盖 4 台；`REGISTERED + ACCEPTED` 和 `AUTHENTICATED + ACCEPTED` 审计各 4 条。
+- 附件合同边界按方案 A 保留：附件相关拒绝审计 8 条，Outbox 稳定终态为 pending 0、delivering 0、dead-letter 12，readiness HTTP 503。该状态不再污染 session audit，但当前环境仍不得标记为生产就绪。
+- 详细证据为 `docs/pilot/evidence/p6-2/local-simulated-terminal-acceptance-r2-2026-08-22.md`；修复前失败证据继续保存在 R1 报告和旧卷中。
+
+### P6-2 核心范围裁决
+
+- 2026-08-22 用户确认 P6-2 核心交付范围仅包括注册、鉴权、位置上报和报警；四台真实终端只按这四段基础链路执行最终验收。
+- 附件功能延期到真实媒体服务接入后的独立阶段处理。在此之前不启用平台 `0x9208`、终端 `0x1210` 和 `0x1206` 链路，不修改附件相关代码。
+- 无媒体服务时继续保持 `ALARM_IDENTIFIER_UNAVAILABLE`；附件拒绝形成的 readiness HTTP 503 记为已知降级状态，不阻塞 P6-2 基础链路验收，但不得据此宣称附件可用或完整生产就绪。
+- 合成 R2 场景中的 `0x1210`、`0x1206` 只作为未启用合同的负路径兼容性探测，不纳入 P6-2 功能通过项。
+- 当前收口门禁为：方案 A 两项修复已提交且验证通过，随后四台真实终端分别完成注册、鉴权、位置和报警，并形成逐台脱敏证据；任何一台失败都必须暂停并报告。
+
+### 异常、现场和下一入口
+
+- terminal-01 第一次启动时，PowerShell 误解析未加引号的 Maven `-Dexec.mainClass` 参数；模拟器 JVM 未启动、gateway 未收到流量，激活脚本按门禁超时退出。修正参数引号后从未注册状态正常重试，没有改库、清卷或跳过状态机。
+- R2 最终 evidence 中只保存掩码模拟器日志和 readiness 聚合 JSON；公开文档不包含完整终端、车牌、UUID、令牌、凭证或原始帧。
+- 为冻结现场，已仅停止 R2 `jt-gateway`；R2 PostgreSQL、Redis、API、管理端、算法和路由模拟服务及三个新卷继续保留。R1 gateway 仍保持停止，R1 卷继续保留。
+- 当前待审改动包括两个 Dockerfile、模拟器注册字段扩展及测试、方案 A 的 Outbox 隔离与鉴权时间戳实现及测试、E2E/运行时稳定性调整、R1/R2 报告和本进度记录。
+- 方案 A 本机合成修复复验结论为限定范围通过。用户再次确认门禁已就绪后，4/4 私密资料、网络可达性、NAT/防火墙、报警触发方法、车辆标识和首配坐标均通过预检，用户当前消息作为即时验收窗口确认。
+- 四个 secret JSON 各有一个字符串外全角逗号导致首次解析失败；确认值内部全角标点为 0、六个预期键齐全后，仅机械替换为 ASCII 分隔符。CSV 手机因表格软件转为科学计数法，但 4/4 舍入区间覆盖 secret 完整值、terminal ID 精确匹配；运行时继续以 secret 为权威。intake 的 `GCJ-02` 经最小失败/成功请求确认需规范为 API 接受的 `GCJ02`，仅修改私密预录入脚本。
+- 已创建独立 `drt-ops-jt-real-acceptance` 项目与新卷；API/Flyway V17 健康，4 辆真实车辆、4 台 PENDING 终端、能力和唯一绑定预录入完成。真实 gateway 短暂启动后 7611 本地可达，自动激活观察器运行期间仍为 0 注册、0 鉴权、0 JT808 位置、0 报警。
+- Windows 当前有 Public 和 Private 两个活动网络连接，但没有任何启用的 TCP 7611 入站允许规则。创建仅限 Public/Private、TCP 7611 的临时规则被安全策略拒绝，因为此前用户没有显式授权主机级防火墙变更。未绕过策略；已停止 gateway 和观察器，基础服务、数据库和三个真实验收卷保留。
+- 下一入口为用户显式授权创建名为 `DRT P6-2 JT Gateway 7611 Acceptance` 的临时 Windows 入站规则（Public、Private，TCP 7611，验收完成或失败后删除），然后恢复观察器与 gateway；附件链路保持禁用。
+
+### P6-2 四台真实终端第一轮接入验收（2026-08-22）
+
+- 用户明确授权临时 Windows 规则后，已创建并核验唯一规则：Inbound、Allow、Public + Private、TCP 7611、RemoteAddress Any；未开放 API 或管理端口。
+- 自动激活观察器先于 gateway 启动；gateway liveness 健康，宿主机 7611 本地探针可连接。实际观察窗口为 2026-08-22 14:24:36.570Z 至 14:34:24.640Z。
+- 窗口内多次条件式检查始终为：ESTABLISHED 连接 0、已注册 0/4、已鉴权 0/4、ACTIVE 0/4、JT808 位置 0、报警 0、session audit 0；gateway 无协议拒绝和连接错误。
+- 本轮失败边界为终端或其上游网络没有向当前 7611 发起 TCP 连接，服务器端没有收到可供协议解析或拒绝的字节。未使用合成报文、静态回放或人工数据库写入代替真实终端。
+- 按失败即暂停门禁，已停止观察器和 gateway，并删除唯一临时防火墙规则。复核规则数量为 0、7611 已关闭；PostgreSQL、Redis、API、管理端、算法和路由服务继续健康，真实验收数据库和三个卷保留。
+- 详细失败证据：`docs/pilot/evidence/p6-2/real-terminal-acceptance-2026-08-22.md`。P6-2 当前仍未正式收口。
+- 下一入口：每台终端私密确认当前服务器地址/端口、在窗口内执行上电或网络重连，并提供终端或厂商侧 TCP 连接尝试结果。先以一台设备完成 TCP 建连和注册，再扩展到其余三台；附件链路保持禁用。
+
+### P6-2 腾讯云真实终端接入 R1 与注册合同修复（2026-08-24）
+
+- 腾讯云正式预录入完成：4 辆验收车辆均为 `IDLE` 且不可调度，4 台终端均为 `PENDING`，ADAS/DMS/JT1078 和唯一绑定均为 4/4；四类 `PRE_ACCEPTANCE` 审计各 4 条，私有 manifest 记录 16/16 步骤完成。
+- 真实并行窗口中 gateway liveness、非 root/只读安全属性和 `7611` 监听正常；计数型抓包确认真实入站包到达，但观察器 20 分钟超时为注册 0、激活 0、鉴权 0。数据库形成 841 条 `REGISTERED/REJECTED`，均为 `NOT_PREPROVISIONED`；位置和报警均为 0。
+- terminal-01 单机 60 秒复检新增 3 条相同拒绝审计，总数达到 844，证明终端到云端 TCP/JT808 注册路径可达，失败位于注册字段匹配。两轮结束后均先停止 gateway，最终 `7611` 监听和连接为 0，卷与数据库保留。
+- 确认至少一个必然阻断项：云端保存的资料描述协议版本与 gateway 规范枚举不相等。方案 1 已测试先行实现白名单规范化、新预录入规范值、安全逐字段原因码和 gateway 原样映射；未知值继续 fail closed，未直接更新数据库或重建终端。
+- 完整回归退出码为 0：JT 协议 48、模拟器 11、gateway 107、API 484，失败 0、错误 0、跳过 41；私有预录入/观察器测试通过，`git diff --check` 为 0。
+- 脱敏流程发生一次内部工具输出异常：旧私有 manifest 的标识类字段进入受控会话输出，但未包含密码、鉴权码、服务凭证或 token；后续已改为安全别名和聚合计数，并在公开报告中清零真实值。
+- 方案 1 离线部署已完成：API/gateway 镜像标签为 `p6-2-registration-a0b8ff7`，image ID 分别为 `sha256:a681f986…b4c1`、`sha256:c6445a51…22e6`，离线包 SHA-256 为 `581f0e7c…74ff1`。新版 API 已重建且 health `UP`；新版 gateway 仅重建为 `created`，未启动，`7611` 监听为 0，安全属性保持。
+- 离线注册验证返回 `APPROVED`，部署未改变终端状态和历史审计：PENDING 4、ACTIVE/注册/鉴权均为 0，注册拒绝仍为 844，四类 `PRE_ACCEPTANCE` 审计仍各为 4。
+- 详细证据：`docs/pilot/evidence/p6-2/cloud-real-terminal-acceptance-r1-2026-08-24.md`。P6-2 仍未收口；方案 1 修复尚未提交，但修复镜像已离线部署。下一入口为用户提供明确的实际窗口起始时间并确认 terminal-01 数据修正、上电和安全组规则仍有效，随后先做 terminal-01 单机 fail-fast 注册验证。
+
+### P6-2 云端终端身份受控纠正（2026-08-25）
+
+- 用户已在 `.private/terminals/` 按设备实际注册值更新 4 份 secret JSON 和 intake CSV。受控纠正 API/preview 与私有脚本已测试先行实现，只允许 PENDING、未注册、未鉴权、有活动绑定的终端；使用 expectedVersion 和唯一性门禁，保留终端 UUID、绑定、能力和鉴权材料，审计不保存字段明文。
+- 完整回归退出码为 0：JT 协议 48、模拟器 11、gateway 107、API 488，失败 0、错误 0、跳过 41。身份纠正 API 镜像为 `p6-2-identity-0192c46`，image ID `sha256:501572f2…7b9b`，离线包 SHA-256 `464019b3…b626`；部署后 API health `UP`，gateway 保持 `created`、`7611=0`。
+- dry-run 显示 4/4 仅需修改 `terminalPhone`、`protocolVersion`。写入前全量备份 `identity-correction-20260825T022635Z` 为 mode 600、186 个归档条目，SHA-256 `e5b5ba9a…dba67`。
+- 按 terminal-01 至 terminal-04 顺序 apply，每台版本 2→3，每台完成后内部只读注册验证均为 APPROVED。最终纠正审计 4、预期字段集合 4、车辆标识纠正 0、规范协议 4、能力 4、活动绑定/唯一终端/唯一车辆 4/4/4；终端仍为 PENDING 4、注册/鉴权 0。
+- 私密资料哈希已冻结：intake CSV `8ebc791b…dede`；terminal-01 至 terminal-04 secret 分别为 `ae8f2ca5…1ab1`、`7d7731d8…c607`、`21f00aaa…9bfb`、`0d81bcce…f216`。完整哈希仅记录于脱敏验收报告。
+- P6-2 尚未收口。下一入口为用户确认新的 terminal-01 上电窗口、安全组和设备配置后，按“观察器 READY → gateway 启动 → terminal-01 fail-fast”验证注册、鉴权、位置与报警；通过后再扩展其余三台。
+
+### P6-2 临时注册维护白名单与脱敏诊断（2026-08-25）
+
+- 四台并发复检有效窗口为 `2026-08-25T05:10:36.722222956Z` 至 `2026-08-25T05:13:25.115400973Z`；形成 87 条注册拒绝、0 条注册成功，原因全部为 `NOT_PREPROVISIONED`。终端仍为 PENDING 4，ACTIVE/注册/鉴权/JT808 位置/报警均为 0。
+- 失败冻结时 gateway 为 exited，7611 监听/连接为 0；观察器日志和状态快照 SHA-256 分别为 `2ac2821…e328948`、`2665d3b…799aef`。宿主和同 Compose 网络的只读注册验证均为 4/4 APPROVED，服务凭证和网络配置一致，失败范围收敛到真实 0x0100 解析后的 Java verify/complete 流程。
+- 用户确认 terminal-02～04 无法断网，并批准维护窗口选项 1：允许其持续重试但不成功上线，只保证不改变云端业务状态。测试先行新增摘要白名单、到期 fail-closed、每身份 60 秒审计限流、五个必填字段空值诊断及 VERIFY/COMPLETE 的 HTTP/网络分类；不记录原始身份、摘要、响应正文或异常消息。
+- RED 覆盖阶段折叠、空字段穿透、策略/运行时/私有 writer 缺失和 HTTP/网络矩阵；GREEN 私有 PowerShell 测试 14/14 通过。四模块串行回归为 JT 协议 48、gateway 128、API 488、模拟器 11，共 675 项，失败 0、错误 0、跳过 41。
+- 新维护实现尚未构建或部署。下一入口为构建并离线传输新 gateway 镜像，使用 `.env.registration-maintenance` 与独立 Compose override 只放行 terminal-01 摘要；必须先启动观察器，诊断窗口最长 10 分钟，结束后先停止 gateway 并确认 7611 为 0，再移除维护 override。附件边界保持不变。
+
+### P6-2 临时维护镜像停止态部署（2026-08-25）
+
+- 源码摘要 `35ac844d…d4760`；宿主离线 JAR SHA-256 `39a4c08e…1fa2f`。标准 Dockerfile 因构建容器无法访问 Maven Central 失败后，改用已验证注册修复镜像作为运行时基底，只替换已通过 675 项回归的 JAR。
+- 新 gateway 镜像为 `p6-2-maintenance-35ac844`，image ID `sha256:e12da837…00e1`；离线包 176,067,611 字节、SHA-256 `f0df1f89…83530`，本地隔离验证及云端上传、解压、`docker load` 全部通过。
+- 真实 terminal-01 维护环境与 Compose override 哈希为 `0c3acf6e…cce34`、`af54a0ad…65588`，真实摘要未进入公开输出。云端 release 目录 mode 700、全部文件 mode 600。
+- 六文件 Compose 链保持 API `p6-2-identity-0192c46`，仅把 gateway 切换到 `p6-2-maintenance-35ac844`。gateway 已停止态重建为 `created`，原 H2 卷、API 容器和安全属性保持，7611 监听/连接为 0，终端仍为 PENDING 4、ACTIVE/注册/鉴权 0。
+- 当前维护工件到期为 `2026-08-25T09:45:26.2425467Z`，最终核验时只剩 280 秒，已不足实际诊断窗口；禁止直接启动。下一入口是在收到即时启动指令后重新生成 UTC+15 分钟工件并再次停止态重建，确认观察器 READY 后才启动 gateway。附件边界继续保持。
+
+### P6-2 terminal-01 维护白名单真实复验（2026-08-25）
+
+- 观察器 READY 后使用新 15 分钟工件启动 `p6-2-maintenance-35ac844` gateway；有效窗口为 `2026-08-25T10:02:57.496796782Z` 至 `2026-08-25T10:11:01.437784414Z`。
+- 维护策略拦截 265 次、覆盖 3 个非目标身份，写入 24 条 `TEMPORARILY_BLOCKED_FOR_MAINTENANCE` 审计并抑制 241 次重复；Outbox pending/dead-letter 为 0，证明 02～04 无需断网即可被隔离且不改变云端终端状态。
+- terminal-01 允许计数始终为 0，观察器 600 秒内保持注册/ACTIVE/鉴权 0并超时；终态 PENDING 4、ACTIVE/注册/鉴权 0，本窗口 JT808 位置和报警覆盖 0。没有证据证明目标终端发送了匹配白名单的 0x0100。
+- fail-fast 已停止 gateway，7611 监听/连接为 0，API `UP`。观察器日志和状态快照 SHA-256 为 `a3d76015…911d8`、`feb637dc…98411`。
+- P6-2 仍未收口。下一入口为取得 terminal-01 设备侧连接/重试结果或执行明确网络重连，再刷新 UTC+15 分钟工件并重复观察器 READY → gateway 启动流程；不得把本次非目标隔离成功替代 terminal-01 基础链路验收。
+
+### P6-2 terminal-01 设备重连复验 R2（2026-08-25）
+
+- 用户确认 terminal-01 设备侧重连后执行第二个独立维护窗口，范围为 `2026-08-25T10:36:37.617392139Z` 至 `2026-08-25T10:43:47.342764028Z`。
+- R2 拦截 235 次、覆盖 3 个非目标身份，持久审计 21 条、抑制 214 次，Outbox pending/dead-letter 为 0；terminal-01 允许计数仍为 0。
+- 观察器再次超时为注册/ACTIVE/鉴权 0；终端保持 PENDING 4，本窗口 JT808 位置和报警覆盖 0。gateway 已 fail-fast 停止，7611 为 0。
+- 两次维护窗口均只有 3 个非目标身份抵达，设备重连未形成目标身份请求。停止继续盲目复验；下一输入必须是 terminal-01 设备侧连接时间、目标地址/端口、连接错误和当前出口地址与安全组范围核对，或用户另行审批不保存原始消息头的私密身份指纹诊断。
+
+### P6-2 terminal-01 配置确认与维护复验 R3（2026-08-25）
+
+- 设备截图确认目标地址、TCP 7611 和 JT808-2019 配置；R3 窗口为 `2026-08-25T11:26:04.049984758Z` 至 `2026-08-25T11:35:55.838013965Z`。
+- R3 拦截 332 次注册、覆盖 4 个不同摘要身份和 4 个来源 IP，持久审计 32 条、抑制 300 次；terminal-01 允许计数仍为 0。该证据首次证明第四台设备已到达，但其线上协议/消息头身份与允许摘要不一致。
+- 另有 47 条 `MESSAGE_NOT_ALLOWED_BEFORE_AUTHENTICATION`，终端保持 PENDING 4、注册/ACTIVE/鉴权 0，Outbox 无积压。gateway 已停止、7611 为 0。
+- R3 日志/状态快照 SHA-256 为 `97d1e31d…e374b`、`725a06f2…1cbd9`。下一步不再盲目开窗；需审批测试先行的私密指纹比对，仅输出安全别名和协议匹配结果，禁止原始消息头、身份或摘要落盘/输出。
+
+### P6-2 terminal-01 同步在线重试（2026-08-25）
+
+- 观察器 READY、gateway 明确在线后由现场点击 terminal-01 连接重试；有效窗口为 `2026-08-25T13:29:43.994101779Z` 至 `2026-08-25T13:37:14.944923932Z`。
+- 本窗口只有 1 个来源 IP和 1 个摘要身份，形成 4 条 `TEMPORARILY_BLOCKED_FOR_MAINTENANCE`、28 条 `MESSAGE_NOT_ALLOWED_BEFORE_AUTHENTICATION`；维护内存计数为拦截 28、抑制 24、允许 0，Outbox 无积压。
+- 同步点击证明 terminal-01 流量真实到达云端，但其线上 `(protocolVersion, terminalIdentity)` 与后台允许摘要不一致。终端仍为 PENDING 4、ACTIVE/注册/鉴权 0。
+- gateway 已停止、7611 为 0。日志/状态 SHA-256 为 `2470a982…642c3`、`1dc9b524…c432`。不再重复相同连接窗口，下一门禁为测试先行的私密身份指纹比对，只输出 terminal 安全别名及协议匹配布尔值。
+
+### P6-2 私密身份指纹诊断离线构建（2026-08-26）
+
+- 用户复核 RED/GREEN 后批准生成真实指纹并构建镜像。新增诊断仍以原“协议 + 身份”组合摘要决定放行，身份摘要仅用于映射 `terminal-01…04/UNKNOWN`；运行时只公开 `identityMatch`、`protocolMatch` 和聚合计数。
+- GREEN 四模块串行回归为 JT 协议 48、gateway 130、API 488、模拟器 11，共 677 项，失败 0、错误 0、API 既有条件跳过 41；私有 PowerShell 测试 27/27，`git diff --check` 为 0。
+- 私密输入 4/4 文件与所需字段有效，终端消息头身份、协议版本和安全别名映射通过；旧预录入 manifest 的手机号仍是身份纠正前快照，本轮未修改 manifest，也未使用手机号参与指纹。指纹工件覆盖 4 个唯一安全别名，原始终端值泄漏扫描为 0。
+- 冻结生产源码 77 个文件，摘要为 `5199ac83…15edf`；JAR 为 35,076,627 字节、SHA-256 `c5d52fb3…f6cb9`，并确认包含新维护策略及运行时配置类。
+- 新镜像为 `drt-ops-jt-cloud-gateway:p6-2-fingerprint-5199ac8`，image ID `sha256:c09af686…2394e`；隔离验证为 linux/amd64、UID/GID 10001、无网络、只读、`cap_drop=ALL`、no-new-privileges，容器内 JAR SHA 与宿主一致，镜像内维护指纹环境变量数量为 0。
+- Docker 原生 tar 为 178,195,968 字节；外层离线包为 176,073,280 字节、SHA-256 `3e94ffe5…f755`，内容仅一个 Docker tar。8/8 发布文件 SHA 复算通过，重新 `docker load` 后 image ID 不变且候选镜像容器残留为 0。
+- 发布目录为 `.private/cloud-deployment/p6-2-cloud-7fa38d0/fingerprint-release-5199ac8`。私密指纹环境文件 SHA-256 为 `0ff63b70…4269`；工件明确标记 `ActivationReady=NO_FRESH_EXPIRY_REQUIRED`，因此不得直接启动。
+- 本阶段没有上传云端、没有重建容器、没有启动 gateway。下一入口为上传 5 个清单文件至云端私密发布目录，逐项校验并 `docker load`，随后只做停止态 Compose 重建；真实流量前仍须生成当前 UTC + 15 分钟到期工件、观察器先 READY，并单独确认启动门禁。
+
+### P6-2 私密身份指纹诊断云端停止态部署（2026-08-26）
+
+- 用户明确授权将 5 个文件上传至云端私密临时目录，并继续 SHA 校验、`docker load` 与停止态重建。上传清单自身 SHA-256 为 `53461381…f6bc1`，4 个载荷在本地及云端均逐项校验通过。
+- 临时目录仅在 5/5 上传和 4/4 SHA 通过后晋升为 `.private-recovery/fingerprint-5199ac8`；正式目录 owner/group 为 `ubuntu/ubuntu`、mode 700。解压及生成停止态配置后共 8 个文件，非 600 文件数量为 0。
+- 云端 Docker tar SHA-256 为 `c78a488c…77424`，`docker load` 后镜像 ID 精确为 `sha256:c09af686…2394e`；linux/amd64、UID/GID 10001、源码摘要标签及镜像内维护变量数量 0 均通过。
+- 从私密指纹种子生成的停止态环境 SHA-256 为 `49835d60…1d5fe`，Compose 注册 override SHA-256 为 `e4590a46…a27fc`；停止态环境固定使用 `2000-01-01T00:00:00Z` 过期哨兵，意外启动会 fail closed，不能替代实时 15 分钟工件。
+- 首次使用 `docker compose create --no-deps` 时，Compose v5.5.0 在参数解析阶段返回 `unknown flag: --no-deps`，回滚命令因同一参数也未执行。只读复核确认旧 gateway、原卷、API 与 `7611=0` 均未变化。随后依据实际帮助改用 `up --dry-run --no-start --no-deps`，dry-run 仅计划重建 gateway；去掉 dry-run 后停止态重建成功。
+- gateway 终态为唯一容器、`created`、`Running=false`，镜像为 `p6-2-fingerprint-5199ac8`；原卷 `jt-gateway-data-cloud-test-01` 保持，非 root、只读根文件系统、`cap_drop=ALL`、no-new-privileges 均通过。API 容器保持 identity 修复镜像且 health `UP`。
+- 云端端口 7611 监听/连接均为 0；5173、8080、5432、6379、8090、8091 仍只绑定 `127.0.0.1`。数据库终态为终端 4、PENDING 4、注册 0、鉴权 0，证明停止态部署未改变业务状态。
+- 当前仍不得启动 gateway。下一入口是收到即时真实流量指令后，用相同指纹种子生成当前 UTC + 15 分钟环境，先启动验收观察器并取得 READY，再停止态重建刷新环境后启动 gateway；窗口结束或失败时必须先停止 gateway 并确认 7611 为 0。
+
+### P6-2 私密身份指纹首次真实窗口无效裁决（2026-08-26）
+
+- 观察器完成登录并进入 RUNNING 后，两次刷新 UTC+15 分钟环境；最终 gateway 在线窗口为 `2026-08-26T12:02:56Z` 至 `2026-08-26T12:16:52Z`。现场确认 terminal-01 没有手动“连接重试/网络重连”入口，因此改用设备持续上电条件下的自动重连/周期流量被动观察。
+- 脱敏健康快照记录允许 0、拦截 336、4 个不同组合摘要、审计抑制 306、Outbox pending/dead-letter 0；唯一指纹观察为 `UNKNOWN + identityMatch=false + protocolMatch=false`、尝试 336。持久终态审计为维护拦截 41、未鉴权消息 71，终端仍为 PENDING 4、注册 0、鉴权 0。
+- 在裁决设备资料前追踪 Java 字段流发现：`frame.header().terminalIdentity()` 被解析为 `TerminalRegistrationIdentity.terminalNumber`，并作为内部注册请求的 `terminalPhone`；注册体中的 `terminalCode` 是另一独立字段。
+- 本次私密指纹工件错误地用 `secret.terminal_id/terminalCode` 计算身份摘要，而不是用 `secret.terminal_phone` 计算消息头身份摘要。因此 `UNKNOWN` 结果只能证明错误候选未匹配，不能证明真实终端消息头身份或协议配置错误；本窗口判定为配置工件无效，不纳入真实终端通过/失败统计。
+- fail-fast 已停止 gateway 并重新应用 2000 年过期哨兵；终态为 `created`、未运行、原 H2 卷保持、7611 监听/连接 0、API `UP`。观察器最终 TIMEOUT，状态文件 SHA-256 `ec172bcf…aeb`。
+- 下一门禁为测试先行修正私有指纹配置生成：新增“消息头身份必须来自 TerminalPhone、不得来自 TerminalCode”的失败测试，GREEN 后仅重新生成/上传私密环境并复验；生产 JAR 和镜像无需因该数据源修正而重建。
+
+### P6-2 TerminalPhone 指纹修正与无样本复验（2026-08-26）
+
+- RED 新增 provisioning-plan 指纹配置构建器合同，首次仅因函数缺失形成 1 项预期失败；GREEN 明确验证允许摘要和四台身份摘要取自 TerminalPhone，修改 TerminalCode 不改变结果、修改 TerminalPhone 必须改变结果，且配置不含原始 phone/code。私有测试最终 35/35 通过。
+- 新私密工件为 `fingerprint-phone-3339c13`，环境文件 SHA-256 `3339c13f…50de4`，原始值匹配 0；本地 SHA 2/2、云端 SHA 2/2。云端正式目录 mode 700、3 个文件均为 600，元数据固定 `SourceField=TerminalPhone`、`ImageRebuildRequired=NO`。
+- 复验观察器进入 RUNNING 后，电话型 gateway 窗口为 `2026-08-26T13:16:26Z` 至 `2026-08-26T13:22:38Z`，实时环境 SHA-256 `f20496a0…e39db8`。gateway liveness 200；整体/readiness 503 是已知降级，Outbox 及维护计数均为 0。
+- 两次被动读取均为 TCP established 0、允许 0、拦截 0、指纹观察 0，数据库没有本窗口注册审计；观察器最终 TIMEOUT，注册/ACTIVE/鉴权 0。该窗口没有收到任何可解析样本，因此既不能证明身份匹配，也不能证明不匹配。
+- fail-fast 已停止 gateway 并应用电话型 2000 年过期哨兵；终态 `created`、未运行、7611 监听/连接 0、原卷保留。观察器状态 SHA-256 `7e68002e…8848`。
+- 下一入口必须由现场提供可触发 TCP 重连的动作。terminal-01 没有菜单式“连接重试/网络重连”时，需要明确确认是否允许断电重启/重启设备，或由厂商提供自动重连周期；在此之前不再盲目开窗。
+
+### P6-2 固定宽度 BCD 指纹与 API 电话合同裁决（2026-08-26）
+
+- 现场获准并完成 terminal-01 断电/设备重启。电话型指纹窗口最初收到 1 次 `UNKNOWN` 后，源码复核确认解码器对 JT808-2019 固定读取 10 字节 BCD 并保留 20 位数字；四台后台 TerminalPhone 均为 12 位，因此未经补零的电话摘要仍不是消息头摘要。
+- RED 将 2019 TerminalPhone 左补零到 20 位、2013 左补零到 12 位写入两个固定宽度摘要断言，当前实现形成 2 项预期失败；GREEN 增加纯数字/最大宽度门禁和 `PadLeft` 后私有测试 35/35 通过。
+- 新工件 `fingerprint-bcd-b9d30ff` 环境 SHA-256 为 `b9d30ff3…b7c67`，原始值泄漏 0，本地/云端 SHA 2/2；云端目录 mode 700、3 个文件均为 600，元数据为 `HeaderIdentityEncoding=FixedWidthBCD`，镜像无需重建。
+- BCD 指纹窗口为 `2026-08-26T14:23:51Z` 至 `2026-08-26T14:29:21Z`。安全健康结果为允许 4、拦截 0、Outbox pending/dead-letter 0；唯一观察为 `terminal-01 + identityMatch=true + protocolMatch=true`、尝试 4，证明 terminal-01 的消息头身份及协议配置均正确。
+- 4 次允许请求全部进入 API 后被 `TERMINAL_PHONE_MISMATCH` 拒绝；终端保持 PENDING、注册 0、鉴权 0。源码证据为 API `verifyRegistration` 对存储 12 位 TerminalPhone 与解码后的 20 位固定宽度 header identity 使用严格 `secureEquals`，未执行协议宽度规范化。
+- fail-fast 已恢复 BCD 2000 年过期哨兵停止态，gateway `created`、未运行、7611 为 0、原卷和 API 保持。该窗口构成设备身份/协议通过及 API 电话比较合同失败的有效证据，不是终端失败。
+- 推荐下一轮在 API 测试先行修复：依据 protocolVersion 把存储值和上报值都验证为 BCD 数字并左补零到 2013 的 12 位或 2019 的 20 位，再常量时间比较；错误尾号、非数字、超宽继续拒绝。不得在 gateway 直接剥离全部前导零。该修复无需数据库迁移或 gateway 镜像，只需新的 API 镜像与合同回归。
+
+### P6-2 API 固定宽度电话规范化与停止态部署复验（2026-08-27）
+
+- API 修复保持 terminalCode 精确查找，只在电话比较边界按已存 protocolVersion 规范化：2019 数字号码左补零到 20 位，2013 左补零到 12 位；任一数字值超过协议宽度即拒绝，非数字历史测试值继续严格常量时间比较。未改 gateway 解码、数据库数据或附件边界。
+- RED 定向测试 3 项中，2019/2013 固定宽度 BCD 两项按预期失败，差异号码/非 BCD/超宽拒绝测试通过；GREEN 后 3/3 通过。部署后重新执行的新鲜定向测试仍为 3 项、失败 0、错误 0。
+- 完整 reactor 回归退出码为 0：JT 协议、gateway、模拟器和 API 合计 680 项，失败 0、错误 0、跳过 41；本轮汇总来自 114 个新生成的 Surefire 报告。
+- API 发布源码摘要为 `2efdf6aa…a2177`；JAR 为 73,648,587 字节、SHA-256 `28b3cd03…ee0a`。新镜像 `drt-ops-jt-cloud-api:p6-2-phone-2efdf6a` 的 image ID 为 `sha256:c64892d3…03ba`，linux/amd64，镜像内 JAR 哈希与宿主一致。
+- 离线包为 244,272,064 字节、SHA-256 `8b35e94c…b669`，外层归档仅含一个 Docker tar。本地校验、云端 3/3 上传校验、Docker tar 校验、`docker load` 后 image ID 复核及无网络只读隔离验证全部通过；云端私密目录 mode 700、文件均为 600。
+- 使用实际 API Compose 配置链并在末尾追加新 override，执行 `--no-deps` 仅重建 API；切换成功，无需回滚。API 终态 `running/healthy`、restart count 0、根健康端点 200/UP、近 20 分钟 ERROR/FATAL 计数 0。
+- 未认证访问 `/actuator/health/liveness` 与 `/readiness` 返回 401，符合安全配置只公开精确 `/actuator/health` 的既有合同；Compose 健康检查也使用根端点，不构成部署故障。
+- 首次观察器预检因本地 SSH 隧道进程已退出而失败；证据为两个端口均无监听且无 ssh 进程。恢复仅绑定 `127.0.0.1` 的 15173/18080 转发后，观察器 pre-auth 门禁通过：隧道、API health、4 项计划和附件禁入均正常。
+- 本轮明确不启动真实流量：gateway 继续为 `created`、`Running=false`，镜像与原 H2 卷保持；7611 监听为 0。尚未用 terminal-01 重新执行注册/鉴权/位置/报警，下一入口必须另行确认真实窗口并授权启动观察器与 gateway。
+
+### P6-2 API 电话修复后的真实 terminal-01 窗口（2026-08-27）
+
+- 用户裁决为“先完成真实流量验证，再合并”。观察器以四台均 PENDING、注册/ACTIVE/鉴权 0 的基线进入 RUNNING；实时 BCD 环境有效期为 `2026-08-26T21:47:59Z` 至 `22:02:59Z`，SHA-256 `2e45ed4c…ee3a6`。
+- gateway 使用 `p6-2-fingerprint-5199ac8` 启动，健康、UID/GID 10001、只读根文件系统、`cap_drop=ALL`、no-new-privileges 和 `0.0.0.0:7611` 单监听全部通过；API 继续为 `p6-2-phone-2efdf6a` 且 health `UP`。
+- 有效窗口为 `2026-08-26T21:49:36Z` 至 `21:56:20Z`。维护策略允许 30、拦截 0，唯一安全观察为 `terminal-01 + identityMatch=true + protocolMatch=true`、尝试 30；Outbox pending/dead-letter 均为 0。
+- 当前 30 次注册已全部越过此前 `TERMINAL_PHONE_MISMATCH`，但 API 均以 `MODEL_MISMATCH` 拒绝；注册成功、ACTIVE 和鉴权仍为 0。电话规范化修复因此获得真实流量正向证据，但 terminal-01 全链路仍未通过。
+- 源码复核确认 2019 `0x0100` 型号字段按 30 字节 ASCII 读取，并在第一个 NUL 处截断后 `trim()`；私密资料中的期望型号为 8 个 ASCII 字节，不存在超宽或尾部填充解释。现有审计只保存安全原因码，无法从本轮证据确定设备实际型号明文。
+- 按 fail-fast 停止 gateway 并重新应用 2000 年过期哨兵；终态 `created`、未运行、7611 监听/连接 0、API `UP`，观察器进程已停止。冻结观察器快照 SHA-256 为 `d87d1a1c…d4ca`。
+- 一次私密长度诊断误把 intake 的 `terminal_alias` 当成安全别名输出，受控工具输出中出现标识类值；未包含密码、鉴权码、服务凭证、token 或原始报文，且未写入公开文档。后续命令已改为固定 `terminal-01…04`。
+- 合并门禁继续关闭。下一输入必须是 terminal-01 在真实 `0x0100` 中上报的准确型号值，或用户明确授权测试先行的私密型号指纹/取值诊断；不得直接放宽型号比较或猜测更新后台数据。
+
+### P6-2 terminal-01 型号纠正与车辆标识阻断（2026-08-27）
+
+- 用户从设备取得 terminal-01 真实 `0x0100` 型号并更新私密 CSV。为消除误改，terminal-02～04 的型号从云端当前值只读回填；本地原子替换前创建两个备份，terminal-01 整行及四行所有非 `model` 字段保持不变。最终私密 CSV SHA-256 为 `697a8eb7…5e15`。
+- 四台 DryRun 门禁最终为 terminal-01 仅 `model`，terminal-02～04 `NONE`，版本均为 3。Apply 前数据库归档为 210,215 字节、186 个条目、SHA-256 `f13066d6…0815`，目录 mode 700、文件均为 600。
+- terminal-01 受控 Apply 仅修改 `model`，版本 3→4；独立聚合复核为目标状态 1、非目标状态 3、PENDING 4、注册/鉴权 0、活动绑定 4、型号纠正审计 1。Apply 状态 SHA-256 为 `9b23bf1b…9954`。
+- 新真实工件有效期为 `2026-08-27T00:21:40Z` 至 `00:36:40Z`，SHA-256 `66995b3a…25a6c`。gateway 于 `00:21:57Z` 健康启动，非 root、只读、`cap_drop=ALL`、no-new-privileges 与 7611 单监听门禁均通过。
+- terminal-01 维护允许 24，安全观察为 `terminal-01 + identityMatch=true + protocolMatch=true`、尝试 24；此前电话及型号拒绝均未再出现，但 24/24 次在下一字段以 `VEHICLE_IDENTIFIER_MISMATCH` 拒绝。注册、ACTIVE 和鉴权仍为 0，Outbox pending/dead-letter 为 0。
+- 同窗口另有 210 次未知身份拦截及 17 条 `TEMPORARILY_BLOCKED_FOR_MAINTENANCE` 持久审计，不改变四台业务状态。该非目标流量不替代 terminal-01 验收。
+- `00:27:21Z` fail-fast 停止 gateway 并恢复 2000 年过期哨兵；终态 `created`、未运行、7611 监听/连接 0、API `UP`，观察器已停止。冻结快照 SHA-256 为 `da3c05ce…e9313`。
+- 当前结论为电话合同和型号合同已通过真实流量验证，车辆标识合同失败。合并继续阻塞；下一输入必须是 terminal-01 真实 `0x0100` 车辆标识，或另行授权私密车辆标识取值诊断，不得猜测修改绑定车辆标识。
+
+### P6-2 注册异常边界修复与云端停止态部署（2026-08-27）
+
+- 独立 GREEN 复核发现并闭环两项 Important：私密车辆标识捕获写盘 `RuntimeException` 现在与 registry 运行时异常共用“释放入站帧、关闭会话、原样重抛”路径；配置型 `IllegalArgumentException` 继续返回安全原因码，不伪装为终端报文畸形。测试在兜底清理前断言 `refCnt=0`、channel inactive、session CLOSED、无 outbound 和无错误审计，消除假 GREEN。
+- RED 定向测试为 24 项中新增写盘失败用例 1 项预期失败，失败证据为入站帧 `refCnt` 实际 1；GREEN 后定向 24/24。完整 reactor 为 JT 协议 48、gateway 141、模拟器 11、API 491，共 691 项，失败 0、错误 0、API 既有条件跳过 41；`git diff --check` 退出码 0。
+- 本轮沿用已验证 overlay 发布模式，以 `p6-2-legacy-reg-f40d534` 为运行时基底，仅替换通过回归的新 JAR。77 个生产源码文件清单 SHA-256 为 `44b8703a…d8ed`；JAR 为 35,084,258 字节、SHA-256 `7dcf3e7b…271e`。发布目录为 `.private/cloud-deployment/p6-2-cloud-7fa38d0/exception-boundary-release-44b8703`。
+- 新镜像为 `drt-ops-jt-cloud-gateway:p6-2-exception-boundary-44b8703`，image ID `sha256:b822c81e…c343`；本地及云端均确认 linux/amd64、UID/GID 10001、镜像环境敏感项 0，容器内 JAR SHA 与宿主一致。Docker tar 为 273,293,312 字节、SHA-256 `0965ff35…504b`；外层单条目归档为 271,279,704 字节、SHA-256 `1ed4d873…b78a`，本地重新 `docker load` 后 image ID 不变。
+- JAR 高敏字段扫描覆盖 24 个去重候选值，终端号、手机号、车辆标识、坐标、厂商、型号等命中 0。首次全字段扫描只命中 4 字符公共备注/能力值，已按字段名和长度裁决为假阳性，未输出原值、文件名或摘要。
+- 云端上传先进入临时 mode 700 目录。首轮校验因 `UPLOAD-LIST.txt` 本身未上传而在晋升前停止，镜像仓库和容器均未变化；仅补传该小文件后，目录 7 文件、清单 6 个载荷、5/5 SHA、外层归档单条目全部通过，随后原子晋升为 `.private-recovery/exception-boundary-44b8703`。正式目录 mode 700、全部文件 mode 600，上传清单 SHA-256 为 `282a1b7a…9449`。
+- Compose 首次 `config --quiet` 因既有私密捕获 override 的三个变量未持久化到 env 文件而安全失败，未执行 dry-run 或重建。未打印或人工回填值，而是在服务器内部从当前停止态容器复制这三个既有键值到新的 `.private-recovery/exception-boundary-runtime-44b8703/.env.private-capture`；runtime 目录 mode 700、3 个文件均为 600，运行时清单 SHA-256 为 `4c984c46…e807`。
+- 实际停止态配置链为基础 Compose、云端 override、API 电话修复、私密捕获、旧 legacy gateway override、新 exception-boundary override；环境文件为基础 `.env` 加新私密捕获 env。`config --quiet` 通过，`up --dry-run --no-start --no-deps jt-gateway` 只计划重建 gateway，随后实际 `up --no-start --no-deps jt-gateway` 成功。
+- 云端终态：gateway 唯一容器为 `created`、`Running=false`、restart count 0，新镜像生效；原卷 `jt-gateway-data-cloud-test-01` 不变，API 容器未重建且 health `UP`；非 root、只读根文件系统、`cap_drop=ALL`、no-new-privileges 均保持。私密捕获键 3、维护键 0，误启动会 fail closed；7611 监听 0、连接 0。
+- 数据库聚合终态为终端 4、PENDING 4、注册 0、鉴权 0。部署没有启动真实流量，也没有修改终端、车辆、绑定、附件或审计事实。
+- 当前工作树仍为分支 `feat/jt-gateway-deployment`、HEAD `7fa38d0`，发布修复尚未提交或合并。下一入口必须另行确认真实流量窗口，生成当期维护/私密捕获运行时工件并先取得观察器 READY；在此之前不得启动 gateway 或把停止态部署宣称为真实终端验收通过。
+
+### P6-2 exception-boundary 镜像真实 terminal-01 窗口（2026-08-27）
+
+- 现场确认立即开始 20 分钟窗口，terminal-01 已上电、可受控重连、安全组有效。服务器生成窗口 `20260827T131006Z` 的 UTC+15 分钟维护/捕获工件，到期 `13:25:06Z`；目录 mode 700、初始 5 个文件均 mode 600，初始清单 SHA-256 `41a1e6b3…1b76`。
+- 本地现有 SSH 隧道 PID 19516 经监听进程、命令行和 API `UP` 复核后复用。观察器取得 `OBSERVER_READY=YES`，基线注册/ACTIVE/鉴权 0；随后 gateway 用本窗口配置停止态重建，TTL 剩余 685 秒、维护键 5、捕获键 3、捕获输出不存在，才启动服务。
+- gateway 于 `2026-08-27T13:14:38Z` 健康启动，新镜像 `p6-2-exception-boundary-44b8703` 生效，7611 单监听、liveness `UP`。现场在 `21:16:00` Asia/Shanghai 执行 terminal-01 网络重连。
+- 有效流量结果：维护允许 25、拦截 0；唯一观察为 terminal-01、身份匹配 true、协议匹配 true。私密捕获成功，字符数 8、GBK 字节数 9；gateway 健康、Outbox pending/delivering/dead-letter 均 0、ERROR/FATAL 0。
+- 私密捕获通过正式 provisioning-plan 映射与本地最新资料比较：计划 4、terminal-01 映射唯一，字符数、UTF-8 字节数及固定时间字节比较一致，`VehicleIdentifierMatch=YES`。捕获内容和自身哈希未进入公开输出。
+- API 仍拒绝注册；最近窗口安全原因码为 `VEHICLE_IDENTIFIER_MISMATCH` 56 条、`MESSAGE_NOT_ALLOWED_BEFORE_AUTHENTICATION` 56 条。终态仍为终端 4、PENDING 4、注册 0、鉴权 0。结论为设备与本地私密资料已对齐，但云端车辆标识/活动绑定仍是旧快照。
+- 按 fail-fast 于窗口内停止 gateway，并在 `2026-08-27T13:23:15Z` 完成无维护停止态重建。最终状态 created/Running=false/restart 0，维护键 0，7611 监听/连接 0，API `UP`。
+- 观察器被主动结束前冻结，状态仍为 RUNNING，SHA-256 `c2bbdd00…b2dc`，不得当作自然完成。服务器私密窗口清单加入捕获后 SHA-256 为 `81d6e5d2…cade`，6 个文件均 mode 600。
+- 详细脱敏报告为 `docs/pilot/evidence/p6-2/cloud-terminal-01-private-capture-acceptance-2026-08-27.md`。下一门禁为受控车辆标识纠正的 RED/dry-run/备份/单台 apply/只读验证；未获授权前不改库、不删除重建对象、不重复开启同配置窗口。
+
+### P6-2 terminal-01 车辆标识受控纠正门禁失败（2026-08-27）
+
+- 用户授权按 RED/dry-run、备份、单台修正、只读注册验证和真实单台复验顺序执行。私有测试先复现并修复两个门禁缺口：DryRun 提供 Alias 时必须只选择单台，preview changed-fields 必须与期望集合精确一致。
+- 首次真实 strict dry-run 因范围不等于 `vehicleIdentifier` 被阻止。脱敏诊断发现旧脚本依赖 preload manifest vehicleId/车牌反向映射终端；新增“按当前 plan terminalCode 大小写敏感唯一映射”测试先 RED 后 GREEN，并保留 PENDING、未注册/未鉴权和活动绑定门禁。
+- 修复映射后 strict dry-run 仍失败，安全事件为 terminal-01、`ChangedFields=NONE`、`SCOPE_MISMATCH`、版本 4。私有哈希比较却对同一 plan terminalCode 唯一匹配一条活动绑定，并得到 `ChangedFields=vehicleIdentifier`；所有其他六个身份字段摘要一致。
+- 以正式 plan 构造的私密六字段请求调用内部只读注册验证接口，HTTP 200 但结果仍为 `VEHICLE_IDENTIFIER_MISMATCH`。API 发布 JAR 与当前 target JAR的纠正相关类哈希一致，排除简单镜像陈旧。
+- 最近一小时审计没有车辆或终端身份纠正 action；本轮没有生成备份、没有 Apply、没有修改数据库，也没有重新启动 gateway。最终 gateway created/Running=false，7611 监听/连接 0。
+- 服务器窗口私密证据已扩展为 10 个 mode 600 文件，清单 SHA-256 `90706462…a002`。详细报告为 `docs/pilot/evidence/p6-2/cloud-terminal-01-vehicle-identifier-correction-attempt-2026-08-27.md`。
+- 下一门禁为测试先行解决 preview/数据库哈希/registration verify 三方不一致；在此之前不得绕过 preview 直接 Apply，不重复开启真实流量窗口。
+
+### P6-2 API preview / registration-verify 一致性修复（2026-08-27）
+
+- RED 使用同一 JT808-2019 注册身份复现合同漂移：后台保存 12 位规范手机号、注册帧携带等价 20 位固定宽度 BCD 手机号，同时车辆标识确有差异。修复前 preview 错误返回 `terminalPhone,vehicleIdentifier`，而 registration-verify 已接受等价手机号并仅返回 `VEHICLE_IDENTIFIER_MISMATCH`；定向测试 1 项按预期失败。
+- GREEN 将 identity preview/correction 的手机号和协议版本比较收敛到 registration-verify 已使用的等价规则；车辆标识、终端号、厂商、型号和坐标系继续按 UTF-8 精确值判断。Apply 对等价字段保留后台规范值，只更新真实差异，并只对真实变化字段执行唯一性冲突检查。
+- 新增组合合同覆盖“preview 仅报车辆标识 → 修正前 verify 仅报车辆标识不一致 → Apply 仅更新车辆标识且不写回补零手机号 → 修正后 verify APPROVED”。定向 GREEN 退出码 0，`TerminalManagementServiceTest` 23/23 通过。
+- 四模块串行回归退出码为 0：JT 协议 48、gateway 141、API 492、模拟器 11，共 692 项；失败 0、错误 0、条件跳过 41。私有身份纠正脚本测试 16/16 通过，`git diff --check` 退出码 0。
+- 本轮未构建镜像、未访问或写入云端、未启动 gateway，也未执行车辆标识备份/Apply。下一入口为复核本次 GREEN；通过后再单独授权构建 API 离线镜像、停止态部署，并以真实资料重新执行单台 preview/registration-verify dry-run。
+
+### P6-2 云端 API 一致性部署与真实资料 dry-run（2026-08-28）
+
+- 独立 GREEN 复核先后发现并闭环固定宽度手机号语义冲突、并发唯一性、opaque legacy 误拒绝和 SQL 约束名误识别。最终实现由 `TerminalPhoneIdentity` 统一 Java 规范化，V18 增加 `terminal_phone_identity` 非空唯一约束，车辆单字段纠正仅改变业务身份值并推进终端聚合版本一次。
+- 测试门禁为 JT 协议 48、gateway 141、API 500、模拟器 11，共 700 项，失败 0、错误 0、条件跳过 44；真实临时 PostgreSQL V18 迁移 3/3。一次全 reactor 冷启动 gateway burst 时序失败经原用例独立复跑和 gateway 141/141 全量复跑排除，未修改 gateway。
+- API 发布 `p6-2-preview-consistency-169104a`：源码 240 个文件、摘要 `169104ac…2fb6`；JAR SHA-256 `72cce99b…717cc`；镜像 ID `sha256:88361bb6…fd11`；离线归档 SHA-256 `794faf51…30b5`。发布 SHA 8/8、归档单条目、高敏命中 0。
+- 云端预检确认旧 Flyway V17、终端 4、语义重复组 0；V17 私密备份 234,873 字节、201 个条目。上传 SHA 5/5，Compose dry-run 仅计划 API，随后只重建 API。部署后 health `UP`、restart 0、Flyway V18、手机号 identity 缺失/重复 0/0；gateway 保持 created、7611 为 0。
+- 部署后首次真实资料 dry-run 仍出现 preview `NONE`，而 registration-verify 为 `VEHICLE_IDENTIFIER_MISMATCH`。进一步私密诊断证明根因在 Windows PowerShell 5.1 默认代码页读取 UTF-8 无 BOM 私密文件：默认读取 8 字符/12 UTF-8 字节，明确 UTF-8 为 8 字符/10 字节；后者与真实捕获和 registration 请求一致。
+- 私有读取路径按 RED/GREEN 增加严格 UTF-8 JSON/CSV helper，并替换 identity-correction 的 intake、secret、manifest 三个入口；identity 测试 20/20、preload 测试 79/79。一次 intake CSV 可写锁导致 fail-closed；释放文件锁后再次执行成功。
+- 最终 preview dry-run 为 terminal-01、`ChangedFields=vehicleIdentifier`、`PLANNED`、版本 4，状态文件 SHA-256 `d6ede5cf…fe8d`；独立 registration-verify HTTP 200、`approved=false`、原因 `VEHICLE_IDENTIFIER_MISMATCH`，两条路径一致。
+- 终态为终端 4、PENDING 4、注册/鉴权 0、最大版本 4，当日终端/车辆身份纠正审计均为 0；未执行 Apply，gateway 未启动。详细证据：`docs/pilot/evidence/p6-2/cloud-api-preview-registration-consistency-2026-08-28.md`。
+- 下一入口为用户明确授权后执行当前车辆标识私密备份、terminal-01 单台 Apply、只读 registration-verify APPROVED，再进入 gateway 单台真实注册复验；不得提前放开其余终端。
+
+### P6-2 terminal-01 型号级短鉴权码兼容 GREEN（2026-08-28）
+
+- terminal-01 新导出日志在 `2026-08-28 18:20:32` 形成闭环证据：设备 TCP 连接和注册成功，收到结果码 0、正文 46 字节及 43 字节鉴权码；鉴权码为可打印 ASCII 且本次仅含字母数字，但设备固件 `jtprotocal.c:JT_Authkey-1806` 在构造 `0x0102` 时返回 -1。云端同窗口没有收到 `0x0102`，后续仅见重复 `0x0100`。四个相关日志 SHA-256 已脱敏记录，未输出鉴权码或摘要。
+- RED 使用真实 Spring/Netty/TCP 注册链路验证用户批准的型号级策略。默认路径新增断言保持 `0x8100` 正文 92 个十六进制字符（3 字节固定字段 + 43 字符令牌）；精确型号及逗号列表命中均期望 50、实际仍为 92，形成 2 个预期失败；大小写不匹配路径保持 92 并通过。测试在返回长度前已完成模拟 `0x0102`，排除 API、摘要或测试网络故障。
+- GREEN 新增 `RegistrationAuthenticationTokenPolicy`：默认空列表使用 32 字节随机熵并生成 43 字符无填充 Base64URL；精确、大小写敏感的兼容型号使用 16 字节随机熵并生成 22 字符，保留 128 位随机强度。随机熵在编码后立即清零，注册客户端在完成 API 调用后继续清零编码令牌；兼容型号集合没有 getter、日志或健康详情暴露。
+- 生产装配新增 `JT_GATEWAY_REGISTRATION_AUTHENTICATION_COMPATIBILITY_MODELS` 占位配置，基础 Compose 和 `.env.example` 默认留空；实际型号只能写入私密环境文件。运维手册明确型号列表不得进入基础 Compose、公开报告、日志、健康详情或 Outbox，且变更后必须轮换认证并重跑真实注册/鉴权验收。
+- GREEN 定向型号测试通过；`JtGatewayRuntimeIntegrationTest` 10/10 通过。完整四模块串行回归退出码 0：JT 协议 48、gateway 142、API 500、模拟器 11，共 701 项，失败 0、错误 0、条件跳过 44；报告时间均为本轮新生成。
+- 私有观察器测试和认证轮换测试均通过，Compose `config --quiet` 退出码 0，`git diff --check` 退出码 0，遗留 Java 进程 0。Docker 仅报告当前用户无权读取非必需的 `config.json`，未影响 Compose 解析。
+- 本轮没有构建 JAR/镜像、没有上传或部署云端、没有启动 gateway，也没有再次轮换 terminal-01 认证。工作树仍为 `feat/jt-gateway-deployment`、HEAD `7fa38d0`，现有历史未提交改动全部保留。
+- 下一门禁为 GREEN 复核；通过后再单独授权生成源码指纹、构建离线 gateway 镜像、配置私密精确型号、停止态部署，并执行 terminal-01 再次认证轮换与真实注册→激活→`0x0102` 鉴权复验。附件链路和 terminal-02～04 隔离边界不变。
+
+### P6-2 型号级短鉴权码离线构建与云端停止态部署（2026-08-28）
+
+- 用户确认 GREEN 通过后授权进入构建与部署。发布继续采用 overlay 模式，以已部署的 `p6-2-exception-boundary-44b8703` 为固定基底，仅替换新 gateway JAR；基础镜像 content ID 为 `sha256:b822c81e…c343`，linux/amd64、UID/GID 10001。
+- 重新执行 `package -DskipTests` 退出码 0；新 JAR 为 35,086,668 字节，SHA-256 `1d82431f…d42fd`。完整生产构建输入清单覆盖 root POM、gateway Dockerfile/POM/`src/main` 及 JT 协议 POM/`src/main`，共 79 文件，源码摘要 `9dbd9384…fe137`。本轮按实际文件系统收集，包含尚未跟踪但确实进入 JAR 的生产类，修正了旧清单只依赖跟踪文件可能漏项的问题。
+- 新镜像为 `drt-ops-jt-cloud-gateway:p6-2-short-auth-9dbd938`，content ID `sha256:b0eb2b16…d5618`，linux/amd64、UID/GID 10001，镜像内 JAR SHA 与宿主一致，镜像环境敏感项 0。构建使用 `--network=none --pull=false --no-cache`，未访问外部仓库。
+- Docker tar 为 304,994,304 字节、SHA-256 `73e754c2…f0435`；确定性 gzip 归档为 302,757,695 字节、SHA-256 `9663f5c9…e25d`。gzip 自检、展开后 tar 哈希、Docker manifest 单例、目标 RepoTag 及本地 `docker load` 回读 image ID 全部一致。
+- 发布目录为 `.private/cloud-deployment/p6-2-cloud-7fa38d0/short-auth-release-9dbd938`。21 个私密候选值以 UTF-8/GBK 扫描 JAR 和发布文本，命中 0；本地公开文件中两个实际型号命中 0。兼容型号通过正式 provisioning plan 精确映射 terminal-01 后只写入独立私密 `.env.short-auth`，控制台和公开工件未输出真实值。
+- 云端上传先进入两个 `.uploading` 临时目录。发布 5/5 SHA、私密 env 1/1 SHA、gzip、展开 tar、79 行源码清单、占位符及 CRLF 门禁全部通过后，原子晋升为 `.private-recovery/short-auth-9dbd938` 和 `.private-recovery/short-auth-runtime-9dbd938`；目录 mode 700，文件 mode 600，违规数 0。
+- 云端流式 `docker load` 成功；新镜像 content ID、平台、用户和容器内 JAR SHA 均与本地一致。加载时现有 gateway 仍为旧镜像、exited/未运行，7611 为 0。
+- 停止态 Compose 链包含基础、cloud-offline、API preacceptance/phone/preview、旧 exception-boundary 及新 short-auth override；env 为基础 `.env` 加私密 `.env.short-auth`。`config --quiet` 和 dry-run 通过，随后 `--no-start --force-recreate --no-deps` 只重建 gateway。
+- 独立终态复核：gateway 为 `created|false|0`，新镜像 content ID `sha256:b0eb2b16…d5618`，原卷 `jt-gateway-data-cloud-test-01` 保留；兼容键 1、维护键 0、7611 监听 0。API 容器 ID/创建时间未变化，仍为 `p6-2-preview-consistency-169104a`、running/healthy、restart 0，根健康端点 `UP`。非 root、只读根文件系统、`cap_drop=ALL`、no-new-privileges 均保持。
+- 云端安全结果 `STOPPED-DEPLOYMENT-RESULT.txt` SHA-256 为 `10d6d4e6…ee2d6`，Compose dry-run 日志 SHA-256 为 `02260e59…1db07`；两份证据已回收到本地私密发布目录，实际型号命中 0。
+- 本轮没有启动 gateway、没有开放 7611、没有再次轮换 terminal-01 认证，也没有接入真实流量。工作树仍为 `feat/jt-gateway-deployment`、HEAD `7fa38d0`，历史未提交改动全部保留。
+- 下一入口必须由用户确认新的真实流量窗口：先对 terminal-01 再次执行受控 `rotate-auth`，再启动带诊断工件的单台观察器，生成 UTC+15 分钟维护窗口并启动 gateway；成功门禁为设备日志不再出现 `JT_Authkey` 长度失败、云端 `AUTHENTICATED/APPROVED`、`last_authenticated_at` 更新。terminal-02～04 继续维护隔离，附件链路不启用。
+
+### P6-2 short-auth 真实 terminal-01 窗口与跨连接鉴权阻断（2026-08-29）
+
+- 用户确认真实流量准备就绪。前置门禁确认新 gateway 镜像为 `p6-2-short-auth-9dbd938`、created/未运行、7611 为 0、兼容键 1、私密 env SHA-256 `e0736c4c…4812f`；API 仍为 preview-consistency 镜像、healthy/restart 0。数据库唯一目标为 ACTIVE、已注册、未鉴权、活动绑定有效、版本 10。
+- 受控 `rotate-auth` 先备份并通过 dry-run，terminal-01 版本 10→11，状态 SUSPENDED、注册/鉴权时间为空、活动绑定保持；两条操作审计各 1。备份 SHA-256 `f9d7265c…4059a`，结果 SHA-256 `d100bb66…bc70`，独立数据库复核一致。
+- 首次观察器密码输入返回 HTTP 401，未进入基线、未修改业务状态；清理隧道后重新输入成功。观察器以单台 RUNNING、注册/ACTIVE/鉴权 0 基线就绪。
+- 本轮维护窗口 `20260828T222226Z` 到期 `2026-08-28T22:37:26Z`。窗口 SHA、启动脚本 SHA/语法、Compose、新镜像、维护键 5、兼容键 1 全部通过；gateway 于 `22:25:45Z` 健康启动，7611 单监听。用户在 `06:26:55` Asia/Shanghai 执行网络重连。
+- terminal-01 于 `22:27:03.780Z` 完成注册，数据库与审计均为 `REGISTERED/ACCEPTED/APPROVED`，观察器随后激活至 ACTIVE。设备不再出现此前 `JT_Authkey` 长度失败；云端在注册成功后 0.121 秒首次收到 `0x0102`，证明 22 字符型号兼容真实生效。
+- 该 `0x0102` 以 `REGISTRATION_REQUIRED` 被拒绝。审计中的注册成功与鉴权拒绝远端地址比较结果为 `DIFFERENT`，未输出 IP/端口；证据确认设备使用“TCP 连接 A 注册并接收 0x8100 → TCP 连接 B 发送 0x0102”。当前 handler 虽在同一连接内先写入 session 注册状态再回复 0x8100，但新连接 session 没有 terminalId，因此拒绝鉴权。
+- 拒绝后设备回退为重复注册；窗口内另有 `MESSAGE_NOT_ALLOWED_BEFORE_AUTHENTICATION` 9、`TERMINAL_STATE_INVALID` 8，目标 `last_authenticated_at` 仍为空。terminal-02～04 的非目标尝试继续命中 `TEMPORARILY_BLOCKED_FOR_MAINTENANCE`，未改变其 PENDING 状态。
+- 按 fail-fast 停止 gateway；终态 exited/未运行、7611 为 0。观察器专用 SSH 隧道已关闭，冻结状态为注册 1、ACTIVE 1、鉴权 0；状态 SHA-256 `804a79cb…e29cd`，日志 SHA-256 `ba82eefd…44617`。观察器最终 IOException 是主动关闭隧道形成，不是业务根因。
+- 当前结论：型号级 short-auth 修复通过真实设备验证，但全链路仍因网关只支持“同 TCP 连接注册后鉴权”而阻塞。不得再次盲目轮换或启动窗口。
+- 推荐下一门禁为测试先行扩展跨连接鉴权合同：API 按协议版本 + 终端身份规范化查找 ACTIVE 终端并仅以令牌 SHA-256 验证，成功时返回 terminal/vehicle/session 元数据；gateway 新连接收到 `0x0102` 时可调用该合同并重建 session。必须覆盖未知身份、错误令牌、非 ACTIVE、缺失绑定、2013/2019 固定宽度身份、成功时间戳只在成功时更新、原始令牌不落库/不日志。完成独立复核、701+ 回归、构建部署后才允许下一次真实窗口。
+
+### P6-2 复合车载系统规格与实施基线门禁（2026-08-29）
+
+- 用户已确认“车载系统聚合 + 物理设备节点 + 能力角色”模型：同一车辆上的调度终端和行车记录仪使用独立 `terminal_id`、独立凭证和独立 TCP 会话，按一个逻辑车载系统聚合管理；调度终端为位置主设备、行车记录仪为备设备，并由能力和运行状态驱动接管。
+- 正式规格 `docs/superpowers/specs/2026-08-29-p6-2-composite-onboard-system-design.md` 已复核通过，规格提交为 `5da8486`，文件 SHA-256 为 `8d78905a4febdae586befed2cb5c5993f4e2edd0c18a645ac0fd7520e0bf64a5`。测试先行实施计划 `docs/superpowers/plans/2026-08-29-p6-2-composite-onboard-system.md` 已形成，计划提交为 `f8b7dc6`，文件 SHA-256 为 `8e8fcb725f2972e8d380b0294ff6a8a14fc713ed643fe25ded330cfef449bafb`。
+- 新架构实现尚未开始。Task 0 只读基线审计确认当前 `feat/jt-gateway-deployment` 工作树有 51 项既有 P6-2 变更（34 个已修改、17 个未跟踪，暂存为 0），因此 `COMPOSITE_ONBOARD_BASELINE_NOT_COMMITTED=51` 硬门禁按预期生效；不得在脏工作树上直接叠加 V19 或创建新实施 worktree。
+- 既有变更正在按 API/V18、gateway 注册安全链路、发布配置、模拟器、公开证据与本进度记录六个非重叠范围独立复核并准备逻辑提交；`.private/` 和 `.tmp/` 明确排除，禁止 catch-all 提交。
+- 当前代码的新鲜回归证据为 JT 协议 48、gateway 142、API 500、模拟器 11，共 701 项，失败 0、错误 0、API 条件跳过 44。该结果仅证明当前代码回归通过，不关闭真实设备跨 TCP 连接鉴权限制。
+- 已知真实基线保持：terminal-01 的型号级 22 字符鉴权令牌已通过真实设备注册；设备在另一 TCP 连接发送 `0x0102` 时仍被 `REGISTRATION_REQUIRED` 拒绝。该问题归入新计划 Task 3/4，不作为 Task 0 的循环前置条件，也不得在基线提交中宣称已解决。
+- 最后有证据的云端终态仍为 gateway 停止、TCP `7611` 无监听；本轮 Task 0 未访问云端、未启动容器、未接入真实流量。附件/媒体链路继续禁用，不属于本次复合车载系统基础交付。
+- 下一入口：完成六组既有变更的独立复核与显式路径提交，确认暂存为 0、工作树干净并记录基线 SHA；随后创建隔离实施 worktree，从计划 Task 1 的 V19 RED 测试开始。真实流量窗口、gateway 启动和云端部署均需后续单独授权。
+
+### P6-2 Task 11/12 交付与最终 whole-branch review（2026-09-02）
+
+- 状态：**Task 11/12 交付物与本地隔离执行已完成；P6-2 复合车载系统本地开发/隔离验收未收口；云端部署、真实设备、真实流量未开始/未授权。**
+- 实现 branch 为 `codex/p6-2-composite-onboard-system`；Task 12 执行入口 HEAD 为 `ecae1b7a429b0781fa6dbef76d6b64d54fba24d9`，最终 whole-branch review 的当前代码/文档基准 HEAD 为 `c4e504676b4b8dac4bc0a38d0609996cde9d9ec8`。本次预计形成独立 docs corrective commit，当前为 pending，不预写或伪造该提交 SHA；写入本记录后工作树仅有本报告与 `docs/pilot/evidence/p6-2/local-composite-onboard-acceptance-2026-09-02.md` 两项 tracked 未提交，staged 0。本轮未 stage、commit、push、SSH/SFTP、云端操作、安全组操作、真实设备或真实流量。
+- actual API JAR 构建退出码 0，JAR SHA-256 `BD62961A81E0FDB9570503A876AC2CEF61AF48E19A9BDF524EB9FF94965B2DC3`。唯一一次性 PostGIS 16 环境使用 loopback 随机端口、独立卷和 run label；gateway 从未启动，7611 各阶段及清理后均为 0。
+- 真实本地迁移链完成：V18 seed 为 4 车辆/4 终端/4 活动 legacy bindings，pre-V19 备份可读；V19 为 4 systems/4 runtime/4 memberships 且保持 UUID/鉴权/时间戳；actual API 完成 16 次 capability verification；DryRun 4/4，memberships/roles/profiles/audits/system-version-sum/terminal-version-sum/capabilities 七个观测维度未变化，结合 preview API 只读合同，本次未观察到配置写入，但不把它外推为所有相关表内容级零写；ApplyV19 4/4、version 1；ContractCheck 4/4；post-Apply 备份可读；V20 为旧索引 0、legacy 拒写 trigger 1、API `UP`、意外重启 0。
+- 四设备终态：4 physical devices、4 active systems、4 active memberships、4 active protocol profiles、16 verified capabilities、16 active roles；`LOCATION_PRIMARY/ACTIVE_SAFETY/VIDEO/WAN_UPLINK` 各 4；4 辆 source-derived 车辆均 `SAFETY_MONITOR_ONLY` 且不可调度，identity 唯一 4/4，attachment 非空字段 0。
+- fixture 例外：Flyway V2 自带 2 辆无 legacy binding 的 demo 车辆且默认可调度；仅在一次性数据库中归一为不可调度，以通过 V20 全局 gate。未改变四条私密源记录、业务代码或源私密数据。
+- 云端 V20 硬门禁：任何未来云端 V19→V20 前，必须在最新只读备份的恢复克隆上完成全库盘点；所有 `dispatchable=true` 车辆必须具备满足 V20 的活动 system、`DISPATCH_SERVICE` 模式、活动 membership、`DISPATCH`/`LOCATION_PRIMARY` 角色及相应 verified capability，或由业务所有者明确授权、通过另行审计的业务变更改为不可调度。本次一次性 fixture SQL 禁止直接复用于云端，禁止据此未经授权修改生产车辆；盘点或处置未闭环即 **NO-GO**。
+- 新鲜验证：external PostgreSQL 57 tests、0 failure/error、1 conditional skip；Task10 matrix 41/41；Java 125 suites、963/963、0 failure/error、83 skips、Maven exit 0；frontend 54 files/304 tests、typecheck/build exit 0、191 modules，并保留非阻断 `>500 kB` warning；Task11 private 43/43；Task12 private RED→GREEN 后 6/6。
+- Task 12 初审修复轮次没有重跑 963 suite，只在新的唯一 disposable PostGIS 环境中重跑 focused external 57：`P6CompositeOnboardSystemMigrationTest` 54/54，`DatabaseMigrationTest` 3 项（0 failure/error、1 conditional skip），合计 57/0/0/1、Maven exit 0、`external-ephemeral=true`。`2026-09-02T07:23:03Z` 机械生成的 private safe summary SHA-256 为 `80A22B8B6F2F295C387890DE3B06FE18B9B3A3DDD5BF0419EE45BE4B9861F6CA`，源日志 SHA-256 为 `2D12988B996C14ADF935F1186020F985E61A45CBBF03A2CBCA730CA95ECFBBC0`，不含连接属性；本轮容器/卷已精确清理，现有 Docker 资源未变化，7611=0。
+- 两项诊断：external 首轮因临时 `composite` 角色不是 disposable superuser 导致 V1 PostGIS extension errors，重建精确任务测试库/角色后完整通过；Java 首轮 `clean test` 因历史 `hsperfdata` 目录 clean AccessDenied 在 API 前退出，不计成功，随后清空四模块 Surefire 报告、切换新 TEMP/TMP 的完整 `mvn test` 才形成有效 963/963。
+- 清理：task container/volume/run-label 资源均 0，现有容器/卷名称集合不变、状态类别漂移 0，PostgreSQL/API/7611 listener 0，Java 0、Task-owned Node 0、PowerShell 0。完整备份 SHA、working manifest SHA、原始身份引用和测试凭据仅留在 ignored `.private`。
+- 公开证据：`docs/pilot/evidence/p6-2/local-composite-onboard-acceptance-2026-09-02.md`。本次是本地隔离验收，不是云端部署或真实设备/流量验收；附件、媒体、完整 GB/T 28787 业务消息继续 out of scope。
+- 最终 whole-branch review 的当前本地收口阻断项为 I-1～I-7：I-1 活动 profile/verified capability 尚未贯通 session/decode；I-2 alarm authorization 仍查询被冻结的 legacy binding；I-3 readiness 以历史鉴权代替当前 session lease；I-4 位置 staleness 混用平台/终端时钟且迟到坏质量可改变主源资格；I-5 configuration 改变后未协调 runtime 与 vehicle onboard provenance；I-6 换机审计持久化原始 terminal/plate；I-7 UI 固定只读取第一页 20 条。修复必须分别补真实纵向合同、第二设备及撤权/跨车并发、离线调度拒绝、允许偏差与迟到重放、角色迁移/新系统复用、原文禁止项与历史只读盘点、21+ 分页/竞态/只读权限测试。
+- 继续准确保留的 Minor/硬门禁：Task 10 异常路径 `ByteBuf` 释放时机与 instance runner 首个失败步骤/原因诊断保真两个 Minor 必须在真实窗口前修复；Task 11 runner library 在安全 catch 外加载，任何 cloud runner 前必须修复并覆盖 missing/ACL/syntax 三类子进程失败的 stderr 脱敏负向测试；Task 12 helper 6/6 不等于完整 cleanup 测试，复用前须补 `count==4` 和 selector/match-count fail-closed 测试；云端 V20 全库盘点或业务处置未闭环继续为 **NO-GO**。
+- 下一入口：业务代码 TDD 修复 I-1～I-7 已于本轮获得授权，当前实施中；修复后必须重跑 Java、frontend、external、private 完整门禁与独立 whole-branch re-review。在新鲜完整门禁和 re-review 通过前，P6-2 本地开发/隔离验收仍未收口，不得部署、接入真实设备或真实流量；本轮既有证据不能替代修复后的新鲜证据。
+
+- 最终泄漏扫描覆盖 19 个目标和 14 个当前敏感值：公开原值、私密安全输出原值、身份摘要、公开私密绝对路径、长 credential pattern 均为 0，严格 UTF-8 通过。最终 `git diff --check` 通过，状态严格为本地验收报告与 `progress.md` 两项，staged 0、tracked `.private` 0；未 stage/commit/push。
+
+### P6-2 Task 0 基线门禁收口（2026-08-29）
+
+- 六组既有变更已完成独立只读复核。A 组先修复协议单字段 canonical identity 冲突预检、真实唯一约束 409 映射和审计摘要禁存；B 组先修复审计持久化/协议应答顺序、维护并发预约、私密捕获授权、2019 legacy 布局精确摘要门禁、维护状态有界性与鉴权异常 Netty 所有权。修复均保留真实 RED→GREEN 证据，并在最终复核中获 `APPROVED`；C、D、E、F 也分别获批。
+- 在本节提交前，已按显式路径形成六个本地前置提交：`63a1d9c`（忽略本地 `.tmp/` 诊断工件）、`70a4959`（API/V18 身份纠正）、`98cb1fe`（gateway 注册安全边界）、`6ef8023`（部署配置）、`58d5eb5`（真实注册字段模拟器）、`637ceb0`（公开脱敏运维/验收证据）。本进度记录与规格状态属于最后的 F 组文档提交；没有 catch-all 提交，`.private/` 与 `.tmp/` 均未进入 Git。
+- 控制器在最终源码上独立执行串行门禁：JT 协议 48、gateway 164、API 502、模拟器 11，共 **725** 项，失败 0、错误 0；API 仍有 41 项其他显式条件跳过。gateway 的 19 个测试类采用可审计小分区并由随后 API reactor 的普通全量再次 164/164 通过。
+- V18 三项迁移测试使用独立空数据库 `phone_identity` 和仅监听 `127.0.0.1:55491` 的临时 PostGIS 16 容器补跑：fresh schema、V17→V18 回填、语义重复回滚均通过。测试容器以 `--rm` 创建，完成后已删除，端口已释放，未触碰任何既有业务容器或卷。
+- Windows 当前环境对 Spring/H2/PowerShell 固定时限存在明显调度波动。仅调整测试专用预算：runtime loopback HTTP 100ms→500ms；功能型 file-backed H2 E2E 的四个应答步骤显式 5000ms。生产超时、P95/P99 合同、业务断言和附件边界均未改变；失败的历史 XML 保留用于诊断，最终成功集通过类集合机械核对，无遗漏或重复。
+- `git diff --check` 退出码 0，Java 残留进程 0；内容与 HEAD 一致的 `JtTerminalRepository` 伪修改已通过索引 stat 刷新清除。最后有证据的云端状态仍是 gateway 停止、7611 无监听，本轮未访问云端或真实流量。
+- 待本节与规格状态完成 F 组提交后，产生的 `HEAD` 才是 Task 0 最终基线；其精确 SHA 由提交后的 `git rev-parse HEAD` 固化在 Subagent-Driven ledger 和任务交付中。下一入口改为：从该干净基线创建 `codex/p6-2-composite-onboard-system` 隔离 worktree，执行 Task 1 的 V19 RED；跨 TCP 鉴权继续属于计划 Task 3/4，附件/媒体继续延期。
+
+### P6-2 R2 紧急暂停检查点（2026-09-03）
+
+- 状态：**PAUSED_BY_USER_QUOTA**。用户要求在额度仅余约 2% 时立即停止开发，不启动新测试、不再修改业务代码、不 stage/commit/push、不关闭终端会话。
+- 用户消息中的“8 个文件、+283/-18、R2 第 3/8 步”属于更早快照；暂停时只读核验的权威状态为 **49 个未提交 tracked 文件、2,125 insertions、431 deletions**。恢复时以本节实测状态为准，不回退或重做已完成工作。
+- 分支：`codex/p6-2-composite-onboard-system`；HEAD：`b38502d3412ba447adbdde759aa8c5099963f574`；staged=0；Java=0。当前可见 Node 进程总数 5，未在权限边界内确认归属，未停止任何 Node 或终端会话。
+- V21 冻结 SHA-256：`EC6FEC3C8E38B9B4A48054E89220434B4B606F69147C01234E337E9758E33FA3`；V19/V20/V21 均无 R2 修改。此前检查点中的 `B4D178...` 为记录笔误，当前值与 HEAD 及 Task 1 独立复审基线一致。
+- 已批准修复策略：不新增会伪造 authority 的默认/兼容构造器；测试 fixture 必须显式提供 `contractVersion=2`、`protocolProfile`、`onboardSystemId`。除原 R2 清单外，已批准 12 个 testCompile consumer，随后批准第 13 个 `GpsLocationIngressIntegrationTest.java`；这些仅用于显式迁移测试 fixture。
+- 已完成、恢复后不得重复：入口 56/56；API resolver 11/11；readiness 22/22；gateway authority 92/92；alarm unit 14/14；TerminalApi 30/30；TerminalManagementService 34/34；OnboardSystemConfigurationService 27/27；管理端 Vitest 13/13；真实 H2 纵向 E2E 5/5；R2 聚焦组合 244/244；GPS integration 两层 RED 后 61/61 GREEN；gateway runtime v2 stub 修正后 13/13 GREEN。
+- 外部 PostgreSQL/PostGIS：Testcontainers npipe 两次均 9/9 skip，不计 GREEN；严格 external-ephemeral loopback 入口先以“9/9 skip”形成 RED，再暴露并修复测试 fixture 的 V20 全局合同，最终本地独立 PostgreSQL/PostGIS **9/9、0 skip**，`pg_ctl stop=0`，临时实例/目录已清理。
+- 暂停点：原计划步骤 13 聚焦 GREEN 已有 244/244；步骤 14 最终 167 项模块回归先出现 8 个 gateway v2 stub 失败，修复后单类 13/13；随后 GPS alarm fixture 先 8 个、再 5 个预期 RED，显式补齐后单类 61/61。**修复后的最终 167 项整组复跑在暂停时没有可审计最终结果，视为未完成/未知，不能假定通过。**
+- 剩余任务：1）只读复核本检查点、`task-2-brief.md`、`task-2-report.md` 与当前 49 文件；2）确认无 Maven/Java 后仅重跑修复后的步骤 14 最终 167 项并保存新鲜结果；3）运行 admin-web typecheck（Vitest 13/13 已完成）；4）完成 allowlist、V21 SHA、diff-check、staged/process 门禁；5）把 external 9/9、244/244、61/61、13/13 与最终 167/typecheck 追加到 `task-2-report.md`；6）生成 review package 并独立复审；7）Critical/Important 清零后才提交 R2 并进入 R3。
+- 当前未提交文件完整列表：
+
+```text
+ M apps/admin-web/src/api/types.ts
+ M apps/admin-web/src/pages/TerminalManagementPage.vue
+ M apps/admin-web/src/pages/terminal-management-page.test.ts
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/AlarmStore.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/JpaAlarmStore.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/VehicleAlarm.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/alarm/VehicleAlarmIngressService.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/location/GatewayIngressRouter.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/onboard/OnboardReadinessService.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/onboard/OnboardRegistrationResolver.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/onboard/OnboardSystemConfigurationService.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/terminal/GatewayRegistryController.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/terminal/TerminalController.java
+ M apps/api/src/main/java/com/idavy/drtops/domain/terminal/TerminalManagementService.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmAttachmentServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmEventStreamIntegrationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmEventStreamPaginationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/AlarmOutboxPublisherConcurrencyTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/InMemoryAlarmStore.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/MediaCallbackSecurityTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/PostgisVehicleAlarmIngressIntegrationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmActionServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmApiTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmAttachmentApiTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/alarm/VehicleAlarmIngressServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/location/GpsLocationIngressIntegrationTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/CompositeOnboardEndToEndTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardReadinessServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardRegistrationResolverTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardSystemConfigurationServiceTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/onboard/OnboardTestFixtures.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/terminal/TerminalApiTest.java
+ M apps/api/src/test/java/com/idavy/drtops/domain/terminal/TerminalManagementServiceTest.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/dispatch/ProtocolModuleRegistry.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/ingress/ActiveSafetyAlarmRouter.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/ingress/CanonicalVehicleAlarm.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/OperationsTerminalRegistryClient.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/RegistrationAuthenticationHandler.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/TerminalSession.java
+ M apps/jt-gateway/src/main/java/com/idavy/drtops/jtgateway/session/TerminalSessionContext.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/JtGatewayRuntimeIntegrationTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/dispatch/ProtocolModuleRegistryActiveSafetyDispatchTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/e2e/GatewayTestRig.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/ingress/ActiveSafetyAlarmRouterTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/ingress/CanonicalPositionIngressTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/netty/JtGatewayServerIntegrationTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/netty/ProtocolDispatchHandlerOwnershipTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/session/OperationsTerminalRegistryClientTest.java
+ M apps/jt-gateway/src/test/java/com/idavy/drtops/jtgateway/session/RegistrationAuthenticationHandlerTest.java
+```
+
+- 检查点写入后的最终只读确认：`progress.md` 本身成为第 50 个未提交 tracked 文件，因此 `git status` 为 50 项、总 diff 为 2,192 insertions / 431 deletions；其中 R2 业务与测试仍是上述 49 项、2,125 / 431，新增 67 行仅为本紧急检查点。staged=0、HEAD/branch 不变、Java=0。
+
+### P6-2 R2 恢复、复审修复与提交前门禁（2026-09-04）
+
+- 从暂停点只重跑最终 Step 14，初次恢复结果为 167/167、0 failure/error/skip；admin-web typecheck exit 0，allowlist/V19-V21/diff/staged/process 门禁通过。
+- 独立复审初始结论为 Critical 0 / Important 2 / Minor 1：注册/鉴权 ACK 前 transport fail-close 不完整；alarm lifecycle 查询未以 `onboardSystemId` 精确取数。两项均按测试先行修复。
+- Fix round 1：I1 3 fail→3 pass；I2 InMemory 1 fail→1 pass，真实 PostgreSQL 2 fail→2 pass；四完整类 102/102。Scoped re-review 判定 I2 ADDRESSED、I1 尚有 client 分类降级缺口。
+- Fix round 2：真实 client→handler 组合 2 fail→2 pass，完整类 78/78；专用 transport mismatch 分类贯通至安全审计和无 ACK fail-close，正常业务拒绝语义不变。Scoped re-review 判定 I1 ADDRESSED，新 Critical/Important/Minor=0/0/0，Task quality=Approved。
+- 修复后新鲜门禁：Step 13 共 252 项、failure/error=0（11 个条件 PostGIS skip 由同代码 external 11/11、0 skip 证据补足）；Step 14 167/167、0 failure/error/skip；frontend typecheck exit 0。最终业务/测试改动 51 项，批准 allowlist 52、unexpected 0；V19/V20/V21 不变；diff-check/staged/Java/worktree-Node 均为 0。
+- R2 本地提交已完成：`3917c7e6f600cbc95bd4e56b6c523d58fc564dbc`（parent `b38502d3412ba447adbdde759aa8c5099963f574`，subject `fix: align onboard session and alarm authority`），51 路径、2,602 insertions / 445 deletions。提交中 `progress.md`、V19/V20/V21、private/temp/SDD evidence 均为 0；commit diff-check=0。
+- 当前状态：`R2_COMPLETE_LOCAL`。提交后 staged=0，tracked 未提交只剩本 `progress.md`；Java/工作树 Node=0。未 push、未部署、未进入 R3；下一入口为 Task R3“当前会话租约与统一就绪度”，需后续明确继续指令。
+
+### P6-2 R3 物理终端 current session lease（2026-09-05）
+
+- R3 从 HEAD `3917c7e6f600cbc95bd4e56b6c523d58fc564dbc` 开始；V21 冻结 lease schema 未改。实现 terminal-keyed persistent lease、API Clock 180 秒 TTL、token/generation/owner fencing、gateway 有界异步 renew/release、统一 readiness/自动/人工/UI current-session 门禁。
+- 测试先行证据覆盖生命周期、鉴权原子性、非 Netty executor、单 in-flight、expiry close、stale owner、历史鉴权不冒充、另一 terminal lease 不冒充、自动/人工拒绝和 UI 当前/历史分离。
+- 独立初审发现 2 Critical / 2 Important / 1 Minor：malformed approved response orphan lease、audit failure cleanup、failed-renew 30 秒节流、并发/回滚测试不足、UI 字段注入层级错误。两轮 fix/scoped re-review 后全部 ADDRESSED，新 Critical/Important/Minor=0/0/0。
+- 受控 mutation 证据：generation 不递增、resolver `noRollbackFor` 和 terminal `FOR UPDATE` 移除均被对应测试杀死；每次 mutation 均精确恢复生产文件 SHA。无预存 lease 并发首建测试在移除 terminal lock 后稳定产生 H2 23505，恢复后完整 lease 类 5/5。
+- 修复后最终门禁：Java 216/216、failure/error/skip=0；frontend 26/26；typecheck=0。task-owned 38 路径全部位于 39 项批准 allowlist，unexpected=0；V19/V20/V21 SHA 不变；diff/staged/Java/worktree-Node=0。
+- R3 本地提交已完成：`5543054af40afb95cd338e971c6f8cbefaed6c46`（parent `3917c7e6f600cbc95bd4e56b6c523d58fc564dbc`，subject `fix: require live terminal session leases`），38 路径、2,796 insertions / 209 deletions、新文件 5。提交中 `progress.md`、V19/V20/V21、private/temp/SDD evidence 均为 0；commit diff-check=0。
+- 当前状态：`R3_COMPLETE_LOCAL`。提交后 staged=0，tracked 未提交只剩本 `progress.md`；Java/工作树 Node=0。未 push、未部署、未进入 R4；下一入口为 Task R4“位置时钟域与配置/运行态/快照协调”，需后续明确继续指令。
+
+### P6-2 R4 位置双时钟、迟到质量与 provenance（2026-09-05）
+
+- R4 从 HEAD `5543054af40afb95cd338e971c6f8cbefaed6c46` 开始；实现 primary/backup terminal cursor 与 gateway cursor 分离、迟到顺序门禁先于质量运行态变更、跨终端速度只比较 gateway 时钟，以及 Vehicle snapshot 的 onboard-system/terminal/event provenance。
+- 配置 apply/retire/replace/legacy adapter 统一按 system→terminals→membership/role/profile/capability→runtime→vehicle 锁序协调来源；合法 active source 保留，非法来源与 cursor 重置，同系统旧 GPS snapshot 标 stale；readiness 要求当前 snapshot system 与当前车载系统一致。V19/V20/V21 未修改。
+- 独立初审发现 2 个 Important：恢复期 gateway cursor 可回退；配置-vs-ingress 测试不足以证明 whole-old/whole-new。三轮测试先行修复后，gateway cursor 改为同域 max；两个真实事务方向具备精确 system-lock before/after 信号、结果/provenance/history/有效期断言；外部 PostgreSQL 清理加入 pre-context opt-in、loopback、唯一库名、nonce/sentinel 门禁并强制 `ddl-auto=none`。最终 scoped re-review `APPROVED`，未关闭 finding=0。
+- 新鲜最终门禁：Step 11 为 182 项、180 实际通过、2 个条件 PostGIS skip（已有同一代码独立 PostgreSQL/PostGIS 2/2 零跳过证据）；Step 12 为 gateway 13 + API 185 = 198/198，零失败/错误/跳过。另有 configuration-vs-ingress 在合规临时 PostgreSQL/PostGIS 上 2/2；所有临时实例均停止、端口关闭、精确目录删除。
+- 最终范围：14 个允许路径中实际修改 12、允许但未改 2、unexpected 0；diff-check/staged/Java/worktree Node=0；V19/V20/V21 diff=0 且 SHA 保持 `9E9D50...5775`、`C1FED7...5DD3`、`EC6FEC3...3FA3`。
+- R4 本地提交已完成：`a61e8eb6e6c10a330812c6c4cad8fa4ba4cf2e40`（parent `5543054af40afb95cd338e971c6f8cbefaed6c46`，subject `fix: coordinate location runtime provenance`），12 路径、1,961 insertions / 165 deletions。提交严格排除本 `progress.md`、V19/V20/V21、private/temp/SDD evidence；commit diff-check=0。
+- 当前状态：`R4_COMPLETE_LOCAL`。提交后 staged=0，tracked 未提交只剩本 `progress.md`；Java/工作树 Node=0。未 push、未部署、未进入 R5；下一入口为 Task R5，需后续明确继续指令。
+
+### P6-2 R5 换机审计脱敏与历史只读边界（2026-09-05）
+
+- 状态：`R5_COMPLETE_LOCAL`。提交 `14ab97baf19f768244134fa3c8a0e187b78ce8c1`，parent `a61e8eb6e6c10a330812c6c4cad8fa4ba4cf2e40`，subject `fix: redact terminal replacement audit metadata`；精确两个Java文件 +146/-24，commit diff-check=0。
+- 新换机审计 metadata 仅写7键：两个不可逆设备别名、迁移角色及数量、两个令牌版本、固定reasonCode。移除为审计读取车牌的代码，禁止terminal code/phone/UUID/plate/换机前后token hash；gateway审计及自由文本reason原语义未扩展。
+- 行为RED准确复现旧明文三键；新增精确值/禁止值和合成历史sentinel重载比较。另修正同一测试文件中R4漏掉的旧consumer断言：无新合法位置event时replacement不得直接成为位置源，active source及三个cursor为空，保留角色迁移和legacy历史检查。
+- 聚焦三类105/105通过（service35/API30/configuration40），增强定向1/1及最终服务类35/35通过；全部零failure/error/skip。独立规格/质量复核 APPROVED，Critical/Important/Minor=0/0/0。
+- 历史边界：真实数据库零访问、历史audit零修改。未来另获只读授权后仅执行报告中的count/timestamp/action聚合盘点，不输出metadata原值；任何历史UPDATE/DELETE/替换另行批准。此结果不表示真实历史明文已清理。
+- V19/V20/V21未改；暂存为0，仅本progress.md未提交。未push/deploy；报告及复核见本计划SDD目录task-5-report.md/task-5-review.md。R6尚未开始。
+
+### P6-2 R6 车载系统可访问分页（2026-09-05）
+
+- 状态：`R6_COMPLETE_LOCAL`。提交 `4518c675a7db5b6a783ad74409fb51006bd8118c`，parent `14ab97baf19f768244134fa3c8a0e187b78ce8c1`，subject `fix: paginate onboard system management`；精确页面/测试两文件+293/-10，commit diff-check=0。
+- 管理端沿用现有每页20条API，提供上一页/下一页、服务端总数、页码及aria标签；21+系统可达，TERMINAL_READ可分页，管理权限不变。
+- 列表/详情分别用请求序号隔离迟到成功和失败；跨页草稿失效，应用配置期间导航锁定且旧请求不得覆盖权威状态；越界空页最多补一次请求，后页刷新归零时显示0/0并禁用双按钮。
+- 初始RED为20项中新增8项预期失败；独立初审发现1项零页按钮问题，补22项中1项精确RED后最小修复。最终三文件38/38、typecheck/build均exit0，191 modules；保留既有>500kB chunk提示。独立复审APPROVED，无未关闭C/I/M。
+- 暂存0，仅本progress.md仍未提交；Java/工作树Node=0，V19/V20/V21哈希未变，API/client/types/backend未改。未push/deploy。详细证据位于当前计划SDD的task-6-report.md及task-6-fix-round1-rereview.md。
+- 下一步为R1–R6新鲜完整回归与全分支独立复核；当前仅六个整改任务分别完成，不能宣称P6-2整阶段或云端/真实流量验收已收口。最终文档进度另行单独提交。
+
+### R1–R6 最终完整回归与全分支独立复核（2026-09-05）
+
+- 状态：`R1_R6_FINAL_REVIEW_APPROVED_LOCAL`。独立广域审阅加统一修复后的定向复核通过，当前整改范围未关闭Critical/Important为0，新增Minor为0。真实环境准入仍NO-GO。
+- 代码基线 `39494f3e3e459a7c5ac842f73ad99967baf3119b`；R6 `4518c675a7db5b6a783ad74409fb51006bd8118c`；统一测试合同修复提交 `cfd18b330b79b597ff73115305cdcb056a6f4a1a`（4文件+65/-13）。提交差异SHA `D57027F0B4972F43D3CE0504D601673A33E03F0C1D2218B079B609D083925F87` 与测试/复核包一致，无生产/迁移变更。
+- 首轮Java292执行中5失败：GatewayTestRig 2019档案与2013帧不符、历史固定lease过期；外部62项中3errors：当前JPA用例只迁V19而需要V21列。均按真实RED修正测试合同，未弱化生产门禁或冻结迁移。定向gateway16/16、post-fix外部P6迁移59/59证明修复；失败历史保留。
+- 修复后完整Java于UTC04:59:40.4612861–05:11:48.7105541执行，exit0：126测试类/126新XML，无漏报；1042 total=948实际通过+94条件跳过，0failure/error。协议48/48、gateway220/220、API750(656通过94跳过)、模拟器24/24。
+- 独立外部迁移PG17.9/PostGIS3.6.1：62 total=61实际通过+1独立Docker条件skip，0failure/error、exit0。前端54文件317/317、typecheck/build0（191 modules）；private迁移43/43及Task12 6/6。不同门禁有重叠，不相加为唯一测试总数，不将条件跳过算passed。
+- 外部首helper因PowerShell继承管道句柄卡在pg_ctl启动后，未运行测试；仅修ignored helper后按新实例复验。所有本轮临时PG已停、端口关闭、data及合成密码文件清理；最终Java/本工作树Node/taskPGdata=0。V19/V20零diff，V21自R1冻结SHA不变。未访问业务数据库或历史audit数据。
+- 保留门禁：Task10 ByteBuf释放及runner首失败诊断未重新关闭；Task11 library missing/ACL/syntax安全加载未关闭；Task12 count==4与cleanup selector/match-count fail-closed未关闭；cloud V20全库只读盘点未完成。本地APPROVED不授予push/merge/PR/部署或真实设备/流量操作。
+- 最终可复核交付物：`docs/pilot/evidence/p6-2/final-remediation-regression-2026-09-05.md`、`docs/pilot/evidence/p6-2/final-remediation-review-2026-09-05.md`。本进度和两份报告独立文档提交，过程日志/SDD证据保留，后续无需重做本轮已完成门禁。
+- 下一步：关闭已列真实环境/运维前置门禁后再进入相应授权流程；本轮工作到本地整改验证与文档收口为止。

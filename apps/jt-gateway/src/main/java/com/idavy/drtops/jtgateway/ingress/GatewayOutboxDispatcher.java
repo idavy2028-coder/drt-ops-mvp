@@ -47,6 +47,9 @@ public final class GatewayOutboxDispatcher {
         if (report.attempted() != report.delivered()) {
             return report;
         }
+        Instant auditClaimAt = clock.instant();
+        report = report.plus(deliverIndividually(repository.claimSessionAudits(
+                auditClaimAt, MAX_URGENT_BATCH)));
         Instant urgentClaimAt = clock.instant();
         report = report.plus(deliver(repository.claimEligible(
                 urgentClaimAt, GatewayOutboxRepository.Priority.HIGH, MAX_URGENT_BATCH)));
@@ -55,6 +58,14 @@ public final class GatewayOutboxDispatcher {
                 locationClaimAt, GatewayOutboxRepository.Priority.LOCATION, MAX_LOCATION_BATCH);
         if (!locations.isEmpty()) {
             report = report.plus(deliver(locations));
+        }
+        return report;
+    }
+
+    private DispatchReport deliverIndividually(List<GatewayOutboxRepository.OutboxEntry> entries) {
+        DispatchReport report = DispatchReport.empty();
+        for (GatewayOutboxRepository.OutboxEntry entry : entries) {
+            report = report.plus(deliver(List.of(entry)));
         }
         return report;
     }

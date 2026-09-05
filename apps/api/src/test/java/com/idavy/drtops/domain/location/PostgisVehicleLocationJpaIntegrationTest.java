@@ -173,9 +173,9 @@ class PostgisVehicleLocationJpaIntegrationTest {
     void atomicallyReplaysConcurrentGpsIngressWithOneReceiptAndOneEvent() throws Exception {
         UUID terminalId = UUID.randomUUID();
         UUID idempotencyKey = UUID.randomUUID();
-        commitTerminalBinding(terminalId, VEHICLE_ID);
+        UUID onboardSystemId = commitTerminalBinding(terminalId, VEHICLE_ID);
         CanonicalPositionIngress payload = new CanonicalPositionIngress(
-                terminalId, VEHICLE_ID, "JT808_2019", 7,
+                terminalId, onboardSystemId, VEHICLE_ID, "LOCATION_PRIMARY", "JT808_2019", 7,
                 new BigDecimal("105.2384988"), new BigDecimal("35.2109657"), "WGS84",
                 Instant.parse("2026-08-12T08:59:50Z"), Instant.parse("2026-08-12T09:00:00Z"),
                 0L, 0L, new BigDecimal("50"), 90, 10, 8, "a".repeat(64));
@@ -217,7 +217,7 @@ class PostgisVehicleLocationJpaIntegrationTest {
         UUID terminalId = UUID.randomUUID();
         UUID unknownTerminalId = UUID.randomUUID();
         UUID nonexistentVehicleId = UUID.randomUUID();
-        commitTerminalBinding(terminalId, BOUNDARY_VEHICLE_ID);
+        UUID onboardSystemId = commitTerminalBinding(terminalId, BOUNDARY_VEHICLE_ID);
 
         Instant normalLocatedAt = Instant.parse("2026-08-12T08:59:50Z");
         Instant normalGatewayAt = Instant.parse("2026-08-12T09:00:00Z");
@@ -238,34 +238,38 @@ class PostgisVehicleLocationJpaIntegrationTest {
                 "select count(*) from jt_gateway_audit_events", Integer.class);
         List<GpsLocationIngressService.Result> results = ingressService.ingest(List.of(
                 gpsEnvelope(unknownTerminalKey,
-                        gpsPayload(unknownTerminalId, BOUNDARY_VEHICLE_ID, normalLocatedAt, normalGatewayAt),
+                        gpsPayload(unknownTerminalId, onboardSystemId, BOUNDARY_VEHICLE_ID,
+                                normalLocatedAt, normalGatewayAt),
                         normalGatewayAt),
                 gpsEnvelope(nonexistentVehicleKey,
-                        gpsPayload(terminalId, nonexistentVehicleId, normalLocatedAt, normalGatewayAt),
+                        gpsPayload(terminalId, onboardSystemId, nonexistentVehicleId,
+                                normalLocatedAt, normalGatewayAt),
                         normalGatewayAt),
                 gpsEnvelope(belowRangeKey,
-                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID,
+                        gpsPayload(terminalId, onboardSystemId, BOUNDARY_VEHICLE_ID,
                                 POSTGRES_TIMESTAMPTZ_MIN.minusSeconds(1), normalGatewayAt),
                         normalGatewayAt),
                 gpsEnvelope(aboveRangeKey,
-                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID, normalLocatedAt, normalGatewayAt),
+                        gpsPayload(terminalId, onboardSystemId, BOUNDARY_VEHICLE_ID,
+                                normalLocatedAt, normalGatewayAt),
                         POSTGRES_TIMESTAMPTZ_END_EXCLUSIVE),
                 gpsEnvelope(minimumBoundaryKey,
-                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID,
+                        gpsPayload(terminalId, onboardSystemId, BOUNDARY_VEHICLE_ID,
                                 POSTGRES_TIMESTAMPTZ_MIN, POSTGRES_TIMESTAMPTZ_MIN),
                         POSTGRES_TIMESTAMPTZ_MIN),
                 gpsEnvelope(maximumBoundaryKey,
-                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID,
+                        gpsPayload(terminalId, onboardSystemId, BOUNDARY_VEHICLE_ID,
                                 postgresLastMicrosecond, postgresLastMicrosecond),
                         postgresLastMicrosecond),
                 gpsEnvelope(laterValidKey,
-                        gpsPayload(terminalId, BOUNDARY_VEHICLE_ID, normalLocatedAt, normalGatewayAt),
+                        gpsPayload(terminalId, onboardSystemId, BOUNDARY_VEHICLE_ID,
+                                normalLocatedAt, normalGatewayAt),
                         normalGatewayAt)));
 
         assertThat(results).hasSize(7);
         assertThat(results.subList(0, 2)).allSatisfy(result -> {
             assertThat(result.status()).isEqualTo("REJECTED");
-            assertThat(result.reasonCodes()).containsExactly("TERMINAL_BINDING_MISMATCH");
+            assertThat(result.reasonCodes()).containsExactly("ONBOARD_PROVENANCE_MISMATCH");
         });
         assertThat(results.subList(2, 4)).allSatisfy(result -> {
             assertThat(result.status()).isEqualTo("REJECTED");
@@ -350,10 +354,14 @@ class PostgisVehicleLocationJpaIntegrationTest {
         return ingressService.ingest(List.of(envelope)).getFirst();
     }
 
-    private CanonicalPositionIngress gpsPayload(UUID terminalId, UUID vehicleId, Instant terminalLocatedAt,
+    private CanonicalPositionIngress gpsPayload(
+            UUID terminalId,
+            UUID onboardSystemId,
+            UUID vehicleId,
+            Instant terminalLocatedAt,
             Instant gatewayReceivedAt) {
         return new CanonicalPositionIngress(
-                terminalId, vehicleId, "JT808_2019", 7,
+                terminalId, onboardSystemId, vehicleId, "LOCATION_PRIMARY", "JT808_2019", 7,
                 new BigDecimal("105.2384988"), new BigDecimal("35.2109657"), "WGS84",
                 terminalLocatedAt, gatewayReceivedAt, 0L, 0L, new BigDecimal("50"), 90, 10, 8,
                 "a".repeat(64));
@@ -365,10 +373,11 @@ class PostgisVehicleLocationJpaIntegrationTest {
                 1, idempotencyKey, "POSITION", gatewayReceivedAt, objectMapper.writeValueAsString(payload));
     }
 
-    private void commitTerminalBinding(UUID terminalId, UUID vehicleId) {
+    private UUID commitTerminalBinding(UUID terminalId, UUID vehicleId) {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        transaction.executeWithoutResult(status -> {
+        return transaction.execute(status -> {
+            UUID onboardSystemId = UUID.randomUUID();
             jdbcTemplate.update("""
                     insert into jt_terminals (
                       id, terminal_phone, terminal_code, manufacturer_id, model, protocol_version,
@@ -382,6 +391,26 @@ class PostgisVehicleLocationJpaIntegrationTest {
                       id, terminal_id, vehicle_id, valid_from, status, binding_reason, created_at, updated_at
                     ) values (?, ?, ?, now(), 'ACTIVE', 'GPS concurrency test', now(), now())
                     """, UUID.randomUUID(), terminalId, vehicleId);
+            jdbcTemplate.update("""
+                    insert into onboard_systems (
+                      id, vehicle_id, status, operating_mode, created_at, updated_at, version
+                    ) values (?, ?, 'ACTIVE', 'SAFETY_MONITOR_ONLY', now(), now(), 0)
+                    """, onboardSystemId, vehicleId);
+            jdbcTemplate.update("""
+                    insert into onboard_device_memberships (
+                      id, onboard_system_id, terminal_id, network_mode, status, valid_from,
+                      added_reason, created_at, updated_at, version
+                    ) values (?, ?, ?, 'DIRECT_CELLULAR', 'ACTIVE', now(),
+                      'GPS concurrency test', now(), now(), 0)
+                    """, UUID.randomUUID(), onboardSystemId, terminalId);
+            jdbcTemplate.update("""
+                    insert into onboard_device_role_assignments (
+                      id, onboard_system_id, terminal_id, role, status, valid_from,
+                      assigned_reason, created_at, updated_at, version
+                    ) values (?, ?, ?, 'LOCATION_PRIMARY', 'ACTIVE', now(),
+                      'GPS concurrency test', now(), now(), 0)
+                    """, UUID.randomUUID(), onboardSystemId, terminalId);
+            return onboardSystemId;
         });
     }
 

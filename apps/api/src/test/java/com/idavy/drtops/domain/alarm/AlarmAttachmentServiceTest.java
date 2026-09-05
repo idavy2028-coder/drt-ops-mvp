@@ -325,14 +325,16 @@ class AlarmAttachmentServiceTest {
 
     private VehicleAlarm saveAlarm() {
         VehicleAlarmIngressService.AlarmFact fact = new VehicleAlarmIngressService.AlarmFact(
-                UUID.randomUUID(), UUID.randomUUID(), "T/JSATL12-2017", "ADAS", 1,
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                "T/JSATL12-2017", "ADAS", 1,
                 "FORWARD_COLLISION", 4097L, "START", 1, "00000001",
                 Instant.parse("2026-01-15T02:00:00Z"), Instant.parse("2026-01-15T02:00:01Z"),
                 new BigDecimal("118.0000000"), new BigDecimal("32.0000000"), new BigDecimal("60.00"),
                 UUID.randomUUID(), "UNASSESSED", "a".repeat(64));
         return alarms.saveAndFlush(VehicleAlarm.start(fact, UUID.randomUUID().toString().replace("-", "")
                 + UUID.randomUUID().toString().replace("-", ""),
-                new AlarmStore.LocationReference(UUID.randomUUID(), "GOOD", "[]")));
+                new AlarmStore.LocationReference(
+                        UUID.randomUUID(), fact.onboardSystemId(), fact.occurredAt(), "GOOD", "[]")));
     }
 
     @TestConfiguration

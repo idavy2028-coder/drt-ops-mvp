@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 class VehicleAlarmIngressServiceTest {
     private static final UUID DEFAULT_POSITION_KEY = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    static final UUID ONBOARD_SYSTEM_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
 
     @Test
     void writesOneFactAndOutboxPerAlarmWithoutCollapsingOnePositionManyAlarms() {
@@ -51,6 +52,7 @@ class VehicleAlarmIngressServiceTest {
                 start("DMS", 2, "PHONE").atPosition(positionKey)));
 
         assertThat(store.facts()).hasSize(2).allSatisfy(alarm -> {
+            assertThat(alarm.getOnboardSystemId()).isEqualTo(ONBOARD_SYSTEM_ID);
             assertThat(alarm.getLocationEventId()).isEqualTo(locationEventId);
             assertThat(alarm.getLocationQualityStatus()).isEqualTo("QUARANTINED");
             assertThat(alarm.getLocationQualityReasons()).isEqualTo("[\"POSITION_INVALID\"]");
@@ -58,41 +60,39 @@ class VehicleAlarmIngressServiceTest {
     }
 
     @Test
-    void preservesTheAlarmWithRejectedQualityWhenItsPositionHasNoTrustedEvent() {
+    void rejectsAnAlarmWhosePositionReceiptWasRejected() {
         InMemoryAlarmStore store = new InMemoryAlarmStore();
         VehicleAlarmIngressService service = new VehicleAlarmIngressService(store);
 
         UUID rejectedPositionKey = UUID.fromString("55555555-5555-5555-5555-555555555555");
         store.rejectedPosition(rejectedPositionKey);
-        service.ingest(List.of(start("ADAS", 1, "FORWARD_COLLISION").atPosition(rejectedPositionKey)));
+        assertThatThrownBy(() -> service.ingest(List.of(
+                start("ADAS", 1, "FORWARD_COLLISION").atPosition(rejectedPositionKey))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("position ingress is not settled");
 
-        assertThat(store.facts()).singleElement().satisfies(alarm -> {
-            assertThat(alarm.getLocationEventId()).isNull();
-            assertThat(alarm.getLocationQualityStatus()).isEqualTo("REJECTED");
-            assertThat(alarm.getLocationQualityReasons()).contains("INVALID_COORDINATE");
-        });
-        assertThat(store.outbox()).hasSize(1);
-    }
-
-    @Test
-    void rejectsAClaimThatDoesNotMatchTheActiveTerminalVehicleBinding() {
-        InMemoryAlarmStore store = new InMemoryAlarmStore();
-        store.position(DEFAULT_POSITION_KEY, UUID.randomUUID(), "GOOD");
-        store.rejectBindings();
-        VehicleAlarmIngressService service = new VehicleAlarmIngressService(store);
-
-        assertThatThrownBy(() -> service.ingest(List.of(start("ADAS", 1, "FORWARD_COLLISION"))))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("terminal vehicle binding mismatch");
         assertThat(store.facts()).isEmpty();
         assertThat(store.outbox()).isEmpty();
     }
 
     @Test
-    void acceptsBufferedAlarmWhenTheClaimMatchedTheBindingAtGatewayReceiptTime() {
+    void rejectsAClaimWithoutActiveSafetyAuthority() {
         InMemoryAlarmStore store = new InMemoryAlarmStore();
         store.position(DEFAULT_POSITION_KEY, UUID.randomUUID(), "GOOD");
-        store.acceptHistoricalBindingUntil(Instant.parse("2026-01-15T02:00:10Z"));
+        store.rejectAuthority();
+        VehicleAlarmIngressService service = new VehicleAlarmIngressService(store);
+
+        assertThatThrownBy(() -> service.ingest(List.of(start("ADAS", 1, "FORWARD_COLLISION"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("active safety authority mismatch");
+        assertThat(store.facts()).isEmpty();
+        assertThat(store.outbox()).isEmpty();
+    }
+
+    @Test
+    void acceptsAlarmWhenAuthorityMatchesTheLocationRecordedTime() {
+        InMemoryAlarmStore store = new InMemoryAlarmStore();
+        store.position(DEFAULT_POSITION_KEY, UUID.randomUUID(), "GOOD");
         VehicleAlarmIngressService service = new VehicleAlarmIngressService(store);
 
         service.ingest(List.of(start("ADAS", 1, "FORWARD_COLLISION")));
@@ -183,6 +183,7 @@ class VehicleAlarmIngressServiceTest {
         VehicleAlarmIngressService service = new VehicleAlarmIngressService(store);
         VehicleAlarmIngressService.AlarmFact missingModule = new VehicleAlarmIngressService.AlarmFact(
                 UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                ONBOARD_SYSTEM_ID,
                 UUID.fromString("22222222-2222-2222-2222-222222222222"), "T/JSATL12-2017", null, 1,
                 "FORWARD_COLLISION", 0x00001001L, "START", 1, "a".repeat(64), Instant.parse("2026-01-15T02:00:00Z"),
                 Instant.parse("2026-01-15T02:00:01Z"), new BigDecimal("118.0000000"),
@@ -203,6 +204,7 @@ class VehicleAlarmIngressServiceTest {
         VehicleAlarmIngressService service = new VehicleAlarmIngressService(store);
         VehicleAlarmIngressService.AlarmFact invalidLongitude = new VehicleAlarmIngressService.AlarmFact(
                 UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                ONBOARD_SYSTEM_ID,
                 UUID.fromString("22222222-2222-2222-2222-222222222222"), "T/JSATL12-2017", "ADAS", 1,
                 "FORWARD_COLLISION", 0x00001001L, "START", 1, "a".repeat(64), Instant.parse("2026-01-15T02:00:00Z"),
                 Instant.parse("2026-01-15T02:00:01Z"), new BigDecimal("181.0000000"),
@@ -229,8 +231,39 @@ class VehicleAlarmIngressServiceTest {
         assertThat(store.outbox()).isEmpty();
     }
 
+    @Test
+    void inMemoryLifecycleLookupScopesHistoryByOnboardSystemButDetectsGlobalOpenConflict() {
+        InMemoryAlarmStore store = new InMemoryAlarmStore();
+        VehicleAlarmIngressService.AlarmFact current = start(
+                "ADAS", 1, "FORWARD_COLLISION");
+        UUID otherSystemId = UUID.fromString(
+                "55555555-5555-5555-5555-555555555555");
+        VehicleAlarm currentAlarm = VehicleAlarm.start(
+                current,
+                "c".repeat(64),
+                new AlarmStore.LocationReference(
+                        UUID.randomUUID(), ONBOARD_SYSTEM_ID,
+                        Instant.parse("2026-01-15T02:00:00Z"), "GOOD", "[]"));
+        currentAlarm.endAt(Instant.parse("2026-01-15T02:01:00Z"));
+        VehicleAlarmIngressService.AlarmFact other = withOnboardSystemAndOccurredAt(
+                current, otherSystemId, Instant.parse("2026-01-15T02:02:00Z"));
+        VehicleAlarm otherAlarm = VehicleAlarm.start(
+                other,
+                "d".repeat(64),
+                new AlarmStore.LocationReference(
+                        UUID.randomUUID(), otherSystemId,
+                        Instant.parse("2026-01-15T02:00:00Z"), "GOOD", "[]"));
+        store.save(currentAlarm);
+        store.save(otherAlarm);
+
+        assertThat(store.findOpenStart(current)).isEmpty();
+        assertThat(store.findStart(current)).contains(currentAlarm);
+        assertThat(store.hasOpenStart(current)).isTrue();
+    }
+
     private static VehicleAlarmIngressService.AlarmFact start(String module, int typeCode, String type) {
         return new VehicleAlarmIngressService.AlarmFact(UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                ONBOARD_SYSTEM_ID,
                 UUID.fromString("22222222-2222-2222-2222-222222222222"), "T/JSATL12-2017", module, typeCode, type,
                 0x00001001L, "START", 1, "a".repeat(64), Instant.parse("2026-01-15T02:00:00Z"), Instant.parse("2026-01-15T02:00:01Z"),
                 new BigDecimal("118.0000000"), new BigDecimal("32.0000000"), new BigDecimal("60.00"),
@@ -240,14 +273,15 @@ class VehicleAlarmIngressServiceTest {
     private static VehicleAlarmIngressService.AlarmFact withTerminalIdentifier(
             VehicleAlarmIngressService.AlarmFact fact, String terminalAlarmIdentifier) {
         return new VehicleAlarmIngressService.AlarmFact(
-                fact.terminalId(), fact.vehicleId(), fact.standard(), fact.module(), fact.typeCode(), fact.alarmType(),
+                fact.terminalId(), fact.onboardSystemId(), fact.vehicleId(), fact.standard(), fact.module(), fact.typeCode(), fact.alarmType(),
                 fact.terminalAlarmId(), fact.state(), fact.level(), terminalAlarmIdentifier, fact.occurredAt(),
                 fact.gatewayReceivedAt(), fact.longitude(), fact.latitude(), fact.speedKph(),
                 fact.positionIdempotencyKey(), fact.locationQualityStatus(), fact.payloadDigest());
     }
 
     private static VehicleAlarmIngressService.AlarmFact invalid() {
-        return new VehicleAlarmIngressService.AlarmFact(UUID.randomUUID(), UUID.randomUUID(), "T/JSATL12-2017", "DSM", 1,
+        return new VehicleAlarmIngressService.AlarmFact(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                "T/JSATL12-2017", "DSM", 1,
                 "FATIGUE", 0x00002001L, "START", 1, "b".repeat(64), Instant.parse("2026-01-15T02:00:00Z"), Instant.parse("2026-01-15T02:00:01Z"),
                 new BigDecimal("118"), new BigDecimal("32"), new BigDecimal("60"), UUID.randomUUID(),
                 "UNASSESSED", "not-a-digest");
@@ -256,9 +290,21 @@ class VehicleAlarmIngressServiceTest {
     private static VehicleAlarmIngressService.AlarmFact withVehicle(
             VehicleAlarmIngressService.AlarmFact fact, UUID vehicleId) {
         return new VehicleAlarmIngressService.AlarmFact(
-                fact.terminalId(), vehicleId, fact.standard(), fact.module(), fact.typeCode(), fact.alarmType(),
+                fact.terminalId(), fact.onboardSystemId(), vehicleId, fact.standard(), fact.module(), fact.typeCode(), fact.alarmType(),
                 fact.terminalAlarmId(), fact.state(), fact.level(), fact.terminalAlarmIdentifier(), fact.occurredAt(), fact.gatewayReceivedAt(),
                 fact.longitude(), fact.latitude(), fact.speedKph(), fact.positionIdempotencyKey(),
                 fact.locationQualityStatus(), fact.payloadDigest());
+    }
+
+    private static VehicleAlarmIngressService.AlarmFact withOnboardSystemAndOccurredAt(
+            VehicleAlarmIngressService.AlarmFact fact,
+            UUID onboardSystemId,
+            Instant occurredAt) {
+        return new VehicleAlarmIngressService.AlarmFact(
+                fact.terminalId(), onboardSystemId, fact.vehicleId(), fact.standard(),
+                fact.module(), fact.typeCode(), fact.alarmType(), fact.terminalAlarmId(),
+                fact.state(), fact.level(), fact.terminalAlarmIdentifier(), occurredAt,
+                fact.gatewayReceivedAt(), fact.longitude(), fact.latitude(), fact.speedKph(),
+                fact.positionIdempotencyKey(), fact.locationQualityStatus(), fact.payloadDigest());
     }
 }

@@ -22,6 +22,8 @@ import org.testcontainers.utility.DockerImageName;
 class DatabaseMigrationTest {
 
     private static final String POSTGIS_INTEGRATION_PROPERTY = "drt.integration.postgis";
+    private static final String COMPOSITE_ONBOARD_INTEGRATION_PROPERTY =
+            "drt.integration.composite-onboard";
     private static final Path MIGRATION_DIR = Path.of("src/main/resources/db/migration");
 
     @Test
@@ -34,6 +36,8 @@ class DatabaseMigrationTest {
         String pilotVirtualStops = readMigration("V11__enhance_virtual_stops_for_pilot.sql");
         String deferredTaskStopSequence = readMigration("V12__defer_task_stop_sequence_constraint.sql");
         String gpsLocationQuality = readMigration("V14__extend_gps_location_quality.sql");
+        String gatewayAuditIdempotency = readMigration("V17__add_jt_gateway_audit_idempotency.sql");
+        String terminalPhoneIdentity = readMigration("V18__add_jt_terminal_phone_identity.sql");
 
         assertThat(schema).contains(
                 "CREATE EXTENSION IF NOT EXISTS postgis",
@@ -101,6 +105,23 @@ class DatabaseMigrationTest {
                 "idempotency_key UUID PRIMARY KEY",
                 "final_status VARCHAR(20) NOT NULL",
                 "reason_codes JSONB NOT NULL");
+
+        assertThat(gatewayAuditIdempotency).contains(
+                "ADD COLUMN idempotency_key UUID",
+                "SET idempotency_key = id",
+                "ALTER COLUMN idempotency_key SET NOT NULL",
+                "UNIQUE (idempotency_key)",
+                "ALTER TABLE jt_gateway_ingress_receipts",
+                "ADD COLUMN terminal_id UUID",
+                "ADD COLUMN vehicle_id UUID",
+                "ADD COLUMN ingress_kind VARCHAR(32)");
+
+        assertThat(terminalPhoneIdentity).contains(
+                "ADD COLUMN terminal_phone_identity VARCHAR(30)",
+                "LPAD(terminal_phone, 20, '0')",
+                "ALTER COLUMN terminal_phone_identity SET NOT NULL",
+                "ADD CONSTRAINT uq_jt_terminals_terminal_phone_identity",
+                "UNIQUE (terminal_phone_identity)");
     }
 
     @Test
@@ -119,7 +140,39 @@ class DatabaseMigrationTest {
         }
     }
 
+    @Test
+    void migrationsCreateCompositeOnboardTablesOnExplicitExternalPostgres() throws Exception {
+        Assumptions.assumeTrue(Boolean.getBoolean(COMPOSITE_ONBOARD_INTEGRATION_PROPERTY),
+                "composite onboard migration verification was not enabled");
+        String jdbcUrl = System.getProperty(
+                "drt.integration.composite-onboard.jdbc-url", "");
+        String username = System.getProperty(
+                "drt.integration.composite-onboard.username", "");
+        String password = System.getProperty(
+                "drt.integration.composite-onboard.password", "");
+        Assumptions.assumeTrue(
+                Boolean.getBoolean("drt.integration.composite-onboard.external-ephemeral")
+                        && "composite".equals(username)
+                        && jdbcUrl.matches(
+                                "jdbc:postgresql://(?:127\\.0\\.0\\.1|localhost):\\d+/composite_onboard"),
+                "requires an explicit empty loopback composite_onboard PostgreSQL database");
+
+        verifyMigrations(jdbcUrl, username, password);
+    }
+
     private static void verifyMigrations(String jdbcUrl, String username, String password) throws Exception {
+        Flyway.configure()
+                .dataSource(jdbcUrl, username, password)
+                .locations("classpath:db/migration")
+                .target("19")
+                .load()
+                .migrate();
+
+        try (var connection = DriverManager.getConnection(jdbcUrl, username, password);
+                var statement = connection.createStatement()) {
+            statement.executeUpdate("update vehicles set dispatchable = false where dispatchable");
+        }
+
         Flyway.configure()
                 .dataSource(jdbcUrl, username, password)
                 .locations("classpath:db/migration")
@@ -148,7 +201,14 @@ class DatabaseMigrationTest {
                 "roles",
                 "user_roles",
                 "refresh_tokens",
-                "vehicle_location_events");
+                "vehicle_location_events",
+                "onboard_systems",
+                "onboard_system_runtime_state",
+                "onboard_device_memberships",
+                "onboard_device_capabilities",
+                "onboard_device_protocol_profiles",
+                "onboard_device_role_assignments",
+                "jt_terminal_session_leases");
 
         Integer areaCount = jdbcTemplate.queryForObject("select count(*) from service_areas", Integer.class);
         Integer stopCount = jdbcTemplate.queryForObject("select count(*) from virtual_stops", Integer.class);
@@ -161,6 +221,7 @@ class DatabaseMigrationTest {
         assertThat(driverCount).isEqualTo(2);
 
         try (var connection = DriverManager.getConnection(jdbcUrl, username, password)) {
+            assertThat(currentFlywayVersion(connection)).isEqualTo("21");
             try (var statement = connection.createStatement();
                     var resultSet = statement.executeQuery("select postgis_version()")) {
                 assertThat(resultSet.next()).isTrue();
@@ -173,12 +234,22 @@ class DatabaseMigrationTest {
                     "coordinate_system", "standardized_address", "driver_reported_at",
                     "recorded_at", "recorded_by", "note", "correction_reason",
                     "corrects_event_id", "idempotency_key", "request_fingerprint", "snapshot_applied",
-                    "outside_service_area");
+                    "outside_service_area", "onboard_system_id", "source_role");
             assertColumns(connection, "vehicles",
                     "current_location_address", "current_location_source",
                     "current_location_coordinate_system", "current_location_reported_at",
                     "current_location_recorded_at", "current_location_event_id",
-                    "current_location_task_id");
+                    "current_location_task_id", "current_location_onboard_system_id");
+            assertColumns(
+                    connection,
+                    "onboard_system_runtime_state",
+                    "last_primary_valid_gateway_received_at",
+                    "primary_terminal_cursor_at",
+                    "backup_terminal_cursor_at");
+            assertColumns(
+                    connection,
+                    "vehicle_alarms",
+                    "onboard_system_id");
             assertColumns(connection, "virtual_stops",
                     "address", "area_name", "coordinate_system", "source",
                     "verified_at", "verified_by", "updated_at");
@@ -192,6 +263,20 @@ class DatabaseMigrationTest {
                 password,
                 "update vehicle_location_events set note = 'changed' where id = ?");
         assertMutationRejected(jdbcUrl, username, password, "delete from vehicle_location_events where id = ?");
+    }
+
+    private static String currentFlywayVersion(java.sql.Connection connection) throws Exception {
+        try (var statement = connection.createStatement();
+                var resultSet = statement.executeQuery("""
+                        select version
+                        from flyway_schema_history
+                        where success
+                        order by installed_rank desc
+                        limit 1
+                        """)) {
+            assertThat(resultSet.next()).isTrue();
+            return resultSet.getString(1);
+        }
     }
 
     private static void assertColumns(java.sql.Connection connection, String tableName, String... expectedColumns)
