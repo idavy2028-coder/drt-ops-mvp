@@ -1,6 +1,7 @@
 # P6-2 云端 API preview / registration-verify 一致性复验
 
-日期：2026-08-28  
+日期：2026-08-28
+
 范围：terminal-01 单台只读 dry-run；不执行身份纠正 Apply，不启动 gateway。
 
 ## 结论

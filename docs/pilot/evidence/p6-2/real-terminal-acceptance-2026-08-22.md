@@ -74,4 +74,3 @@
 - 真实验收数据库和三个卷保留，未执行 `down -v`、未删除或人工改写 H2/PostgreSQL 业务事实。
 - 分支：`feat/jt-gateway-deployment`。
 - 方案 A 修复提交：`6f6787b`、`7fa38d0`；未推送、未合并。
-
