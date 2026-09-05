@@ -83,6 +83,216 @@ describe("OnboardSystemManagementPage", () => {
     expect(screen.queryByRole("button", { name: "应用配置" })).not.toBeInTheDocument();
   });
 
+  it("exposes the twenty-first system through the existing page API", async () => {
+    const firstTwenty = Array.from({ length: 20 }, (_, index) =>
+      summaryFixture(vehicleId(index + 1)));
+    const twentyFirst = summaryFixture(vehicleId(21));
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture(firstTwenty, 0, 21, 2))
+      .mockResolvedValueOnce(pageFixture([twentyFirst], 1, 21, 2));
+    onboardApi.getOnboardSystem.mockImplementation(async (id: string) => detailFixture(id));
+
+    render(OnboardSystemManagementPage);
+    expect(await screen.findByText("共 21 套系统")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(onboardApi.listOnboardSystems).toHaveBeenLastCalledWith(1, 20);
+    expect(await screen.findByRole("button", { name: new RegExp(vehicleId(21)) }))
+      .toBeInTheDocument();
+    expect(screen.getByText("第 2 / 2 页")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "上一页" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "下一页" })).toBeDisabled();
+  });
+
+  it("ignores an older refresh response after a newer page response", async () => {
+    const firstTwenty = Array.from({ length: 20 }, (_, index) =>
+      summaryFixture(vehicleId(index + 1)));
+    const lateRefresh = deferred<ReturnType<typeof pageFixture>>();
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture(firstTwenty, 0, 21, 2))
+      .mockReturnValueOnce(lateRefresh.promise)
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(21))], 1, 21, 2));
+    onboardApi.getOnboardSystem.mockImplementation(async (id: string) => detailFixture(id));
+
+    render(OnboardSystemManagementPage);
+    await screen.findByText("共 21 套系统");
+    screen.getByRole("button", { name: "刷新" })
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    screen.getByRole("button", { name: "下一页" })
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    lateRefresh.resolve(pageFixture(firstTwenty, 0, 21, 2));
+
+    expect(await screen.findByText("第 2 / 2 页")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: new RegExp(vehicleId(1)) }))
+      .not.toBeInTheDocument();
+  });
+
+  it("invalidates a configuration draft when changing pages", async () => {
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(1))], 0, 2, 2))
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(2))], 1, 2, 2));
+    onboardApi.getOnboardSystem.mockImplementation(async (id: string) => detailFixture(id));
+    render(OnboardSystemManagementPage);
+    await screen.findByText("整体：DEGRADED");
+    await fireEvent.click(screen.getByRole("button", { name: "编辑期望配置" }));
+
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("草稿已失效，请重新开始编辑");
+    expect(screen.queryByRole("button", { name: "应用配置" })).not.toBeInTheDocument();
+  });
+
+  it("lets a read-only operator page without exposing manage controls", async () => {
+    vi.spyOn(authStore, "has").mockImplementation((permission) => permission === "TERMINAL_READ");
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(1))], 0, 2, 2))
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(2))], 1, 2, 2));
+    onboardApi.getOnboardSystem.mockImplementation(async (id: string) => detailFixture(id));
+    render(OnboardSystemManagementPage);
+    await screen.findByText("第 1 / 2 页");
+
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(await screen.findByRole("heading", { name: vehicleId(2) })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑期望配置" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "应用配置" })).not.toBeInTheDocument();
+  });
+
+  it("ignores stale list failures and stale detail successes or failures after paging", async () => {
+    const lateList = deferred<ReturnType<typeof pageFixture>>();
+    const lateDetail = deferred<ReturnType<typeof detailFixture>>();
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(1))], 0, 2, 2))
+      .mockReturnValueOnce(lateList.promise)
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(2))], 1, 2, 2));
+    onboardApi.getOnboardSystem
+      .mockResolvedValueOnce(detailFixture(vehicleId(1)))
+      .mockReturnValueOnce(lateDetail.promise)
+      .mockResolvedValueOnce(detailFixture(vehicleId(2)));
+    render(OnboardSystemManagementPage);
+    await screen.findByRole("heading", { name: vehicleId(1) });
+    screen.getByRole("button", { name: new RegExp(vehicleId(1)) }).click();
+    screen.getByRole("button", { name: "刷新" }).click();
+    screen.getByRole("button", { name: "下一页" }).click();
+
+    lateList.reject(new Error("old list failure"));
+    lateDetail.resolve(detailFixture(vehicleId(1), 99));
+
+    expect(await screen.findByRole("heading", { name: vehicleId(2) })).toBeInTheDocument();
+    expect(screen.queryByText("配置版本 v99 · 调度服务")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale detail failure after a newer page detail succeeds", async () => {
+    const lateDetail = deferred<ReturnType<typeof detailFixture>>();
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(1))], 0, 2, 2))
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(2))], 1, 2, 2));
+    onboardApi.getOnboardSystem
+      .mockReturnValueOnce(lateDetail.promise)
+      .mockResolvedValueOnce(detailFixture(vehicleId(2)));
+    render(OnboardSystemManagementPage);
+    await screen.findByText("第 1 / 2 页");
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    lateDetail.reject(new Error("old detail failure"));
+
+    expect(await screen.findByRole("heading", { name: vehicleId(2) })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("disables pagination while apply is pending", async () => {
+    const pendingFreshDetail = deferred<ReturnType<typeof detailFixture>>();
+    onboardApi.listOnboardSystems.mockResolvedValue(
+      pageFixture([summaryFixture(vehicleId(1))], 0, 2, 2));
+    onboardApi.getOnboardSystem
+      .mockResolvedValueOnce(detailFixture(vehicleId(1)))
+      .mockReturnValueOnce(pendingFreshDetail.promise);
+    render(OnboardSystemManagementPage);
+    await screen.findByText("整体：DEGRADED");
+    await fireEvent.click(screen.getByRole("button", { name: "编辑期望配置" }));
+    await fireEvent.update(screen.getByLabelText("操作原因"), "应用期间分页锁定");
+    await fireEvent.click(screen.getByLabelText("我已核对当前车辆、版本和设备角色，确认应用。"));
+    await fireEvent.click(screen.getByRole("button", { name: "应用配置" }));
+
+    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下一页" })).toBeDisabled();
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(onboardApi.listOnboardSystems).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a list response that was already pending when apply starts", async () => {
+    const lateList = deferred<ReturnType<typeof pageFixture>>();
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(1))], 0, 2, 2))
+      .mockReturnValueOnce(lateList.promise);
+    onboardApi.getOnboardSystem.mockImplementation(async (id: string) => detailFixture(id));
+    render(OnboardSystemManagementPage);
+    await screen.findByText("整体：DEGRADED");
+    await fireEvent.click(screen.getByRole("button", { name: "编辑期望配置" }));
+    await fireEvent.update(screen.getByLabelText("操作原因"), "应用隔离列表晚回");
+    await fireEvent.click(screen.getByLabelText("我已核对当前车辆、版本和设备角色，确认应用。"));
+
+    screen.getByRole("button", { name: "刷新" }).dispatchEvent(
+      new MouseEvent("click", { bubbles: true }));
+    screen.getByRole("button", { name: "应用配置" }).dispatchEvent(
+      new MouseEvent("click", { bubbles: true }));
+    lateList.resolve(pageFixture([summaryFixture(vehicleId(2))], 1, 2, 2));
+
+    await waitFor(() => expect(feedbackStore.items.some(
+      (item) => item.message === "车载系统期望配置已应用")).toBe(true));
+    expect(screen.getByRole("heading", { name: vehicleId(1) })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: new RegExp(vehicleId(2)) }))
+      .not.toBeInTheDocument();
+  });
+
+  it("falls back from an out-of-range empty page at most once", async () => {
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture([summaryFixture(vehicleId(1))], 0, 21, 2))
+      .mockResolvedValueOnce(pageFixture([], 2, 21, 2))
+      .mockResolvedValueOnce(pageFixture([], 2, 21, 2));
+    render(OnboardSystemManagementPage);
+    await screen.findByText("第 1 / 2 页");
+
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    await waitFor(() => expect(onboardApi.listOnboardSystems).toHaveBeenCalledTimes(3));
+    expect(onboardApi.listOnboardSystems).toHaveBeenLastCalledWith(1, 20);
+    expect(screen.getByText("第 2 / 2 页")).toBeInTheDocument();
+    expect(screen.getByText("暂无已安装车载系统")).toBeInTheDocument();
+  });
+
+  it("normalizes a later page to zero when refresh returns an empty collection", async () => {
+    const firstVehicle = vehicleId(1);
+    const secondVehicle = vehicleId(21);
+    const lateDetail = deferred<ReturnType<typeof detailFixture>>();
+    onboardApi.listOnboardSystems
+      .mockResolvedValueOnce(pageFixture([summaryFixture(firstVehicle)], 0, 21, 2))
+      .mockResolvedValueOnce(pageFixture([summaryFixture(secondVehicle)], 1, 21, 2))
+      .mockResolvedValueOnce(pageFixture([], 1, 0, 0));
+    onboardApi.getOnboardSystem
+      .mockResolvedValueOnce(detailFixture(firstVehicle))
+      .mockResolvedValueOnce(detailFixture(secondVehicle))
+      .mockReturnValueOnce(lateDetail.promise);
+    render(OnboardSystemManagementPage);
+    await screen.findByRole("heading", { name: firstVehicle });
+    await fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await screen.findByRole("heading", { name: secondVehicle });
+    await fireEvent.click(screen.getByRole("button", { name: "编辑期望配置" }));
+    screen.getByRole("button", { name: new RegExp(secondVehicle) }).click();
+
+    await fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    lateDetail.resolve(detailFixture(secondVehicle, 99));
+
+    expect(await screen.findByText("第 0 / 0 页")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下一页" })).toBeDisabled();
+    expect(screen.getByText("暂无已安装车载系统")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: secondVehicle })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "应用配置" })).not.toBeInTheDocument();
+    expect(onboardApi.listOnboardSystems).toHaveBeenCalledTimes(3);
+  });
+
   it("showsCurrentOfflineWhileKeepingHistoricalAuthenticationTime", async () => {
     const detail = detailFixture();
     Object.assign(detail.devices[0]!, {
@@ -396,8 +606,17 @@ describe("OnboardSystemManagementPage", () => {
   });
 });
 
-function pageFixture(items: ReturnType<typeof summaryFixture>[]) {
-  return { items, page: 0, size: 20, totalElements: items.length, totalPages: 1 };
+function pageFixture(
+  items: ReturnType<typeof summaryFixture>[],
+  page = 0,
+  totalElements = items.length,
+  totalPages = totalElements === 0 ? 0 : Math.ceil(totalElements / 20)
+) {
+  return { items, page, size: 20, totalElements, totalPages };
+}
+
+function vehicleId(index: number): string {
+  return "33333333-3333-3333-3333-" + String(index).padStart(12, "0");
 }
 
 function summaryFixture(
