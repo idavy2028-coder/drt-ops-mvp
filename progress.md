@@ -1030,3 +1030,15 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 最终业务回归在原样三脚本SHA副本+合成manifest中执行42/42，stderr空、输出扫描0、manifest hash不变。早期原目录42项存在nonloopback catch对真实manifest计算hash的读取路径，已明确披露并不再作为零读取凭据；真实内容未被改写或输出。
 - 版本化交付：`tools/ops-safety/Invoke-CloudOnboardSystemMigration.ps1`、`tools/ops-safety/tests/runner-library-loading.tests.ps1`，以及Task11计划/验收报告；私有业务库和资料继续ignored。测试ACL只作用于合成file并恢复，临时目录/测试进程残留0。
 - 本轮仅关闭Task11，未push/merge/deploy，未改Java/V19–V21或真实资料。Task12数量与cleanup selector/match-count、Task10异常路径及隔离演练仍待各自执行；不能由Task11通过推定云端准入。
+
+### P6-2 运维安全门禁：Task12（2026-09-05）
+
+- 状态：`TASK12_ACCEPTANCE_CLEANUP_APPROVED_LOCAL`。从 `16e174214ff87bc5a90736a34eb3bdc1818a3f04`、分支 `codex/p6-2-ops-safety-gates` 开始；进入时工作树干净。
+- 已批准范围：恰好4物理终端的数量/身份/映射门禁，创建时receipt驱动的本地资源默认只读清理、精确选择及match-count fail-closed。允许同车双设备共享车辆/系统，不改旧seed builder数量合同。
+- 实施计划：`docs/superpowers/plans/2026-09-05-p6-2-ops-task12-acceptance-cleanup.md`；恢复入口：同名SDD目录的 `progress.md`、`task-12-report.md`。本轮采用Subagent-Driven、RED→GREEN与独立复核，已完成，不重新派发Task11/12。
+- 不变边界：Task11、旧Task12库/6测试、业务代码、V19–V21和真实资料不改；不调用真实Docker删除，不访问云端，不推送或部署。
+- 初审前74/74仍遗漏I1标签键大小写、I2 bind共享存储及M1坏库parse证据。Fix1关闭I1/I2；M1首版缺有效receipt/fake PATH正控制，Fix2仅修测试接线，先2/2 RED后2/2 GREEN。最终独立规格/质量PASS，C/I/M=0/0/0。
+- I2保守裁定：全库存任意bind拒绝自动清理，避免仅凭路径字符串推定无别名共享；无关bind也会拒绝，需人工只读核对及单独清理流程，不提供绕过。
+- 最终控制器完整92/92，exit0、stderr0；旧基线6/6；WinPS5.1四脚本Parser0；测试/审阅hash一致，冻结hash漂移0，Task12临时目录0。最终测试SHA `F2D222849CE2900289B7B656133D89131CE8A46B30FFA4FCBA02042F5A8CE28F`。未运行无关Java/Maven回归。
+- 公开门禁报告 `docs/pilot/evidence/p6-2/ops-task12-acceptance-cleanup-2026-09-05.md` 与新本地安全手册已更新，共10个交付文件在本节所在本地提交固化（parent为入口HEAD）；未push/merge/deploy，真实资源删除及四设备验收均未执行。
+- 下一步：Task10异常路径门禁及后续独立隔离演练；需要相应任务指令，不由本次本地保护测试推定云端准入。
