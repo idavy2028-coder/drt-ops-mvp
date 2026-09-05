@@ -1042,3 +1042,12 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 最终控制器完整92/92，exit0、stderr0；旧基线6/6；WinPS5.1四脚本Parser0；测试/审阅hash一致，冻结hash漂移0，Task12临时目录0。最终测试SHA `F2D222849CE2900289B7B656133D89131CE8A46B30FFA4FCBA02042F5A8CE28F`。未运行无关Java/Maven回归。
 - 公开门禁报告 `docs/pilot/evidence/p6-2/ops-task12-acceptance-cleanup-2026-09-05.md` 与新本地安全手册已更新，共10个交付文件在本节所在本地提交固化（parent为入口HEAD）；未push/merge/deploy，真实资源删除及四设备验收均未执行。
 - 下一步：Task10异常路径门禁及后续独立隔离演练；需要相应任务指令，不由本次本地保护测试推定云端准入。
+
+### P6-2 运维安全门禁：Task10异常路径（2026-09-06）
+
+- 状态：`TASK10_EXCEPTION_GATES_APPROVED_LOCAL`。从Task12提交 `2c0d274437db5e91a0e30579d03456b5c7e01c1c` 开始；仅两个simulator生产文件及两个测试文件，业务API/gateway/POM/V19–V21/Task11/12未改。
+- ByteBuf测试先纠正不可释放EmptyByteBuf夹具，再真实复现registration/authentication/position异常后refCnt=1；最小finally修复后资源5/5。runner首错/脱敏在29项中6个真实断言RED，另有control reason mutation RED；实例/report共享step/action/fixed reason，不保存cause/raw message，连接关闭和single-use不变。
+- 最终定向34/34、三模块矩阵52/52，均0 failure/error/skip、exit0；四suite XML Fresh=true。独立规格/质量复核PASS，C/I/M0/0/0；差异包SHA `74FE4B21C867BF14714B045FF7C905BB228199456A883D8966F1C38704AB66EB`。
+- 历史RED stdout未单独保存；控制器在发生时接收失败计数/断言值，过程报告如实承接。独立审阅未回滚复现RED，未把当前GREEN冒充历史时序证据。
+- Docker只读库存44容器/16bind/36volume，按Task12不得自动清理，因此连续隔离演练选native PG17.9/PostGIS新实例；不改现有Docker、不绕过Task12。演练预检已识别V21、V2 demo V20前置及注册后真实API激活衔接，正在建立单独plan-owned runner。
+- 本节代码/计划/公开报告在单独Task10本地提交固化；未push/deploy/访问真实资料。下一状态为 `ISOLATED_REHEARSAL_IN_PROGRESS`，不由Task10通过推定演练或云端准入。

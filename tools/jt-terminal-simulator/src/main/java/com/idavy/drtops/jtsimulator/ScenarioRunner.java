@@ -44,6 +44,7 @@ public final class ScenarioRunner {
             new AtomicReference<>(InstanceRunState.NEW);
     private String currentConnection;
     private boolean failed;
+    private FailureDiagnostic firstFailure;
 
     private ScenarioRunner(
             Scenario scenario,
@@ -87,7 +88,7 @@ public final class ScenarioRunner {
             this.scenario = scenario;
             executeMulti(false);
             if (failed) {
-                throw new IllegalStateException("multi-device scenario failed; no partial result is available");
+                throw new IllegalStateException(firstFailure.instanceMessage());
             }
             return multiResult();
         } finally {
@@ -167,26 +168,38 @@ public final class ScenarioRunner {
             }
         } catch (StepFailure failure) {
             failed = true;
+            FailureDiagnostic diagnostic = recordFirstFailure(index, step.action(), failure.reason());
             if (includeReport) {
                 steps.add(new ScenarioReport.StepRecord(index, step.action().name(), step.terminalAlias(),
-                        ScenarioReport.Outcome.FAIL, failure.getMessage()));
+                        ScenarioReport.Outcome.FAIL, diagnostic.reportDetail()));
             }
         } catch (RuntimeException unexpected) {
             failed = true;
+            FailureDiagnostic diagnostic = recordFirstFailure(
+                    index, step.action(), FailureReason.UNEXPECTED_EXCEPTION);
             if (includeReport) {
                 steps.add(new ScenarioReport.StepRecord(index, step.action().name(), step.terminalAlias(),
-                        ScenarioReport.Outcome.FAIL, unexpected.getClass().getSimpleName() + ": " + unexpected.getMessage()));
+                        ScenarioReport.Outcome.FAIL, diagnostic.reportDetail()));
             }
         }
     }
 
+    private FailureDiagnostic recordFirstFailure(
+            int index, Scenario.MultiAction action, FailureReason reason) {
+        // 只保留固定枚举诊断；原异常正文、cause、token/body/identity 均不进入实例或报告。
+        if (firstFailure == null) {
+            firstFailure = new FailureDiagnostic(index, action.name(), reason);
+        }
+        return firstFailure;
+    }
+
     private String connect(String alias) {
         if (connections.containsKey(alias)) {
-            throw new StepFailure("terminal is already connected: " + alias);
+            throw new StepFailure(FailureReason.INVALID_STEP_STATE, "terminal is already connected");
         }
         Scenario.TerminalDefinition definition = terminalDefinitions.get(alias);
         if (definition == null) {
-            throw new StepFailure("no such terminal alias: " + alias);
+            throw new StepFailure(FailureReason.INVALID_STEP_STATE, "terminal definition is missing");
         }
         SimulatedTerminal terminal = new SimulatedTerminal(
                 definition.terminalIdentity(), definition.protocolVersion(), definition.vehicleIdentifier(),
@@ -195,7 +208,7 @@ public final class ScenarioRunner {
             terminal.connect(endpoint);
         } catch (RuntimeException unreachable) {
             terminal.close();
-            throw new StepFailure("connect failed: " + unreachable.getMessage());
+            throw new StepFailure(FailureReason.WIRE_STEP_FAILED, "connection could not be established");
         }
         connections.put(alias, terminal);
         return "connected as " + alias;
@@ -205,7 +218,7 @@ public final class ScenarioRunner {
         int serial = terminal.sendRegistration();
         SimulatedTerminal.ReplyRecord reply = awaitReply(terminal, DEFAULT_REPLY_TIMEOUT);
         if (reply == null || reply.messageId() != 0x8100 || reply.result() != 0) {
-            throw new StepFailure("registration was not accepted (serial " + serial + ")");
+            throw new StepFailure(FailureReason.WIRE_STEP_FAILED, "registration was not accepted");
         }
         return "registered";
     }
@@ -216,7 +229,7 @@ public final class ScenarioRunner {
         if (reply == null || reply.messageId() != 0x8001 || reply.result() != 0
                 || reply.requestMessageId() == null || reply.requestMessageId() != 0x0102
                 || reply.requestSerialNo() != serial) {
-            throw new StepFailure("authentication was not accepted (serial " + serial + ")");
+            throw new StepFailure(FailureReason.WIRE_STEP_FAILED, "authentication was not accepted");
         }
         authenticatedAliases.add(alias);
         return "authenticated";
@@ -228,7 +241,7 @@ public final class ScenarioRunner {
         if (reply == null || reply.messageId() != 0x8001 || reply.result() != 0
                 || reply.requestMessageId() == null || reply.requestMessageId() != 0x0200
                 || reply.requestSerialNo() != serial) {
-            throw new StepFailure("location was not acknowledged with success (serial " + serial + ")");
+            throw new StepFailure(FailureReason.WIRE_STEP_FAILED, "location was not acknowledged");
         }
         return "location acknowledged";
     }
@@ -255,7 +268,9 @@ public final class ScenarioRunner {
 
     private ScenarioControl requireControl() {
         if (control == null) {
-            throw new StepFailure("control adapter is required for control-plane steps");
+            throw new StepFailure(
+                    FailureReason.CONTROL_ADAPTER_REQUIRED,
+                    "control adapter is required for control-plane steps");
         }
         return control;
     }
@@ -263,7 +278,7 @@ public final class ScenarioRunner {
     private SimulatedTerminal multiConnection(Scenario.ScenarioStep step) {
         SimulatedTerminal terminal = connections.get(step.terminalAlias());
         if (terminal == null) {
-            throw new StepFailure("no connected terminal alias: " + step.terminalAlias());
+            throw new StepFailure(FailureReason.MISSING_CONNECTION, "terminal connection is required");
         }
         return terminal;
     }
@@ -531,8 +546,50 @@ public final class ScenarioRunner {
     }
 
     private static final class StepFailure extends RuntimeException {
+        private final FailureReason reason;
+
         StepFailure(String message) {
+            this(FailureReason.WIRE_STEP_FAILED, message);
+        }
+
+        StepFailure(FailureReason reason, String message) {
             super(message);
+            this.reason = reason;
+        }
+
+        FailureReason reason() {
+            return reason;
+        }
+    }
+
+    private record FailureDiagnostic(int stepIndex, String action, FailureReason reason) {
+        String instanceMessage() {
+            return "multi-device scenario failed; step=" + stepIndex
+                    + " action=" + action
+                    + " reason=" + reason.name()
+                    + "; no partial result is available";
+        }
+
+        String reportDetail() {
+            return "reason=" + reason.name() + " " + reason.safeDescription();
+        }
+    }
+
+    private enum FailureReason {
+        MISSING_CONNECTION("terminal connection is required"),
+        CONTROL_ADAPTER_REQUIRED("control adapter is required for control-plane steps"),
+        WIRE_STEP_FAILED("wire step failed"),
+        UNEXPECTED_EXCEPTION("unexpected step failure"),
+        INVALID_STEP_STATE("invalid multi-device step state");
+
+        private final String safeDescription;
+
+        FailureReason(String safeDescription) {
+            this.safeDescription = safeDescription;
+        }
+
+        String safeDescription() {
+            return safeDescription;
         }
     }
 
