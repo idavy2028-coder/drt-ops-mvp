@@ -246,7 +246,9 @@ final class GatewayTestRig implements AutoCloseable {
                             : Set.of("LOCATION_PRIMARY"),
                     "WGS84",
                     new TerminalSessionContext.SessionProtocolProfile(
-                            "JT808_2019",
+                            // 本夹具的模拟终端和原始帧均按 2013 版编码；档案必须与线协议一致，
+                            // 否则生产 fail-close 门禁会在注册阶段正确拒绝。
+                            "JT808_2013",
                             "NONE",
                             capable ? "JSATL12_2017" : "NONE",
                             capable ? "JT1078_2016" : "NONE",

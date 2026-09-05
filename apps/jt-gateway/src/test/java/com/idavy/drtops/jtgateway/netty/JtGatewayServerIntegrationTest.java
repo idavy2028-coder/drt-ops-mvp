@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -54,6 +55,8 @@ class JtGatewayServerIntegrationTest {
     private static final UUID ONBOARD_SYSTEM_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
     private static final UUID VEHICLE_ID = UUID.fromString("55555555-5555-5555-5555-555555555555");
     private static final String AUTHENTICATION_TOKEN = "PIPELINE-TEST-TOKEN";
+    private static final Clock TEST_RUNTIME_CLOCK = Clock.systemUTC();
+    private static final Duration TEST_LEASE_DURATION = Duration.ofSeconds(180);
 
     @Test
     void buildsHandlersInSecurityAndProtocolOrderWithReaderIdleTimeout() {
@@ -249,6 +252,11 @@ class JtGatewayServerIntegrationTest {
                 assertEquals(Set.of("DISPATCH", "LOCATION_PRIMARY"), firstDispatch.roles());
                 assertEquals(Set.of("LOCATION_BACKUP", "ACTIVE_SAFETY", "VIDEO"),
                         recorderSession.roles());
+                assertCurrentFiniteLeases(registry.issuedLeases, 2);
+                assertNotEquals(
+                        registry.issuedLeases.get(0).owner().connectionId(),
+                        registry.issuedLeases.get(1).owner().connectionId(),
+                        "physical terminals must own isolated leases");
 
                 dispatchReplacement.getOutputStream().write(authenticationPacket(
                         "123456789012", AUTHENTICATION_TOKEN));
@@ -266,6 +274,12 @@ class JtGatewayServerIntegrationTest {
                 assertTrue(replacement.channel().isActive());
                 assertSame(recorderSession, sessions.current(PEER_TERMINAL_ID).orElseThrow());
                 assertTrue(recorderSession.channel().isActive());
+                assertCurrentFiniteLeases(registry.issuedLeases, 3);
+                assertEquals(TERMINAL_ID, registry.issuedLeases.get(2).owner().terminalId());
+                assertNotEquals(
+                        registry.issuedLeases.get(0).owner().connectionId(),
+                        registry.issuedLeases.get(2).owner().connectionId(),
+                        "same-terminal takeover must be fenced by a new connection owner");
             }
         }
     }
@@ -492,19 +506,35 @@ class JtGatewayServerIntegrationTest {
     }
 
     private static SessionLeaseReporter reporter(TerminalRegistryPort registry) {
-        return new SessionLeaseReporter(registry, Runnable::run, Clock.systemUTC());
+        return new SessionLeaseReporter(registry, Runnable::run, TEST_RUNTIME_CLOCK);
     }
 
     private static AuthenticationDecision approvedAuthentication(
             TerminalSessionContext context, UUID connectionId) {
-        Instant now = Instant.parse("2026-08-21T10:00:00Z");
+        // 与被测runtime使用同一UTC时间源即时签发；保持180秒有限有效期与owner fencing。
+        Instant now = TEST_RUNTIME_CLOCK.instant();
         return AuthenticationDecision.allow(
                 context,
                 new TerminalRegistryPort.SessionLeaseGrant(
                         new TerminalRegistryPort.SessionLeaseOwner(
                                 context.terminalId(), "gateway-server-test", connectionId,
                                 context.tokenVersion(), 1),
-                        now, now, now.plusSeconds(180)));
+                        now, now, now.plus(TEST_LEASE_DURATION)));
+    }
+
+    private static void assertCurrentFiniteLeases(
+            List<TerminalRegistryPort.SessionLeaseGrant> leases, int expectedCount) {
+        assertEquals(expectedCount, leases.size());
+        Instant assertedAt = TEST_RUNTIME_CLOCK.instant();
+        for (TerminalRegistryPort.SessionLeaseGrant lease : leases) {
+            assertTrue(lease.expiresAt().isAfter(assertedAt),
+                    "a freshly authenticated session lease must still be current");
+            assertEquals(TEST_LEASE_DURATION,
+                    Duration.between(lease.lastValidMessageAt(), lease.expiresAt()),
+                    "test leases must stay finite and retain the production renewal window");
+            assertTrue(lease.owner().leaseGeneration() > 0,
+                    "lease owners must retain a positive fencing generation");
+        }
     }
 
     private static class ApprovingRegistry implements TerminalRegistryPort {
@@ -554,6 +584,7 @@ class JtGatewayServerIntegrationTest {
     }
 
     private static final class DualIdentityRegistry extends ApprovingRegistry {
+        private final List<SessionLeaseGrant> issuedLeases = new CopyOnWriteArrayList<>();
         private final Map<String, TerminalSessionContext> contexts = Map.of(
                 "123456789012",
                 context(TERMINAL_ID, Set.of("DISPATCH", "LOCATION_PRIMARY")),
@@ -575,7 +606,9 @@ class JtGatewayServerIntegrationTest {
                 return AuthenticationDecision.rejected(
                         com.idavy.drtops.jtgateway.session.AuthenticationRejection.TOKEN_MISMATCH);
             }
-            return approvedAuthentication(context, connectionId);
+            AuthenticationDecision decision = approvedAuthentication(context, connectionId);
+            issuedLeases.add(decision.lease());
+            return decision;
         }
     }
 

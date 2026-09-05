@@ -133,6 +133,12 @@ class GatewayOperationsFlowIntegrationTest {
                 assertEquals(MSG_GENERAL_REPLY, authentication.messageId());
                 assertEquals(0, authentication.result());
 
+                var liveSession = rig.sessionRegistry.current(rig.terminalId).orElseThrow();
+                assertTrue(liveSession.acceptsTransport(ProtocolVersion.JT808_2013),
+                        "the provisioned transport profile must match the real 2013 TCP frames");
+                assertFalse(liveSession.acceptsTransport(ProtocolVersion.JT808_2019),
+                        "the fixture must not silently claim the 2019 transport profile");
+
                 AttachmentCommandService.Command command = new AttachmentCommandService.Command(
                         rig.terminalId,
                         GatewayTestRig.TERMINAL_IDENTITY,

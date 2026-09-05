@@ -1028,8 +1028,8 @@ class P6CompositeOnboardSystemMigrationTest {
     @Test
     void managedWarningCodesRoundTripValidStringsAtBoundary() throws Exception {
         ExternalPostgres postgres = externalPostgres();
-        String schema = schema("v19_warning_roundtrip");
-        flyway(postgres, schema, "19").migrate();
+        String schema = schema("current_jpa_warning_roundtrip");
+        migrateCurrentJpaSchema(postgres, schema);
         UUID vehicleId;
         UUID actorId;
         try (Connection connection = connection(postgres, schema)) {
@@ -1630,10 +1630,10 @@ class P6CompositeOnboardSystemMigrationTest {
     }
 
     @Test
-    void v19JpaMappingsAndRepositoryQueriesValidateAgainstPostgres() {
+    void currentJpaMappingsAndRepositoryQueriesValidateAgainstPostgres() throws Exception {
         ExternalPostgres postgres = externalPostgres();
-        String schema = schema("v19_jpa");
-        flyway(postgres, schema, "19").migrate();
+        String schema = schema("current_jpa_mapping");
+        migrateCurrentJpaSchema(postgres, schema);
         String schemaJdbcUrl = postgres.jdbcUrl() + "?currentSchema=" + schema;
         UUID vehicleId;
         UUID terminalId;
@@ -1695,10 +1695,10 @@ class P6CompositeOnboardSystemMigrationTest {
     }
 
     @Test
-    void v19PersistsConfigurationAndRuntimeVersionsIndependently() throws Exception {
+    void currentSchemaPersistsConfigurationAndRuntimeVersionsIndependently() throws Exception {
         ExternalPostgres postgres = externalPostgres();
-        String schema = schema("v19_version_isolation");
-        flyway(postgres, schema, "19").migrate();
+        String schema = schema("current_jpa_version_isolation");
+        migrateCurrentJpaSchema(postgres, schema);
         UUID vehicleId;
         UUID terminalId;
         UUID actorId;
@@ -2259,6 +2259,17 @@ class P6CompositeOnboardSystemMigrationTest {
             insertContractReadyDualDeviceSystem(connection);
         }
         flyway(postgres, schema, "20").migrate();
+    }
+
+    private static void migrateCurrentJpaSchema(
+            ExternalPostgres postgres, String schema) throws Exception {
+        // V19历史合同由专门测试冻结；当前JPA实体必须在隔离schema补齐V20前置后验证到V21。
+        migrateContractReadyToV20(postgres, schema);
+        Flyway currentSchema = flyway(postgres, schema, "21");
+        currentSchema.migrate();
+        assertThat(currentSchema.info().current().getVersion().getVersion())
+                .as("current JPA schema Flyway head")
+                .isEqualTo("21");
     }
 
     private static Flyway flyway(ExternalPostgres postgres, String schema, String target) {
