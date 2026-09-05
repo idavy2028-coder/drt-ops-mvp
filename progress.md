@@ -1020,3 +1020,13 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 保留门禁：Task10 ByteBuf释放及runner首失败诊断未重新关闭；Task11 library missing/ACL/syntax安全加载未关闭；Task12 count==4与cleanup selector/match-count fail-closed未关闭；cloud V20全库只读盘点未完成。本地APPROVED不授予push/merge/PR/部署或真实设备/流量操作。
 - 最终可复核交付物：`docs/pilot/evidence/p6-2/final-remediation-regression-2026-09-05.md`、`docs/pilot/evidence/p6-2/final-remediation-review-2026-09-05.md`。本进度和两份报告独立文档提交，过程日志/SDD证据保留，后续无需重做本轮已完成门禁。
 - 下一步：关闭已列真实环境/运维前置门禁后再进入相应授权流程；本轮工作到本地整改验证与文档收口为止。
+
+### P6-2 运维安全门禁：Task11（2026-09-05）
+
+- 新分支 `codex/p6-2-ops-safety-gates`，精确基线 `master@ecbaf15a128c6dc6d965e409f2748f5da8d7f5d2`；沿用已隔离工作树，不改动其他工作树或旧分支。
+- 状态：`TASK11_SAFE_LIBRARY_LOADING_APPROVED_LOCAL`。通用runner新增不依赖library的固定加载失败出口，missing/真实NTFS拒读/syntax覆盖三种Mode，stderr空、exit1、manifest不变且不执行后续动作。
+- 可信RED使用原167202...runner备份：12项中3合法通过、9明确WRONG_STDOUT_COUNT；最终GREEN加载12/12及harness自证3/3。独立复核I1/I2/M1均关闭，C/I/M0/0/0：全部等待有界、己方进程异常回收、产品断言/辅助错误分离、三个ACL逐一恢复、未恢复禁止删除。
+- 原private入口先守卫初始hash并备份，再同步版本化runner；两者最终SHA `8C99D07F66F0A95E78FCBFAC82F29F2C1585B1C58DD607E9672217A07613C4C4`一致，业务library保持原SHA5EBF...。
+- 最终业务回归在原样三脚本SHA副本+合成manifest中执行42/42，stderr空、输出扫描0、manifest hash不变。早期原目录42项存在nonloopback catch对真实manifest计算hash的读取路径，已明确披露并不再作为零读取凭据；真实内容未被改写或输出。
+- 版本化交付：`tools/ops-safety/Invoke-CloudOnboardSystemMigration.ps1`、`tools/ops-safety/tests/runner-library-loading.tests.ps1`，以及Task11计划/验收报告；私有业务库和资料继续ignored。测试ACL只作用于合成file并恢复，临时目录/测试进程残留0。
+- 本轮仅关闭Task11，未push/merge/deploy，未改Java/V19–V21或真实资料。Task12数量与cleanup selector/match-count、Task10异常路径及隔离演练仍待各自执行；不能由Task11通过推定云端准入。
