@@ -193,6 +193,207 @@ class GpsLocationIngressIntegrationTest {
     }
 
     @Test
+    void persistsSeparatedPrimaryGatewayAndTerminalCursorsAcrossEntityManagerClear()
+            throws Exception {
+        installBackup();
+        Instant primaryGatewayAt = Instant.parse("2026-08-12T09:00:00Z");
+        Instant primaryTerminalAt = primaryGatewayAt.plusSeconds(29);
+        Instant backupGatewayAt = primaryGatewayAt.plusSeconds(30);
+        Instant backupTerminalAt = primaryGatewayAt.minusSeconds(29);
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                primaryTerminalAt,
+                primaryGatewayAt,
+                0x02L,
+                "1".repeat(64))))).andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID,
+                "LOCATION_BACKUP",
+                backupTerminalAt,
+                backupGatewayAt,
+                0x02L,
+                "2".repeat(64))))).andExpect(status().isOk());
+
+        OnboardSystemRuntimeState runtime = new TransactionTemplate(transactionManager)
+                .execute(status -> {
+                    entityManager.flush();
+                    entityManager.clear();
+                    return runtimeRepository.findById(onboardSystemId).orElseThrow();
+                });
+        assertThat(runtime.getLastPrimaryValidGatewayReceivedAt())
+                .isEqualTo(primaryGatewayAt.atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getPrimaryTerminalCursorAt())
+                .isEqualTo(primaryTerminalAt.atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getBackupTerminalCursorAt())
+                .isEqualTo(backupTerminalAt.atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getLastPrimaryValidAt())
+                .isEqualTo(primaryTerminalAt.atOffset(ZoneOffset.UTC));
+    }
+
+    @Test
+    void lateRejectedPrimaryDoesNotMutateRuntimeOrEnableBackupTakeover()
+            throws Exception {
+        installBackup();
+        OnboardSystemRuntimeState runtime = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        OffsetDateTime primaryGateway = OffsetDateTime.parse("2026-08-12T09:00:21Z");
+        OffsetDateTime primaryCursor = OffsetDateTime.parse("2026-08-12T09:00:20Z");
+        OffsetDateTime backupCursor = OffsetDateTime.parse("2026-08-12T09:00:20Z");
+        runtime.applyLocationArbitration(
+                OTHER_TERMINAL_ID,
+                true,
+                2,
+                primaryGateway,
+                primaryCursor,
+                backupCursor,
+                true,
+                OffsetDateTime.parse("2026-08-12T09:00:21Z"));
+        runtimeRepository.saveAndFlush(runtime);
+        entityManager.clear();
+        OnboardSystemRuntimeState before = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        long beforeVersion = before.getRuntimeVersion();
+        OffsetDateTime beforeUpdatedAt = before.getUpdatedAt();
+
+        CanonicalPositionIngress lateRejected = arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                Instant.parse("2026-08-12T09:00:19Z"),
+                Instant.parse("2026-08-12T09:00:22Z"),
+                0x02L,
+                "3".repeat(64),
+                BigDecimal.ZERO);
+        postIngress(List.of(envelope(UUID.randomUUID(), lateRejected)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("REJECTED"));
+
+        OnboardSystemRuntimeState after = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(after.getRuntimeVersion()).isEqualTo(beforeVersion);
+        assertThat(after.getUpdatedAt()).isEqualTo(beforeUpdatedAt);
+        assertThat(after.getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(after.isPrimaryEligible()).isTrue();
+        assertThat(after.getPrimaryRecoveryStreak()).isEqualTo(2);
+        assertThat(after.getLastPrimaryValidGatewayReceivedAt()).isEqualTo(primaryGateway);
+        assertThat(after.getPrimaryTerminalCursorAt()).isEqualTo(primaryCursor);
+        assertThat(after.getBackupTerminalCursorAt()).isEqualTo(backupCursor);
+    }
+
+    @Test
+    void terminalClockSkewDoesNotChangeThePlatformStalenessBoundary() throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                base.plusSeconds(29),
+                base,
+                0x02L,
+                "4".repeat(64),
+                new BigDecimal("105.2384988"))))).andExpect(status().isOk());
+        UUID backupKey = UUID.randomUUID();
+        postIngress(List.of(envelope(backupKey, arbitrationPayload(
+                OTHER_TERMINAL_ID,
+                "LOCATION_BACKUP",
+                base.plusSeconds(1),
+                base.plusSeconds(30),
+                0x02L,
+                "5".repeat(64),
+                new BigDecimal("105.2394988"))))).andExpect(status().isOk());
+
+        Vehicle vehicle = vehicleRepository.findById(VEHICLE_ID).orElseThrow();
+        VehicleLocationEvent backupEvent = eventRepository
+                .findByIdempotencyKey(backupKey).orElseThrow();
+        assertThat(vehicle.getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(vehicle.getCurrentLocation()).isEqualTo(backupEvent.getLocation());
+        assertThat(eventRepository.findAllByOrderByDriverReportedAtAsc())
+                .extracting(VehicleLocationEvent::isSnapshotApplied)
+                .containsExactly(true, true);
+    }
+
+    @Test
+    void crossDeviceImpliedSpeedUsesGatewayIntervalNotTwoTerminalClocks()
+            throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID,
+                "LOCATION_PRIMARY",
+                base.plusSeconds(29),
+                base,
+                0x02L,
+                "6".repeat(64),
+                new BigDecimal("105.2384988"))))).andExpect(status().isOk());
+        UUID backupKey = UUID.randomUUID();
+        postIngress(List.of(envelope(backupKey, arbitrationPayload(
+                OTHER_TERMINAL_ID,
+                "LOCATION_BACKUP",
+                base.plusSeconds(31),
+                base.plusSeconds(60),
+                0x02L,
+                "7".repeat(64),
+                new BigDecimal("105.2394988")))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].reasonCodes",
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem(
+                                "IMPLIED_SPEED_EXCEEDED"))))
+                .andExpect(jsonPath("$.data[0].reasonCodes",
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem(
+                                "OUT_OF_ORDER"))));
+
+        assertThat(eventRepository.findByIdempotencyKey(backupKey).orElseThrow()
+                .getQualityReasons()).doesNotContain(
+                        "IMPLIED_SPEED_EXCEEDED",
+                        "OUT_OF_ORDER");
+        assertThat(vehicleRepository.findById(VEHICLE_ID).orElseThrow()
+                .getCurrentLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+    }
+
+    @Test
+    void recoveryWithIncreasingTerminalCursorAndEarlierGatewayDoesNotRegressRuntime()
+            throws Exception {
+        installBackup();
+        Instant base = Instant.parse("2026-08-12T09:00:00Z");
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base, base,
+                0x02L, "8".repeat(64))))).andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(1),
+                base.plusSeconds(1), 0L, "9".repeat(64)))))
+                .andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                OTHER_TERMINAL_ID, "LOCATION_BACKUP", base.plusSeconds(2),
+                base.plusSeconds(2), 0x02L, "a".repeat(64)))))
+                .andExpect(status().isOk());
+        postIngress(List.of(envelope(UUID.randomUUID(), arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(3),
+                base.plusSeconds(10), 0x02L, "b".repeat(64)))))
+                .andExpect(status().isOk());
+
+        UUID reorderedGatewayKey = UUID.randomUUID();
+        postIngress(List.of(envelope(reorderedGatewayKey, arbitrationPayload(
+                TERMINAL_ID, "LOCATION_PRIMARY", base.plusSeconds(4),
+                base.plusSeconds(5), 0x02L, "c".repeat(64)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("ACCEPTED"));
+
+        OnboardSystemRuntimeState runtime = runtimeRepository
+                .findById(onboardSystemId).orElseThrow();
+        assertThat(runtime.getActiveLocationTerminalId()).isEqualTo(OTHER_TERMINAL_ID);
+        assertThat(runtime.getPrimaryRecoveryStreak()).isEqualTo(2);
+        assertThat(runtime.getLastPrimaryValidGatewayReceivedAt())
+                .isEqualTo(base.plusSeconds(10).atOffset(ZoneOffset.UTC));
+        assertThat(runtime.getPrimaryTerminalCursorAt())
+                .isEqualTo(base.plusSeconds(4).atOffset(ZoneOffset.UTC));
+        assertThat(eventRepository.findByIdempotencyKey(reorderedGatewayKey)
+                .orElseThrow().isSnapshotApplied()).isFalse();
+    }
+
+    @Test
     void usesIdleProfileIntervalAndAuditsTheExactThresholdSwitchWithSafeAliases() throws Exception {
         installBackup();
         replacePrimaryProfile(60, 20);
@@ -705,6 +906,8 @@ class GpsLocationIngressIntegrationTest {
                 true,
                 0,
                 CONFIGURED_AT.plusSeconds(2),
+                CONFIGURED_AT.plusSeconds(2),
+                null,
                 true,
                 CONFIGURED_AT.plusSeconds(3));
 
@@ -718,6 +921,8 @@ class GpsLocationIngressIntegrationTest {
                 false,
                 -1,
                 CONFIGURED_AT.plusSeconds(1),
+                CONFIGURED_AT.plusSeconds(1),
+                null,
                 true,
                 CONFIGURED_AT.plusSeconds(4)))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -742,6 +947,8 @@ class GpsLocationIngressIntegrationTest {
                 true,
                 0,
                 CONFIGURED_AT.plusSeconds(2),
+                CONFIGURED_AT.plusSeconds(2),
+                null,
                 true,
                 CONFIGURED_AT.plusSeconds(3));
         long runtimeVersion = runtime.getRuntimeVersion();
@@ -751,6 +958,8 @@ class GpsLocationIngressIntegrationTest {
                 true,
                 invalidStreak,
                 CONFIGURED_AT.plusSeconds(2),
+                CONFIGURED_AT.plusSeconds(2),
+                null,
                 false,
                 CONFIGURED_AT.plusSeconds(4)))
                 .isInstanceOf(IllegalArgumentException.class)

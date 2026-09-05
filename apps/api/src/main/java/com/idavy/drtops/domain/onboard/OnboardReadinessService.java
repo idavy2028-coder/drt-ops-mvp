@@ -330,6 +330,10 @@ public class OnboardReadinessService {
         if (activeId == null || !activeId.equals(snapshot.vehicle().getCurrentLocationTerminalId())) {
             return ReadinessState.UNAVAILABLE;
         }
+        if (!snapshot.system().getId().equals(
+                snapshot.vehicle().getCurrentLocationOnboardSystemId())) {
+            return ReadinessState.UNAVAILABLE;
+        }
         RoleFact activeAssignment;
         if (activeId.equals(primaryId)) {
             activeAssignment = primary.getFirst();

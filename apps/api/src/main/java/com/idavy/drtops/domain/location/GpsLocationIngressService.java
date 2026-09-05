@@ -161,8 +161,10 @@ public class GpsLocationIngressService {
         }
         Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(authority.vehicleId()).orElse(null);
         if (vehicle == null) return rejectAudit(envelope, ingress, "ONBOARD_PROVENANCE_MISMATCH");
+        Instant sourceCursor = sourceTerminalCursor(authority, ingress);
         LocationQualityDecision rawDecision = evaluate(
-                ingress, envelope, vehicle, ingress.rawLongitude(), ingress.rawLatitude(), true, null, 0);
+                ingress, envelope, sourceCursor,
+                ingress.rawLongitude(), ingress.rawLatitude(), true, null, 0);
         if (!rawDecision.persistEvent()) {
             PendingArbitration arbitration = prepareArbitration(
                     authority, vehicle, ingress, envelope, rawDecision.status());
@@ -187,12 +189,12 @@ public class GpsLocationIngressService {
             return rejectAudit(envelope, ingress, reasons);
         }
         boolean inside = areaChecker.isInsideEnabledArea(coordinate.longitude(), coordinate.latitude());
-        Double impliedSpeed = impliedSpeedKph(vehicle, coordinate, ingress);
-        LocationQualityDecision decision = evaluate(ingress, envelope, vehicle,
+        Double impliedSpeed = impliedSpeedKph(vehicle, coordinate, ingress, envelope);
+        LocationQualityDecision decision = evaluate(ingress, envelope, sourceCursor,
                 coordinate.longitude(), coordinate.latitude(), inside, impliedSpeed, 0);
         if (decision.status() == LocationQualityStatus.QUARANTINED) {
             int consecutive = consecutiveQuarantines(authority.vehicleId()) + 1;
-            decision = evaluate(ingress, envelope, vehicle,
+            decision = evaluate(ingress, envelope, sourceCursor,
                     coordinate.longitude(), coordinate.latitude(), inside, impliedSpeed, consecutive);
         }
         PendingArbitration arbitration = prepareArbitration(
@@ -206,9 +208,11 @@ public class GpsLocationIngressService {
         }
         VehicleLocationEvent event = VehicleLocationEvent.recordGps(authority.vehicleId(), ingress.terminalId(), ingress, coordinate, decision,
                 envelope.idempotencyKey(), ingress.payloadDigest(), arbitration.processedAt(), envelope.gatewayReceivedAt(), !inside);
-        event = eventRepository.save(event);
         if (arbitration.decision().applySnapshot()) {
             event.markSnapshotApplied();
+        }
+        event = eventRepository.save(event);
+        if (arbitration.decision().applySnapshot()) {
             vehicle.applyGpsLocationSnapshot(event);
         }
         applyArbitration(authority, arbitration);
@@ -418,8 +422,10 @@ public class GpsLocationIngressService {
                             authority.primaryTerminalId(),
                             authority.backupTerminalId(),
                             runtimeState.getActiveLocationTerminalId(),
-                            instant(runtimeState.getLastPrimaryValidAt()),
-                            instant(vehicle.getCurrentLocationReportedAt()),
+                            instant(runtimeState.getLastPrimaryValidGatewayReceivedAt()),
+                            instant(runtimeState.getPrimaryTerminalCursorAt()),
+                            instant(runtimeState.getBackupTerminalCursorAt()),
+                            instant(vehicle.getCurrentLocationGatewayReceivedAt()),
                             Duration.ofSeconds(expectedIntervalSeconds),
                             runtimeState.isPrimaryEligible(),
                             runtimeState.getPrimaryRecoveryStreak());
@@ -434,20 +440,9 @@ public class GpsLocationIngressService {
         } catch (IllegalArgumentException invalidArbitrationState) {
             return null;
         }
-        OffsetDateTime nextLastPrimaryValidAt = runtimeState.getLastPrimaryValidAt();
-        if (ingress.terminalId().equals(authority.primaryTerminalId())
-                && eligibleQuality(qualityStatus)
-                && !"POSITION_NOT_ELIGIBLE".equals(decision.reasonCode())) {
-            OffsetDateTime candidateValidAt = ingress.terminalLocatedAt().atOffset(ZoneOffset.UTC);
-            if (nextLastPrimaryValidAt == null
-                    || candidateValidAt.isAfter(nextLastPrimaryValidAt)) {
-                nextLastPrimaryValidAt = candidateValidAt;
-            }
-        }
         return new PendingArbitration(
                 runtimeState.getActiveLocationTerminalId(),
                 decision,
-                nextLastPrimaryValidAt,
                 OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
     }
 
@@ -460,7 +455,9 @@ public class GpsLocationIngressService {
                 decision.selectedTerminalId(),
                 decision.primaryEligible(),
                 decision.primaryRecoveryStreak(),
-                arbitration.nextLastPrimaryValidAt(),
+                offset(decision.lastPrimaryValidGatewayReceivedAt()),
+                offset(decision.primaryTerminalCursorAt()),
+                offset(decision.backupTerminalCursorAt()),
                 decision.switchSource(),
                 arbitration.processedAt());
         if (decision.switchSource()) {
@@ -543,9 +540,13 @@ public class GpsLocationIngressService {
                 || selectedTerminalId.equals(backupTerminalId);
     }
 
-    private static boolean eligibleQuality(LocationQualityStatus qualityStatus) {
-        return qualityStatus == LocationQualityStatus.GOOD
-                || qualityStatus == LocationQualityStatus.WARNING;
+    private static Instant sourceTerminalCursor(
+            CompositeAuthority authority,
+            CanonicalPositionIngress ingress) {
+        OnboardSystemRuntimeState runtime = authority.runtimeState();
+        return ingress.terminalId().equals(authority.primaryTerminalId())
+                ? instant(runtime.getPrimaryTerminalCursorAt())
+                : instant(runtime.getBackupTerminalCursorAt());
     }
 
     private static boolean validPrimaryRecoveryStreak(int recoveryStreak) {
@@ -554,6 +555,9 @@ public class GpsLocationIngressService {
 
     private static Instant instant(OffsetDateTime timestamp) {
         return timestamp == null ? null : timestamp.toInstant();
+    }
+    private static OffsetDateTime offset(Instant timestamp) {
+        return timestamp == null ? null : timestamp.atOffset(ZoneOffset.UTC);
     }
     private static boolean validPostgresTimestamp(Instant timestamp) {
         return timestamp != null
@@ -575,11 +579,12 @@ public class GpsLocationIngressService {
         return fractionalDigits <= scale && integerDigits <= precision - scale;
     }
     private LocationQualityDecision evaluate(CanonicalPositionIngress ingress, GatewayIngressEnvelope envelope,
-            Vehicle vehicle, java.math.BigDecimal longitude, java.math.BigDecimal latitude,
+            Instant latestSourceTerminalLocatedAt,
+            java.math.BigDecimal longitude, java.math.BigDecimal latitude,
             boolean inside, Double impliedSpeed, int consecutive) {
         return evaluator.evaluate(new LocationQualityEvaluator.Input(longitude, latitude,
                 ingress.terminalLocatedAt(), envelope.gatewayReceivedAt(), envelope.gatewayReceivedAt(),
-                vehicle.getCurrentLocationReportedAt() == null ? null : vehicle.getCurrentLocationReportedAt().toInstant(),
+                latestSourceTerminalLocatedAt,
                 ingress.statusBits() == null ? 0 : ingress.statusBits(), ingress.speedKph(), ingress.satelliteCount(),
                 inside, impliedSpeed, consecutive));
     }
@@ -592,10 +597,25 @@ public class GpsLocationIngressService {
         }
         return count;
     }
-    private static Double impliedSpeedKph(Vehicle vehicle, CoordinateTransformer.StandardizedCoordinate coordinate,
-            CanonicalPositionIngress ingress) {
+    private static Double impliedSpeedKph(
+            Vehicle vehicle,
+            CoordinateTransformer.StandardizedCoordinate coordinate,
+            CanonicalPositionIngress ingress,
+            GatewayIngressEnvelope envelope) {
         if (vehicle.getCurrentLocation() == null || vehicle.getCurrentLocationReportedAt() == null) return null;
-        long seconds = java.time.Duration.between(vehicle.getCurrentLocationReportedAt().toInstant(), ingress.terminalLocatedAt()).getSeconds();
+        Instant previousAt;
+        Instant candidateAt;
+        if (ingress.terminalId().equals(vehicle.getCurrentLocationTerminalId())) {
+            previousAt = vehicle.getCurrentLocationReportedAt().toInstant();
+            candidateAt = ingress.terminalLocatedAt();
+        } else {
+            if (vehicle.getCurrentLocationGatewayReceivedAt() == null) {
+                return null;
+            }
+            previousAt = vehicle.getCurrentLocationGatewayReceivedAt().toInstant();
+            candidateAt = envelope.gatewayReceivedAt();
+        }
+        long seconds = java.time.Duration.between(previousAt, candidateAt).getSeconds();
         if (seconds <= 0) return null;
         org.locationtech.jts.geom.Point point = GeographyPoint.fromWkt(vehicle.getCurrentLocation());
         double lat1 = Math.toRadians(point.getY()), lat2 = Math.toRadians(coordinate.latitude().doubleValue());
@@ -618,6 +638,5 @@ public class GpsLocationIngressService {
     private record PendingArbitration(
             UUID previousTerminalId,
             LocationSourceDecision decision,
-            OffsetDateTime nextLastPrimaryValidAt,
             OffsetDateTime processedAt) { }
 }

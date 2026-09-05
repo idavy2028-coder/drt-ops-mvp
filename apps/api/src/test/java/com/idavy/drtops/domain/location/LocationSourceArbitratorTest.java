@@ -24,7 +24,8 @@ class LocationSourceArbitratorTest {
     @Test
     void selectsEligiblePrimaryForTheInitialSnapshot() {
         LocationSourceDecision decision = arbitrator.decide(
-                state(BACKUP, null, null, null, true, 0, Duration.ofSeconds(10)),
+                state(BACKUP, null, null, null, null, null,
+                        Duration.ofSeconds(10), true, 0),
                 primary(LocationQualityStatus.GOOD, BASE, BASE.plusSeconds(1)));
 
         assertThat(decision.applySnapshot()).isTrue();
@@ -38,11 +39,13 @@ class LocationSourceArbitratorTest {
     @Test
     void selectsEligibleBackupOnlyWhenNoValidPrimaryHasEverBeenObserved() {
         LocationSourceDecision initialBackup = arbitrator.decide(
-                state(BACKUP, null, null, null, true, 0, Duration.ofSeconds(10)),
+                state(BACKUP, null, null, null, null, null,
+                        Duration.ofSeconds(10), true, 0),
                 backup(LocationQualityStatus.WARNING, BASE, BASE.plusSeconds(1)));
         LocationSourceDecision backupAfterPrimaryHistory = arbitrator.decide(
-                state(BACKUP, null, BASE, null, true, 0, Duration.ofSeconds(10)),
-                backup(LocationQualityStatus.GOOD, BASE.plusSeconds(1), BASE.plusSeconds(31)));
+                state(BACKUP, null, BASE, BASE, null, null,
+                        Duration.ofSeconds(10), true, 0),
+                backup(LocationQualityStatus.GOOD, BASE.plusSeconds(1), BASE.plusSeconds(29)));
 
         assertThat(initialBackup.applySnapshot()).isTrue();
         assertThat(initialBackup.switchSource()).isTrue();
@@ -56,9 +59,10 @@ class LocationSourceArbitratorTest {
     }
 
     @Test
-    void usesThirtySecondFloorAndTakesOverAtTheExactBoundary() {
+    void takesOverAtExactGatewayBoundaryButNotOneNanosecondBefore() {
         ArbitrationState state = state(
-                BACKUP, PRIMARY, BASE, BASE, true, 0, Duration.ofSeconds(10));
+                BACKUP, PRIMARY, BASE, BASE, null, BASE,
+                Duration.ofSeconds(10), true, 0);
 
         LocationSourceDecision beforeBoundary = arbitrator.decide(
                 state,
@@ -80,7 +84,8 @@ class LocationSourceArbitratorTest {
     @Test
     void usesTwiceTheExpectedIntervalWhenItExceedsTheFloor() {
         ArbitrationState state = state(
-                BACKUP, PRIMARY, BASE, BASE, true, 0, Duration.ofSeconds(20));
+                BACKUP, PRIMARY, BASE, BASE, null, BASE,
+                Duration.ofSeconds(20), true, 0);
 
         LocationSourceDecision beforeBoundary = arbitrator.decide(
                 state,
@@ -98,7 +103,8 @@ class LocationSourceArbitratorTest {
     @Test
     void invalidPrimaryQualityMarksItIneligibleAndFreshBackupTakesOver() {
         ArbitrationState activePrimary = state(
-                BACKUP, PRIMARY, BASE, BASE, true, 2, Duration.ofSeconds(60));
+                BACKUP, PRIMARY, BASE, BASE, null, BASE,
+                Duration.ofSeconds(60), true, 2);
 
         for (LocationQualityStatus invalid : new LocationQualityStatus[] {
                 LocationQualityStatus.QUARANTINED, LocationQualityStatus.REJECTED}) {
@@ -113,7 +119,8 @@ class LocationSourceArbitratorTest {
             assertThat(rejected.reasonCode()).isEqualTo("POSITION_NOT_ELIGIBLE");
 
             LocationSourceDecision takeover = arbitrator.decide(
-                    state(BACKUP, PRIMARY, BASE, BASE, false, 0, Duration.ofSeconds(60)),
+                    state(BACKUP, PRIMARY, BASE, BASE, null, BASE,
+                            Duration.ofSeconds(60), false, 0),
                     backup(LocationQualityStatus.GOOD, BASE.plusSeconds(2), BASE.plusSeconds(2)));
             assertThat(takeover.applySnapshot()).isTrue();
             assertThat(takeover.switchSource()).isTrue();
@@ -126,10 +133,12 @@ class LocationSourceArbitratorTest {
     @Test
     void freshBackupCannotOverridePrimaryButActiveBackupRemainsAuthoritative() {
         LocationSourceDecision ignored = arbitrator.decide(
-                state(BACKUP, PRIMARY, BASE, BASE, true, 0, Duration.ofSeconds(30)),
+                state(BACKUP, PRIMARY, BASE, BASE, null, BASE,
+                        Duration.ofSeconds(30), true, 0),
                 backup(LocationQualityStatus.GOOD, BASE.plusSeconds(1), BASE.plusSeconds(29)));
         LocationSourceDecision activeBackup = arbitrator.decide(
-                state(BACKUP, BACKUP, BASE, BASE, true, 2, Duration.ofSeconds(30)),
+                state(BACKUP, BACKUP, BASE, BASE, BASE, BASE,
+                        Duration.ofSeconds(30), true, 2),
                 backup(LocationQualityStatus.WARNING, BASE.plusSeconds(1), BASE.plusSeconds(1)));
 
         assertThat(ignored.applySnapshot()).isFalse();
@@ -146,13 +155,16 @@ class LocationSourceArbitratorTest {
     @Test
     void preservesEligibilityDuringThreeReportFailbackAfterStaleTakeover() {
         LocationSourceDecision first = arbitrator.decide(
-                state(BACKUP, BACKUP, BASE, BASE, true, 0, Duration.ofSeconds(30)),
+                state(BACKUP, BACKUP, BASE, BASE, BASE, BASE,
+                        Duration.ofSeconds(30), true, 0),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(1), BASE.plusSeconds(1)));
         LocationSourceDecision second = arbitrator.decide(
-                state(BACKUP, BACKUP, BASE.plusSeconds(1), BASE, true, 1, Duration.ofSeconds(30)),
+                state(BACKUP, BACKUP, BASE.plusSeconds(1), BASE.plusSeconds(1), BASE, BASE,
+                        Duration.ofSeconds(30), true, 1),
                 primary(LocationQualityStatus.WARNING, BASE.plusSeconds(2), BASE.plusSeconds(2)));
         LocationSourceDecision third = arbitrator.decide(
-                state(BACKUP, BACKUP, BASE.plusSeconds(2), BASE, true, 2, Duration.ofSeconds(30)),
+                state(BACKUP, BACKUP, BASE.plusSeconds(2), BASE.plusSeconds(2), BASE, BASE,
+                        Duration.ofSeconds(30), true, 2),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(3), BASE.plusSeconds(3)));
 
         assertThat(first.applySnapshot()).isFalse();
@@ -174,19 +186,23 @@ class LocationSourceArbitratorTest {
     @Test
     void keepsSelectedPrimaryIneligibleUntilThirdRecoveryAndLetsBackupTakeOverAfterFirst() {
         LocationSourceDecision first = arbitrator.decide(
-                state(BACKUP, PRIMARY, BASE, BASE, false, 0, Duration.ofSeconds(10)),
+                state(BACKUP, PRIMARY, BASE, BASE, null, BASE,
+                        Duration.ofSeconds(10), false, 0),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(1), BASE.plusSeconds(1)));
         LocationSourceDecision backupAfterFirst = arbitrator.decide(
-                state(BACKUP, PRIMARY, BASE.plusSeconds(1), BASE,
-                        first.primaryEligible(), first.primaryRecoveryStreak(), Duration.ofSeconds(10)),
+                state(BACKUP, PRIMARY, first.lastPrimaryValidGatewayReceivedAt(),
+                        first.primaryTerminalCursorAt(), first.backupTerminalCursorAt(), BASE,
+                        Duration.ofSeconds(10), first.primaryEligible(), first.primaryRecoveryStreak()),
                 backup(LocationQualityStatus.GOOD, BASE.plusSeconds(2), BASE.plusSeconds(2)));
         LocationSourceDecision second = arbitrator.decide(
-                state(BACKUP, PRIMARY, BASE.plusSeconds(1), BASE,
-                        first.primaryEligible(), first.primaryRecoveryStreak(), Duration.ofSeconds(10)),
+                state(BACKUP, PRIMARY, first.lastPrimaryValidGatewayReceivedAt(),
+                        first.primaryTerminalCursorAt(), first.backupTerminalCursorAt(), BASE,
+                        Duration.ofSeconds(10), first.primaryEligible(), first.primaryRecoveryStreak()),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(2), BASE.plusSeconds(2)));
         LocationSourceDecision third = arbitrator.decide(
-                state(BACKUP, PRIMARY, BASE.plusSeconds(2), BASE,
-                        second.primaryEligible(), second.primaryRecoveryStreak(), Duration.ofSeconds(10)),
+                state(BACKUP, PRIMARY, second.lastPrimaryValidGatewayReceivedAt(),
+                        second.primaryTerminalCursorAt(), second.backupTerminalCursorAt(), BASE,
+                        Duration.ofSeconds(10), second.primaryEligible(), second.primaryRecoveryStreak()),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(3), BASE.plusSeconds(3)));
 
         assertThat(first.applySnapshot()).isFalse();
@@ -217,7 +233,8 @@ class LocationSourceArbitratorTest {
     void lateValidPrimaryLeavesEligibilityAndRecoveryStateUnchanged() {
         LocationSourceDecision decision = arbitrator.decide(
                 state(BACKUP, BACKUP, BASE.plusSeconds(10), BASE.plusSeconds(20),
-                        false, 2, Duration.ofSeconds(10)),
+                        BASE.plusSeconds(20), BASE.plusSeconds(20),
+                        Duration.ofSeconds(10), false, 2),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(15), BASE.plusSeconds(21)));
 
         assertThat(decision.applySnapshot()).isFalse();
@@ -231,8 +248,9 @@ class LocationSourceArbitratorTest {
     @Test
     void nonMonotonicPrimaryRecoveryTimestampDoesNotAdvanceTheStreak() {
         LocationSourceDecision decision = arbitrator.decide(
-                state(BACKUP, BACKUP, BASE.plusSeconds(10), BASE.plusSeconds(5),
-                        true, 1, Duration.ofSeconds(10)),
+                state(BACKUP, BACKUP, BASE.plusSeconds(10), BASE.plusSeconds(10),
+                        BASE.plusSeconds(5), BASE.plusSeconds(5),
+                        Duration.ofSeconds(10), true, 1),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(10), BASE.plusSeconds(11)));
 
         assertThat(decision.applySnapshot()).isFalse();
@@ -244,7 +262,8 @@ class LocationSourceArbitratorTest {
     @Test
     void invalidPrimaryResetsRecoveryButInvalidOrLateBackupDoesNotMutatePrimaryState() {
         ArbitrationState recovering = state(
-                BACKUP, BACKUP, BASE, BASE, true, 2, Duration.ofSeconds(10));
+                BACKUP, BACKUP, BASE, BASE, BASE, BASE,
+                Duration.ofSeconds(10), true, 2);
         LocationSourceDecision invalidPrimary = arbitrator.decide(
                 recovering,
                 primary(LocationQualityStatus.QUARANTINED, BASE.plusSeconds(1), BASE.plusSeconds(1)));
@@ -268,19 +287,24 @@ class LocationSourceArbitratorTest {
     @Test
     void singleDeviceInitializesThenRequiresThreeReportsAfterQualityInvalidation() {
         LocationSourceDecision initial = arbitrator.decide(
-                state(null, null, null, null, true, 0, Duration.ofSeconds(10)),
+                state(null, null, null, null, null, null,
+                        Duration.ofSeconds(10), true, 0),
                 primary(LocationQualityStatus.GOOD, BASE, BASE));
         LocationSourceDecision invalid = arbitrator.decide(
-                state(null, PRIMARY, BASE, BASE, true, 0, Duration.ofSeconds(10)),
+                state(null, PRIMARY, BASE, BASE, null, BASE,
+                        Duration.ofSeconds(10), true, 0),
                 primary(LocationQualityStatus.REJECTED, BASE.plusSeconds(1), BASE.plusSeconds(1)));
         LocationSourceDecision first = arbitrator.decide(
-                state(null, PRIMARY, BASE, BASE, false, 0, Duration.ofSeconds(10)),
+                state(null, PRIMARY, BASE, BASE, null, BASE,
+                        Duration.ofSeconds(10), false, 0),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(2), BASE.plusSeconds(2)));
         LocationSourceDecision second = arbitrator.decide(
-                state(null, PRIMARY, BASE.plusSeconds(2), BASE, false, 1, Duration.ofSeconds(10)),
+                state(null, PRIMARY, BASE.plusSeconds(2), BASE.plusSeconds(2), null, BASE,
+                        Duration.ofSeconds(10), false, 1),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(3), BASE.plusSeconds(3)));
         LocationSourceDecision third = arbitrator.decide(
-                state(null, PRIMARY, BASE.plusSeconds(3), BASE, false, 2, Duration.ofSeconds(10)),
+                state(null, PRIMARY, BASE.plusSeconds(3), BASE.plusSeconds(3), null, BASE,
+                        Duration.ofSeconds(10), false, 2),
                 primary(LocationQualityStatus.GOOD, BASE.plusSeconds(4), BASE.plusSeconds(4)));
 
         assertThat(initial.applySnapshot()).isTrue();
@@ -302,7 +326,8 @@ class LocationSourceArbitratorTest {
     @Test
     void unknownTerminalOrMismatchedRoleIsSafelyIgnoredWithoutStateMutation() {
         ArbitrationState state = state(
-                BACKUP, PRIMARY, BASE, BASE, true, 2, Duration.ofSeconds(10));
+                BACKUP, PRIMARY, BASE, BASE, BASE, BASE,
+                Duration.ofSeconds(10), true, 2);
 
         for (PositionCandidate candidate : new PositionCandidate[] {
                 new PositionCandidate(UNKNOWN, "LOCATION_PRIMARY", LocationQualityStatus.GOOD,
@@ -322,24 +347,183 @@ class LocationSourceArbitratorTest {
     }
 
     @Test
+    void primaryReceivedOneSecondAgoIsNotStaleWhenTerminalClockIsTwentyNineSecondsBehind() {
+        ArbitrationState state = state(
+                BACKUP,
+                PRIMARY,
+                BASE,
+                BASE.minusSeconds(29),
+                null,
+                BASE,
+                Duration.ofSeconds(15),
+                true,
+                0);
+
+        LocationSourceDecision decision = arbitrator.decide(
+                state,
+                backup(LocationQualityStatus.GOOD, BASE.plusSeconds(1), BASE.plusSeconds(1)));
+
+        assertThat(decision.applySnapshot()).isFalse();
+        assertThat(decision.reasonCode()).isEqualTo("NON_ACTIVE_SOURCE_IGNORED");
+    }
+
+    @Test
+    void primaryIsStaleAtPlatformBoundaryEvenWhenTerminalClockIsTwentyNineSecondsAhead() {
+        ArbitrationState state = state(
+                BACKUP,
+                PRIMARY,
+                BASE,
+                BASE.plusSeconds(29),
+                null,
+                BASE,
+                Duration.ofSeconds(15),
+                true,
+                0);
+
+        LocationSourceDecision decision = arbitrator.decide(
+                state,
+                backup(LocationQualityStatus.GOOD, BASE.plusSeconds(1), BASE.plusSeconds(30)));
+
+        assertThat(decision.applySnapshot()).isTrue();
+        assertThat(decision.reasonCode()).isEqualTo("PRIMARY_STALE");
+    }
+
+    @Test
+    void lateRejectedPrimaryCannotRevokeEligibilityOrResetRecovery() {
+        ArbitrationState state = state(
+                BACKUP,
+                BACKUP,
+                BASE.plusSeconds(21),
+                BASE.plusSeconds(20),
+                BASE.plusSeconds(20),
+                BASE.plusSeconds(21),
+                Duration.ofSeconds(15),
+                true,
+                2);
+
+        LocationSourceDecision decision = arbitrator.decide(
+                state,
+                primary(LocationQualityStatus.REJECTED, BASE.plusSeconds(19), BASE.plusSeconds(22)));
+
+        assertThat(decision.primaryEligible()).isTrue();
+        assertThat(decision.primaryRecoveryStreak()).isEqualTo(2);
+        assertThat(decision.lastPrimaryValidGatewayReceivedAt()).isEqualTo(BASE.plusSeconds(21));
+        assertThat(decision.primaryTerminalCursorAt()).isEqualTo(BASE.plusSeconds(20));
+        assertThat(decision.backupTerminalCursorAt()).isEqualTo(BASE.plusSeconds(20));
+        assertThat(decision.reasonCode()).isEqualTo("POSITION_NOT_ELIGIBLE");
+    }
+
+    @Test
+    void lateQuarantinedPrimaryLeavesEveryRuntimeFieldUnchanged() {
+        ArbitrationState state = state(
+                BACKUP, BACKUP, BASE.plusSeconds(21), BASE.plusSeconds(20),
+                BASE.plusSeconds(18), BASE.plusSeconds(21), Duration.ofSeconds(15), true, 2);
+
+        LocationSourceDecision decision = arbitrator.decide(
+                state,
+                primary(LocationQualityStatus.QUARANTINED,
+                        BASE.plusSeconds(20), BASE.plusSeconds(22)));
+
+        assertThat(decision.applySnapshot()).isFalse();
+        assertThat(decision.selectedTerminalId()).isEqualTo(BACKUP);
+        assertThat(decision.primaryEligible()).isTrue();
+        assertThat(decision.primaryRecoveryStreak()).isEqualTo(2);
+        assertThat(decision.lastPrimaryValidGatewayReceivedAt()).isEqualTo(BASE.plusSeconds(21));
+        assertThat(decision.primaryTerminalCursorAt()).isEqualTo(BASE.plusSeconds(20));
+        assertThat(decision.backupTerminalCursorAt()).isEqualTo(BASE.plusSeconds(18));
+    }
+
+    @Test
+    void lateBackupLeavesPrimaryAndBackupCursorsUnchanged() {
+        ArbitrationState state = state(
+                BACKUP, PRIMARY, BASE.plusSeconds(21), BASE.plusSeconds(20),
+                BASE.plusSeconds(18), BASE.plusSeconds(21), Duration.ofSeconds(15), true, 1);
+
+        LocationSourceDecision decision = arbitrator.decide(
+                state,
+                backup(LocationQualityStatus.GOOD, BASE.plusSeconds(18), BASE.plusSeconds(22)));
+
+        assertThat(decision.applySnapshot()).isFalse();
+        assertThat(decision.primaryTerminalCursorAt()).isEqualTo(BASE.plusSeconds(20));
+        assertThat(decision.backupTerminalCursorAt()).isEqualTo(BASE.plusSeconds(18));
+        assertThat(decision.primaryRecoveryStreak()).isEqualTo(1);
+    }
+
+    @Test
+    void thirdStrictlyIncreasingPrimaryTerminalTimeCompletesRecovery() {
+        ArbitrationState state = state(
+                BACKUP, BACKUP, BASE.plusSeconds(21), BASE.plusSeconds(20),
+                BASE.plusSeconds(20), BASE.plusSeconds(21), Duration.ofSeconds(15), false, 2);
+
+        LocationSourceDecision decision = arbitrator.decide(
+                state,
+                primary(LocationQualityStatus.GOOD, BASE.plusSeconds(21), BASE.plusSeconds(22)));
+
+        assertThat(decision.applySnapshot()).isTrue();
+        assertThat(decision.switchSource()).isTrue();
+        assertThat(decision.selectedTerminalId()).isEqualTo(PRIMARY);
+        assertThat(decision.primaryEligible()).isTrue();
+        assertThat(decision.primaryRecoveryStreak()).isZero();
+        assertThat(decision.lastPrimaryValidGatewayReceivedAt()).isEqualTo(BASE.plusSeconds(22));
+        assertThat(decision.primaryTerminalCursorAt()).isEqualTo(BASE.plusSeconds(21));
+        assertThat(decision.backupTerminalCursorAt()).isEqualTo(BASE.plusSeconds(20));
+        assertThat(decision.reasonCode()).isEqualTo("PRIMARY_RECOVERED");
+    }
+
+    @Test
+    void recoveryGatewayCursorUsesMaximumWhenTerminalCursorAdvances() {
+        ArbitrationState state = state(
+                BACKUP,
+                BACKUP,
+                BASE.plusSeconds(10),
+                BASE.plusSeconds(1),
+                BASE,
+                BASE,
+                Duration.ofSeconds(15),
+                false,
+                1);
+
+        LocationSourceDecision decision = arbitrator.decide(
+                state,
+                primary(
+                        LocationQualityStatus.GOOD,
+                        BASE.plusSeconds(2),
+                        BASE.plusSeconds(5)));
+
+        assertThat(decision.applySnapshot()).isFalse();
+        assertThat(decision.primaryRecoveryStreak()).isEqualTo(2);
+        assertThat(decision.lastPrimaryValidGatewayReceivedAt())
+                .isEqualTo(BASE.plusSeconds(10));
+        assertThat(decision.primaryTerminalCursorAt())
+                .isEqualTo(BASE.plusSeconds(2));
+        assertThat(decision.reasonCode()).isEqualTo("PRIMARY_RECOVERING");
+    }
+
+    @Test
     void validatesStateAndCandidateContractsBeforeArbitration() {
         assertThatThrownBy(() -> new ArbitrationState(
-                null, BACKUP, null, null, null, Duration.ofSeconds(10), true, 0))
+                null, BACKUP, null, null, null, null, null,
+                Duration.ofSeconds(10), true, 0))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new ArbitrationState(
-                PRIMARY, PRIMARY, null, null, null, Duration.ofSeconds(10), true, 0))
+                PRIMARY, PRIMARY, null, null, null, null, null,
+                Duration.ofSeconds(10), true, 0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ArbitrationState(
-                PRIMARY, BACKUP, UNKNOWN, null, null, Duration.ofSeconds(10), true, 0))
+                PRIMARY, BACKUP, UNKNOWN, null, null, null, null,
+                Duration.ofSeconds(10), true, 0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ArbitrationState(
-                PRIMARY, BACKUP, null, null, null, Duration.ZERO, true, 0))
+                PRIMARY, BACKUP, null, null, null, null, null,
+                Duration.ZERO, true, 0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ArbitrationState(
-                PRIMARY, BACKUP, null, null, null, Duration.ofSeconds(Long.MAX_VALUE), true, 0))
+                PRIMARY, BACKUP, null, null, null, null, null,
+                Duration.ofSeconds(Long.MAX_VALUE), true, 0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ArbitrationState(
-                PRIMARY, BACKUP, null, null, null, Duration.ofSeconds(10), true, -1))
+                PRIMARY, BACKUP, null, null, null, null, null,
+                Duration.ofSeconds(10), true, -1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new PositionCandidate(
                 null, "LOCATION_PRIMARY", LocationQualityStatus.GOOD, BASE, BASE))
@@ -367,6 +551,8 @@ class LocationSourceArbitratorTest {
                 PRIMARY,
                 BASE,
                 BASE,
+                BASE,
+                BASE,
                 Duration.ofSeconds(10),
                 false,
                 invalidStreak))
@@ -383,6 +569,9 @@ class LocationSourceArbitratorTest {
                 PRIMARY,
                 false,
                 invalidStreak,
+                BASE,
+                BASE,
+                BASE,
                 "PRIMARY_RECOVERING"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("primaryRecoveryStreak");
@@ -391,17 +580,21 @@ class LocationSourceArbitratorTest {
     private static ArbitrationState state(
             UUID backup,
             UUID active,
-            Instant lastPrimaryValidAt,
-            Instant lastSnapshotAt,
+            Instant lastPrimaryValidGatewayReceivedAt,
+            Instant primaryTerminalCursorAt,
+            Instant backupTerminalCursorAt,
+            Instant lastSnapshotGatewayReceivedAt,
+            Duration expectedInterval,
             boolean primaryEligible,
-            int recoveryStreak,
-            Duration expectedInterval) {
+            int recoveryStreak) {
         return new ArbitrationState(
                 PRIMARY,
                 backup,
                 active,
-                lastPrimaryValidAt,
-                lastSnapshotAt,
+                lastPrimaryValidGatewayReceivedAt,
+                primaryTerminalCursorAt,
+                backupTerminalCursorAt,
+                lastSnapshotGatewayReceivedAt,
                 expectedInterval,
                 primaryEligible,
                 recoveryStreak);

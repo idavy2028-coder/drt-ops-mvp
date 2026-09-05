@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
+import com.idavy.drtops.domain.fleet.Vehicle;
+import com.idavy.drtops.domain.fleet.VehicleRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceCapability.Capability;
 import com.idavy.drtops.domain.onboard.OnboardDeviceCapability.CapabilityStatus;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembership.NetworkMode;
@@ -66,6 +68,7 @@ public class OnboardSystemConfigurationService {
     private final JtTerminalRepository terminalRepository;
     private final JtTerminalSessionLeaseRepository leaseRepository;
     private final AuditLogRepository auditLogRepository;
+    private final VehicleRepository vehicleRepository;
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final EntityManager entityManager;
@@ -81,6 +84,7 @@ public class OnboardSystemConfigurationService {
             JtTerminalRepository terminalRepository,
             JtTerminalSessionLeaseRepository leaseRepository,
             AuditLogRepository auditLogRepository,
+            VehicleRepository vehicleRepository,
             ObjectMapper objectMapper,
             EntityManager entityManager,
             ObjectProvider<Clock> clocks) {
@@ -94,6 +98,7 @@ public class OnboardSystemConfigurationService {
         this.terminalRepository = terminalRepository;
         this.leaseRepository = leaseRepository;
         this.auditLogRepository = auditLogRepository;
+        this.vehicleRepository = vehicleRepository;
         this.objectMapper = objectMapper;
         this.entityManager = entityManager;
         this.clock = clocks.getIfAvailable(Clock::systemUTC);
@@ -121,7 +126,26 @@ public class OnboardSystemConfigurationService {
 
     @Transactional(readOnly = true)
     public List<OnboardSystemView> listSystems() {
-        return listSystems(0, 20).items();
+        List<Object[]> systemRows = entityManager.createQuery("""
+                        select system, runtime
+                        from OnboardSystem system
+                        left join OnboardSystemRuntimeState runtime
+                          on runtime.onboardSystemId = system.id
+                        where system.status = :status
+                        order by system.vehicleId, system.id
+                        """, Object[].class)
+                .setParameter("status", OnboardSystem.Status.ACTIVE)
+                .setMaxResults(20)
+                .getResultList();
+        List<OnboardSystem> systems = systemRows.stream()
+                .map(row -> (OnboardSystem) row[0])
+                .toList();
+        Map<UUID, OnboardSystemRuntimeState> runtimeBySystem = systemRows.stream()
+                .filter(row -> row[1] != null)
+                .collect(java.util.stream.Collectors.toMap(
+                        row -> ((OnboardSystem) row[0]).getId(),
+                        row -> (OnboardSystemRuntimeState) row[1]));
+        return assembleViews(systems, runtimeBySystem);
     }
 
     @Transactional(readOnly = true)
@@ -213,6 +237,11 @@ public class OnboardSystemConfigurationService {
         if (evaluated.changedFields().isEmpty()) {
             throw conflict("NO_CONFIGURATION_CHANGES");
         }
+        LocationCoordination location = lockLocationCoordination(system);
+        CurrentLocationAssignment before = currentLocationAssignment(
+                evaluated.current().roles());
+        CurrentLocationAssignment after = currentLocationAssignment(
+                evaluated.desiredByCode().values());
 
         long oldVersion = system.getVersion();
         OffsetDateTime changedAt = OffsetDateTime.now(clock);
@@ -224,6 +253,15 @@ public class OnboardSystemConfigurationService {
         } else {
             system.touchConfiguration(actorId, changedAt);
         }
+        reconcileLocationRuntimeAfterConfiguration(
+                system,
+                before,
+                after,
+                location.runtime(),
+                location.vehicle(),
+                changedAt);
+        runtimeStateRepository.saveAndFlush(location.runtime());
+        vehicleRepository.saveAndFlush(location.vehicle());
         system = systemRepository.saveAndFlush(system);
 
         auditLogRepository.save(AuditLog.record(
@@ -304,6 +342,11 @@ public class OnboardSystemConfigurationService {
         OnboardSystemRuntimeState runtime = runtimeStateRepository
                 .findLockedByOnboardSystemId(system.getId())
                 .orElseThrow(() -> conflict("ONBOARD_RUNTIME_STATE_MISSING"));
+        Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(system.getVehicleId())
+                .orElseThrow(() -> conflict("VEHICLE_NOT_FOUND"));
+        CurrentLocationAssignment before = currentLocationAssignment(
+                roleRepository.findActiveByOnboardSystemIdOrderByValidFromAsc(system.getId()));
+        CurrentLocationAssignment after = withoutTerminal(before, terminalId);
 
         OffsetDateTime changedAt = OffsetDateTime.now(clock);
         currentRoles.forEach(role -> {
@@ -313,10 +356,10 @@ public class OnboardSystemConfigurationService {
         roleRepository.flush();
         membership.remove(reason, actorId, changedAt);
         membershipRepository.saveAndFlush(membership);
-        if (terminalId.equals(runtime.getActiveLocationTerminalId())) {
-            runtime.clearLocationSource(changedAt);
-            runtimeStateRepository.saveAndFlush(runtime);
-        }
+        reconcileLocationRuntimeAfterConfiguration(
+                system, before, after, runtime, vehicle, changedAt);
+        runtimeStateRepository.saveAndFlush(runtime);
+        vehicleRepository.saveAndFlush(vehicle);
         if (currentMembers.size() == 1) {
             system.suspend(actorId, changedAt);
         } else {
@@ -385,6 +428,12 @@ public class OnboardSystemConfigurationService {
         OnboardSystemRuntimeState runtime = runtimeStateRepository
                 .findLockedByOnboardSystemId(system.getId())
                 .orElseThrow(() -> conflict("ONBOARD_RUNTIME_STATE_MISSING"));
+        Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(system.getVehicleId())
+                .orElseThrow(() -> conflict("VEHICLE_NOT_FOUND"));
+        CurrentLocationAssignment before = currentLocationAssignment(
+                roleRepository.findActiveByOnboardSystemIdOrderByValidFromAsc(system.getId()));
+        CurrentLocationAssignment after = replacingTerminal(
+                before, oldTerminalId, replacementTerminalId);
         OffsetDateTime changedAt = OffsetDateTime.now(clock);
         rolesToTransfer.forEach(role -> {
             role.revoke(reason, actorId, changedAt);
@@ -398,17 +447,10 @@ public class OnboardSystemConfigurationService {
         roleRepository.flush();
         oldMembership.remove(reason, actorId, changedAt);
         membershipRepository.saveAndFlush(oldMembership);
-        if (oldTerminalId.equals(runtime.getActiveLocationTerminalId())) {
-            boolean transfersLocation = rolesToTransfer.stream().anyMatch(role ->
-                    role.getRole() == Role.LOCATION_PRIMARY
-                            || role.getRole() == Role.LOCATION_BACKUP);
-            if (transfersLocation) {
-                runtime.selectLocationSource(replacementTerminalId, changedAt);
-            } else {
-                runtime.clearLocationSource(changedAt);
-            }
-            runtimeStateRepository.saveAndFlush(runtime);
-        }
+        reconcileLocationRuntimeAfterConfiguration(
+                system, before, after, runtime, vehicle, changedAt);
+        runtimeStateRepository.saveAndFlush(runtime);
+        vehicleRepository.saveAndFlush(vehicle);
         system.touchConfiguration(actorId, changedAt);
         systemRepository.saveAndFlush(system);
         return new OnboardReplacementResult(
@@ -453,6 +495,13 @@ public class OnboardSystemConfigurationService {
             runtimeStateRepository.saveAndFlush(
                     OnboardSystemRuntimeState.initialize(system.getId(), changedAt));
         }
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findLockedByOnboardSystemId(system.getId())
+                .orElseThrow(() -> conflict("ONBOARD_RUNTIME_STATE_MISSING"));
+        Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(vehicleId)
+                .orElseThrow(() -> conflict("VEHICLE_NOT_FOUND"));
+        CurrentLocationAssignment assignment = currentLocationAssignment(
+                roleRepository.findActiveByOnboardSystemIdOrderByValidFromAsc(system.getId()));
         if (membershipRepository.findActiveByTerminalId(lockedTerminal.getId()).isEmpty()) {
             membershipRepository.saveAndFlush(OnboardDeviceMembership.join(
                     system.getId(), lockedTerminal.getId(), NetworkMode.DIRECT_CELLULAR,
@@ -462,6 +511,10 @@ public class OnboardSystemConfigurationService {
                 system = systemRepository.saveAndFlush(system);
             }
         }
+        reconcileLocationRuntimeAfterConfiguration(
+                system, assignment, assignment, runtime, vehicle, changedAt);
+        runtimeStateRepository.saveAndFlush(runtime);
+        vehicleRepository.saveAndFlush(vehicle);
         return system;
     }
 
@@ -598,6 +651,106 @@ public class OnboardSystemConfigurationService {
         return Map.copyOf(lockedTerminals);
     }
 
+    private LocationCoordination lockLocationCoordination(OnboardSystem system) {
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findLockedByOnboardSystemId(system.getId())
+                .orElseThrow(() -> conflict("ONBOARD_RUNTIME_STATE_MISSING"));
+        Vehicle vehicle = vehicleRepository.findByIdForLocationUpdate(system.getVehicleId())
+                .orElseThrow(() -> conflict("VEHICLE_NOT_FOUND"));
+        return new LocationCoordination(runtime, vehicle);
+    }
+
+    private void reconcileLocationRuntimeAfterConfiguration(
+            OnboardSystem system,
+            CurrentLocationAssignment before,
+            CurrentLocationAssignment after,
+            OnboardSystemRuntimeState runtime,
+            Vehicle vehicle,
+            OffsetDateTime changedAt) {
+        UUID activeTerminalId = runtime.getActiveLocationTerminalId();
+        if (activeTerminalId == null) {
+            runtime.reconcileLocationAssignment(
+                    !Objects.equals(before.primaryTerminalId(), after.primaryTerminalId()),
+                    !Objects.equals(before.backupTerminalId(), after.backupTerminalId()),
+                    changedAt);
+            vehicle.invalidateGpsSnapshotForOnboardSystem(system.getId());
+            return;
+        }
+        if (!after.eligibleTerminalIds().contains(activeTerminalId)) {
+            runtime.resetLocationAuthority(changedAt);
+            vehicle.invalidateGpsSnapshotForOnboardSystem(system.getId());
+            return;
+        }
+        runtime.reconcileLocationAssignment(
+                !Objects.equals(before.primaryTerminalId(), after.primaryTerminalId()),
+                !Objects.equals(before.backupTerminalId(), after.backupTerminalId()),
+                changedAt);
+    }
+
+    private static CurrentLocationAssignment currentLocationAssignment(
+            Map<UUID, Set<Role>> roles) {
+        UUID primary = null;
+        UUID backup = null;
+        Set<UUID> eligible = new HashSet<>();
+        for (Map.Entry<UUID, Set<Role>> entry : roles.entrySet()) {
+            if (entry.getValue().contains(Role.LOCATION_PRIMARY)) {
+                primary = entry.getKey();
+                eligible.add(entry.getKey());
+            }
+            if (entry.getValue().contains(Role.LOCATION_BACKUP)) {
+                backup = entry.getKey();
+                eligible.add(entry.getKey());
+            }
+        }
+        return new CurrentLocationAssignment(primary, backup, Set.copyOf(eligible));
+    }
+
+    private static CurrentLocationAssignment currentLocationAssignment(
+            java.util.Collection<DesiredDevice> devices) {
+        Map<UUID, Set<Role>> roles = new HashMap<>();
+        devices.forEach(device -> roles.put(
+                device.terminal().getId(), device.roles()));
+        return currentLocationAssignment(roles);
+    }
+
+    private static CurrentLocationAssignment currentLocationAssignment(
+            List<OnboardDeviceRoleAssignment> assignments) {
+        Map<UUID, Set<Role>> roles = new HashMap<>();
+        assignments.forEach(assignment -> roles.computeIfAbsent(
+                assignment.getTerminalId(), ignored -> EnumSet.noneOf(Role.class))
+                .add(assignment.getRole()));
+        return currentLocationAssignment(roles);
+    }
+
+    private static CurrentLocationAssignment withoutTerminal(
+            CurrentLocationAssignment assignment,
+            UUID terminalId) {
+        return new CurrentLocationAssignment(
+                terminalId.equals(assignment.primaryTerminalId())
+                        ? null : assignment.primaryTerminalId(),
+                terminalId.equals(assignment.backupTerminalId())
+                        ? null : assignment.backupTerminalId(),
+                assignment.eligibleTerminalIds().stream()
+                        .filter(candidate -> !candidate.equals(terminalId))
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+    }
+
+    private static CurrentLocationAssignment replacingTerminal(
+            CurrentLocationAssignment assignment,
+            UUID oldTerminalId,
+            UUID replacementTerminalId) {
+        Set<UUID> eligible = assignment.eligibleTerminalIds().stream()
+                .map(candidate -> candidate.equals(oldTerminalId)
+                        ? replacementTerminalId : candidate)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return new CurrentLocationAssignment(
+                oldTerminalId.equals(assignment.primaryTerminalId())
+                        ? replacementTerminalId : assignment.primaryTerminalId(),
+                oldTerminalId.equals(assignment.backupTerminalId())
+                        ? replacementTerminalId : assignment.backupTerminalId(),
+                eligible);
+    }
+
     private static void requireUniqueDesiredAliases(
             java.util.Collection<UUID> desiredTerminalIds) {
         Set<String> aliases = new HashSet<>();
@@ -656,6 +809,28 @@ public class OnboardSystemConfigurationService {
         for (UUID terminalId : terminalIds) {
             entityManager.createNativeQuery("""
                             select id from onboard_device_memberships
+                            where terminal_id = :terminalId
+                              and status = 'ACTIVE' and valid_to is null
+                            order by id
+                            for update
+                            """)
+                    .setParameter("terminalId", terminalId)
+                    .getResultList();
+        }
+        for (UUID terminalId : terminalIds) {
+            entityManager.createNativeQuery("""
+                            select id from onboard_device_role_assignments
+                            where terminal_id = :terminalId
+                              and status = 'ACTIVE' and valid_to is null
+                            order by role, id
+                            for update
+                            """)
+                    .setParameter("terminalId", terminalId)
+                    .getResultList();
+        }
+        for (UUID terminalId : terminalIds) {
+            entityManager.createNativeQuery("""
+                            select id from onboard_device_protocol_profiles
                             where terminal_id = :terminalId
                               and status = 'ACTIVE' and valid_to is null
                             order by id
@@ -762,9 +937,11 @@ public class OnboardSystemConfigurationService {
         }
         List<UUID> systemIds = systems.stream().map(OnboardSystem::getId).toList();
         List<Object[]> membershipRows = entityManager.createQuery("""
-                        select membership, terminal
+                        select membership, terminal, lease
                         from OnboardDeviceMembership membership
                         join JtTerminal terminal on terminal.id = membership.terminalId
+                        left join JtTerminalSessionLease lease
+                          on lease.terminalId = terminal.id
                         where membership.onboardSystemId in :systemIds
                           and membership.status = :status and membership.validTo is null
                         order by membership.validFrom, membership.id
@@ -818,12 +995,12 @@ public class OnboardSystemConfigurationService {
                         .setParameter("terminalIds", terminalIds)
                         .setParameter("status", OnboardDeviceProtocolProfile.Status.ACTIVE)
                         .getResultList();
-        Map<UUID, JtTerminalSessionLease> leaseByTerminal = terminalIds.isEmpty()
-                ? Map.of()
-                : leaseRepository.findAllByTerminalIdIn(terminalIds).stream()
-                        .collect(java.util.stream.Collectors.toMap(
-                                JtTerminalSessionLease::getTerminalId,
-                                java.util.function.Function.identity()));
+        Map<UUID, JtTerminalSessionLease> leaseByTerminal = membershipRows.stream()
+                .filter(row -> row[2] != null)
+                .map(row -> (JtTerminalSessionLease) row[2])
+                .collect(java.util.stream.Collectors.toMap(
+                        JtTerminalSessionLease::getTerminalId,
+                        java.util.function.Function.identity()));
 
         Map<UUID, List<OnboardDeviceMembership>> membershipsBySystem = memberships.stream()
                 .collect(java.util.stream.Collectors.groupingBy(
@@ -1567,6 +1744,20 @@ public class OnboardSystemConfigurationService {
             Map<UUID, OnboardDeviceMembership> memberships,
             Map<UUID, OnboardDeviceProtocolProfile> profiles,
             Map<UUID, Set<Role>> roles) {
+    }
+
+    private record CurrentLocationAssignment(
+            UUID primaryTerminalId,
+            UUID backupTerminalId,
+            Set<UUID> eligibleTerminalIds) {
+        private CurrentLocationAssignment {
+            eligibleTerminalIds = Set.copyOf(eligibleTerminalIds);
+        }
+    }
+
+    private record LocationCoordination(
+            OnboardSystemRuntimeState runtime,
+            Vehicle vehicle) {
     }
 
     private record EvaluatedConfiguration(

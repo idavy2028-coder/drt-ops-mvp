@@ -32,6 +32,9 @@ public class OnboardSystemRuntimeState {
     private boolean primaryEligible;
 
     private OffsetDateTime lastPrimaryValidAt;
+    private OffsetDateTime lastPrimaryValidGatewayReceivedAt;
+    private OffsetDateTime primaryTerminalCursorAt;
+    private OffsetDateTime backupTerminalCursorAt;
     private OffsetDateTime lastLocationSwitchAt;
 
     @JdbcTypeCode(SqlTypes.JSON)
@@ -82,7 +85,9 @@ public class OnboardSystemRuntimeState {
             UUID selectedTerminalId,
             boolean nextPrimaryEligible,
             int nextPrimaryRecoveryStreak,
-            OffsetDateTime nextLastPrimaryValidAt,
+            OffsetDateTime nextLastPrimaryValidGatewayReceivedAt,
+            OffsetDateTime nextPrimaryTerminalCursorAt,
+            OffsetDateTime nextBackupTerminalCursorAt,
             boolean sourceChanged,
             OffsetDateTime processedAt) {
         if (nextPrimaryRecoveryStreak < 0 || nextPrimaryRecoveryStreak > 2) {
@@ -96,11 +101,18 @@ public class OnboardSystemRuntimeState {
         if (sourceChanged && selectedTerminalId == null) {
             throw new IllegalArgumentException("a source change requires a selected terminal");
         }
-        if (lastPrimaryValidAt != null
-                && (nextLastPrimaryValidAt == null
-                        || nextLastPrimaryValidAt.isBefore(lastPrimaryValidAt))) {
-            throw new IllegalArgumentException("lastPrimaryValidAt must not move backward");
-        }
+        requireNonDecreasing(
+                lastPrimaryValidGatewayReceivedAt,
+                nextLastPrimaryValidGatewayReceivedAt,
+                "lastPrimaryValidGatewayReceivedAt");
+        requireNonDecreasing(
+                primaryTerminalCursorAt,
+                nextPrimaryTerminalCursorAt,
+                "primaryTerminalCursorAt");
+        requireNonDecreasing(
+                backupTerminalCursorAt,
+                nextBackupTerminalCursorAt,
+                "backupTerminalCursorAt");
         OffsetDateTime nextUpdatedAt = processingTime.isBefore(updatedAt)
                 ? updatedAt
                 : processingTime;
@@ -112,17 +124,65 @@ public class OnboardSystemRuntimeState {
         boolean stateChanged = terminalActuallyChanged
                 || primaryEligible != nextPrimaryEligible
                 || primaryRecoveryStreak != nextPrimaryRecoveryStreak
-                || !Objects.equals(lastPrimaryValidAt, nextLastPrimaryValidAt);
+                || !Objects.equals(
+                        lastPrimaryValidGatewayReceivedAt,
+                        nextLastPrimaryValidGatewayReceivedAt)
+                || !Objects.equals(primaryTerminalCursorAt, nextPrimaryTerminalCursorAt)
+                || !Objects.equals(backupTerminalCursorAt, nextBackupTerminalCursorAt);
         this.activeLocationTerminalId = selectedTerminalId;
         this.primaryEligible = nextPrimaryEligible;
         this.primaryRecoveryStreak = nextPrimaryRecoveryStreak;
-        this.lastPrimaryValidAt = nextLastPrimaryValidAt;
+        this.lastPrimaryValidGatewayReceivedAt = nextLastPrimaryValidGatewayReceivedAt;
+        this.primaryTerminalCursorAt = nextPrimaryTerminalCursorAt;
+        this.backupTerminalCursorAt = nextBackupTerminalCursorAt;
+        this.lastPrimaryValidAt = nextPrimaryTerminalCursorAt;
         if (sourceChanged) {
             this.lastLocationSwitchAt = nextUpdatedAt;
         }
         if (stateChanged) {
             this.updatedAt = nextUpdatedAt;
         }
+    }
+
+    public void resetLocationAuthority(OffsetDateTime changedAt) {
+        OffsetDateTime nextChangedAt = requireMonotonicTime(changedAt, "changedAt");
+        this.activeLocationTerminalId = null;
+        this.primaryRecoveryStreak = 0;
+        this.primaryEligible = true;
+        this.lastPrimaryValidAt = null;
+        this.lastPrimaryValidGatewayReceivedAt = null;
+        this.primaryTerminalCursorAt = null;
+        this.backupTerminalCursorAt = null;
+        this.lastLocationSwitchAt = nextChangedAt;
+        this.updatedAt = nextChangedAt;
+    }
+
+    public void reconcileLocationAssignment(
+            boolean primaryChanged,
+            boolean backupChanged,
+            OffsetDateTime changedAt) {
+        boolean clearPrimaryState = primaryChanged
+                && (!primaryEligible
+                        || primaryRecoveryStreak != 0
+                        || lastPrimaryValidAt != null
+                        || lastPrimaryValidGatewayReceivedAt != null
+                        || primaryTerminalCursorAt != null);
+        boolean clearBackupState = backupChanged && backupTerminalCursorAt != null;
+        if (!clearPrimaryState && !clearBackupState) {
+            return;
+        }
+        OffsetDateTime nextChangedAt = requireMonotonicTime(changedAt, "changedAt");
+        if (clearPrimaryState) {
+            this.primaryEligible = true;
+            this.primaryRecoveryStreak = 0;
+            this.lastPrimaryValidAt = null;
+            this.lastPrimaryValidGatewayReceivedAt = null;
+            this.primaryTerminalCursorAt = null;
+        }
+        if (clearBackupState) {
+            this.backupTerminalCursorAt = null;
+        }
+        this.updatedAt = nextChangedAt;
     }
 
     public int recordPrimaryRecovery() {
@@ -142,6 +202,7 @@ public class OnboardSystemRuntimeState {
             throw new IllegalArgumentException("validAt must not be before lastPrimaryValidAt");
         }
         this.lastPrimaryValidAt = candidate;
+        this.primaryTerminalCursorAt = candidate;
         if (candidate.isAfter(updatedAt)) {
             updatedAt = candidate;
         }
@@ -172,6 +233,11 @@ public class OnboardSystemRuntimeState {
     public int getPrimaryRecoveryStreak() { return primaryRecoveryStreak; }
     public boolean isPrimaryEligible() { return primaryEligible; }
     public OffsetDateTime getLastPrimaryValidAt() { return lastPrimaryValidAt; }
+    public OffsetDateTime getLastPrimaryValidGatewayReceivedAt() {
+        return lastPrimaryValidGatewayReceivedAt;
+    }
+    public OffsetDateTime getPrimaryTerminalCursorAt() { return primaryTerminalCursorAt; }
+    public OffsetDateTime getBackupTerminalCursorAt() { return backupTerminalCursorAt; }
     public OffsetDateTime getLastLocationSwitchAt() { return lastLocationSwitchAt; }
     public List<String> getWarningCodes() { return List.copyOf(warningCodes); }
     public OffsetDateTime getUpdatedAt() { return updatedAt; }
@@ -183,6 +249,16 @@ public class OnboardSystemRuntimeState {
             throw new IllegalArgumentException(field + " must not be before updatedAt");
         }
         return candidate;
+    }
+
+    private static void requireNonDecreasing(
+            OffsetDateTime current,
+            OffsetDateTime candidate,
+            String field) {
+        if (current != null
+                && (candidate == null || candidate.isBefore(current))) {
+            throw new IllegalArgumentException(field + " must not move backward");
+        }
     }
 
     private static String requireText(String value, String field, int maxLength) {

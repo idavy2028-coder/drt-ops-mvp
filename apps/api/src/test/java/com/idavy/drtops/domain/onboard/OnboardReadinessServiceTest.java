@@ -335,6 +335,24 @@ class OnboardReadinessServiceTest {
     }
 
     @Test
+    void newSystemCannotUseThePreviousSystemsVehicleSnapshot() {
+        UUID vehicleId = fixtures.readyDispatchSystemVehicleId();
+        OnboardSystem current = systemRepository
+                .findActiveByVehicleId(vehicleId).orElseThrow();
+        Vehicle vehicle = vehicleRepository.findById(vehicleId).orElseThrow();
+        assertThat(vehicle.getCurrentLocationOnboardSystemId()).isEqualTo(current.getId());
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                vehicle,
+                "currentLocationOnboardSystemId",
+                UUID.fromString("91000000-0000-0000-0000-000000000001"));
+        vehicleRepository.saveAndFlush(vehicle);
+
+        assertThat(service.evaluate(vehicleId).location())
+                .isEqualTo(ReadinessState.UNAVAILABLE);
+        assertThat(service.evaluate(vehicleId).dispatchEligible()).isFalse();
+    }
+
+    @Test
     void staleFlagAndMissingTimestampAreNeverGuessedFresh() {
         // Mutations caught: deriving freshness only from terminal state or accepting a missing timestamp.
         UUID stale = fixtures.readyDispatchSystemVehicleId();

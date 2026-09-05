@@ -6,6 +6,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
+import com.idavy.drtops.domain.location.CanonicalPositionIngress;
+import com.idavy.drtops.domain.location.GatewayIngressEnvelope;
+import com.idavy.drtops.domain.location.GatewayIngressRouter;
+import com.idavy.drtops.domain.location.GpsLocationIngressService;
+import com.idavy.drtops.domain.location.LocationQualityDecision;
+import com.idavy.drtops.domain.location.LocationQualityStatus;
+import com.idavy.drtops.domain.location.CoordinateTransformer;
 import com.idavy.drtops.domain.location.VehicleLocationEvent;
 import com.idavy.drtops.domain.location.VehicleLocationEventRepository;
 import com.idavy.drtops.domain.onboard.OnboardDeviceMembership.NetworkMode;
@@ -23,8 +30,10 @@ import com.idavy.drtops.domain.terminal.JtTerminalVehicleBindingRepository;
 import com.idavy.drtops.domain.terminal.TerminalManagementService;
 import com.idavy.drtops.domain.terminal.TerminalConflictException;
 import java.time.OffsetDateTime;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -52,17 +61,29 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-@SpringBootTest(properties = {
-        "spring.datasource.url=jdbc:h2:mem:onboard_configuration;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
-        "spring.datasource.username=sa",
-        "spring.datasource.password=",
-        "spring.datasource.driver-class-name=org.h2.Driver",
-        "spring.flyway.enabled=false",
-        "spring.jpa.hibernate.ddl-auto=create-drop"
-})
+@SpringBootTest
 @Import({OnboardTestFixtures.class,
         OnboardSystemConfigurationServiceTest.PreviewPauseConfiguration.class})
 class OnboardSystemConfigurationServiceTest {
+
+    @org.springframework.test.context.DynamicPropertySource
+    static void dataSourceProperties(
+            org.springframework.test.context.DynamicPropertyRegistry registry) {
+        DataSourceBootstrap bootstrap = bootstrapDataSource(
+                System.getProperty("drt.integration.r4-configuration.jdbc-url", ""),
+                System.getProperty("drt.integration.r4-configuration.username", ""),
+                System.getProperty("drt.integration.r4-configuration.password", ""),
+                Boolean.getBoolean("drt.integration.r4-configuration.external-ephemeral"),
+                System.getProperty("drt.integration.r4-configuration.cleanup-nonce", ""),
+                System.getProperty("drt.integration.r4-configuration.ddl-auto", ""),
+                OnboardSystemConfigurationServiceTest::verifyExternalBootstrapTarget);
+        registry.add("spring.datasource.url", bootstrap::jdbcUrl);
+        registry.add("spring.datasource.username", bootstrap::username);
+        registry.add("spring.datasource.password", bootstrap::password);
+        registry.add("spring.datasource.driver-class-name", bootstrap::driverClassName);
+        registry.add("spring.flyway.enabled", () -> false);
+        registry.add("spring.jpa.hibernate.ddl-auto", bootstrap::ddlAuto);
+    }
 
     @Autowired
     OnboardSystemConfigurationService service;
@@ -93,6 +114,12 @@ class OnboardSystemConfigurationServiceTest {
 
     @Autowired
     VehicleLocationEventRepository locationEventRepository;
+
+    @Autowired
+    GatewayIngressRouter ingressRouter;
+
+    @Autowired
+    com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     @Autowired
     OnboardSystemRuntimeStateRepository runtimeStateRepository;
@@ -127,9 +154,182 @@ class OnboardSystemConfigurationServiceTest {
     @Autowired
     ConstraintFailureInjector constraintFailureInjector;
 
+    @Autowired
+    ConfigurationIngressRacePause configurationIngressRacePause;
+
     @BeforeEach
     void setUp() {
-        fixtures.clear();
+        if (isPostgreSql()) {
+            requirePostgreSqlEphemeralCleanupPermission();
+            jdbcTemplate.execute("""
+                    truncate table
+                      audit_logs,
+                      jt_gateway_ingress_receipts,
+                      jt_gateway_audit_events,
+                      vehicles,
+                      jt_terminals
+                    cascade
+                    """);
+        } else {
+            fixtures.clear();
+        }
+    }
+
+    private void requirePostgreSqlEphemeralCleanupPermission() {
+        boolean explicitlyEnabled = Boolean.getBoolean(
+                "drt.integration.r4-configuration.external-ephemeral");
+        String nonce = System.getProperty(
+                "drt.integration.r4-configuration.cleanup-nonce", "");
+        String metadataUrl;
+        try (java.sql.Connection connection = java.util.Objects.requireNonNull(
+                jdbcTemplate.getDataSource(), "dataSource").getConnection()) {
+            metadataUrl = connection.getMetaData().getURL();
+        } catch (SQLException failure) {
+            throw cleanupForbidden();
+        }
+        requireExternalEphemeralCleanupTarget(explicitlyEnabled, metadataUrl, nonce);
+        try {
+            int totalSentinels = jdbcTemplate.queryForObject(
+                    "select count(*) from r4_configuration_test_sentinel",
+                    Integer.class);
+            int matchingSentinels = jdbcTemplate.queryForObject(
+                    "select count(*) from r4_configuration_test_sentinel where cleanup_nonce = ?",
+                    Integer.class,
+                    nonce);
+            requireExternalEphemeralCleanupPermission(
+                    explicitlyEnabled,
+                    metadataUrl,
+                    nonce,
+                    totalSentinels,
+                    matchingSentinels);
+        } catch (org.springframework.dao.DataAccessException failure) {
+            throw cleanupForbidden();
+        }
+    }
+
+    private static void requireExternalEphemeralCleanupPermission(
+            boolean explicitlyEnabled,
+            String metadataUrl,
+            String nonce,
+            int totalSentinels,
+            int matchingSentinels) {
+        requireExternalEphemeralCleanupTarget(explicitlyEnabled, metadataUrl, nonce);
+        if (totalSentinels != 1 || matchingSentinels != 1) {
+            throw cleanupForbidden();
+        }
+    }
+
+    private static void requireExternalEphemeralCleanupTarget(
+            boolean explicitlyEnabled,
+            String metadataUrl,
+            String nonce) {
+        if (!explicitlyEnabled
+                || nonce == null
+                || !nonce.matches("[0-9a-f]{32,}")) {
+            throw cleanupForbidden();
+        }
+        java.util.regex.Matcher target = java.util.regex.Pattern.compile(
+                        "jdbc:postgresql://(?:127\\.0\\.0\\.1|localhost):(\\d+)/"
+                                + "r4_configuration_[0-9a-f]{12,}(?:\\?.*)?")
+                .matcher(metadataUrl == null ? "" : metadataUrl);
+        if (!target.matches()) {
+            throw cleanupForbidden();
+        }
+        int port;
+        try {
+            port = Integer.parseInt(target.group(1));
+        } catch (NumberFormatException invalidPort) {
+            throw cleanupForbidden();
+        }
+        if (port < 1 || port > 65_535 || port == 5_432) {
+            throw cleanupForbidden();
+        }
+    }
+
+    private static IllegalStateException cleanupForbidden() {
+        return new IllegalStateException("R4_EXTERNAL_EPHEMERAL_CLEANUP_FORBIDDEN");
+    }
+
+    private static DataSourceBootstrap bootstrapDataSource(
+            String externalJdbcUrl,
+            String externalUsername,
+            String externalPassword,
+            boolean explicitlyEnabled,
+            String nonce,
+            String callerDdlAuto,
+            ExternalBootstrapVerifier verifier) {
+        if (externalJdbcUrl == null || externalJdbcUrl.isBlank()) {
+            return new DataSourceBootstrap(
+                    "jdbc:h2:mem:onboard_configuration_"
+                            + UUID.randomUUID().toString().replace("-", "")
+                            + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+                    "sa",
+                    "",
+                    "org.h2.Driver",
+                    "create-drop");
+        }
+        requireExternalEphemeralCleanupTarget(
+                explicitlyEnabled, externalJdbcUrl, nonce);
+        java.util.Objects.requireNonNull(verifier, "verifier").verify(
+                externalJdbcUrl,
+                externalUsername == null ? "" : externalUsername,
+                externalPassword == null ? "" : externalPassword,
+                nonce);
+        return new DataSourceBootstrap(
+                externalJdbcUrl,
+                externalUsername == null ? "" : externalUsername,
+                externalPassword == null ? "" : externalPassword,
+                "org.postgresql.Driver",
+                "none");
+    }
+
+    private static void verifyExternalBootstrapTarget(
+            String targetJdbcUrl,
+            String username,
+            String password,
+            String nonce) {
+        try (java.sql.Connection connection = java.sql.DriverManager.getConnection(
+                targetJdbcUrl, username, password)) {
+            String metadataUrl = connection.getMetaData().getURL();
+            if (!targetJdbcUrl.equals(metadataUrl)) {
+                throw cleanupForbidden();
+            }
+            requireExternalEphemeralCleanupTarget(true, metadataUrl, nonce);
+            int totalSentinels;
+            try (java.sql.Statement statement = connection.createStatement();
+                    java.sql.ResultSet rows = statement.executeQuery(
+                            "select count(*) from r4_configuration_test_sentinel")) {
+                if (!rows.next()) {
+                    throw cleanupForbidden();
+                }
+                totalSentinels = rows.getInt(1);
+            }
+            int matchingSentinels;
+            try (java.sql.PreparedStatement query = connection.prepareStatement(
+                    "select count(*) from r4_configuration_test_sentinel "
+                            + "where cleanup_nonce = ?")) {
+                query.setString(1, nonce);
+                try (java.sql.ResultSet rows = query.executeQuery()) {
+                    if (!rows.next()) {
+                        throw cleanupForbidden();
+                    }
+                    matchingSentinels = rows.getInt(1);
+                }
+            }
+            requireExternalEphemeralCleanupPermission(
+                    true, metadataUrl, nonce, totalSentinels, matchingSentinels);
+        } catch (SQLException failure) {
+            throw cleanupForbidden();
+        }
+    }
+
+    private boolean isPostgreSql() {
+        try (java.sql.Connection connection = java.util.Objects.requireNonNull(
+                jdbcTemplate.getDataSource(), "dataSource").getConnection()) {
+            return "PostgreSQL".equals(connection.getMetaData().getDatabaseProductName());
+        } catch (SQLException failure) {
+            throw new IllegalStateException("failed to inspect test database", failure);
+        }
     }
 
     @Test
@@ -1096,6 +1296,600 @@ class OnboardSystemConfigurationServiceTest {
                 .getActiveLocationTerminalId()).isEqualTo(event.getTerminalId());
     }
 
+    @Test
+    void removingActiveLocationMemberClearsRuntimeAndMarksSnapshotStale() {
+        ActiveLocationFixture fixture = activeDualDeviceLocationFixture();
+
+        service.apply(
+                fixture.vehicleId(),
+                fixture.commandWithoutActiveTerminal(),
+                OnboardTestFixtures.ACTOR_ID);
+
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findById(fixture.systemId()).orElseThrow();
+        Vehicle vehicle = vehicleRepository
+                .findById(fixture.vehicleId()).orElseThrow();
+        assertThat(runtime.getActiveLocationTerminalId()).isNull();
+        assertThat(runtime.getPrimaryRecoveryStreak()).isZero();
+        assertThat(runtime.getPrimaryTerminalCursorAt()).isNull();
+        assertThat(runtime.getBackupTerminalCursorAt()).isNull();
+        assertThat(vehicle.isCurrentLocationStale()).isTrue();
+    }
+
+    @Test
+    void unrelatedWanChangePreservesStillLegalActiveLocationSource() {
+        ActiveLocationFixture fixture = activeDualDeviceLocationFixture();
+
+        service.apply(
+                fixture.vehicleId(),
+                fixture.commandMovingOnlyWanUplink(),
+                OnboardTestFixtures.ACTOR_ID);
+
+        assertThat(runtimeStateRepository.findById(fixture.systemId())
+                .orElseThrow().getActiveLocationTerminalId())
+                .isEqualTo(fixture.activeTerminalId());
+        assertThat(vehicleRepository.findById(fixture.vehicleId())
+                .orElseThrow().isCurrentLocationStale()).isFalse();
+    }
+
+    @Test
+    void movingPrimaryRoleLetsTheNextLegalPrimarySelectWithoutProvenanceMismatch()
+            throws Exception {
+        ActiveLocationFixture fixture = activeDualDeviceLocationFixture();
+        service.apply(
+                fixture.vehicleId(),
+                fixture.commandWithoutActiveTerminal(),
+                OnboardTestFixtures.ACTOR_ID);
+        UUID nextPrimary = roleRepository
+                .findActiveByOnboardSystemIdOrderByValidFromAsc(fixture.systemId()).stream()
+                .filter(role -> role.getRole() == Role.LOCATION_PRIMARY)
+                .map(OnboardDeviceRoleAssignment::getTerminalId)
+                .findFirst().orElseThrow();
+        Instant locatedAt = Instant.now().plusSeconds(1);
+        CanonicalPositionIngress ingress = locationIngress(
+                fixture.vehicleId(), fixture.systemId(), nextPrimary,
+                Role.LOCATION_PRIMARY, locatedAt, "d".repeat(64));
+        GatewayIngressEnvelope envelope = new GatewayIngressEnvelope(
+                1,
+                UUID.randomUUID(),
+                "POSITION",
+                locatedAt,
+                objectMapper.writeValueAsString(ingress));
+
+        assertThat(ingressRouter.ingest(List.of(envelope)).getFirst().status())
+                .isEqualTo("ACCEPTED");
+        assertThat(runtimeStateRepository.findById(fixture.systemId()).orElseThrow()
+                .getActiveLocationTerminalId()).isEqualTo(nextPrimary);
+        assertThat(vehicleRepository.findById(fixture.vehicleId()).orElseThrow()
+                .getCurrentLocationOnboardSystemId()).isEqualTo(fixture.systemId());
+    }
+
+    @Test
+    void replacementNeverClaimsTheOldSnapshotForTheNewTerminal() {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        String oldCode = "r4-old-" + suffix;
+        String backupCode = "r4-backup-" + suffix;
+        String replacementCode = "r4-new-" + suffix;
+        String plate = "R4R-" + suffix;
+        fixtures.configureDualDeviceSystem(oldCode, backupCode, plate);
+        fixtures.verifyDispatchAndLocation(replacementCode);
+        Vehicle vehicle = vehicleRepository.findByPlateNumber(plate).orElseThrow();
+        OnboardSystem system = systemRepository
+                .findActiveByVehicleId(vehicle.getId()).orElseThrow();
+        JtTerminal oldTerminal = fixtures.terminal(oldCode);
+        JtTerminal replacement = fixtures.terminal(replacementCode);
+        service.apply(
+                vehicle.getId(),
+                command(
+                        system.getVersion(),
+                        OperatingMode.DISPATCH_SERVICE,
+                        List.of(
+                                device(oldCode, NetworkMode.DIRECT_CELLULAR,
+                                        Set.of(Role.DISPATCH, Role.LOCATION_PRIMARY,
+                                                Role.WAN_UPLINK)),
+                                device(backupCode, NetworkMode.SHARED_LAN_CLIENT,
+                                        Set.of(Role.LOCATION_BACKUP, Role.ACTIVE_SAFETY,
+                                                Role.VIDEO)),
+                                deviceWithProfiles(
+                                        replacementCode,
+                                        NetworkMode.DIRECT_CELLULAR,
+                                        Set.of(),
+                                        new ProtocolProfiles(
+                                                "JT808_2019", "GBT28787_2023",
+                                                "NONE", "NONE", 30, 60)))),
+                OnboardTestFixtures.ACTOR_ID);
+        persistActiveLocation(system.getId(), vehicle.getId(), oldTerminal.getId());
+
+        service.replaceTerminal(
+                oldTerminal.getId(),
+                fixtures.terminal(oldCode).getVersion(),
+                replacement.getId(),
+                fixtures.terminal(replacementCode).getVersion(),
+                "replace synthetic active location terminal",
+                OnboardTestFixtures.ACTOR_ID);
+
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findById(system.getId()).orElseThrow();
+        Vehicle after = vehicleRepository.findById(vehicle.getId()).orElseThrow();
+        assertThat(runtime.getActiveLocationTerminalId()).isNull();
+        assertThat(after.getCurrentLocationTerminalId()).isEqualTo(oldTerminal.getId());
+        assertThat(after.getCurrentLocationTerminalId()).isNotEqualTo(replacement.getId());
+        assertThat(after.isCurrentLocationStale()).isTrue();
+    }
+
+    @Test
+    void configurationLockFirstMakesIngressWaitAndRejectCompleteNewAuthority()
+            throws Exception {
+        ActiveLocationFixture fixture = activeDualDeviceLocationFixture();
+        Vehicle before = vehicleRepository.findById(fixture.vehicleId()).orElseThrow();
+        UUID originalSnapshotEventId = before.getCurrentLocationEventId();
+        long originalEventCount = locationEventRepository.count();
+        UUID rejectedKey = UUID.randomUUID();
+        GatewayIngressEnvelope envelope = nextPrimaryEnvelope(
+                fixture, before, rejectedKey, "e".repeat(64));
+        CountDownLatch configurationLocked = new CountDownLatch(1);
+        CountDownLatch releaseConfiguration = new CountDownLatch(1);
+        CountDownLatch contenderBeforeSystemLock = new CountDownLatch(1);
+        CountDownLatch contenderAfterSystemLock = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        configurationIngressRacePause.arm(
+                "r4-configuration-lock-first",
+                configurationLocked,
+                releaseConfiguration,
+                "r4-ingress-waits-for-configuration",
+                contenderBeforeSystemLock,
+                contenderAfterSystemLock);
+        try {
+            Future<?> configuration = executor.submit(() -> {
+                Thread.currentThread().setName("r4-configuration-lock-first");
+                service.apply(
+                        fixture.vehicleId(), fixture.commandWithoutActiveTerminal(),
+                        OnboardTestFixtures.ACTOR_ID);
+            });
+            assertThat(configurationLocked.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<GpsLocationIngressService.Result> position = executor.submit(() -> {
+                Thread.currentThread().setName("r4-ingress-waits-for-configuration");
+                return ingressRouter.ingest(List.of(envelope)).getFirst();
+            });
+            assertThat(contenderBeforeSystemLock.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(contenderAfterSystemLock.await(250, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(completedWithin(position, 250)).isFalse();
+
+            releaseConfiguration.countDown();
+            configuration.get(5, TimeUnit.SECONDS);
+            assertThat(contenderAfterSystemLock.await(5, TimeUnit.SECONDS)).isTrue();
+            GpsLocationIngressService.Result result = position.get(5, TimeUnit.SECONDS);
+            assertThat(result.status()).isEqualTo("REJECTED");
+            assertThat(result.reasonCodes())
+                    .containsExactly("ONBOARD_PROVENANCE_MISMATCH");
+        } finally {
+            releaseConfiguration.countDown();
+            configurationIngressRacePause.disarm();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findById(fixture.systemId()).orElseThrow();
+        Vehicle vehicle = vehicleRepository.findById(fixture.vehicleId()).orElseThrow();
+        assertThat(locationEventRepository.count()).isEqualTo(originalEventCount);
+        assertThat(locationEventRepository.findByIdempotencyKey(rejectedKey)).isEmpty();
+        assertThat(vehicle.getCurrentLocationEventId()).isEqualTo(originalSnapshotEventId);
+        assertThat(runtime.getActiveLocationTerminalId()).isNull();
+        assertThat(runtime.getLastPrimaryValidGatewayReceivedAt()).isNull();
+        assertThat(runtime.getPrimaryTerminalCursorAt()).isNull();
+        assertThat(runtime.getBackupTerminalCursorAt()).isNull();
+        assertThat(vehicle.isCurrentLocationStale()).isTrue();
+        assertNewPrimaryExcludesOldTerminal(fixture);
+    }
+
+    @Test
+    void ingressLockFirstMakesConfigurationWaitThenResetsAcceptedOldAuthority()
+            throws Exception {
+        ActiveLocationFixture fixture = activeDualDeviceLocationFixture();
+        Vehicle before = vehicleRepository.findById(fixture.vehicleId()).orElseThrow();
+        long originalEventCount = locationEventRepository.count();
+        UUID acceptedKey = UUID.randomUUID();
+        GatewayIngressEnvelope envelope = nextPrimaryEnvelope(
+                fixture, before, acceptedKey, "f".repeat(64));
+        CountDownLatch ingressLocked = new CountDownLatch(1);
+        CountDownLatch releaseIngress = new CountDownLatch(1);
+        CountDownLatch contenderBeforeSystemLock = new CountDownLatch(1);
+        CountDownLatch contenderAfterSystemLock = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        configurationIngressRacePause.arm(
+                "r4-ingress-lock-first",
+                ingressLocked,
+                releaseIngress,
+                "r4-configuration-waits-for-ingress",
+                contenderBeforeSystemLock,
+                contenderAfterSystemLock);
+        try {
+            Future<GpsLocationIngressService.Result> position = executor.submit(() -> {
+                Thread.currentThread().setName("r4-ingress-lock-first");
+                return ingressRouter.ingest(List.of(envelope)).getFirst();
+            });
+            assertThat(ingressLocked.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<?> configuration = executor.submit(() -> {
+                Thread.currentThread().setName("r4-configuration-waits-for-ingress");
+                service.apply(
+                        fixture.vehicleId(), fixture.commandWithoutActiveTerminal(),
+                        OnboardTestFixtures.ACTOR_ID);
+            });
+            assertThat(contenderBeforeSystemLock.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(contenderAfterSystemLock.await(250, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(completedWithin(configuration, 250)).isFalse();
+
+            releaseIngress.countDown();
+            GpsLocationIngressService.Result result = position.get(5, TimeUnit.SECONDS);
+            assertThat(result.status()).isEqualTo("ACCEPTED");
+            assertThat(result.reasonCodes()).isEmpty();
+            assertThat(contenderAfterSystemLock.await(5, TimeUnit.SECONDS)).isTrue();
+            configuration.get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseIngress.countDown();
+            configurationIngressRacePause.disarm();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+
+        VehicleLocationEvent accepted = locationEventRepository
+                .findByIdempotencyKey(acceptedKey).orElseThrow();
+        assertThat(locationEventRepository.count()).isEqualTo(originalEventCount + 1);
+        assertThat(accepted.isSnapshotApplied()).isTrue();
+        assertThat(accepted.getVehicleId()).isEqualTo(fixture.vehicleId());
+        assertThat(accepted.getOnboardSystemId()).isEqualTo(fixture.systemId());
+        assertThat(accepted.getTerminalId()).isEqualTo(fixture.activeTerminalId());
+
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findById(fixture.systemId()).orElseThrow();
+        Vehicle vehicle = vehicleRepository.findById(fixture.vehicleId()).orElseThrow();
+        assertThat(vehicle.getCurrentLocationEventId()).isEqualTo(accepted.getId());
+        assertThat(vehicle.getCurrentLocationOnboardSystemId()).isEqualTo(fixture.systemId());
+        assertThat(vehicle.getCurrentLocationTerminalId()).isEqualTo(fixture.activeTerminalId());
+        assertThat(vehicle.isCurrentLocationStale()).isTrue();
+        assertThat(runtime.getActiveLocationTerminalId()).isNull();
+        assertThat(runtime.getLastPrimaryValidGatewayReceivedAt()).isNull();
+        assertThat(runtime.getPrimaryTerminalCursorAt()).isNull();
+        assertThat(runtime.getBackupTerminalCursorAt()).isNull();
+        assertNewPrimaryExcludesOldTerminal(fixture);
+    }
+
+    @Test
+    void cleanupGuardRejectsMissingExplicitOptInWithoutTouchingADatabase() {
+        assertThatThrownBy(() -> requireExternalEphemeralCleanupPermission(
+                false,
+                "jdbc:postgresql://127.0.0.1:15432/r4_configuration_0123456789ab",
+                "0123456789abcdef0123456789abcdef",
+                1,
+                1))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("R4_EXTERNAL_EPHEMERAL_CLEANUP_FORBIDDEN");
+    }
+
+    @Test
+    void cleanupGuardRejectsNonLoopbackMetadataUrlWithoutTouchingADatabase() {
+        assertThatThrownBy(() -> requireExternalEphemeralCleanupPermission(
+                true,
+                "jdbc:postgresql://database.example:15432/r4_configuration_0123456789ab",
+                "0123456789abcdef0123456789abcdef",
+                1,
+                1))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("R4_EXTERNAL_EPHEMERAL_CLEANUP_FORBIDDEN");
+    }
+
+    @Test
+    void cleanupGuardRejectsWrongDatabaseNameWithoutTouchingADatabase() {
+        assertThatThrownBy(() -> requireExternalEphemeralCleanupPermission(
+                true,
+                "jdbc:postgresql://127.0.0.1:15432/composite_onboard",
+                "0123456789abcdef0123456789abcdef",
+                1,
+                1))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("R4_EXTERNAL_EPHEMERAL_CLEANUP_FORBIDDEN");
+    }
+
+    @Test
+    void cleanupGuardRejectsSentinelNonceMismatchWithoutTouchingADatabase() {
+        assertThatThrownBy(() -> requireExternalEphemeralCleanupPermission(
+                true,
+                "jdbc:postgresql://localhost:15432/r4_configuration_0123456789ab",
+                "0123456789abcdef0123456789abcdef",
+                1,
+                0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("R4_EXTERNAL_EPHEMERAL_CLEANUP_FORBIDDEN");
+    }
+
+    @Test
+    void bootstrapDefaultsToUniqueH2AndCreateDropWithoutCallingExternalVerifier() {
+        AtomicBoolean verifierCalled = new AtomicBoolean();
+
+        DataSourceBootstrap first = bootstrapDataSource(
+                "", "", "", false, "", "none",
+                (target, username, password, nonce) -> verifierCalled.set(true));
+        DataSourceBootstrap second = bootstrapDataSource(
+                null, "", "", false, "", "none",
+                (target, username, password, nonce) -> verifierCalled.set(true));
+
+        assertThat(first.jdbcUrl()).startsWith("jdbc:h2:mem:onboard_configuration_");
+        assertThat(second.jdbcUrl()).startsWith("jdbc:h2:mem:onboard_configuration_");
+        assertThat(first.jdbcUrl()).isNotEqualTo(second.jdbcUrl());
+        assertThat(first.driverClassName()).isEqualTo("org.h2.Driver");
+        assertThat(first.username()).isEqualTo("sa");
+        assertThat(first.password()).isEmpty();
+        assertThat(first.ddlAuto()).isEqualTo("create-drop");
+        assertThat(verifierCalled).isFalse();
+    }
+
+    @Test
+    void bootstrapExternalForcesNoneEvenWhenCallerRequestsCreateDrop() {
+        AtomicBoolean verifierCalled = new AtomicBoolean();
+        String nonce = "0123456789abcdef0123456789abcdef";
+
+        DataSourceBootstrap bootstrap = bootstrapDataSource(
+                "jdbc:postgresql://127.0.0.1:15432/r4_configuration_0123456789ab",
+                "composite",
+                "synthetic-password",
+                true,
+                nonce,
+                "create-drop",
+                (target, username, password, actualNonce) -> {
+                    verifierCalled.set(true);
+                    assertThat(actualNonce).isEqualTo(nonce);
+                });
+
+        assertThat(bootstrap.driverClassName()).isEqualTo("org.postgresql.Driver");
+        assertThat(bootstrap.ddlAuto()).isEqualTo("none");
+        assertThat(verifierCalled).isTrue();
+    }
+
+    @Test
+    void bootstrapRejectsMissingExternalOptInBeforeCallingVerifier() {
+        AtomicBoolean verifierCalled = new AtomicBoolean();
+
+        assertThatThrownBy(() -> bootstrapDataSource(
+                "jdbc:postgresql://127.0.0.1:15432/r4_configuration_0123456789ab",
+                "composite",
+                "synthetic-password",
+                false,
+                "0123456789abcdef0123456789abcdef",
+                "create-drop",
+                (target, username, password, nonce) -> verifierCalled.set(true)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("R4_EXTERNAL_EPHEMERAL_CLEANUP_FORBIDDEN");
+        assertThat(verifierCalled).isFalse();
+    }
+
+    private GatewayIngressEnvelope nextPrimaryEnvelope(
+            ActiveLocationFixture fixture,
+            Vehicle current,
+            UUID idempotencyKey,
+            String digest) throws Exception {
+        Instant terminalAt = current.getCurrentLocationReportedAt().toInstant().plusSeconds(1);
+        Instant gatewayAt = current.getCurrentLocationGatewayReceivedAt().toInstant().plusSeconds(1);
+        CanonicalPositionIngress ingress = locationIngress(
+                fixture.vehicleId(), fixture.systemId(), fixture.activeTerminalId(),
+                Role.LOCATION_PRIMARY, terminalAt, digest);
+        ingress = new CanonicalPositionIngress(
+                ingress.terminalId(), ingress.onboardSystemId(), ingress.vehicleId(),
+                ingress.sourceRole(), ingress.protocolVersion(), ingress.messageSerialNo(),
+                ingress.rawLongitude(), ingress.rawLatitude(), ingress.rawCoordinateSystem(),
+                terminalAt, gatewayAt, ingress.alarmBits(), ingress.statusBits(),
+                ingress.speedKph(), ingress.directionDegrees(), ingress.altitudeMeters(),
+                ingress.satelliteCount(), ingress.payloadDigest());
+        return new GatewayIngressEnvelope(
+                1, idempotencyKey, "POSITION", gatewayAt,
+                objectMapper.writeValueAsString(ingress));
+    }
+
+    private void assertNewPrimaryExcludesOldTerminal(ActiveLocationFixture fixture) {
+        List<OnboardDeviceRoleAssignment> primaryHistory = roleRepository.findAll().stream()
+                .filter(role -> role.getOnboardSystemId().equals(fixture.systemId()))
+                .filter(role -> role.getRole() == Role.LOCATION_PRIMARY)
+                .sorted(java.util.Comparator.comparing(
+                        OnboardDeviceRoleAssignment::getValidFrom))
+                .toList();
+        OnboardDeviceRoleAssignment oldPrimary = primaryHistory.stream()
+                .filter(role -> role.getTerminalId().equals(fixture.activeTerminalId()))
+                .findFirst().orElseThrow();
+        OnboardDeviceRoleAssignment newPrimary = primaryHistory.stream()
+                .filter(role -> role.getStatus()
+                        == OnboardDeviceRoleAssignment.Status.ACTIVE)
+                .findFirst().orElseThrow();
+        assertThat(oldPrimary.getStatus())
+                .isEqualTo(OnboardDeviceRoleAssignment.Status.REVOKED);
+        assertThat(oldPrimary.getValidTo()).isNotNull();
+        assertThat(newPrimary.getTerminalId())
+                .isNotEqualTo(fixture.activeTerminalId());
+        assertThat(newPrimary.getStatus())
+                .isEqualTo(OnboardDeviceRoleAssignment.Status.ACTIVE);
+        assertThat(newPrimary.getValidTo()).isNull();
+        assertThat(primaryHistory).filteredOn(role ->
+                        role.getStatus() == OnboardDeviceRoleAssignment.Status.ACTIVE)
+                .singleElement();
+        assertThat(oldPrimary.getValidTo())
+                .isBeforeOrEqualTo(newPrimary.getValidFrom());
+
+        List<OnboardDeviceMembership> membershipHistory = membershipRepository
+                .findAll().stream()
+                .filter(membership -> membership.getOnboardSystemId()
+                        .equals(fixture.systemId()))
+                .toList();
+        OnboardDeviceMembership oldMembership = membershipHistory.stream()
+                .filter(membership -> membership.getTerminalId()
+                        .equals(fixture.activeTerminalId()))
+                .findFirst().orElseThrow();
+        assertThat(oldMembership.getStatus())
+                .isEqualTo(OnboardDeviceMembership.Status.REMOVED);
+        assertThat(oldMembership.getValidTo()).isNotNull();
+        assertThat(membershipHistory).filteredOn(membership ->
+                        membership.getTerminalId().equals(newPrimary.getTerminalId())
+                                && membership.getStatus()
+                                        == OnboardDeviceMembership.Status.ACTIVE
+                                && membership.getValidTo() == null)
+                .singleElement();
+        membershipHistory.stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        OnboardDeviceMembership::getTerminalId))
+                .values()
+                .forEach(history -> {
+                    List<OnboardDeviceMembership> ordered = history.stream()
+                            .sorted(java.util.Comparator.comparing(
+                                    OnboardDeviceMembership::getValidFrom))
+                            .toList();
+                    for (int index = 1; index < ordered.size(); index++) {
+                        assertThat(ordered.get(index - 1).getValidTo()).isNotNull();
+                        assertThat(ordered.get(index - 1).getValidTo())
+                                .isBeforeOrEqualTo(ordered.get(index).getValidFrom());
+                    }
+                });
+    }
+
+    private ActiveLocationFixture activeDualDeviceLocationFixture() {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        String dispatchCode = "r4-dispatch-" + suffix;
+        String recorderCode = "r4-recorder-" + suffix;
+        String plate = "R4-" + suffix;
+        fixtures.configureDualDeviceSystem(dispatchCode, recorderCode, plate);
+        Vehicle vehicle = vehicleRepository.findByPlateNumber(plate).orElseThrow();
+        OnboardSystem system = systemRepository
+                .findActiveByVehicleId(vehicle.getId()).orElseThrow();
+        JtTerminal dispatch = fixtures.terminal(dispatchCode);
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findById(system.getId()).orElseThrow();
+        OffsetDateTime locatedAt = runtime.getUpdatedAt();
+        CanonicalPositionIngress ingress = locationIngress(
+                vehicle.getId(), system.getId(), dispatch.getId(),
+                Role.LOCATION_PRIMARY, locatedAt.toInstant(), "c".repeat(64));
+        VehicleLocationEvent event = VehicleLocationEvent.recordGps(
+                vehicle.getId(),
+                dispatch.getId(),
+                ingress,
+                new CoordinateTransformer.StandardizedCoordinate(
+                        new java.math.BigDecimal("120.155"),
+                        new java.math.BigDecimal("30.274"),
+                        "GCJ02",
+                        "SYNTHETIC_R4"),
+                new LocationQualityDecision(
+                        LocationQualityStatus.GOOD, Set.of(), true, true),
+                UUID.randomUUID(),
+                ingress.payloadDigest(),
+                locatedAt,
+                locatedAt.toInstant(),
+                false);
+        event.markSnapshotApplied();
+        event = locationEventRepository.saveAndFlush(event);
+        vehicle.applyGpsLocationSnapshot(event);
+        vehicleRepository.saveAndFlush(vehicle);
+        runtime.applyLocationArbitration(
+                dispatch.getId(),
+                true,
+                0,
+                locatedAt,
+                locatedAt,
+                null,
+                true,
+                locatedAt);
+        runtimeStateRepository.saveAndFlush(runtime);
+        long version = systemRepository.findById(system.getId()).orElseThrow().getVersion();
+        ConfigurationCommand withoutActive = command(
+                version,
+                OperatingMode.SAFETY_MONITOR_ONLY,
+                List.of(device(
+                        recorderCode,
+                        NetworkMode.DIRECT_CELLULAR,
+                        Set.of(Role.LOCATION_PRIMARY, Role.ACTIVE_SAFETY,
+                                Role.VIDEO, Role.WAN_UPLINK))));
+        ConfigurationCommand wanOnly = command(
+                version,
+                OperatingMode.DISPATCH_SERVICE,
+                List.of(
+                        device(dispatchCode, NetworkMode.SHARED_LAN_CLIENT,
+                                Set.of(Role.DISPATCH, Role.LOCATION_PRIMARY)),
+                        device(recorderCode, NetworkMode.DIRECT_CELLULAR,
+                                Set.of(Role.LOCATION_BACKUP, Role.ACTIVE_SAFETY,
+                                        Role.VIDEO, Role.WAN_UPLINK))));
+        return new ActiveLocationFixture(
+                vehicle.getId(), system.getId(), dispatch.getId(),
+                withoutActive, wanOnly);
+    }
+
+    private void persistActiveLocation(
+            UUID systemId,
+            UUID vehicleId,
+            UUID terminalId) {
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findById(systemId).orElseThrow();
+        OffsetDateTime locatedAt = runtime.getUpdatedAt();
+        CanonicalPositionIngress ingress = locationIngress(
+                vehicleId, systemId, terminalId,
+                Role.LOCATION_PRIMARY, locatedAt.toInstant(), "f".repeat(64));
+        VehicleLocationEvent event = VehicleLocationEvent.recordGps(
+                vehicleId,
+                terminalId,
+                ingress,
+                new CoordinateTransformer.StandardizedCoordinate(
+                        new java.math.BigDecimal("120.155"),
+                        new java.math.BigDecimal("30.274"),
+                        "GCJ02",
+                        "SYNTHETIC_R4_REPLACEMENT"),
+                new LocationQualityDecision(
+                        LocationQualityStatus.GOOD, Set.of(), true, true),
+                UUID.randomUUID(),
+                ingress.payloadDigest(),
+                locatedAt,
+                locatedAt.toInstant(),
+                false);
+        event.markSnapshotApplied();
+        event = locationEventRepository.saveAndFlush(event);
+        Vehicle vehicle = vehicleRepository.findById(vehicleId).orElseThrow();
+        vehicle.applyGpsLocationSnapshot(event);
+        vehicleRepository.saveAndFlush(vehicle);
+        runtime.applyLocationArbitration(
+                terminalId, true, 0,
+                locatedAt, locatedAt, null,
+                true, locatedAt);
+        runtimeStateRepository.saveAndFlush(runtime);
+    }
+
+    private static CanonicalPositionIngress locationIngress(
+            UUID vehicleId,
+            UUID systemId,
+            UUID terminalId,
+            Role role,
+            Instant locatedAt,
+            String digest) {
+        return new CanonicalPositionIngress(
+                terminalId,
+                systemId,
+                vehicleId,
+                role.name(),
+                "JT808_2019",
+                1,
+                new java.math.BigDecimal("120.155"),
+                new java.math.BigDecimal("30.274"),
+                "GCJ02",
+                locatedAt,
+                locatedAt,
+                0L,
+                0x02L,
+                java.math.BigDecimal.ZERO,
+                0,
+                0,
+                8,
+                digest);
+    }
+
+    private record ActiveLocationFixture(
+            UUID vehicleId,
+            UUID systemId,
+            UUID activeTerminalId,
+            ConfigurationCommand commandWithoutActiveTerminal,
+            ConfigurationCommand commandMovingOnlyWanUplink) { }
+
     private static ConfigurationCommand command(
             long expectedVersion, List<DeviceConfiguration> devices) {
         return command(expectedVersion, OperatingMode.DISPATCH_SERVICE, devices);
@@ -1363,6 +2157,19 @@ class OnboardSystemConfigurationServiceTest {
         }
     }
 
+    private record DataSourceBootstrap(
+            String jdbcUrl,
+            String username,
+            String password,
+            String driverClassName,
+            String ddlAuto) {
+    }
+
+    @FunctionalInterface
+    private interface ExternalBootstrapVerifier {
+        void verify(String jdbcUrl, String username, String password, String nonce);
+    }
+
     static final class PreviewReadPause {
         private final AtomicBoolean pauseOnce = new AtomicBoolean();
         private volatile String threadName;
@@ -1493,6 +2300,70 @@ class OnboardSystemConfigurationServiceTest {
         }
     }
 
+    static final class ConfigurationIngressRacePause {
+        private final AtomicBoolean pauseOnce = new AtomicBoolean();
+        private final AtomicBoolean contenderBeforeOnce = new AtomicBoolean();
+        private final AtomicBoolean contenderAfterOnce = new AtomicBoolean();
+        private volatile String ownerThreadName;
+        private volatile CountDownLatch ownerLocked;
+        private volatile CountDownLatch releaseOwner;
+        private volatile String contenderThreadName;
+        private volatile CountDownLatch contenderBeforeSystemLock;
+        private volatile CountDownLatch contenderAfterSystemLock;
+
+        void arm(
+                String ownerThreadName,
+                CountDownLatch ownerLocked,
+                CountDownLatch releaseOwner,
+                String contenderThreadName,
+                CountDownLatch contenderBeforeSystemLock,
+                CountDownLatch contenderAfterSystemLock) {
+            this.ownerThreadName = ownerThreadName;
+            this.ownerLocked = ownerLocked;
+            this.releaseOwner = releaseOwner;
+            this.contenderThreadName = contenderThreadName;
+            this.contenderBeforeSystemLock = contenderBeforeSystemLock;
+            this.contenderAfterSystemLock = contenderAfterSystemLock;
+            pauseOnce.set(false);
+            contenderBeforeOnce.set(false);
+            contenderAfterOnce.set(false);
+        }
+
+        void afterVehicleLock() {
+            if (Thread.currentThread().getName().equals(ownerThreadName)
+                    && pauseOnce.compareAndSet(false, true)) {
+                ownerLocked.countDown();
+                await(releaseOwner);
+            }
+        }
+
+        void beforeSystemLock() {
+            if (Thread.currentThread().getName().equals(contenderThreadName)
+                    && contenderBeforeOnce.compareAndSet(false, true)) {
+                contenderBeforeSystemLock.countDown();
+            }
+        }
+
+        void afterSystemLock() {
+            if (Thread.currentThread().getName().equals(contenderThreadName)
+                    && contenderAfterOnce.compareAndSet(false, true)) {
+                contenderAfterSystemLock.countDown();
+            }
+        }
+
+        void disarm() {
+            ownerThreadName = null;
+            ownerLocked = null;
+            releaseOwner = null;
+            contenderThreadName = null;
+            contenderBeforeSystemLock = null;
+            contenderAfterSystemLock = null;
+            pauseOnce.set(false);
+            contenderBeforeOnce.set(false);
+            contenderAfterOnce.set(false);
+        }
+    }
+
     static final class ConstraintFailureInjector {
         private volatile DataIntegrityViolationException failure;
 
@@ -1515,6 +2386,13 @@ class OnboardSystemConfigurationServiceTest {
     static class PreviewPauseConfiguration {
 
         @Bean
+        @org.springframework.context.annotation.Primary
+        com.idavy.drtops.domain.location.ServiceAreaLocationChecker
+                configurationGpsAreaChecker() {
+            return (longitude, latitude) -> true;
+        }
+
+        @Bean
         PreviewReadPause previewReadPause() {
             return new PreviewReadPause();
         }
@@ -1530,6 +2408,62 @@ class OnboardSystemConfigurationServiceTest {
         }
 
         @Bean
+        ConfigurationIngressRacePause configurationIngressRacePause() {
+            return new ConfigurationIngressRacePause();
+        }
+
+        private static EntityManager systemLockEntityManager(
+                EntityManager delegate,
+                ConfigurationIngressRacePause configurationIngressRacePause) {
+            return (EntityManager) Proxy.newProxyInstance(
+                    EntityManager.class.getClassLoader(),
+                    new Class<?>[] {EntityManager.class},
+                    (proxy, method, arguments) -> {
+                        Object result = invokeRepository(delegate, method, arguments);
+                        if (method.getName().equals("createNativeQuery")
+                                && arguments != null
+                                && arguments.length > 0
+                                && arguments[0] instanceof String sql
+                                && systemLockSql(sql)) {
+                            return systemLockQuery(
+                                    (jakarta.persistence.Query) result,
+                                    configurationIngressRacePause);
+                        }
+                        return result;
+                    });
+        }
+
+        private static boolean systemLockSql(String sql) {
+            return sql.replaceAll("\\s+", " ")
+                    .trim()
+                    .equalsIgnoreCase(
+                            "select id from onboard_systems "
+                                    + "where id = :onboardSystemId for update");
+        }
+
+        private static jakarta.persistence.Query systemLockQuery(
+                jakarta.persistence.Query delegate,
+                ConfigurationIngressRacePause configurationIngressRacePause) {
+            Object[] proxyReference = new Object[1];
+            jakarta.persistence.Query proxy = (jakarta.persistence.Query) Proxy.newProxyInstance(
+                    jakarta.persistence.Query.class.getClassLoader(),
+                    new Class<?>[] {jakarta.persistence.Query.class},
+                    (ignored, method, arguments) -> {
+                        boolean lockingCall = method.getName().equals("getResultList");
+                        if (lockingCall) {
+                            configurationIngressRacePause.beforeSystemLock();
+                        }
+                        Object result = invokeRepository(delegate, method, arguments);
+                        if (lockingCall) {
+                            configurationIngressRacePause.afterSystemLock();
+                        }
+                        return result == delegate ? proxyReference[0] : result;
+                    });
+            proxyReference[0] = proxy;
+            return proxy;
+        }
+
+        @Bean
         ConstraintFailureInjector constraintFailureInjector() {
             return new ConstraintFailureInjector();
         }
@@ -1539,10 +2473,15 @@ class OnboardSystemConfigurationServiceTest {
                 PreviewReadPause previewReadPause,
                 SystemRefreshRacePause systemRefreshRacePause,
                 TerminalCodeRacePause terminalCodeRacePause,
+                ConfigurationIngressRacePause configurationIngressRacePause,
                 ConstraintFailureInjector constraintFailureInjector) {
             return new BeanPostProcessor() {
                 @Override
                 public Object postProcessAfterInitialization(Object bean, String beanName) {
+                    if (bean instanceof EntityManager entityManager) {
+                        return systemLockEntityManager(
+                                entityManager, configurationIngressRacePause);
+                    }
                     if (bean instanceof OnboardDeviceMembershipRepository repository) {
                         return Proxy.newProxyInstance(
                                 OnboardDeviceMembershipRepository.class.getClassLoader(),
@@ -1594,6 +2533,18 @@ class OnboardSystemConfigurationServiceTest {
                                     Object result = invokeRepository(repository, method, arguments);
                                     if (method.getName().equals("findByTerminalCode")) {
                                         terminalCodeRacePause.afterTerminalCodeResolution();
+                                    }
+                                    return result;
+                                });
+                    }
+                    if (bean instanceof VehicleRepository repository) {
+                        return Proxy.newProxyInstance(
+                                VehicleRepository.class.getClassLoader(),
+                                new Class<?>[] {VehicleRepository.class},
+                                (proxy, method, arguments) -> {
+                                    Object result = invokeRepository(repository, method, arguments);
+                                    if (method.getName().equals("findByIdForLocationUpdate")) {
+                                        configurationIngressRacePause.afterVehicleLock();
                                     }
                                     return result;
                                 });
