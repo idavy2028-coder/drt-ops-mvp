@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.idavy.drtops.domain.audit.AuditLog;
 import com.idavy.drtops.domain.audit.AuditLogRepository;
 import com.idavy.drtops.domain.fleet.Vehicle;
 import com.idavy.drtops.domain.fleet.VehicleRepository;
@@ -24,6 +26,7 @@ import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeState;
 import com.idavy.drtops.domain.onboard.OnboardSystemRuntimeStateRepository;
 import com.idavy.drtops.integration.jtgateway.JtGatewayControlClient;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -82,6 +85,9 @@ class TerminalManagementServiceTest {
 
     @Autowired
     AuditLogRepository auditLogRepository;
+
+    @Autowired
+    ObjectMapper objectMapper;
 
     @Autowired
     JtGatewayAuditEventRepository gatewayAuditRepository;
@@ -268,8 +274,13 @@ class TerminalManagementServiceTest {
                         OnboardDeviceRoleAssignment.Role.LOCATION_PRIMARY);
         assertThat(onboardSystemRepository.findById(fixture.system().getId()).orElseThrow().getStatus())
                 .isEqualTo(OnboardSystem.Status.ACTIVE);
-        assertThat(runtimeStateRepository.findById(fixture.system().getId()).orElseThrow()
-                .getActiveLocationTerminalId()).isEqualTo(fixture.replacement().getId());
+        OnboardSystemRuntimeState runtime = runtimeStateRepository
+                .findById(fixture.system().getId()).orElseThrow();
+        // replacement 必须等待首个合法定位事件，不能仅凭角色迁移冒领活动来源或继承旧游标。
+        assertThat(runtime.getActiveLocationTerminalId()).isNull();
+        assertThat(runtime.getLastPrimaryValidGatewayReceivedAt()).isNull();
+        assertThat(runtime.getPrimaryTerminalCursorAt()).isNull();
+        assertThat(runtime.getBackupTerminalCursorAt()).isNull();
         assertThat(bindingRepository.findAll()).isEmpty();
     }
 
@@ -566,16 +577,6 @@ class TerminalManagementServiceTest {
                 "浙A10001", "JT808_2019").approved())
                 .isTrue();
         assertThat(auditActions()).endsWith("JT_TERMINAL_REPLACED", "JT_TERMINAL_DISCONNECT_REQUESTED");
-        String metadata = auditLogRepository.findAllByOrderByCreatedAtAsc().stream()
-                .filter(audit -> "JT_TERMINAL_REPLACED".equals(audit.getAction()))
-                .findFirst().orElseThrow().getMetadataJson();
-        assertThat(metadata)
-                .contains(oldTerminal.getTerminalCode(), replacement.getTerminalCode(),
-                        "浙A10001", String.valueOf(oldTokenVersion + 1),
-                        String.valueOf(replacementTokenVersion + 1))
-                .doesNotContain(oldTerminal.getId().toString(), replacement.getId().toString(),
-                        oldHash, replacementHash,
-                        oldTerminal.getTerminalPhone(), replacement.getTerminalPhone());
         assertThat(gatewayAuditRepository.findAll()).singleElement().satisfies(event -> {
             assertThat(event.getEventType()).isEqualTo(JtGatewayAuditEvent.EventType.TERMINAL_REPLACED);
             assertThat(event.getResult()).isEqualTo(JtGatewayAuditEvent.Result.APPLIED);
@@ -587,6 +588,105 @@ class TerminalManagementServiceTest {
         service.activate(pending.getTerminalCode(), pending.getVersion(), "完成换机上线", ACTOR_ID);
         assertThat(terminalRepository.findById(replacement.getId()).orElseThrow().getStatus())
                 .isEqualTo(JtTerminal.Status.ACTIVE);
+    }
+
+    @Test
+    void replacementAuditContainsOnlySafeAliasesVersionsRolesAndReasonCode()
+            throws Exception {
+        ReplacementFixture fixture = replacementFixture(true);
+        JtTerminal oldTerminal = fixture.oldTerminal();
+        JtTerminal replacement = fixture.replacement();
+        int oldVersionBefore = oldTerminal.getAuthTokenVersion();
+        int replacementVersionBefore = replacement.getAuthTokenVersion();
+        String oldHashBefore = oldTerminal.getAuthTokenHash();
+        String replacementHashBefore = replacement.getAuthTokenHash();
+        AuditLog historicalSentinel = auditLogRepository.saveAndFlush(AuditLog.record(
+                "SYNTHETIC_HISTORY",
+                UUID.fromString("77777777-7777-7777-7777-777777777777"),
+                "SYNTHETIC_LEGACY_AUDIT",
+                "SYSTEM",
+                "synthetic-r5-test",
+                "synthetic historical sentinel",
+                "{\"legacyMarker\":\"preserve-verbatim\"}"));
+        UUID sentinelId = historicalSentinel.getId();
+        entityManager.clear();
+        historicalSentinel = auditLogRepository.findById(sentinelId).orElseThrow();
+        OffsetDateTime sentinelCreatedAt = historicalSentinel.getCreatedAt();
+
+        service.replace(
+                oldTerminal.getTerminalCode(),
+                replacement.getTerminalCode(),
+                oldTerminal.getVersion(),
+                replacement.getVersion(),
+                "synthetic replacement",
+                ACTOR_ID);
+
+        AuditLog audit = auditLogRepository
+                .findAllByOrderByCreatedAtAsc().stream()
+                .filter(item -> "JT_TERMINAL_REPLACED"
+                        .equals(item.getAction()))
+                .findFirst()
+                .orElseThrow();
+        JsonNode metadata = objectMapper.readTree(audit.getMetadataJson());
+        assertThat(fieldNames(metadata)).containsExactlyInAnyOrder(
+                "oldDeviceAlias",
+                "replacementDeviceAlias",
+                "transferredRoleCount",
+                "transferredRoles",
+                "oldTokenVersion",
+                "replacementTokenVersion",
+                "reasonCode");
+        assertThat(metadata.path("reasonCode").asText())
+                .isEqualTo("TERMINAL_REPLACED");
+        assertThat(metadata.path("oldTokenVersion").asInt())
+                .isEqualTo(oldVersionBefore + 1);
+        assertThat(metadata.path("replacementTokenVersion").asInt())
+                .isEqualTo(replacementVersionBefore + 1);
+        String expectedOldAlias = "device-"
+                + sha256(oldTerminal.getId().toString()).substring(0, 12);
+        String expectedReplacementAlias = "device-"
+                + sha256(replacement.getId().toString()).substring(0, 12);
+        assertThat(metadata.path("oldDeviceAlias").asText())
+                .isEqualTo(expectedOldAlias)
+                .matches("device-[0-9a-f]{12}");
+        assertThat(metadata.path("replacementDeviceAlias").asText())
+                .isEqualTo(expectedReplacementAlias)
+                .matches("device-[0-9a-f]{12}")
+                .isNotEqualTo(expectedOldAlias);
+        assertThat(metadata.path("transferredRoleCount").asInt()).isEqualTo(2);
+        assertThat(metadata.path("transferredRoles"))
+                .extracting(JsonNode::asText)
+                .containsExactly("DISPATCH", "LOCATION_PRIMARY");
+        JtTerminal oldTerminalAfter = terminalRepository.findById(oldTerminal.getId()).orElseThrow();
+        JtTerminal replacementAfter = terminalRepository.findById(replacement.getId()).orElseThrow();
+        assertThat(audit.getMetadataJson()).doesNotContain(
+                oldTerminal.getTerminalCode(),
+                replacement.getTerminalCode(),
+                oldTerminal.getTerminalPhone(),
+                replacement.getTerminalPhone(),
+                oldTerminal.getId().toString(),
+                replacement.getId().toString(),
+                oldHashBefore,
+                replacementHashBefore,
+                oldTerminalAfter.getAuthTokenHash(),
+                replacementAfter.getAuthTokenHash(),
+                "浙A10001");
+        AuditLog sentinelAfter = auditLogRepository.findById(historicalSentinel.getId()).orElseThrow();
+        assertThat(sentinelAfter.getEntityType()).isEqualTo("SYNTHETIC_HISTORY");
+        assertThat(sentinelAfter.getEntityId()).isEqualTo(historicalSentinel.getEntityId());
+        assertThat(sentinelAfter.getAction()).isEqualTo("SYNTHETIC_LEGACY_AUDIT");
+        assertThat(sentinelAfter.getActorType()).isEqualTo("SYSTEM");
+        assertThat(sentinelAfter.getActorId()).isEqualTo("synthetic-r5-test");
+        assertThat(sentinelAfter.getReason()).isEqualTo("synthetic historical sentinel");
+        assertThat(sentinelAfter.getMetadataJson())
+                .isEqualTo("{\"legacyMarker\":\"preserve-verbatim\"}");
+        assertThat(sentinelAfter.getCreatedAt()).isEqualTo(sentinelCreatedAt);
+    }
+
+    private static List<String> fieldNames(JsonNode value) {
+        List<String> names = new ArrayList<>();
+        value.fieldNames().forEachRemaining(names::add);
+        return List.copyOf(names);
     }
 
     @Test

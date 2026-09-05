@@ -14,10 +14,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.OffsetDateTime;
 import java.time.Clock;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.ObjectProvider;
@@ -474,14 +477,11 @@ public class TerminalManagementService {
                 throw new TerminalConflictException(conflict.getMessage());
             }
             UUID vehicleId = onboardReplacement.vehicleId();
-            String vehiclePlate = vehicleRepository.findById(vehicleId)
-                    .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "vehicle not found"))
-                    .getPlateNumber();
             asConflict(oldTerminal::retireAndInvalidateAuthentication);
             asConflict(replacement::prepareForReplacementRegistration);
             terminalRepository.saveAndFlush(oldTerminal);
             terminalRepository.saveAndFlush(replacement);
-            String metadata = replacementMetadata(oldTerminal, replacement, vehiclePlate);
+            String metadata = replacementMetadata(oldTerminal, replacement, onboardReplacement);
             audit(oldTerminal, "JT_TERMINAL_REPLACED", actorId, reason, metadata);
             audit(oldTerminal, "JT_TERMINAL_DISCONNECT_REQUESTED", actorId, reason);
             gatewayAuditRepository.save(JtGatewayAuditEvent.record(
@@ -564,16 +564,38 @@ public class TerminalManagementService {
                 "JT_TERMINAL", terminal.getId(), action, "USER", actorId.toString(), reason, metadata));
     }
 
-    private String replacementMetadata(JtTerminal oldTerminal, JtTerminal replacement, String vehiclePlate) {
+    private String replacementMetadata(
+            JtTerminal oldTerminal,
+            JtTerminal replacement,
+            OnboardSystemConfigurationService.OnboardReplacementResult onboardReplacement) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        List<String> roles = onboardReplacement.transferredRoles().stream()
+                .map(Enum::name)
+                .sorted()
+                .toList();
+        metadata.put("oldDeviceAlias", safeDeviceAlias(oldTerminal.getId()));
+        metadata.put("replacementDeviceAlias", safeDeviceAlias(replacement.getId()));
+        metadata.put("transferredRoleCount", roles.size());
+        metadata.put("transferredRoles", roles);
+        metadata.put("oldTokenVersion", oldTerminal.getAuthTokenVersion());
+        metadata.put("replacementTokenVersion", replacement.getAuthTokenVersion());
+        metadata.put("reasonCode", "TERMINAL_REPLACED");
         try {
-            return objectMapper.writeValueAsString(Map.of(
-                    "oldTerminalCode", oldTerminal.getTerminalCode(),
-                    "replacementTerminalCode", replacement.getTerminalCode(),
-                    "vehiclePlate", vehiclePlate,
-                    "oldTokenVersion", oldTerminal.getAuthTokenVersion(),
-                    "replacementTokenVersion", replacement.getAuthTokenVersion()));
+            return objectMapper.writeValueAsString(metadata);
         } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("failed to encode replacement audit metadata", exception);
+            throw new IllegalStateException(
+                    "failed to encode safe replacement audit metadata", exception);
+        }
+    }
+
+    private static String safeDeviceAlias(UUID terminalId) {
+        try {
+            // 审计只保留固定长度、不可逆的设备别名，避免 UUID 或可逆编码进入 metadata。
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(terminalId.toString().getBytes(StandardCharsets.US_ASCII));
+            return "device-" + HexFormat.of().formatHex(digest, 0, 6);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
         }
     }
 
