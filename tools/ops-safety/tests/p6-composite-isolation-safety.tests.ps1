@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('All','PowerShell','Java')] [string] $Phase = 'All', [string] $NameFilter = '')
+param([ValidateSet('All','PowerShell','Java','Wire')] [string] $Phase = 'All', [string] $NameFilter = '')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -544,6 +544,48 @@ public class P6CompositeFlywayContractTest {
         $r = RunTestProcess $java @('-cp',$classpath,'P6CompositeFlywayTool','SYNTHETIC_SECRET_DO_NOT_LOG')
         Check ($r.ExitCode -eq 1 -and $r.Out -cmatch 'CODE=REHEARSAL_FLYWAY_ARGUMENT_INVALID') 'JAVA_ARGS_NOT_REJECTED'
         Check (($r.Out+$r.Error) -notmatch 'SECRET|Exception|[A-Z]:\\') 'JAVA_SECRET_LEAK'
+    }
+}
+if ($Phase -cin @('All','Wire')) {
+    # Wire合同仅提取旧Boot JAR第三方依赖；业务class使用已核验的Task10矩阵产物。
+    # 不加载旧BOOT-INF/classes，不启动PG/API/gateway，不运行Maven。
+    $wireSources = @(
+        @('tools/jt-terminal-simulator/src/main/java/com/idavy/drtops/jtsimulator/SimulatedTerminal.java','979BED858F6999E0116FB3E8ABE9D04B8086990178D817E8A403C44FF79B62E0'),
+        @('tools/jt-terminal-simulator/target/classes/com/idavy/drtops/jtsimulator/SimulatedTerminal.class','B6B37EEDB6D1BE58F38E984E8DE2B241D36DBBF6587BD6CAF99276E91CF19DA6'),
+        @('libs/jt-protocol/src/main/java/com/idavy/drtops/jt/protocol/codec/Jt808Frame.java','5CD7857818E39CE91C8F7B3820A7B6953C4BEA9E452F9A935883CA9455FDBC96'),
+        @('libs/jt-protocol/target/classes/com/idavy/drtops/jt/protocol/codec/Jt808Frame.class','FB99479674A126B1734FB375612A64E1BAC73FCD3AF8386D1BF5429C028BC382'))
+    foreach ($source in $wireSources) { Check ((Get-FileHash -LiteralPath (Join-Path $repo $source[0]) -Algorithm SHA256).Hash -ceq $source[1]) 'WIRE_SOURCE_CLASS_DRIFT' }
+    $wireLib = Join-Path $testRoot 'wire-libs'
+    [void][IO.Directory]::CreateDirectory($wireLib)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive=[IO.Compression.ZipFile]::OpenRead((Join-Path $repo 'apps/api/target/drt-ops-api-0.1.0-SNAPSHOT.jar'))
+    try {
+        foreach ($entry in @($archive.Entries | Where-Object { $_.FullName -match '^BOOT-INF/lib/(jackson-(core|annotations|databind)|netty-[a-z-]+|postgresql)-[^/]+\.jar$' })) {
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,(Join-Path $wireLib $entry.Name))
+        }
+    } finally { $archive.Dispose() }
+    foreach ($component in @('common','buffer','transport','resolver','codec')) {
+        Check (Test-Path -LiteralPath (Join-Path $wireLib ('netty-'+$component+'-4.1.122.Final.jar')) -PathType Leaf) 'WIRE_DEPENDENCY_MISSING'
+    }
+    $javac='C:\Program Files\Java\jdk-21.0.10\bin\javac.exe'
+    $java='C:\Program Files\Java\jdk-21.0.10\bin\java.exe'
+    $wireClasspath=$testRoot+';'+$wireLib+'/*;'+(Join-Path $repo 'tools/jt-terminal-simulator/target/classes')+';'+(Join-Path $repo 'libs/jt-protocol/target/classes')
+    $compile=RunTestProcess $javac @('-encoding','UTF-8','-cp',$wireClasspath,'-d',$testRoot,(Join-Path $ops 'fixtures/P6CompositeWireHarness.java'),(Join-Path $ops 'fixtures/P6CompositeWireHarnessContractTest.java'))
+    Check ($compile.ExitCode -eq 0) 'WIRE_COMPILE_INFRASTRUCTURE_FAILED'
+    Case 'java_wire_contract_suite' {
+        $r=RunTestProcess $java @(('-Dwire.test.root='+$testRoot),'-cp',$wireClasspath,'P6CompositeWireHarnessContractTest') 60000
+        [Console]::Out.Write($r.Out)
+        Check ($r.ExitCode -eq 0 -and $r.Error -eq '') 'WIRE_CONTRACT_FAILED'
+    }
+    Case 'java_wire_main_refuses_args_and_suppresses_secret' {
+        $r=RunTestProcess $java @('-cp',$wireClasspath,'P6CompositeWireHarness','SYNTHETIC_SECRET_DO_NOT_LOG')
+        Check ($r.ExitCode -eq 1 -and $r.Out -cmatch 'CODE=REHEARSAL_WIRE_ARGUMENT_INVALID') 'WIRE_ARGUMENT_REJECTION_MISSING'
+        Check (($r.Out+$r.Error) -notmatch 'SECRET|Exception|[A-Z]:\\') 'WIRE_SECRET_LEAK'
+    }
+    Case 'java_wire_main_refuses_missing_owner_before_io' {
+        $r=RunTestProcess $java @('-cp',$wireClasspath,'P6CompositeWireHarness')
+        Check ($r.ExitCode -eq 1 -and $r.Out -cmatch 'CODE=REHEARSAL_WIRE_OWNERSHIP_INVALID') 'WIRE_OWNER_REJECTION_MISSING'
+        Check (($r.Out+$r.Error) -notmatch 'Exception|[A-Z]:\\') 'WIRE_PATH_LEAK'
     }
 }
 [Console]::Out.WriteLine(('P6_ISOLATION_TESTS TOTAL={0} PASSED={1} FAILED={2}' -f $script:total,$script:passed,($script:total-$script:passed)))

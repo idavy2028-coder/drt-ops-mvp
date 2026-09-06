@@ -10,6 +10,7 @@
 ## Global Constraints
 
 - 工作树 `D:\codex-projects\.worktrees\p6-2-composite-onboard-system`，入口HEAD `f1d3b42dac7c945fc9b9f5aa7f989790909a1d2e`，分支 `codex/p6-2-ops-safety-gates`。
+- Task1A安全基础提交为 `11ced71d581c652c3c111a3b4e025b9c40dc5167`；Task1B/1C从该提交继续，最终Plan按运行时当前干净HEAD动态绑定，不能硬编码已成为父节点的旧HEAD。
 - 不修改业务API/gateway/simulator代码、V1–V21、Task10/11/12冻结工件或真实资料；仅新增演练runner/helper/测试/文档。
 - Docker库存有bind，禁止调用Task12 ApplyCleanup、停止/修改现有容器或伪称Docker清理通过；只用本轮native PG。
 - 所有服务只绑定127.0.0.1随机端口；所有数据为固定前缀合成身份。无附件消息、真实终端、云端、外部HTTP或真实凭据。
@@ -41,18 +42,14 @@ helper action白名单固定为MIGRATE_19、PREPARE_V20、MIGRATE_20、MIGRATE_2
 
 运行安全库及Flyway helper定向测试、PowerShell Parser、secret sentinel扫描、`git diff --check`。不创建真实PG、不执行任何Java服务；报告精确RED/GREEN/exit/计数/临时资源0。控制器独立复核后再进入1B。
 
-### Task 1B: 建立wire helper、总runner和操作手册
+### Task 1B: 建立wire helper及合同测试
 
 **Files:**
-- Create: `tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1`
-- Modify: `tools/ops-safety/p6-composite-isolation-lib.ps1`
 - Create: `tools/ops-safety/fixtures/P6CompositeWireHarness.java`
+- Create: `tools/ops-safety/fixtures/P6CompositeWireHarnessContractTest.java`
 - Modify: `tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1`
-- Create: `docs/pilot/p6-2-local-isolation-rehearsal-runbook.md`
 
 **Interfaces:**
-- `Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Plan|Execute -ConfirmationToken <token>`；Plan输出依赖/路径/安全边界固定摘要，无创建/启动；Execute要求Plan给出的非秘密指纹，指纹绑定当前HEAD和工具hash。
-- runner自选新run目录、新PG data、四个不同loopback端口和随机nonce/secrets；不接受现有目录、PID、Docker或远端地址。
 - Wire helper从环境读API/gateway/DB本轮参数；创建4个SimulatedTerminal连接，真实0x0100后GET版本/POST activate，再0x0102和heartbeat；保持四socket直到SQL/API/lease断言和expected/results生成完成。绝不输出ReplyRecord/body/token或原始异常。
 
 - [ ] **Step 1: 写wire和总runner RED**
@@ -61,12 +58,37 @@ helper action白名单固定为MIGRATE_19、PREPARE_V20、MIGRATE_20、MIGRATE_2
 
 runner测试覆盖默认Plan零创建；非法token/非目标HEAD/预存run目录/路径逃逸/非loopback/已有端口/启动失败/超时固定安全码且无后续动作；失败后部分状态与清理证据。假进程证明调用参数/次序，不只断言mock存在。
 
+- [ ] **Step 2: 最小GREEN wire helper**
+
+实际adapter固定使用SimulatedTerminal、java.net.http和JDBC；不能接受任意URL/SQL/终端清单。所有env先与owner marker、固定四个合成terminal/vehicle映射交叉核对。合同测试用真实编排状态机与窄fake外部边界，不能只断言mock调用存在。
+
+- [ ] **Step 3: 验证与独立复核**
+
+运行Java合同和PowerShell包装测试、secret扫描、diff-check；不执行真实PG/API/gateway。实施报告独立复核后再进入1C。
+
+### Task 1C: 接通总runner、手册并执行本地演练
+
+**Files:**
+- Modify: `tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1`
+- Modify: `tools/ops-safety/p6-composite-isolation-lib.ps1`
+- Modify: `tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1`
+- Create: `docs/pilot/p6-2-local-isolation-rehearsal-runbook.md`
+
+**Interfaces:**
+- `Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Plan|Execute -ConfirmationToken <token>`；Plan只读，Execute要求同一干净HEAD与工具字节生成的指纹。
+- runner自选新run目录、新PG data、四个不同loopback端口和随机nonce/secrets；不接受调用者路径、PID、Docker或远端地址。
+- Task1A强制停止/删除合同、Flyway helper和Task1B wire helper是唯一执行依赖；不复制或弱化安全判断。
+
+- [ ] **Step 1: 写总runner生命周期RED**
+
+测试假native/Java进程的真实参数与状态文件：默认Plan零动作；token/HEAD/dirty tree/路径/marker/端口/启动/超时/部分失败均fail-closed；真实adapter读取失败不伪造空观测；只停止本轮进程。验证秘密sentinel不进stdout/stderr/安全报告。
+
 - [ ] **Step 2: 最小GREEN真实编排**
 
-runner串行执行：依赖/HEAD/hash预检→receipt→构建→新PG及两数据库→外部59→live Flyway19/精确fixture/V20/V21→API登录换密并创建/配置3车4终端→preview全表hash不变→gateway→wire helper→Task12→释放/停止/安全清理。若实际合同与预检不符停止，不改业务代码绕过。
+runner串行执行：依赖/HEAD/hash预检→receipt→构建→新PG及两数据库→external59→live Flyway19/精确fixture/V20/V21→API登录换密并创建/配置3车4终端→preview全表hash不变→gateway→wire helper→Task12→释放/停止/安全清理。若实际合同与预检不符停止，不改业务代码绕过。
 
-- [ ] **Step 3: 验证、独立复核和Execute**
+- [ ] **Step 3: 测试、复核与Execute**
 
-运行新增PowerShell/Java helper测试、Parser、secret扫描、diff-check；不执行真实Execute。实施报告经独立复核后，控制器运行Plan并在无漂移代码上Execute。成功标准保持：external59零skip、preview hash不变、四socket真实注册/激活/鉴权/heartbeat、3system/2+1+1、四live lease、Task12 ACCEPTED4、服务和端口关闭、数据/secrets精确清理。
+运行新增PowerShell测试、Parser、secret扫描、diff-check；实施报告独立复核后，控制器运行Plan并在无漂移代码上Execute。成功标准：external59零skip、preview hash不变、四socket真实注册/激活/鉴权/heartbeat、3system/2+1+1、四live lease、Task12 ACCEPTED4、服务和端口关闭、数据/secrets精确清理。
 
 最终结果独立复核后提交；不push/deploy。任何部分失败按阶段报告，不称演练成功。
