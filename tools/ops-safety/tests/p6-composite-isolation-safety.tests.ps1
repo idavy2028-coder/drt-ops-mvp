@@ -31,6 +31,15 @@ function Reject([scriptblock] $Body, [string] $Code) {
 }
 function CopyValue($Value) { return ($Value | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
 function ListenerEvidence([object[]] $Items=@()) { return [pscustomobject]@{ Succeeded=$true; Items=$Items } }
+function NativeFailurePredicate($Result,[string] $Shape,[long] $Elapsed,[int] $Deadline) {
+    $codes=@{output_limit='REHEARSAL_NATIVE_OUTPUT_LIMIT';timeout='REHEARSAL_NATIVE_TIMEOUT';exit_failure='REHEARSAL_NATIVE_EXIT_FAILED';start_failure='REHEARSAL_NATIVE_FAILED'}
+    if(-not $codes.ContainsKey($Shape) -or $Result.Status -cne 'FAILED' -or $Result.Code -cne $codes[$Shape]){return $false}
+    $exit=if($Shape -ceq 'exit_failure'){7}else{-1}
+    $characters=if($Shape -ceq 'output_limit'){65536}else{0}
+    if($Result.ExitCode -ne $exit -or $Result.OutputCharacters -ne $characters){return $false}
+    if($Shape -ceq 'timeout'){return ($Elapsed -ge $Deadline -and $Elapsed -lt ($Deadline+6000))}
+    return ($Elapsed -lt $Deadline)
+}
 function RunTestProcess([string] $Executable, [string[]] $Arguments, [int] $Timeout = 30000, [hashtable] $Environment = @{}) {
     if ($Executable -eq 'powershell.exe') { $Arguments = @('-NonInteractive','-ExecutionPolicy','Bypass') + $Arguments }
     $psi = New-Object Diagnostics.ProcessStartInfo
@@ -111,6 +120,296 @@ function InvokePgFixtureStop($Fixture,[scriptblock] $Read,[scriptblock] $Stop,[s
 }
 
 if ($Phase -cin @('All','PowerShell')) {
+    Case 'fix1_M1_winps51_json_receipt_preserves_string_created_at' {
+        Check ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -ge 1) 'TEST_HOST_NOT_WINPS51'
+        $f=Fixture;$decoded=$f.Receipt|ConvertTo-Json -Depth 20|ConvertFrom-Json
+        Check ($decoded.CreatedAt -is [string] -and $decoded.CreatedAt -ceq $f.Receipt.CreatedAt) 'JSON_CREATED_AT_TYPE_CHANGED'
+        Assert-P6Receipt $decoded $f.Parent $f.Marker | Out-Null
+    }
+    foreach($mode in @('Plan','Execute')) {
+        Case ('fix1_M1_pwsh7_refuses_before_library_'+$mode) {
+            $pwsh=(Get-Command pwsh.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+            $copy=Join-Path $testRoot ('unsupported-host-'+$mode)
+            [void][IO.Directory]::CreateDirectory($copy)
+            $runner=Join-Path $copy 'Invoke-P6CompositeIsolationRehearsal.ps1'
+            [IO.File]::Copy((Join-Path $ops 'Invoke-P6CompositeIsolationRehearsal.ps1'),$runner)
+            # 不复制lib：需要固定宿主码，不能以加载失败或Execute惰性码代替早期宿主门禁。
+            $before=@(Get-ChildItem -LiteralPath $copy -Force|ForEach-Object{$_.Name+'|'+$_.Length}) -join ','
+            $result=RunTestProcess $pwsh @('-NoProfile','-NonInteractive','-File',$runner,'-Mode',$mode,'-ConfirmationToken','SYNTHETIC_SECRET')
+            $after=@(Get-ChildItem -LiteralPath $copy -Force|ForEach-Object{$_.Name+'|'+$_.Length}) -join ','
+            Check ($result.ExitCode -eq 1 -and $result.Out.Trim() -ceq 'P6_REHEARSAL_STATUS=FAIL CODE=REHEARSAL_POWERSHELL_UNSUPPORTED ACTIONS=0' -and $result.Error -ceq '') 'HOST_NOT_REJECTED_EARLY'
+            Check ($before -ceq $after -and ($result.Out+$result.Error) -notmatch 'SECRET|[A-Z]:\\') 'UNSUPPORTED_HOST_ACTION_OR_LEAK'
+        }
+    }
+    Case 'fix1_I2_output_guard_mutation_must_fail_output_predicate' {
+        $f=Fixture;$f.Receipt.Processes=@();$held=New-Object 'Collections.Generic.List[object]'
+        $factory={param($info)
+            $info.FileName=(Get-Command powershell.exe -CommandType Application | Select-Object -First 1).Source
+            $info.Arguments='-NoProfile -NonInteractive -Command "[Console]::Out.Write((''X'' * 70000)); Start-Sleep -Seconds 20"'
+            $p=New-Object Diagnostics.Process;$p.StartInfo=$info;$held.Add($p);return $p
+        }
+        $body=(Get-Command Invoke-P6BoundedChild).ScriptBlock.ToString()
+        Check ($body.Contains('if($count -gt 65536)')) 'MUTATION_TARGET_MISSING'
+        $mutant=[scriptblock]::Create($body.Replace('if($count -gt 65536)','if($false)'))
+        $spec=Get-P6NativeToolSpec 'CREATE_LIVE_DB' $f.Receipt $f.Parent $f.Marker @{DbPassword=('Q'*40)}
+        try{
+            $timer=[Diagnostics.Stopwatch]::StartNew();$original=Invoke-P6BoundedChild $spec 5000 $factory;$timer.Stop()
+            Check (NativeFailurePredicate $original 'output_limit' $timer.ElapsedMilliseconds 5000) 'OUTPUT_GUARD_ORIGINAL_NOT_RECOGNIZED'
+            $timer.Restart();$changed=& $mutant $spec 3000 $factory;$timer.Stop()
+            Check ($changed.Code -ceq 'REHEARSAL_NATIVE_TIMEOUT') 'MUTANT_WRONG_BRANCH'
+            Check (-not (NativeFailurePredicate $changed 'output_limit' $timer.ElapsedMilliseconds 3000)) 'OUTPUT_GUARD_MUTATION_SURVIVED'
+            foreach($p in $held){Check ($p.HasExited) 'MUTATION_CHILD_STILL_ALIVE'}
+            Check (($original.Code+$changed.Code) -notmatch 'SECRET') 'MUTATION_SECRET_LEAK'
+        }finally{foreach($p in $held){if(-not $p.HasExited){$p.Kill();[void]$p.WaitForExit(5000)};$p.Dispose()}}
+    }
+    Case 'fix1_I1_actual_psi_identity_pg_identity_and_stop_seam' {
+        $f=PgFixture
+        $info=New-P6ProcessStartInfo (Get-P6PostgresStartSpec $f.Receipt $f.Parent $f.Marker)
+        $f.Observed.CommandLine='"'+$info.FileName+'" '+$info.Arguments
+        $f.Evidence.ObservedProcess=$f.Observed
+        Assert-P6ProcessIdentity $f.Receipt $f.Recorded $f.Observed | Out-Null
+        Assert-P6PgIdentity $f.Receipt $f.Recorded $f.Observed $f.Evidence.PidFileLines $f.Evidence.Listeners.Items | Out-Null
+        $calls=New-Object 'Collections.Generic.List[string]'
+        $result=Stop-P6OwnedPostgres $f.Receipt $f.Parent $f.Recorded {if($calls.Count -eq 0){$f.Evidence}else{StoppedEvidence $f}} {$calls.Add('stop')} {$true}
+        Check ($result.Status -ceq 'STOPPED' -and $calls.Count -eq 1) 'ACTUAL_PSI_STOP_SEAM_FAILED'
+    }
+    foreach($shape in @('wrong_data','duplicate_D','path_substring','concatenated_token','wrong_exe','extra_argument','unterminated_quote','embedded_option')) {
+        Case ('fix1_I1_pg_command_rejects_'+$shape) {
+            $f=PgFixture;$spec=Get-P6PostgresStartSpec $f.Receipt $f.Parent $f.Marker
+            switch($shape){
+                'wrong_data'{$spec.Arguments[1]=$f.Receipt.PgData+'-other'}
+                'duplicate_D'{$spec.Arguments+=@('-D',$f.Receipt.PgData)}
+                'wrong_exe'{$spec.FileName='C:\synthetic\other.exe'}
+                'extra_argument'{$spec.Arguments+=@('-c','listen_addresses=*')}
+                'embedded_option'{$spec.Arguments[0]='-Dextra'}
+            }
+            $info=New-P6ProcessStartInfo $spec
+            $f.Observed.CommandLine='"'+$info.FileName+'" '+$info.Arguments
+            switch($shape){
+                'path_substring'{$f.Observed.CommandLine='postgres.exe --note "'+$f.Receipt.PgData+'" -D "'+$f.Receipt.PgData+'-other" -h 127.0.0.1 -p 45431'}
+                'concatenated_token'{$f.Observed.CommandLine='postgres.exe -D "'+$f.Receipt.PgData+'""suffix" -h 127.0.0.1 -p 45431'}
+                'unterminated_quote'{$f.Observed.CommandLine='postgres.exe -D "'+$f.Receipt.PgData+'" -h 127.0.0.1 -p "45431'}
+            }
+            $f.Evidence.ObservedProcess=$f.Observed
+            Reject { Assert-P6ProcessIdentity $f.Receipt $f.Recorded $f.Observed } 'REHEARSAL_PROCESS_UNPROVEN'
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $result=Stop-P6OwnedPostgres $f.Receipt $f.Parent $f.Recorded {$f.Evidence} {$calls.Add('stop')} {$true}
+            Check ($result.Status -ceq 'RETAINED' -and $calls.Count -eq 0) 'INVALID_COMMAND_STOPPED'
+        }
+    }
+    Case 'c1_actual_pg_launch_factory_checks_arguments_and_retains_wrong_executable' {
+        $f=Fixture;$f.Receipt.Processes=@();Protect-P6RunAcl $f.Receipt.RunDirectory
+        Write-P6OwnedStorage $f.Receipt $f.Parent $f.Marker @{DbPassword=('T'*40)} | Out-Null
+        $ctx=[pscustomobject]@{Receipt=$f.Receipt;RunParent=$f.Parent;Marker=$f.Marker;Secrets=@{DbPassword=('T'*40)};Ticket=$null;Status='NEW'}
+        $seen=New-Object 'Collections.Generic.List[object]'
+        $factory={param($info)
+            Check ($info.FileName -ceq 'C:\Program Files\PostgreSQL\17\bin\postgres.exe' -and $info.Arguments -ceq ('"-D" "'+$f.Receipt.PgData+'" "-h" "127.0.0.1" "-p" "45431"')) 'ACTUAL_PG_ARGUMENTS'
+            Check ($info.CreateNoWindow -and -not $info.UseShellExecute -and -not $info.EnvironmentVariables.ContainsKey('PGPASSWORD')) 'ACTUAL_PG_ENVIRONMENT'
+            $info.FileName=(Get-Command powershell.exe -CommandType Application | Select-Object -First 1).Source
+            $info.Arguments='-NoProfile -NonInteractive -Command "[Console]::Out.Write(''SYNTHETIC_SECRET''); [Console]::Error.Write(''SYNTHETIC_SECRET''); Start-Sleep -Seconds 20"'
+            $p=New-Object Diagnostics.Process;$p.StartInfo=$info;$seen.Add($p);return $p
+        }
+        try{
+            $result=Start-P6OwnedPostgres $ctx $factory
+            Check ($seen.Count -eq 1 -and -not $result.Succeeded -and $null -ne $result.Ticket -and -not $seen[0].HasExited) 'UNPROVEN_PG_WAS_KILLED_OR_ACCEPTED'
+            $timer=[Diagnostics.Stopwatch]::StartNew()
+            while($ctx.Ticket.Drain.Count -lt 32 -and $timer.ElapsedMilliseconds -lt 5000){[Threading.Thread]::Sleep(10)}
+            Check ($ctx.Ticket.Drain.Count -eq 32 -and -not $ctx.Ticket.Drain.Failed) 'PG_STREAM_DRAIN_FAILED'
+            $disk=Get-Content -LiteralPath (Join-Path $f.Receipt.RunDirectory 'receipt.json') -Raw | ConvertFrom-Json
+            Check ($disk.Processes.Count -eq 0) 'WRONG_EXECUTABLE_REGISTERED'
+        }finally{foreach($p in $seen){if(-not $p.HasExited){$p.Kill();[void]$p.WaitForExit(5000)};$p.Dispose()}}
+    }
+    Case 'c1_atomic_receipt_append_keeps_owner_and_rejects_second_append' {
+        $f=Fixture;$record=$f.Recorded;$f.Receipt.Processes=@();Protect-P6RunAcl $f.Receipt.RunDirectory
+        Write-P6OwnedStorage $f.Receipt $f.Parent $f.Marker @{DbPassword=('T'*40)} | Out-Null
+        $ctx=[pscustomobject]@{Receipt=$f.Receipt;RunParent=$f.Parent;Marker=$f.Marker}
+        $f.Receipt.Processes=@($record)
+        Write-P6ReceiptSnapshot $ctx
+        $disk=Get-Content -LiteralPath (Join-Path $f.Receipt.RunDirectory 'receipt.json') -Raw | ConvertFrom-Json
+        Check ($disk.Processes.Count -eq 1 -and $disk.Processes[0].Pid -eq 424242) 'RECEIPT_APPEND_LOST'
+        Read-P6OwnerMarker $f.Receipt $f.Parent | Out-Null
+        Reject { Write-P6ReceiptSnapshot $ctx } 'REHEARSAL_RECEIPT_UPDATE_INVALID'
+    }
+    Case 'c1_actual_native_stop_and_ready_refuse_missing_held_ticket' {
+        Check ($null -ne (Get-Command Get-P6NativeBoundary -ErrorAction SilentlyContinue)) 'ACTUAL_NATIVE_BOUNDARY_MISSING'
+        $f=Fixture;$f.Receipt.Processes=@()
+        $ctx=[pscustomobject]@{Receipt=$f.Receipt;RunParent=$f.Parent;Marker=$f.Marker;Secrets=@{DbPassword=('S'*40)};Ticket=$null;Status='NEW'}
+        $boundary=Get-P6NativeBoundary
+        Check ((& $boundary.Stop $ctx).Status -ceq 'RETAINED') 'NO_HANDLE_STOP_ALLOWED'
+        Reject { & $boundary.Ready $ctx } 'REHEARSAL_PG_UNPROVEN'
+        Reject { Invoke-P6BoundedNativeTool 'PG_STOP' $f.Receipt $f.Parent $f.Marker $ctx.Secrets } 'REHEARSAL_NATIVE_ACTION_INVALID'
+    }
+    Case 'c1_actual_pg_foreground_spec_has_no_secret_or_arbitrary_endpoint' {
+        Check ($null -ne (Get-Command Get-P6PostgresStartSpec -ErrorAction SilentlyContinue)) 'PG_START_SPEC_MISSING'
+        $f=Fixture;$spec=Get-P6PostgresStartSpec $f.Receipt $f.Parent $f.Marker
+        Check ($spec.FileName -ceq 'C:\Program Files\PostgreSQL\17\bin\postgres.exe' -and ($spec.Arguments -join ',') -ceq ('-D,'+$f.Receipt.PgData+',-h,127.0.0.1,-p,45431')) 'PG_START_ARGS_WRONG'
+        Check ($spec.WorkingDirectory -ceq $f.Receipt.RunDirectory -and -not $spec.Environment.ContainsKey('PGPASSWORD')) 'PG_START_SECRET_OR_CWD'
+    }
+    foreach($shape in @('success','INITDB','START','READY','CREATE_MIGRATION_DB','CREATE_LIVE_DB','PG_PROBE','STOP')) {
+        Case ('c1_pg_lifecycle_'+$shape) {
+            Check ($null -ne (Get-Command Start-P6NativeCluster -ErrorAction SilentlyContinue)) 'PG_LIFECYCLE_MISSING'
+            $f=Fixture;$f.Receipt.Processes=@();$events=New-Object 'Collections.Generic.List[string]'
+            $context=[pscustomobject]@{Receipt=$f.Receipt;RunParent=$f.Parent;Marker=$f.Marker;Secrets=@{DbPassword=('S'*40)};Ticket=$null;Status='NEW'}
+            $boundary=@{
+                Tool={param($action,$ctx) $events.Add($action); if($shape -ceq $action){return [pscustomobject]@{Status='FAILED'}}; [pscustomobject]@{Status='EXITED'}}
+                Start={param($ctx) $events.Add('START');$ticket=[pscustomobject]@{Owned=$true};[pscustomobject]@{Succeeded=($shape -cne 'START');Ticket=$ticket}}
+                Ready={param($ctx) $events.Add('READY'); if($shape -ceq 'READY'){throw 'SYNTHETIC_SECRET'};return $true}
+                Stop={param($ctx) $events.Add('STOP');[pscustomobject]@{Status=$(if($shape -ceq 'STOP'){'RETAINED'}else{'STOPPED'});Code='REHEARSAL_STOP_CONFIRMED'}}
+            }
+            $result=Start-P6NativeCluster $context $boundary
+            if($shape -cin @('success','STOP')){
+                Check ($result.Status -ceq 'READY' -and ($events -join ',') -ceq 'INITDB,START,READY,CREATE_MIGRATION_DB,CREATE_LIVE_DB,PG_PROBE') 'PG_ORDER_WRONG'
+                $stop=Stop-P6NativeCluster $context $boundary
+                Check ($stop.Status -ceq $(if($shape -eq 'STOP'){'RETAINED'}else{'STOPPED'})) 'PG_STOP_RESULT_WRONG'
+            }else{
+                Check ($result.Status -ceq 'FAILED' -and $result.Stage -ceq $shape) 'PG_FAILURE_NOT_BOUNDED'
+                $expected=@('INITDB','START','READY','CREATE_MIGRATION_DB','CREATE_LIVE_DB','PG_PROBE')
+                $stopIndex=[array]::IndexOf($expected,$shape)
+                $want=@($expected[0..$stopIndex]);if($shape -cne 'INITDB'){$want+=,'STOP'}
+                Check (($events -join ',') -ceq ($want -join ',')) 'PG_FAILURE_CONTINUED'
+                Check (($result|ConvertTo-Json -Depth 5) -notmatch 'SECRET|[A-Z]:\\') 'PG_LIFECYCLE_LEAK'
+            }
+        }
+    }
+    Case 'c1_native_short_root_and_long_path_refusal' {
+        Check ($null -ne (Get-Command Get-P6NativeRunParent -ErrorAction SilentlyContinue)) 'SHORT_ROOT_MISSING'
+        Check ((Get-P6NativeRunParent $repo) -ceq (Join-Path $repo '.tmp/p6iso')) 'SHORT_ROOT_WRONG'
+        Reject { Assert-P6NativePathLength ('D:\'+('a'*238)) } 'REHEARSAL_PATH_TOO_LONG'
+        Assert-P6NativePathLength ('D:\'+('a'*237))
+    }
+    Case 'c1_held_handle_requires_original_process_and_independent_identity' {
+        Check ($null -ne (Get-Command Assert-P6LaunchEvidence -ErrorAction SilentlyContinue)) 'HELD_HANDLE_MISSING'
+        $info=New-Object Diagnostics.ProcessStartInfo
+        $info.FileName=(Get-Command powershell.exe -CommandType Application | Select-Object -First 1).Source
+        $info.Arguments='-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 20"';$info.WorkingDirectory=$testRoot;$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+        $p=New-Object Diagnostics.Process;$p.StartInfo=$info;[void]$p.Start()
+        try{
+            $start=([DateTimeOffset]$p.StartTime.ToUniversalTime()).ToString('o')
+            $record=[pscustomobject]@{Pid=$p.Id;StartTimeUtc=$start;ExecutablePath=$p.MainModule.FileName;WorkingDirectory=$testRoot}
+            $observed=[pscustomobject]@{Pid=$p.Id;StartTimeUtc=$start;ExecutablePath=$p.MainModule.FileName;CommandLine='synthetic'}
+            $launch=[pscustomobject]@{Process=$p;WorkingDirectory=$testRoot;StartTicks=$p.StartTime.ToUniversalTime().Ticks}
+            Assert-P6LaunchEvidence $record $observed $launch
+            Reject { Assert-P6LaunchEvidence $record $observed $null } 'REHEARSAL_LAUNCH_UNPROVEN'
+            $record.WorkingDirectory=$repo
+            Reject { Assert-P6LaunchEvidence $record $observed $launch } 'REHEARSAL_LAUNCH_UNPROVEN'
+            $record.WorkingDirectory=$testRoot;$observed.StartTimeUtc=[DateTimeOffset]::UtcNow.AddHours(-1).ToString('o')
+            Reject { Assert-P6LaunchEvidence $record $observed $launch } 'REHEARSAL_LAUNCH_UNPROVEN'
+            $observed.StartTimeUtc=$start;$observed.Pid=$p.Id+1
+            Reject { Assert-P6LaunchEvidence $record $observed $launch } 'REHEARSAL_LAUNCH_UNPROVEN'
+        }finally{if(-not $p.HasExited){$p.Kill();[void]$p.WaitForExit(5000)};$p.Dispose()}
+    }
+    Case 'c1_storage_private_atomic_owner_receipt_secret_and_no_overwrite' {
+        Check ($null -ne (Get-Command Write-P6OwnedStorage -ErrorAction SilentlyContinue)) 'OWNED_STORAGE_MISSING'
+        $f=Fixture;$f.Receipt.Processes=@()
+        Protect-P6RunAcl $f.Receipt.RunDirectory
+        $result=Write-P6OwnedStorage $f.Receipt $f.Parent $f.Marker @{DbPassword=('R'*40)}
+        Assert-P6PrivateAcl $f.Receipt.RunDirectory
+        Assert-P6PrivateAcl (Join-Path $f.Receipt.RunDirectory 'secrets')
+        $owner=Read-P6OwnerMarker $f.Receipt $f.Parent
+        Check ($owner.RunDirectory -ceq $f.Receipt.RunDirectory -and $owner.OwnerNonce -ceq $f.Marker.OwnerNonce) 'OWNER_ROUNDTRIP_FAILED'
+        $receipt=Get-Content -LiteralPath (Join-Path $f.Receipt.RunDirectory 'receipt.json') -Raw | ConvertFrom-Json
+        Check ($receipt.RunId -ceq $f.Receipt.RunId -and $receipt.Processes.Count -eq 0) 'ATOMIC_RECEIPT_FAILED'
+        Check ([IO.File]::ReadAllText((Join-Path $f.Receipt.RunDirectory 'secrets/pg-password.txt')) -ceq ('R'*40)) 'SECRET_CONTENT_FAILED'
+        Check (($result|ConvertTo-Json) -notmatch ('R'*40)) 'STORAGE_REPORT_SECRET'
+        Reject { Write-P6OwnedStorage $f.Receipt $f.Parent $f.Marker @{DbPassword=('R'*40)} } 'REHEARSAL_STORAGE_EXISTS'
+    }
+    Case 'c1_storage_rejects_unprotected_acl_and_marker_drift' {
+        Check ($null -ne (Get-Command Write-P6OwnedStorage -ErrorAction SilentlyContinue)) 'OWNED_STORAGE_MISSING'
+        $f=Fixture;$f.Receipt.Processes=@()
+        Reject { Write-P6OwnedStorage $f.Receipt $f.Parent $f.Marker @{DbPassword=('R'*40)} } 'REHEARSAL_ACL_UNPROVEN'
+        Check (-not (Test-Path -LiteralPath (Join-Path $f.Receipt.RunDirectory 'owner.properties'))) 'UNPROTECTED_SECRET_WRITTEN'
+        Protect-P6RunAcl $f.Receipt.RunDirectory
+        Write-P6OwnedStorage $f.Receipt $f.Parent $f.Marker @{DbPassword=('R'*40)} | Out-Null
+        $f.Receipt.OwnerNonce='b'*64
+        Reject { Read-P6OwnerMarker $f.Receipt $f.Parent } 'REHEARSAL_OWNER_UNPROVEN'
+    }
+    Case 'c1_bounded_native_actual_child_parameters_streams_and_environment' {
+        Check ($null -ne (Get-Command Invoke-P6BoundedNativeTool -ErrorAction SilentlyContinue)) 'BOUNDED_NATIVE_MISSING'
+        $f=Fixture;$f.Receipt.Processes=@();$seen=New-Object 'Collections.Generic.List[object]'
+        $factory={param($info)
+            $seen.Add([pscustomobject]@{File=$info.FileName;Args=$info.Arguments;NoWindow=$info.CreateNoWindow;Shell=$info.UseShellExecute;Env=@($info.EnvironmentVariables.Keys)})
+            Check ($info.EnvironmentVariables['PGPASSWORD'] -ceq ('Q'*40)) 'CHILD_PASSWORD_MISSING'
+            $info.FileName=(Get-Command powershell.exe -CommandType Application | Select-Object -First 1).Source
+            $info.Arguments='-NoProfile -NonInteractive -Command "[Console]::Out.Write(''SYNTHETIC_SECRET''); [Console]::Error.Write(''SYNTHETIC_SECRET''); exit 0"'
+            $p=New-Object Diagnostics.Process;$p.StartInfo=$info;return $p
+        }
+        $result=Invoke-P6BoundedNativeTool 'CREATE_LIVE_DB' $f.Receipt $f.Parent $f.Marker @{DbPassword=('Q'*40)} 10000 $factory
+        Check ($result.Status -ceq 'EXITED' -and $result.ExitCode -eq 0 -and $result.OutputCharacters -eq 32) 'BOUNDED_CHILD_RESULT'
+        Check ($seen.Count -eq 1 -and $seen[0].NoWindow -and -not $seen[0].Shell -and $seen[0].Args -ceq '"-h" "127.0.0.1" "-p" "45431" "-U" "composite" "--no-password" "composite_live"') 'BOUNDED_CHILD_ARGUMENTS'
+        Check (@($seen[0].Env | Where-Object { $_ -match '^(DRT_|JT_|JAVA_|GIT_|HTTP_PROXY|HTTPS_PROXY)' }).Count -eq 0) 'CHILD_INHERITED_CONFIG'
+        Check (($result|ConvertTo-Json) -notmatch 'SECRET|[A-Z]:\\') 'CHILD_OUTPUT_LEAK'
+    }
+    foreach($shape in @('timeout','output_limit','exit_failure','start_failure')) {
+        Case ('c1_bounded_native_'+$shape) {
+            Check ($null -ne (Get-Command Invoke-P6BoundedNativeTool -ErrorAction SilentlyContinue)) 'BOUNDED_NATIVE_MISSING'
+            $f=Fixture;$f.Receipt.Processes=@();$held=New-Object 'Collections.Generic.List[object]'
+            $factory={param($info)
+                if($shape -eq 'start_failure'){throw 'SYNTHETIC_SECRET'}
+                $info.FileName=(Get-Command powershell.exe -CommandType Application | Select-Object -First 1).Source
+                $body=switch($shape){'timeout'{'Start-Sleep -Seconds 20'};'output_limit'{"[Console]::Out.Write(('X' * 70000)); Start-Sleep -Seconds 20"};default{'exit 7'}}
+                $info.Arguments='-NoProfile -NonInteractive -Command "'+$body+'"';$p=New-Object Diagnostics.Process;$p.StartInfo=$info;$held.Add($p);return $p
+            }
+            $deadline=if($shape -eq 'timeout'){500}else{10000}
+            $timer=[Diagnostics.Stopwatch]::StartNew()
+            $result=Invoke-P6BoundedNativeTool 'CREATE_LIVE_DB' $f.Receipt $f.Parent $f.Marker @{DbPassword=('Q'*40)} $deadline $factory
+            $timer.Stop()
+            Check (NativeFailurePredicate $result $shape $timer.ElapsedMilliseconds $deadline) 'CHILD_FAILURE_WRONG_BRANCH'
+            Check (($result|ConvertTo-Json) -notmatch 'SECRET|[A-Z]:\\') 'CHILD_FAILURE_LEAK'
+            foreach($p in $held){Check ($p.HasExited) 'CHILD_REMAINED_ALIVE';$p.Dispose()}
+        }
+    }
+    Case 'c1_native_specs_are_fixed_loopback_and_secret_env_only' {
+        $f=Fixture; $f.Receipt.Processes=@()
+        $secrets=@{ DbPassword=('Q'*40) }
+        foreach ($action in @('INITDB','CREATE_MIGRATION_DB','CREATE_LIVE_DB','PG_STOP','PG_PROBE')) {
+            $spec=Get-P6NativeToolSpec $action $f.Receipt $f.Parent $f.Marker $secrets
+            Check ($spec.FileName -like 'C:\Program Files\PostgreSQL\17\bin\*.exe' -and $spec.WorkingDirectory -ceq $f.Receipt.RunDirectory) 'NATIVE_PATH_WRONG'
+            Check ($spec.Arguments -notmatch ('Q'*40) -and $spec.Environment.PGPASSWORD -ceq ('Q'*40)) 'NATIVE_SECRET_ARGUMENT'
+            if($action -eq 'CREATE_LIVE_DB'){Check (($spec.Arguments -join ' ') -ceq '-h 127.0.0.1 -p 45431 -U composite --no-password composite_live') 'NATIVE_DB_ARGUMENTS'}
+            if($action -eq 'PG_STOP'){Check (($spec.Arguments -join ' ') -ceq ('-D '+$f.Receipt.PgData+' -m fast -w -t 5 stop')) 'NATIVE_STOP_ARGUMENTS'}
+        }
+        Reject { Get-P6NativeToolSpec 'DROP_DATABASE' $f.Receipt $f.Parent $f.Marker $secrets } 'REHEARSAL_NATIVE_ACTION_INVALID'
+    }
+    Case 'c1_native_system_reads_fail_closed_not_empty' {
+        foreach($kind in @('LISTENERS','PROCESS')) {
+            Reject { Read-P6SystemObservation $kind 424242 { throw 'SYNTHETIC_SECRET' } } 'REHEARSAL_SYSTEM_OBSERVATION_FAILED'
+            Reject { Read-P6SystemObservation $kind 424242 { [pscustomobject]@{ wrong='shape' } } } 'REHEARSAL_SYSTEM_OBSERVATION_FAILED'
+        }
+        $listeners=Read-P6SystemObservation 'LISTENERS' 0 { @() }
+        Check ($listeners.Succeeded -and $listeners.Items.Count -eq 0) 'EMPTY_LISTENER_SUCCESS_MISSING'
+        $process=Read-P6SystemObservation 'PROCESS' 424242 { @() }
+        Check ($process.ObservationSucceeded -and -not $process.Exists) 'ABSENCE_NOT_EXPLICIT'
+    }
+    Case 'c1_native_system_reads_preserve_actual_fields_without_cwd_fabrication' {
+        $row=[pscustomobject]@{ ProcessId=424242; CreationDate=[datetime]::UtcNow.AddSeconds(-5); ExecutablePath='C:\Program Files\PostgreSQL\17\bin\postgres.exe'; CommandLine='postgres.exe -D synthetic' }
+        $result=Read-P6SystemObservation 'PROCESS' 424242 { $row }
+        Check ($result.Exists -and $result.Process.Pid -eq 424242 -and $result.Process.CommandLine -ceq $row.CommandLine -and $null -eq $result.Process.PSObject.Properties['WorkingDirectory']) 'PROCESS_OBSERVATION_FABRICATED'
+        $listener=Read-P6SystemObservation 'LISTENERS' 0 { [pscustomobject]@{ LocalAddress='127.0.0.1'; LocalPort=45431; OwningProcess=424242 } }
+        Check ($listener.Items.Count -eq 1 -and $listener.Items[0].ObservationSucceeded) 'LISTENER_OBSERVATION_LOST'
+    }
+    Case 'c1_plan_current_head_and_dirty_snapshot_are_reported' {
+        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=' M tracked-file'; ToolFilesCommitted=$true }
+        $plan=Get-P6IsolationPlan $repo $state
+        Check ($plan.Head -ceq $state.Head -and -not $plan.CleanTracked -and -not $plan.Executable) 'DYNAMIC_DIRTY_PLAN_MISSING'
+        Reject { Assert-P6ExecutionSnapshot $plan $plan.Fingerprint } 'REHEARSAL_WORKTREE_DIRTY'
+    }
+    Case 'c1_plan_next_commit_changes_confirmation_without_parent_pin' {
+        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=''; ToolFilesCommitted=$true }
+        $first=Get-P6IsolationPlan $repo $state
+        $state.Head='b4e0a3a489810dbc59af836c759ad3fb0b470808'
+        $second=Get-P6IsolationPlan $repo $state
+        Check ($second.CleanTracked -and $second.ToolFilesCommitted -and $first.Fingerprint -cne $second.Fingerprint) 'DYNAMIC_HEAD_NOT_BOUND'
+        Reject { Assert-P6ExecutionSnapshot $second $first.Fingerprint } 'REHEARSAL_CONFIRMATION_INVALID'
+        Assert-P6ExecutionSnapshot $second $second.Fingerprint
+    }
+    Case 'c1_plan_uncommitted_tools_and_missing_clean_evidence_refuse_execution' {
+        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=''; ToolFilesCommitted=$false }
+        $plan=Get-P6IsolationPlan $repo $state
+        Reject { Assert-P6ExecutionSnapshot $plan $plan.Fingerprint } 'REHEARSAL_TOOLS_UNCOMMITTED'
+        $state.PSObject.Properties.Remove('TrackedStatus')
+        $plan=Get-P6IsolationPlan $repo $state
+        Check (-not $plan.CleanTracked -and -not $plan.Executable) 'UNKNOWN_CLEANNESS_ACCEPTED'
+    }
     foreach ($shape in @('receipt_schema','marker_drift','wrong_parent','pidfile_data','pidfile_epoch','wildcard_listener','empty_listeners','failed_evidence','string_success','missing_marker','missing_pidfile','missing_listeners','failed_listener_query','malformed_listener')) {
         Case ('fix1_I3_pg_rejects_'+$shape) {
             $f=PgFixture
@@ -570,12 +869,33 @@ if ($Phase -cin @('All','Wire')) {
     $javac='C:\Program Files\Java\jdk-21.0.10\bin\javac.exe'
     $java='C:\Program Files\Java\jdk-21.0.10\bin\java.exe'
     $wireClasspath=$testRoot+';'+$wireLib+'/*;'+(Join-Path $repo 'tools/jt-terminal-simulator/target/classes')+';'+(Join-Path $repo 'libs/jt-protocol/target/classes')
-    $compile=RunTestProcess $javac @('-encoding','UTF-8','-cp',$wireClasspath,'-d',$testRoot,(Join-Path $ops 'fixtures/P6CompositeWireHarness.java'),(Join-Path $ops 'fixtures/P6CompositeWireHarnessContractTest.java'))
+    $wireCompileTimer=[Diagnostics.Stopwatch]::StartNew()
+    try {
+        $compile=RunTestProcess $javac @('-encoding','UTF-8','-cp',$wireClasspath,'-d',$testRoot,(Join-Path $ops 'fixtures/P6CompositeWireHarness.java'),(Join-Path $ops 'fixtures/P6CompositeWireHarnessContractTest.java')) 60000
+    } finally {
+        $wireCompileTimer.Stop()
+        [Console]::Out.WriteLine(('P6_TEST_TIMING STAGE=WIRE_JAVAC ELAPSED_MS={0} DEADLINE_MS=60000' -f $wireCompileTimer.ElapsedMilliseconds))
+    }
     Check ($compile.ExitCode -eq 0) 'WIRE_COMPILE_INFRASTRUCTURE_FAILED'
     Case 'java_wire_contract_suite' {
-        $r=RunTestProcess $java @(('-Dwire.test.root='+$testRoot),'-cp',$wireClasspath,'P6CompositeWireHarnessContractTest') 60000
-        [Console]::Out.Write($r.Out)
-        Check ($r.ExitCode -eq 0 -and $r.Error -eq '') 'WIRE_CONTRACT_FAILED'
+        $wireTotal=0
+        foreach($group in @([pscustomobject]@{Name='CORE';Count=63},[pscustomobject]@{Name='ONBOARD';Count=6},[pscustomobject]@{Name='ADAPTERS';Count=19})) {
+            $wireJavaTimer=[Diagnostics.Stopwatch]::StartNew()
+            try {
+                $r=RunTestProcess $java @(('-Dwire.test.root='+$testRoot),'-cp',$wireClasspath,'P6CompositeWireHarnessContractTest',$group.Name) 60000
+            } finally {
+                $wireJavaTimer.Stop()
+                [Console]::Out.WriteLine(('P6_TEST_TIMING STAGE=WIRE_JAVA_{0} ELAPSED_MS={1} DEADLINE_MS=60000' -f $group.Name,$wireJavaTimer.ElapsedMilliseconds))
+            }
+            [Console]::Out.Write($r.Out)
+            Check ($r.ExitCode -eq 0 -and $r.Error -eq '') 'WIRE_CONTRACT_FAILED'
+            $summary=[regex]::Matches($r.Out,('(?m)^P6_WIRE_GROUP GROUP='+$group.Name+' TOTAL=(\d+) PASSED=(\d+) FAILED=(\d+)\r?$'))
+            Check ($summary.Count -eq 1) 'WIRE_GROUP_SUMMARY_MISSING'
+            Check ([int]$summary[0].Groups[1].Value -eq $group.Count -and [int]$summary[0].Groups[2].Value -eq $group.Count -and [int]$summary[0].Groups[3].Value -eq 0) 'WIRE_GROUP_COVERAGE_INVALID'
+            $wireTotal+=[int]$summary[0].Groups[1].Value
+        }
+        Check ($wireTotal -eq 88) 'WIRE_TOTAL_COVERAGE_INVALID'
+        [Console]::Out.WriteLine('P6_WIRE_TESTS TOTAL=88 PASSED=88 FAILED=0')
     }
     Case 'java_wire_main_refuses_args_and_suppresses_secret' {
         $r=RunTestProcess $java @('-cp',$wireClasspath,'P6CompositeWireHarness','SYNTHETIC_SECRET_DO_NOT_LOG')

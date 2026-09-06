@@ -4,7 +4,7 @@
 
 **Goal:** 在不使用Docker、真实private或云端的情况下，以PG17/PostGIS、最新API/gateway和四个真实loopback TCP连接完成2+1+1复合车载系统演练。
 **Architecture:** 版本化PowerShell runner负责本轮资源所有权、迁移/服务生命周期和安全证据；两个外部Java helper负责Flyway分阶段迁移及注册→管理API激活→鉴权→lease读回。Task12仅在上游真实wire/API/DB断言后校验四项结构。
-**Tech Stack:** PowerShell 7、Java21、Maven3.9.11、PostgreSQL17.9/PostGIS、Spring Boot、Netty/JT808。
+**Tech Stack:** Windows PowerShell 5.1、Java21、Maven3.9.11、PostgreSQL17.9/PostGIS、Spring Boot、Netty/JT808。
 **Spec:** `.superpowers/sdd/2026-09-05-p6-2-ops-task10-exception-gates/isolated-rehearsal-preflight.md`（只读预检）及Task11/Task12安全手册。
 
 ## Global Constraints
@@ -17,6 +17,7 @@
 - 默认Mode=Plan且无副作用；Execute必须显式提供本轮确认token。任何检查失败立即停止，不继续业务步骤、不自动重试破坏性动作。
 - secrets只放进本轮进程环境/受限临时文件，不输出到控制台、公开报告、命令摘要、JSON结果或完整子进程参数。安全报告仅别名、计数、状态、版本/hash。
 - 原生进程调用必须有界；Java服务Start-Process/ProcessStartInfo隐藏窗口并记录PID/StartTime/ExecutablePath。本轮外进程不按name/port停止。
+- runner只支持已验证的Windows PowerShell 5.1；其他宿主在读取receipt或创建资源前固定拒绝，不自动兼容PowerShell 7的JSON日期类型变化。
 - 清理精确验证run root、owner marker、PID+StartTime+ExecutablePath、PG data/postmaster；无法证明停止则保留目录并报告，不递归删除。删除只在验证后的本轮run子目录。
 
 ### Task 1A: 建立资源安全库和固定Flyway helper
@@ -68,15 +69,20 @@ runner测试覆盖默认Plan零创建；非法token/非目标HEAD/预存run目�
 
 ### Task 1C: 接通总runner、手册并执行本地演练
 
+Task1C实现基线：`a4e0a3a489810dbc59af836c759ad3fb0b470808`。Plan可在开发期报告当前HEAD与工具字节，但Execute必须在runner代码提交后的干净工作树、同一branch/root/工具字节和匹配token上运行；不得硬编码父提交造成提交后不可执行。
+
 **Files:**
 - Modify: `tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1`
 - Modify: `tools/ops-safety/p6-composite-isolation-lib.ps1`
+- Modify: `tools/ops-safety/fixtures/P6CompositeWireHarness.java`
+- Modify: `tools/ops-safety/fixtures/P6CompositeWireHarnessContractTest.java`
 - Modify: `tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1`
 - Create: `docs/pilot/p6-2-local-isolation-rehearsal-runbook.md`
 
 **Interfaces:**
 - `Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Plan|Execute -ConfirmationToken <token>`；Plan只读，Execute要求同一干净HEAD与工具字节生成的指纹。
 - runner自选新run目录、新PG data、四个不同loopback端口和随机nonce/secrets；不接受调用者路径、PID、Docker或远端地址。
+- 真实运行目录固定为短路径 `<repo>\.tmp\p6iso\native-<RunId>`，最长生成路径不超过240字符；SDD目录只保留安全证据。原子临时文件在目标同目录用短随机叶名，不使用长嵌套stage。
 - Task1A强制停止/删除合同、Flyway helper和Task1B wire helper是唯一执行依赖；不复制或弱化安全判断。
 
 - [ ] **Step 1: 写总runner生命周期RED**

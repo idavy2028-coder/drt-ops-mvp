@@ -94,6 +94,63 @@ public final class P6CompositeWireHarnessContractTest {
         Properties p=owner(e);p.remove("PgPort");p.setProperty("ApiPort","45432");p.setProperty("GatewayTcpPort","45433");p.setProperty("GatewayInstance",e.get("P6_REHEARSAL_GATEWAY_INSTANCE"));
         for(int i=0;i<3;i++)p.setProperty("Vehicle"+(char)('A'+i)+"Id",VEHICLES.get(i).toString());return p;
     }
+    // M1: retain the real run/finally and HTTP parser; only wire/JDBC are synthetic.
+    static void onboardHttpTests() throws Exception {
+        for(String shape:List.of("valid","membership","capability","unauthenticated","roles","profile")) test("http_onboard_actual_parser_"+shape,()->{
+            HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+            List<String> requests=Collections.synchronizedList(new ArrayList<>());
+            var json=new com.fasterxml.jackson.databind.ObjectMapper();
+            Fake f=new Fake() {
+                P6CompositeWireHarness.Live live;
+                public void onboard(int i,P6CompositeWireHarness.Mapping mapping) {
+                    super.onboard(i,mapping);
+                    try {
+                        if(live==null)live=new P6CompositeWireHarness.Live(new P6CompositeWireHarness.Config(directory(),"http://127.0.0.1:"+server.getAddress().getPort(),45433,"","","synthetic.token.signature","rehearsal-test",VEHICLES,START));
+                        live.onboard(i,mapping);
+                    } catch(RuntimeException e){throw e;} catch(Exception e){throw new IllegalStateException(e);}
+                }
+            };
+            server.createContext("/",x->{
+                try {
+                    String route=x.getRequestURI().getPath();requests.add(x.getRequestMethod()+" "+route);
+                    check(x.getRequestMethod().equals("GET")&&"Bearer synthetic.token.signature".equals(x.getRequestHeaders().getFirst("Authorization")),"ONBOARD_HTTP_CONTRACT");
+                    var data=json.createObjectNode();
+                    if(route.startsWith("/api/terminals/")) {
+                        int i=Integer.parseInt(route.substring(route.length()-1))-1;
+                        var m=f.mappings.get(i);var member=data.putObject("currentOnboardMembership");
+                        member.put("onboardSystemId",(shape.equals("membership")?id(99):m.system()).toString());
+                        member.put("vehicleId",m.vehicle().toString());member.put("status","ACTIVE");
+                    } else {
+                        int v=VEHICLES.indexOf(UUID.fromString(route.substring("/api/onboard-systems/".length())));
+                        check(v>=0,"ONBOARD_WRONG_ROUTE");data.put("onboardSystemId",id(21+v).toString());data.put("vehicleId",VEHICLES.get(v).toString());
+                        data.put("status","ACTIVE");data.put("operatingMode",v==1?"SAFETY_MONITOR_ONLY":"DISPATCH_SERVICE");
+                        var devices=data.putArray("devices");
+                        for(int i:(v==0?new int[]{0,1}:new int[]{v+1})) {
+                            boolean video=i==1||i==2;var d=devices.addObject();
+                            // Independent literal alias policy is the API contract: SHA256(UUID) first 12.
+                            String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(id(i+1).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                            d.put("deviceAlias","device-"+hash.substring(0,12));d.put("currentlyAuthenticated",!shape.equals("unauthenticated"));d.put("terminalStatus","ACTIVE");d.put("networkMode","DIRECT_CELLULAR");
+                            var roles=d.putArray("roles");for(String r:(i==1?List.of("VIDEO","LOCATION_BACKUP"):i==2?List.of("VIDEO","LOCATION_PRIMARY","WAN_UPLINK"):List.of("DISPATCH","LOCATION_PRIMARY","WAN_UPLINK")))roles.add(r);
+                            if(shape.equals("roles"))roles.removeAll();
+                            var p=d.putObject("protocolProfiles");p.put("transportProfile","JT808_2013");p.put("businessProfile",video?"NONE":"VENDOR_DISPATCH");p.put("safetyProfile","NONE");p.put("mediaProfile",video?"JT1078_2016":"NONE");p.put("activePositionIntervalSeconds",shape.equals("profile")?11:10);p.put("idlePositionIntervalSeconds",60);
+                            var capabilities=d.putArray("verifiedCapabilities");capabilities.add("JT808_LOCATION");if(!shape.equals("capability"))capabilities.add(video?"VIDEO":"VENDOR_DISPATCH");
+                            d.put("lastRegisteredAt",START.plusSeconds(1).toString());d.put("lastAuthenticatedAt",START.plusSeconds(1).toString());
+                        }
+                    }
+                    var envelope=json.createObjectNode();envelope.set("data",data);byte[] bytes=json.writeValueAsBytes(envelope);x.sendResponseHeaders(200,bytes.length);x.getResponseBody().write(bytes);
+                } catch(Exception e){throw new IOException("FIXTURE_FAILED");} finally{x.close();}
+            });server.start();
+            Path output=directory();
+            try {
+                var result=run(f,output);
+                check(result.passed()==shape.equals("valid"),"ONBOARD_PARSER_RESULT");
+                check(Arrays.equals(f.open,new boolean[4]),"ONBOARD_FAILURE_NOT_CLOSED");
+                check(Files.exists(output.resolve("acceptance"))==shape.equals("valid"),"ONBOARD_FAILURE_PUBLISHED");
+                if(shape.equals("valid"))check(requests.size()==8&&requests.get(0).equals("GET /api/terminals/SYN0001")&&requests.get(7).equals("GET /api/onboard-systems/"+VEHICLES.get(2)),"ONBOARD_ROUTES_MISSING");
+                else check(!f.events.contains("evidence")&&f.events.subList(f.events.size()-4,f.events.size()).equals(List.of("close3","close2","close1","close0")),"ONBOARD_FAILURE_CONTINUED");
+            } finally{server.stop(0);}
+        });
+    }
     static void adapterTests() throws Exception {
         test("environment_owned_fixed_endpoints",()->{
             Map<String,String> e=environment(directory());
@@ -255,6 +312,12 @@ public final class P6CompositeWireHarnessContractTest {
         out.write(encoded.toByteArray());out.flush();
     }
     public static void main(String[] args) throws Exception {
+        String group=args.length==0?"ALL":args.length==1?args[0]:"INVALID";
+        if(!List.of("ALL","CORE","ONBOARD","ADAPTERS").contains(group)) {
+            System.out.println("P6_WIRE_GROUP_INVALID");System.exit(2);return;
+        }
+        // 固定互斥分区：原core 63、HTTP onboard 6、其余adapter 19；无参仍按原顺序全跑88。
+        if(group.equals("ALL")||group.equals("CORE")) {
         test("success_exact_order_and_atomic_files",()->{
             Fake f=new Fake();Path p=directory();var result=run(f,p);
             check(result.passed(),"WIRE_STATE_MACHINE_MISSING");
@@ -307,8 +370,13 @@ public final class P6CompositeWireHarnessContractTest {
             check(!r.passed()&&!Files.exists(p.resolve("acceptance")),"CLOSE_FAILURE_PUBLISHED_PASS");
             check(Arrays.equals(f.open,new boolean[4])&&f.events.contains("close0"),"CLOSE_FAILURE_LEAK");
         });
-        adapterTests();
-        System.out.println("P6_WIRE_TESTS TOTAL="+total+" PASSED="+passed+" FAILED="+(total-passed));
+        }
+        if(group.equals("ALL")||group.equals("ONBOARD"))onboardHttpTests();
+        if(group.equals("ALL")||group.equals("ADAPTERS"))adapterTests();
+        int expected=switch(group){case "CORE"->63;case "ONBOARD"->6;case "ADAPTERS"->19;default->88;};
+        if(total!=expected){System.out.println("P6_WIRE_GROUP_COVERAGE_INVALID");System.exit(2);return;}
+        String prefix=group.equals("ALL")?"P6_WIRE_TESTS":"P6_WIRE_GROUP GROUP="+group;
+        System.out.println(prefix+" TOTAL="+total+" PASSED="+passed+" FAILED="+(total-passed));
         System.exit(total==passed?0:1);
     }
 }
