@@ -311,9 +311,29 @@ public final class P6CompositeWireHarnessContractTest {
         finally{decoder.finishAndReleaseAll();}
         out.write(encoded.toByteArray());out.flush();
     }
+    static void directoryContractTests() {
+        for(String shape:List.of("short","old","wrong_run","too_long","generated_240","generated_241"))test("c2_D1_directory_"+shape,()->{
+            Path base=Path.of("D:/synthetic-repo");
+            String run="1".repeat(32);
+            Path p=base.resolve(".tmp/p6iso/native-"+run);
+            if(shape.equals("old"))p=base.resolve(".superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/native-"+run);
+            if(shape.equals("wrong_run"))p=base.resolve(".tmp/p6iso/native-"+"2".repeat(32));
+            if(shape.equals("too_long"))p=base.resolve("a".repeat(200)).resolve(".tmp/p6iso/native-"+run);
+            if(shape.startsWith("generated_")) {
+                int budget=shape.equals("generated_240")?240:241;
+                int padding=budget-base.resolve("x/.tmp/p6iso/native-"+run+"/.wire-stage/expected.json").toString().length()+1;
+                p=base.resolve("a".repeat(padding)).resolve(".tmp/p6iso/native-"+run);
+                check(p.resolve(".wire-stage/expected.json").toString().length()==budget,"PATH_FIXTURE_LENGTH_INVALID");
+            }
+            Map<String,String> env=environment(p);
+            boolean accepted=true;
+            try{P6CompositeWireHarness.validateRunDirectory(p,env);}catch(P6CompositeWireHarness.SafeFailure rejected){accepted=false;}
+            check(accepted==(shape.equals("short")||shape.equals("generated_240")),"SHORT_ROOT_CONTRACT_MISSING");
+        });
+    }
     public static void main(String[] args) throws Exception {
         String group=args.length==0?"ALL":args.length==1?args[0]:"INVALID";
-        if(!List.of("ALL","CORE","ONBOARD","ADAPTERS").contains(group)) {
+        if(!List.of("ALL","CORE","ONBOARD","ADAPTERS","DIRECTORY").contains(group)) {
             System.out.println("P6_WIRE_GROUP_INVALID");System.exit(2);return;
         }
         // 固定互斥分区：原core 63、HTTP onboard 6、其余adapter 19；无参仍按原顺序全跑88。
@@ -373,7 +393,8 @@ public final class P6CompositeWireHarnessContractTest {
         }
         if(group.equals("ALL")||group.equals("ONBOARD"))onboardHttpTests();
         if(group.equals("ALL")||group.equals("ADAPTERS"))adapterTests();
-        int expected=switch(group){case "CORE"->63;case "ONBOARD"->6;case "ADAPTERS"->19;default->88;};
+        if(group.equals("ALL")||group.equals("DIRECTORY"))directoryContractTests();
+        int expected=switch(group){case "CORE"->63;case "ONBOARD"->6;case "ADAPTERS"->19;case "DIRECTORY"->6;default->94;};
         if(total!=expected){System.out.println("P6_WIRE_GROUP_COVERAGE_INVALID");System.exit(2);return;}
         String prefix=group.equals("ALL")?"P6_WIRE_TESTS":"P6_WIRE_GROUP GROUP="+group;
         System.out.println(prefix+" TOTAL="+total+" PASSED="+passed+" FAILED="+(total-passed));

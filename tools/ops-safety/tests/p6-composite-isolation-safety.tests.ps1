@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('All','PowerShell','Java','Wire')] [string] $Phase = 'All', [string] $NameFilter = '')
+param([ValidateSet('All','PowerShell','Java','Wire')] [string] $Phase = 'All', [string] $NameFilter = '', [ValidateSet('ALL','DIRECTORY')][string]$WireGroup='ALL')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -158,7 +158,8 @@ if ($Phase -cin @('All','PowerShell')) {
             $timer.Restart();$changed=& $mutant $spec 3000 $factory;$timer.Stop()
             Check ($changed.Code -ceq 'REHEARSAL_NATIVE_TIMEOUT') 'MUTANT_WRONG_BRANCH'
             Check (-not (NativeFailurePredicate $changed 'output_limit' $timer.ElapsedMilliseconds 3000)) 'OUTPUT_GUARD_MUTATION_SURVIVED'
-            foreach($p in $held){Check ($p.HasExited) 'MUTATION_CHILD_STILL_ALIVE'}
+            Check ($original.Cleanup -ceq 'STOPPED' -and $held[0].HasExited) 'ORIGINAL_CHILD_STILL_ALIVE'
+            Check ($changed.Retained -and [object]::ReferenceEquals($changed.HeldTicket.Process,$held[1])) 'MUTANT_TIMEOUT_HANDLE_LOST'
             Check (($original.Code+$changed.Code) -notmatch 'SECRET') 'MUTATION_SECRET_LEAK'
         }finally{foreach($p in $held){if(-not $p.HasExited){$p.Kill();[void]$p.WaitForExit(5000)};$p.Dispose()}}
     }
@@ -354,8 +355,14 @@ if ($Phase -cin @('All','PowerShell')) {
             $result=Invoke-P6BoundedNativeTool 'CREATE_LIVE_DB' $f.Receipt $f.Parent $f.Marker @{DbPassword=('Q'*40)} $deadline $factory
             $timer.Stop()
             Check (NativeFailurePredicate $result $shape $timer.ElapsedMilliseconds $deadline) 'CHILD_FAILURE_WRONG_BRANCH'
-            Check (($result|ConvertTo-Json) -notmatch 'SECRET|[A-Z]:\\') 'CHILD_FAILURE_LEAK'
-            foreach($p in $held){Check ($p.HasExited) 'CHILD_REMAINED_ALIVE';$p.Dispose()}
+            # HeldTicket is internal ownership state, never a user-visible report.
+            Check (($result|Select-Object Status,Code,ExitCode,OutputCharacters,Retained,Cleanup|ConvertTo-Json) -notmatch 'SECRET|[A-Z]:\\') 'CHILD_FAILURE_LEAK'
+            foreach($p in $held){
+                try{
+                    if($shape -ceq 'timeout'){Check ($result.Retained -and [object]::ReferenceEquals($result.HeldTicket.Process,$p)) 'TIMEOUT_HANDLE_LOST'}
+                    else{Check ($p.HasExited) 'CHILD_REMAINED_ALIVE'}
+                }finally{if(-not $p.HasExited){$p.Kill();[void]$p.WaitForExit(5000)};$p.Dispose()}
+            }
         }
     }
     Case 'c1_native_specs_are_fixed_loopback_and_secret_env_only' {
@@ -387,23 +394,69 @@ if ($Phase -cin @('All','PowerShell')) {
         $listener=Read-P6SystemObservation 'LISTENERS' 0 { [pscustomobject]@{ LocalAddress='127.0.0.1'; LocalPort=45431; OwningProcess=424242 } }
         Check ($listener.Items.Count -eq 1 -and $listener.Items[0].ObservationSucceeded) 'LISTENER_OBSERVATION_LOST'
     }
+    foreach($shape in @('untracked','staged','unstaged','head','branch','root','tool')) {
+        Case ('c2_D2_fresh_snapshot_blocks_'+$shape) {
+            $state=[pscustomobject]@{Head='a4e0a3a489810dbc59af836c759ad3fb0b470808';Branch='codex/p6-2-ops-safety-gates';Root=$testRoot;TrackedStatus='';FullStatus='';ToolFilesCommitted=$true}
+            $plan=Get-P6IsolationPlan $testRoot $state
+            $token=$plan.Fingerprint
+            switch($shape){
+                'untracked' {$state.FullStatus='?? apps/api/src/main/resources/application-local.yml'}
+                'staged' {$state.FullStatus='M  pom.xml';$state.TrackedStatus=$state.FullStatus}
+                'unstaged' {$state.FullStatus=' M pom.xml';$state.TrackedStatus=$state.FullStatus}
+                'head' {$state.Head='b4e0a3a489810dbc59af836c759ad3fb0b470808'}
+                'branch' {$state.Branch='codex/other'}
+                'root' {$state.Root=$repo}
+                'tool' {
+                    $p=Join-Path $testRoot 'tools/ops-safety/p6-composite-isolation-pipeline.ps1'
+                    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($p))
+                    [IO.File]::WriteAllText($p,'synthetic tool drift')
+                }
+            }
+            function Get-P6GitValue([string]$RepositoryRoot,[string]$Operation) {
+                if($Operation -ceq 'TrackedTools'){return ((1..11 | ForEach-Object {'file'+$_}) -join "`n")}
+                return Get-P6Field $state $Operation
+            }
+            $actions=0;$rejected=$false
+            try { Assert-P6ExecutionSnapshot $plan $token; $actions++ } catch {$rejected=$true}
+            Check ($rejected -and $actions -eq 0) 'STALE_PLAN_ALLOWED_ACTION'
+        }
+    }
+    Case 'c2_D2_untracked_is_visible_in_plan_without_raw_paths' {
+        $state=[pscustomobject]@{Head='a4e0a3a489810dbc59af836c759ad3fb0b470808';Branch='codex/p6-2-ops-safety-gates';Root=$repo;TrackedStatus='';FullStatus='?? synthetic-secret-input';ToolFilesCommitted=$true}
+        $plan=Get-P6IsolationPlan $repo $state
+        $clean=Get-P6Field $plan 'CleanInputs'
+        Check ($clean -is [bool] -and -not $clean -and $plan.CleanTracked -and -not $plan.Executable) 'UNTRACKED_PLAN_NOT_BLOCKED'
+        Check (($plan|ConvertTo-Json -Compress) -notmatch 'synthetic-secret-input') 'PLAN_RAW_STATUS_LEAK'
+    }
     Case 'c1_plan_current_head_and_dirty_snapshot_are_reported' {
-        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=' M tracked-file'; ToolFilesCommitted=$true }
+        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=' M tracked-file'; FullStatus=' M tracked-file'; ToolFilesCommitted=$true }
+        function Get-P6GitValue([string]$RepositoryRoot,[string]$Operation) {
+            if($Operation -ceq 'TrackedTools'){return ((1..11|ForEach-Object {'file'+$_}) -join "`n")}
+            return Get-P6Field $state $Operation
+        }
         $plan=Get-P6IsolationPlan $repo $state
         Check ($plan.Head -ceq $state.Head -and -not $plan.CleanTracked -and -not $plan.Executable) 'DYNAMIC_DIRTY_PLAN_MISSING'
         Reject { Assert-P6ExecutionSnapshot $plan $plan.Fingerprint } 'REHEARSAL_WORKTREE_DIRTY'
     }
     Case 'c1_plan_next_commit_changes_confirmation_without_parent_pin' {
-        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=''; ToolFilesCommitted=$true }
+        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=''; FullStatus=''; ToolFilesCommitted=$true }
+        function Get-P6GitValue([string]$RepositoryRoot,[string]$Operation) {
+            if($Operation -ceq 'TrackedTools'){return ((1..11|ForEach-Object {'file'+$_}) -join "`n")}
+            return Get-P6Field $state $Operation
+        }
         $first=Get-P6IsolationPlan $repo $state
         $state.Head='b4e0a3a489810dbc59af836c759ad3fb0b470808'
         $second=Get-P6IsolationPlan $repo $state
         Check ($second.CleanTracked -and $second.ToolFilesCommitted -and $first.Fingerprint -cne $second.Fingerprint) 'DYNAMIC_HEAD_NOT_BOUND'
         Reject { Assert-P6ExecutionSnapshot $second $first.Fingerprint } 'REHEARSAL_CONFIRMATION_INVALID'
-        Assert-P6ExecutionSnapshot $second $second.Fingerprint
+        Assert-P6ExecutionSnapshot $second $second.Fingerprint | Out-Null
     }
     Case 'c1_plan_uncommitted_tools_and_missing_clean_evidence_refuse_execution' {
-        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=''; ToolFilesCommitted=$false }
+        $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=''; FullStatus=''; ToolFilesCommitted=$false }
+        function Get-P6GitValue([string]$RepositoryRoot,[string]$Operation) {
+            if($Operation -ceq 'TrackedTools'){return ''}
+            return Get-P6Field $state $Operation
+        }
         $plan=Get-P6IsolationPlan $repo $state
         Reject { Assert-P6ExecutionSnapshot $plan $plan.Fingerprint } 'REHEARSAL_TOOLS_UNCOMMITTED'
         $state.PSObject.Properties.Remove('TrackedStatus')
@@ -879,7 +932,7 @@ if ($Phase -cin @('All','Wire')) {
     Check ($compile.ExitCode -eq 0) 'WIRE_COMPILE_INFRASTRUCTURE_FAILED'
     Case 'java_wire_contract_suite' {
         $wireTotal=0
-        foreach($group in @([pscustomobject]@{Name='CORE';Count=63},[pscustomobject]@{Name='ONBOARD';Count=6},[pscustomobject]@{Name='ADAPTERS';Count=19})) {
+        foreach($group in @([pscustomobject]@{Name='DIRECTORY';Count=6},[pscustomobject]@{Name='CORE';Count=63},[pscustomobject]@{Name='ONBOARD';Count=6},[pscustomobject]@{Name='ADAPTERS';Count=19}) | Where-Object {$WireGroup -ceq 'ALL' -or $_.Name -ceq $WireGroup}) {
             $wireJavaTimer=[Diagnostics.Stopwatch]::StartNew()
             try {
                 $r=RunTestProcess $java @(('-Dwire.test.root='+$testRoot),'-cp',$wireClasspath,'P6CompositeWireHarnessContractTest',$group.Name) 60000
@@ -894,8 +947,9 @@ if ($Phase -cin @('All','Wire')) {
             Check ([int]$summary[0].Groups[1].Value -eq $group.Count -and [int]$summary[0].Groups[2].Value -eq $group.Count -and [int]$summary[0].Groups[3].Value -eq 0) 'WIRE_GROUP_COVERAGE_INVALID'
             $wireTotal+=[int]$summary[0].Groups[1].Value
         }
-        Check ($wireTotal -eq 88) 'WIRE_TOTAL_COVERAGE_INVALID'
-        [Console]::Out.WriteLine('P6_WIRE_TESTS TOTAL=88 PASSED=88 FAILED=0')
+        $expectedWire=if($WireGroup -ceq 'ALL'){94}else{6}
+        Check ($wireTotal -eq $expectedWire) 'WIRE_TOTAL_COVERAGE_INVALID'
+        [Console]::Out.WriteLine(('P6_WIRE_TESTS TOTAL={0} PASSED={0} FAILED=0' -f $expectedWire))
     }
     Case 'java_wire_main_refuses_args_and_suppresses_secret' {
         $r=RunTestProcess $java @('-cp',$wireClasspath,'P6CompositeWireHarness','SYNTHETIC_SECRET_DO_NOT_LOG')

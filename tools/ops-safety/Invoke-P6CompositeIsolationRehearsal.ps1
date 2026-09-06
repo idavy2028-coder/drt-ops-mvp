@@ -24,7 +24,7 @@ try {
     $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
     $plan=Get-P6IsolationPlan $root
     [Console]::Out.WriteLine(('P6_REHEARSAL_STATUS=PLAN ACTIONS=0 EXECUTABLE=false FINGERPRINT={0}' -f $plan.Fingerprint))
-    [Console]::Out.WriteLine(('HEAD={0} BRANCH={1} CLEAN_TRACKED={2} TOOLS_COMMITTED={3} BLOCKER={4}' -f $plan.Head,$plan.Branch,$plan.CleanTracked.ToString().ToLowerInvariant(),$plan.ToolFilesCommitted.ToString().ToLowerInvariant(),$plan.ExecutionBlocker))
+    [Console]::Out.WriteLine(('HEAD={0} BRANCH={1} CLEAN_TRACKED={2} TOOLS_COMMITTED={3} BLOCKER={4} CLEAN_INPUTS={5}' -f $plan.Head,$plan.Branch,$plan.CleanTracked.ToString().ToLowerInvariant(),$plan.ToolFilesCommitted.ToString().ToLowerInvariant(),$plan.ExecutionBlocker,$plan.CleanInputs.ToString().ToLowerInvariant()))
     [Console]::Out.WriteLine(('DEPENDENCIES={0} LOCATION={1} BOUNDARY={2} HOST={3}' -f $plan.Dependencies,$plan.RunLocation,$plan.Boundary,$plan.Host))
     exit 0
 } catch {

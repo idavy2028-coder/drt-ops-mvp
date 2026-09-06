@@ -74,9 +74,11 @@ Task1C实现基线：`a4e0a3a489810dbc59af836c759ad3fb0b470808`。Plan可在开�
 **Files:**
 - Modify: `tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1`
 - Modify: `tools/ops-safety/p6-composite-isolation-lib.ps1`
+- Create: `tools/ops-safety/p6-composite-isolation-pipeline.ps1`
 - Modify: `tools/ops-safety/fixtures/P6CompositeWireHarness.java`
 - Modify: `tools/ops-safety/fixtures/P6CompositeWireHarnessContractTest.java`
 - Modify: `tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1`
+- Create: `tools/ops-safety/tests/p6-composite-isolation-pipeline.tests.ps1`
 - Create: `docs/pilot/p6-2-local-isolation-rehearsal-runbook.md`
 
 **Interfaces:**

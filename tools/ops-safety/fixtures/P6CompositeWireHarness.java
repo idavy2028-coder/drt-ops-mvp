@@ -293,6 +293,17 @@ public final class P6CompositeWireHarness {
         try(InputStream input=Files.newInputStream(path,LinkOption.NOFOLLOW_LINKS)){values.load(input);}
         return values;
     }
+    static void validateRunDirectory(Path cwd,Map<String,String> env) {
+        String run=env.get("P6_REHEARSAL_RUN_ID");
+        require(run!=null&&run.matches("[a-f0-9]{32}"),"REHEARSAL_WIRE_OWNERSHIP_INVALID");
+        require(cwd.toString().equals(env.get("P6_REHEARSAL_RUN_DIRECTORY"))&&cwd.getFileName().toString().equals("native-"+run),"REHEARSAL_WIRE_OWNERSHIP_INVALID");
+        Path parent=cwd.getParent();
+        // Parent owns the repository/receipt proof; this independently enforces the one short run layout.
+        require(cwd.isAbsolute()&&cwd.equals(cwd.normalize())&&parent!=null&&parent.getFileName().toString().equals("p6iso")&&parent.getParent()!=null&&parent.getParent().getFileName().toString().equals(".tmp")&&parent.getParent().getParent()!=null,"REHEARSAL_WIRE_OWNERSHIP_INVALID");
+        // 预算覆盖临时发布和最终发布的所有文件；stage 比 acceptance 多一个字符。
+        for(String file:List.of(".wire-stage/expected.json",".wire-stage/results.json","acceptance/expected.json","acceptance/results.json"))
+            require(cwd.resolve(file).toString().length()<=240,"REHEARSAL_WIRE_OWNERSHIP_INVALID");
+    }
     public static void main(String[] args) {
         PrintStream output=System.out;
         // 第三方网络/JDBC日志全部丢弃，只有固定step/alias/code可写stdout。
@@ -303,9 +314,7 @@ public final class P6CompositeWireHarness {
             Map<String,String> env=System.getenv();String run=env.get("P6_REHEARSAL_RUN_ID");
             require(run!=null&&run.matches("[a-f0-9]{32}"),"REHEARSAL_WIRE_OWNERSHIP_INVALID");
             Path cwd=Path.of("").toAbsolutePath().normalize();
-            require(cwd.toString().equals(env.get("P6_REHEARSAL_RUN_DIRECTORY"))&&cwd.getFileName().toString().equals("native-"+run),"REHEARSAL_WIRE_OWNERSHIP_INVALID");
-            Path parent=cwd.getParent();
-            require(parent!=null&&parent.getFileName().toString().equals("2026-09-06-p6-2-local-isolation-rehearsal")&&parent.getParent()!=null&&parent.getParent().getFileName().toString().equals("sdd")&&parent.getParent().getParent()!=null&&parent.getParent().getParent().getFileName().toString().equals(".superpowers"),"REHEARSAL_WIRE_OWNERSHIP_INVALID");
+            validateRunDirectory(cwd,env);
             safePath(cwd);
             Config config=validateEnvironment(env,readMarker(cwd.resolve("owner.properties")),readMarker(cwd.resolve("wire.properties")));
             outcome=run(new Live(config),config.vehicles(),config.gateway(),Instant.now(),cwd);

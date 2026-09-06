@@ -84,6 +84,16 @@ function Get-P6NativeRunParent {
     Assert-P6NativePathLength (Join-Path $parent ('native-'+('a'*32)+'/secrets/pg-password.txt'))
     return $parent
 }
+function Test-P6ExecutablePath {
+    param($Actual,$Expected)
+    try {
+        foreach($path in @($Actual,$Expected)) {
+            # 只接受本机盘符绝对路径；不解析链接，也不以 leaf/contains 代替身份。
+            if($path -isnot [string] -or $path -cnotmatch '^[A-Za-z]:\\[^:]+$' -or $path.IndexOfAny([IO.Path]::GetInvalidPathChars()) -ge 0){return $false}
+        }
+        return [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($Actual),[IO.Path]::GetFullPath($Expected))
+    }catch{return $false}
+}
 function Assert-P6LaunchEvidence {
     param($Recorded,$Observed,$LaunchEvidence)
     try{
@@ -97,7 +107,11 @@ function Assert-P6LaunchEvidence {
             if([Math]::Floor([decimal]$time/10) -ne [Math]::Floor([decimal]$ticks/10)){throw 'invalid'}
         }
         if($Recorded.WorkingDirectory -cne (Get-P6Field $LaunchEvidence 'WorkingDirectory') -or $Recorded.WorkingDirectory -cne $process.StartInfo.WorkingDirectory){throw 'invalid'}
-        if(-not [StringComparer]::OrdinalIgnoreCase.Equals($process.MainModule.FileName,$Observed.ExecutablePath) -or $Recorded.ExecutablePath -cne $Observed.ExecutablePath){throw 'invalid'}
+        # C2a launch-request evidence adds no stop authority: recheck it against the original StartInfo.
+        if($null -ne (Get-P6Field $LaunchEvidence 'LaunchExecutablePath')){
+            if(-not (Test-P6ExecutablePath $LaunchEvidence.LaunchExecutablePath (Get-P6Field $Recorded 'LaunchExecutablePath')) -or -not (Test-P6ExecutablePath $LaunchEvidence.LaunchExecutablePath $Recorded.ExecutablePath) -or -not (Test-P6ExecutablePath $process.StartInfo.FileName $LaunchEvidence.LaunchExecutablePath)){throw 'invalid'}
+        }
+        if(-not (Test-P6ExecutablePath $process.MainModule.FileName $Observed.ExecutablePath) -or -not (Test-P6ExecutablePath $Recorded.ExecutablePath $Observed.ExecutablePath)){throw 'invalid'}
     }catch{throw 'REHEARSAL_LAUNCH_UNPROVEN'}
 }
 function Start-P6NativeCluster {
@@ -168,6 +182,29 @@ public sealed class P6NativeStreamDrain {
     }
     public bool Wait(int milliseconds) { try { return Task.WaitAll(tasks, milliseconds); } catch { return false; } }
 }
+// Fixed, typed in-process state only. No delegates, PowerShell getters, CIM or network I/O.
+public sealed class P6QuickGuardState {
+    public readonly System.Diagnostics.Stopwatch Clock;
+    public long LastElapsedMilliseconds;
+    public System.Diagnostics.Process[] Processes = new System.Diagnostics.Process[0];
+    public P6NativeStreamDrain[] Drains = new P6NativeStreamDrain[0];
+    public P6QuickGuardState() : this(System.Diagnostics.Stopwatch.StartNew()) { }
+    public P6QuickGuardState(System.Diagnostics.Stopwatch clock) { Clock = clock; }
+    public static string CheckState(P6QuickGuardState state) {
+        try {
+            if (state == null) return "REHEARSAL_HEALTH_UNPROVEN";
+            if (state.Clock == null || !state.Clock.IsRunning) return "REHEARSAL_CLOCK_INVALID";
+            long now = state.Clock.ElapsedMilliseconds;
+            if (now < state.LastElapsedMilliseconds || state.LastElapsedMilliseconds < 0) return "REHEARSAL_CLOCK_INVALID";
+            state.LastElapsedMilliseconds = now;
+            if (now >= 1800000) return "REHEARSAL_TOTAL_DEADLINE";
+            if (state.Processes == null || state.Drains == null) return "REHEARSAL_HEALTH_UNPROVEN";
+            foreach (var process in state.Processes) if (process == null || process.HasExited) return "REHEARSAL_HEALTH_UNPROVEN";
+            foreach (var drain in state.Drains) if (drain == null || drain.Failed || drain.Count > 65536) return "REHEARSAL_HEALTH_UNPROVEN";
+            return "";
+        } catch { return "REHEARSAL_HEALTH_UNPROVEN"; }
+    }
+}
 '@ -ErrorAction Stop | Out-Null
 }
 function Write-P6ReceiptSnapshot {
@@ -205,7 +242,7 @@ function Start-P6OwnedPostgres {
         $start=(New-Object DateTimeOffset(($ticks-($ticks%10)),[TimeSpan]::Zero)).ToString('o')
         $ticket.Recorded=[pscustomobject]@{Pid=$process.Id;StartTimeUtc=$start;ExecutablePath=$process.MainModule.FileName;WorkingDirectory=$info.WorkingDirectory;RunId=$Context.Receipt.RunId;OwnerNonce=$Context.Receipt.OwnerNonce;Kind='Postgres';ArgumentMarker=$Context.Receipt.PgData}
         $ticket.LaunchEvidence=[pscustomobject]@{Process=$process;StartTicks=$ticks;WorkingDirectory=$info.WorkingDirectory}
-        if($ticket.Recorded.ExecutablePath -cne $spec.FileName){throw 'invalid'}
+        if(-not (Test-P6ExecutablePath $ticket.Recorded.ExecutablePath $spec.FileName)){throw 'invalid'}
         $Context.Receipt.Processes=@($ticket.Recorded)
         Write-P6ReceiptSnapshot $Context
         return [pscustomobject]@{Succeeded=$true;Ticket=$ticket;Code='REHEARSAL_PG_STARTED'}
@@ -376,43 +413,68 @@ function New-P6ProcessStartInfo {
     return $info
 }
 function Invoke-P6BoundedChild {
-    param($Spec,[int] $TimeoutMilliseconds,[scriptblock] $ProcessFactory=$null)
+    [CmdletBinding()]
+    param($Spec,[int] $TimeoutMilliseconds,[scriptblock] $ProcessFactory=$null,$QuickState=$null)
+    $timer=[Diagnostics.Stopwatch]::StartNew()
     $process=$null;$started=$false;$count=0;$code='REHEARSAL_NATIVE_FAILED';$ownedFactory=($null -eq $ProcessFactory)
+    $drain=$null;$retained=$false;$status='FAILED';$exitCode=-1;$cleanup='NOT_STARTED'
+    $launchElapsed=-1;$drainElapsed=-1;$cleanupWait=0
     try {
-        if($TimeoutMilliseconds -lt 100 -or $TimeoutMilliseconds -gt 120000){throw 'invalid'}
+        if($TimeoutMilliseconds -lt 100 -or $TimeoutMilliseconds -gt 60000){throw 'invalid'}
+        Initialize-P6StreamDrain
+        if($null -ne $QuickState -and $QuickState -isnot [P6QuickGuardState]){throw 'invalid'}
+        if($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds){$code='REHEARSAL_NATIVE_TIMEOUT';throw 'timeout'}
+        if($null -ne $QuickState){$guardCode=[P6QuickGuardState]::CheckState([P6QuickGuardState]$QuickState);if($guardCode -ne ''){$code=$guardCode;throw 'guard'}}
         $info=New-P6ProcessStartInfo $Spec
+        # The factory is a test seam, not a claim to preempt arbitrary caller code.
         if($ownedFactory){$process=New-Object Diagnostics.Process;$process.StartInfo=$info}else{$process=& $ProcessFactory $info}
+        if($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds){$code='REHEARSAL_NATIVE_TIMEOUT';throw 'timeout'}
         if($process -isnot [Diagnostics.Process] -or -not $process.Start()){throw 'invalid'}
-        $started=$true;$timer=[Diagnostics.Stopwatch]::StartNew()
-        # 两个流同时用固定缓冲读，不保存原文；总量及总时限都受限，不会ReadToEnd无限占内存。
-        $streams=@($process.StandardOutput,$process.StandardError)
-        $buffers=@((New-Object char[] 2048),(New-Object char[] 2048));$reads=@($null,$null);$closed=@($false,$false)
-        for($i=0;$i -lt 2;$i++){$reads[$i]=$streams[$i].ReadAsync($buffers[$i],0,2048)}
+        $started=$true
+        $launchElapsed=$timer.ElapsedMilliseconds
+        # Once started, establish autonomous drains before any deadline exit can retain the child.
+        try{$drain=[P6NativeStreamDrain]::new($process.StandardOutput,$process.StandardError)}
+        catch{$code='REHEARSAL_NATIVE_DRAIN_FAILED';throw 'drain'}
+        $drainElapsed=$timer.ElapsedMilliseconds
         while($true){
             if($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds){$code='REHEARSAL_NATIVE_TIMEOUT';throw 'timeout'}
-            for($i=0;$i -lt 2;$i++){
-                if(-not $closed[$i] -and $reads[$i].IsCompleted){
-                    $n=$reads[$i].GetAwaiter().GetResult();$count+=$n
-                    if($count -gt 65536){$code='REHEARSAL_NATIVE_OUTPUT_LIMIT';throw 'limit'}
-                    if($n -eq 0){$closed[$i]=$true}else{$reads[$i]=$streams[$i].ReadAsync($buffers[$i],0,2048)}
-                }
-            }
-            if($process.HasExited -and $closed[0] -and $closed[1]){break}
-            [void]$process.WaitForExit(10)
-            if($process.HasExited){[Threading.Thread]::Sleep(5)}
+            if($null -ne $QuickState){$guardCode=[P6QuickGuardState]::CheckState([P6QuickGuardState]$QuickState);if($guardCode -ne ''){$code=$guardCode;throw 'guard'}}
+            $count=$drain.Count
+            if($count -gt 65536){$code='REHEARSAL_NATIVE_OUTPUT_LIMIT';throw 'limit'}
+            if($drain.Failed){throw 'drain'}
+            if($process.HasExited -and $drain.Wait(0)){break}
+            $remaining=$TimeoutMilliseconds-[int]$timer.ElapsedMilliseconds
+            if($remaining -le 0){$code='REHEARSAL_NATIVE_TIMEOUT';throw 'timeout'}
+            [void]$process.WaitForExit([Math]::Min(10,$remaining))
+            $remaining=$TimeoutMilliseconds-[int]$timer.ElapsedMilliseconds
+            if($process.HasExited -and $remaining -gt 0){[Threading.Thread]::Sleep([Math]::Min(1,$remaining))}
         }
-        if($process.ExitCode -ne 0){return [pscustomobject]@{Status='FAILED';Code='REHEARSAL_NATIVE_EXIT_FAILED';ExitCode=$process.ExitCode;OutputCharacters=$count}}
-        return [pscustomobject]@{Status='EXITED';Code='REHEARSAL_NATIVE_EXIT_CONFIRMED';ExitCode=0;OutputCharacters=$count}
-    }catch{
-        return [pscustomobject]@{Status='FAILED';Code=$code;ExitCode=-1;OutputCharacters=[Math]::Min($count,65536)}
-    }finally{
+        $exitCode=$process.ExitCode
+        if($exitCode -ne 0){$code='REHEARSAL_NATIVE_EXIT_FAILED'}else{$status='EXITED';$code='REHEARSAL_NATIVE_EXIT_CONFIRMED'}
+    }catch{}finally{
         if($started){
-            # 控制器批准的短命工具例外：只结束本函数启动且仍持有的对象，不按名称、端口或重新查询PID。
-            try{if(-not $process.HasExited){$process.Kill();[void]$process.WaitForExit(5000)}}catch{}
+            try{
+                if($null -eq $drain){throw 'drain'}
+                $remaining=$TimeoutMilliseconds-[int]$timer.ElapsedMilliseconds
+                if($remaining -le 0){throw 'deadline'}
+                if(-not $process.HasExited){
+                    $process.Kill()
+                    $remaining=$TimeoutMilliseconds-[int]$timer.ElapsedMilliseconds
+                    if($remaining -le 0){throw 'stop'}
+                    $cleanupWait+=$remaining
+                    if(-not $process.WaitForExit($remaining)){throw 'stop'}
+                }
+                $remaining=$TimeoutMilliseconds-[int]$timer.ElapsedMilliseconds
+                if($remaining -le 0 -or -not $process.HasExited){throw 'stop'}
+                if($null -ne $drain){$cleanupWait+=$remaining;if(-not $drain.Wait($remaining)){throw 'stop'}}
+                $cleanup='STOPPED'
+            }catch{$retained=$true;$status='FAILED';$cleanup='RETAINED';if($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds -and $code -cne 'REHEARSAL_NATIVE_DRAIN_FAILED'){$code='REHEARSAL_NATIVE_TIMEOUT'}}
         }
-        # 注入的测试factory保留对象给测试核验退出；真实adapter自己释放句柄。
-        if($ownedFactory -and $null -ne $process){$process.Dispose()}
+        # An unknown stop transfers the original handle and autonomous drain to the caller.
+        if($ownedFactory -and $null -ne $process -and -not $retained){$process.Dispose()}
     }
+    $ticket=if($retained){[pscustomobject]@{Process=$process;Drain=$drain}}else{$null}
+    return [pscustomobject]@{Status=$status;Code=$code;ExitCode=$exitCode;OutputCharacters=[Math]::Min($count,65536);Retained=$retained;Cleanup=$cleanup;HeldTicket=$ticket;ElapsedMilliseconds=$timer.ElapsedMilliseconds;LaunchElapsedMilliseconds=$launchElapsed;DrainElapsedMilliseconds=$drainElapsed;CleanupWaitMilliseconds=$cleanupWait}
 }
 
 function Get-P6Field {
@@ -437,7 +499,8 @@ function Get-P6GitValue {
         'Branch' { 'branch --show-current' }
         'Root' { 'rev-parse --show-toplevel' }
         'TrackedStatus' { 'status --porcelain=v1 --untracked-files=no' }
-        'TrackedTools' { 'ls-files -- tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1 tools/ops-safety/p6-composite-isolation-lib.ps1 tools/ops-safety/fixtures/P6CompositeFlywayTool.java tools/ops-safety/fixtures/P6CompositeWireHarness.java tools/ops-safety/fixtures/P6CompositeWireHarnessContractTest.java tools/ops-safety/Invoke-Task12SafetyGate.ps1 tools/ops-safety/task12-safety-lib.ps1 tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1 docs/pilot/p6-2-local-isolation-rehearsal-runbook.md' }
+        'FullStatus' { 'status --porcelain=v1 --untracked-files=all' }
+        'TrackedTools' { 'ls-files -- tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1 tools/ops-safety/p6-composite-isolation-lib.ps1 tools/ops-safety/p6-composite-isolation-pipeline.ps1 tools/ops-safety/fixtures/P6CompositeFlywayTool.java tools/ops-safety/fixtures/P6CompositeWireHarness.java tools/ops-safety/fixtures/P6CompositeWireHarnessContractTest.java tools/ops-safety/Invoke-Task12SafetyGate.ps1 tools/ops-safety/task12-safety-lib.ps1 tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1 tools/ops-safety/tests/p6-composite-isolation-pipeline.tests.ps1 docs/pilot/p6-2-local-isolation-rehearsal-runbook.md' }
         default { throw 'REHEARSAL_PREFLIGHT_FAILED' }
     }
     $psi=New-Object Diagnostics.ProcessStartInfo
@@ -475,7 +538,7 @@ function Get-P6IsolationPlan {
     try {
         $root=[IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\','/')
         if ($null -eq $RepositoryState) {
-            $RepositoryState=[pscustomobject]@{ Head=(Get-P6GitValue $root 'Head'); Branch=(Get-P6GitValue $root 'Branch'); Root=(Get-P6GitValue $root 'Root'); TrackedStatus=(Get-P6GitValue $root 'TrackedStatus'); ToolFilesCommitted=(@((Get-P6GitValue $root 'TrackedTools') -split "`n" | Where-Object { $_ -ne '' }).Count -eq 9) }
+            $RepositoryState=[pscustomobject]@{ Head=(Get-P6GitValue $root 'Head'); Branch=(Get-P6GitValue $root 'Branch'); Root=(Get-P6GitValue $root 'Root'); TrackedStatus=(Get-P6GitValue $root 'TrackedStatus'); FullStatus=(Get-P6GitValue $root 'FullStatus'); ToolFilesCommitted=(@((Get-P6GitValue $root 'TrackedTools') -split "`n" | Where-Object { $_ -ne '' }).Count -eq 11) }
         }
         if ((Get-P6Field $RepositoryState 'Head') -cnotmatch '^[a-f0-9]{40}$' -or (Get-P6Field $RepositoryState 'Head') -ceq ('0'*40) -or
             (Get-P6Field $RepositoryState 'Branch') -cne 'codex/p6-2-ops-safety-gates') { throw 'REHEARSAL_HEAD_MISMATCH' }
@@ -485,18 +548,22 @@ function Get-P6IsolationPlan {
         $rootDigest=Get-P6Sha256 ([Text.Encoding]::UTF8.GetBytes($gitRoot.ToUpperInvariant()))
         $trackedStatus=Get-P6Field $RepositoryState 'TrackedStatus'
         $clean=($trackedStatus -is [string] -and $trackedStatus -ceq '')
+        $fullStatus=Get-P6Field $RepositoryState 'FullStatus'
+        $cleanInputs=($fullStatus -is [string] -and $fullStatus -ceq '')
         $committed=((Get-P6Field $RepositoryState 'ToolFilesCommitted') -is [bool] -and $RepositoryState.ToolFilesCommitted)
-        $manifest=@('p6-isolation-plan-v3',[string]$RepositoryState.Head,[string]$RepositoryState.Branch,('root='+$rootDigest),('clean='+$clean),('committed='+$committed))
+        $manifest=@('p6-isolation-plan-v4',[string]$RepositoryState.Head,[string]$RepositoryState.Branch,('root='+$rootDigest),('clean='+$clean),('cleanInputs='+$cleanInputs),('committed='+$committed))
         # 固定清单；未来wire/runbook加入自动使指纹失效；不枚举private目录。
         foreach ($relative in @(
             'tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1',
             'tools/ops-safety/p6-composite-isolation-lib.ps1',
+            'tools/ops-safety/p6-composite-isolation-pipeline.ps1',
             'tools/ops-safety/fixtures/P6CompositeFlywayTool.java',
             'tools/ops-safety/fixtures/P6CompositeWireHarness.java',
             'tools/ops-safety/fixtures/P6CompositeWireHarnessContractTest.java',
             'tools/ops-safety/Invoke-Task12SafetyGate.ps1',
             'tools/ops-safety/task12-safety-lib.ps1',
             'tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1',
+            'tools/ops-safety/tests/p6-composite-isolation-pipeline.tests.ps1',
             'docs/pilot/p6-2-local-isolation-rehearsal-runbook.md')) {
             $path=Assert-P6ChildPath $root (Join-Path $root $relative)
             $hash=if ([IO.File]::Exists($path)) { Get-P6Sha256 ([IO.File]::ReadAllBytes($path)) } else { 'ABSENT' }
@@ -504,7 +571,7 @@ function Get-P6IsolationPlan {
         }
         return [pscustomobject]@{
             Status='PLAN'; Actions=0; Executable=$false
-            CleanTracked=$clean; ToolFilesCommitted=$committed; ExecutionBlocker='REHEARSAL_EXECUTE_NOT_IMPLEMENTED'; Branch=$RepositoryState.Branch; RootDigest=$rootDigest
+            CleanTracked=$clean; CleanInputs=$cleanInputs; RepositoryRoot=$root; ToolFilesCommitted=$committed; ExecutionBlocker='REHEARSAL_EXECUTE_NOT_IMPLEMENTED'; Branch=$RepositoryState.Branch; RootDigest=$rootDigest
             Fingerprint=(Get-P6Sha256 ([Text.Encoding]::UTF8.GetBytes(($manifest -join "`n"))))
             Head=$RepositoryState.Head; Dependencies='JDK21,POSTGRESQL17_POSTGIS,MAVEN,WINDOWS_POWERSHELL_5_1'; Host='WINDOWS_POWERSHELL_5_1'
             Boundary='NEW_NATIVE_CLUSTER,LOOPBACK_ONLY,NO_DOCKER,NO_CLOUD,NO_EXISTING_DB'; RunLocation='WORKTREE_TMP_P6ISO'
@@ -516,10 +583,12 @@ function Get-P6IsolationPlan {
 }
 function Assert-P6ExecutionSnapshot {
     param($Plan,[string] $ConfirmationToken)
-    # 这是未来Execute的快照前置条件，不是执行授权；C1 runner仍固定拒绝。
-    Assert-P6Confirmation $Plan $ConfirmationToken
-    if ((Get-P6Field $Plan 'CleanTracked') -isnot [bool] -or -not $Plan.CleanTracked) { throw 'REHEARSAL_WORKTREE_DIRTY' }
-    if ((Get-P6Field $Plan 'ToolFilesCommitted') -isnot [bool] -or -not $Plan.ToolFilesCommitted) { throw 'REHEARSAL_TOOLS_UNCOMMITTED' }
+    # Old Plan is only a root hint. Never trust its HEAD/cleanliness/hash claims for an action.
+    $fresh=Get-P6IsolationPlan ([string](Get-P6Field $Plan 'RepositoryRoot'))
+    if (-not $fresh.CleanTracked -or -not $fresh.CleanInputs) { throw 'REHEARSAL_WORKTREE_DIRTY' }
+    if (-not $fresh.ToolFilesCommitted) { throw 'REHEARSAL_TOOLS_UNCOMMITTED' }
+    Assert-P6Confirmation $fresh $ConfirmationToken
+    return $fresh
 }
 function Assert-P6Confirmation {
     param($Plan, [AllowEmptyString()][string] $ConfirmationToken)
@@ -617,8 +686,8 @@ function Assert-P6Receipt {
         return $root
     } catch { throw 'REHEARSAL_RECEIPT_INVALID' }
 }
-function Assert-P6PostgresCommandLine {
-    param([string] $CommandLine,[string] $ExecutablePath,[string] $PgData,[int] $PgPort)
+function ConvertFrom-P6FixedCommandLine {
+    param([string] $CommandLine)
     # 只接受本runner产生的Windows规范token子集：整token引号或无引号。
     # 不把引号拼接/转义的多种等价形式放宽为“路径子串存在”，不接受额外选项。
     if($CommandLine.Length -gt 4096 -or $CommandLine -match '[\x00-\x08\x0a-\x1f]'){throw 'invalid'}
@@ -645,7 +714,12 @@ function Assert-P6PostgresCommandLine {
         }
         $tokens.Add($token)
     }
-    if($tokens.Count -ne 7 -or $tokens[0] -cnotin @($ExecutablePath,'postgres.exe')){throw 'invalid'}
+    return ,$tokens.ToArray()
+}
+function Assert-P6PostgresCommandLine {
+    param([string] $CommandLine,[string] $ExecutablePath,[string] $PgData,[int] $PgPort)
+    $tokens=ConvertFrom-P6FixedCommandLine $CommandLine
+    if($tokens.Count -ne 7 -or ($tokens[0] -cne 'postgres.exe' -and -not (Test-P6ExecutablePath $tokens[0] $ExecutablePath))){throw 'invalid'}
     $expected=@('-D',$PgData,'-h','127.0.0.1','-p',[string]$PgPort)
     for($i=0;$i -lt $expected.Count;$i++){if($tokens[$i+1] -cne $expected[$i]){throw 'invalid'}}
 }
@@ -660,10 +734,11 @@ function Assert-P6ProcessIdentity {
         foreach ($field in @('StartTimeUtc','ExecutablePath','WorkingDirectory','RunId','OwnerNonce','Kind','ArgumentMarker')) {
             if ((Get-P6Field $Recorded $field) -cne (Get-P6Field $owned[0] $field)) { throw 'invalid' }
         }
-        foreach ($field in @('StartTimeUtc','ExecutablePath')) {
+        foreach ($field in @('StartTimeUtc')) {
             $value=Get-P6Field $Recorded $field
             if ($value -isnot [string] -or $value -cne (Get-P6Field $Observed $field)) { throw 'invalid' }
         }
+        if(-not (Test-P6ExecutablePath (Get-P6Field $Recorded 'ExecutablePath') (Get-P6Field $Observed 'ExecutablePath'))){throw 'invalid'}
         if($null -ne $LaunchEvidence){Assert-P6LaunchEvidence $Recorded $Observed $LaunchEvidence}
         elseif($Recorded.WorkingDirectory -cne (Get-P6Field $Observed 'WorkingDirectory')){throw 'invalid'}
         $start=[DateTimeOffset]::ParseExact($Recorded.StartTimeUtc,'o',[Globalization.CultureInfo]::InvariantCulture)
@@ -674,11 +749,11 @@ function Assert-P6ProcessIdentity {
         $command=Get-P6Field $Observed 'CommandLine'
         if ($command -isnot [string]) { throw 'invalid' }
         if ($kind -ceq 'Java') {
-            if ($Recorded.ExecutablePath -cne 'C:\Program Files\Java\jdk-21.0.10\bin\java.exe') { throw 'invalid' }
+            if (-not (Test-P6ExecutablePath $Recorded.ExecutablePath 'C:\Program Files\Java\jdk-21.0.10\bin\java.exe')) { throw 'invalid' }
             $marker='-Dp6.rehearsal.run='+$Receipt.RunId
             if ($Recorded.ArgumentMarker -cne $marker -or $command -cnotmatch ('(?:^|\s)"?'+[regex]::Escape($marker)+'"?(?:\s|$)')) { throw 'invalid' }
         } elseif ($kind -ceq 'Postgres') {
-            if ($Recorded.ExecutablePath -cne 'C:\Program Files\PostgreSQL\17\bin\postgres.exe' -or $Recorded.ArgumentMarker -cne $Receipt.PgData) { throw 'invalid' }
+            if (-not (Test-P6ExecutablePath $Recorded.ExecutablePath 'C:\Program Files\PostgreSQL\17\bin\postgres.exe') -or $Recorded.ArgumentMarker -cne $Receipt.PgData) { throw 'invalid' }
             Assert-P6PostgresCommandLine $command $Recorded.ExecutablePath $Receipt.PgData $Receipt.Ports[0]
         } else { throw 'invalid' }
         return $true
@@ -750,7 +825,8 @@ function Assert-P6RemovalProof {
     param($Receipt,[string] $RunParent,$Marker,[string] $Target,$ProcessObservations,$Listeners)
     try {
         $root=Assert-P6Receipt $Receipt $RunParent $Marker
-        $canonical=Assert-P6ChildPath $root $Target -MustExist
+        # A missing fixed child is not an exemption from proving the run/receipt/processes.
+        $canonical=Assert-P6ChildPath $root $Target
         $listenerEvidence=Assert-P6ListenerEvidence $Listeners
         if ($canonical -cnotin @((Join-Path $root 'pgdata'),(Join-Path $root 'secrets'),(Join-Path $root 'gateway-outbox'))) { throw 'invalid' }
         # 每个收据PID必须有独立、成功、明确“不存在”的观测；空数组不能伪装全部已停。
@@ -766,7 +842,7 @@ function Assert-P6RemovalProof {
         }
         foreach ($listener in $listenerEvidence.Items) { if ($listener.LocalPort -in $Receipt.Ports) { throw 'invalid' } }
         $pending=New-Object 'Collections.Generic.Stack[string]'
-        $pending.Push($canonical)
+        $pending.Push($root)
         while ($pending.Count -gt 0) {
             foreach ($item in @(Get-ChildItem -LiteralPath $pending.Pop() -Force -ErrorAction Stop)) {
                 if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'invalid' }
