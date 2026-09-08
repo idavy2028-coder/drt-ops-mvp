@@ -124,6 +124,15 @@ function Get-P6SyntheticProcessSpec {
     $exe='C:\Program Files\Java\jdk-21.0.10\bin\java.exe';if($Role -eq 'PG'){$exe='C:\Program Files\PostgreSQL\17\bin\postgres.exe'}
     [pscustomobject]@{Role=$Role;FileName=$exe;Arguments=@('-Dp6.synthetic.only=true');Environment=@{P6_SYNTHETIC_ONLY='true';P6_STREAM_DRAIN='required';P6_DEADLINE_MS='1800000'};WorkingDirectory=$Plan.Root;StartAllowed=$false;ReceiptRequired=$true;RetainedOnUnknownStop=$true}
 }
+function Get-P6RealCommandSpec {
+    param([Parameter(Mandatory=$true)]$Plan,[ValidateSet('BUILD','PG','FLYWAY','API','GW','WIRE','TASK12')][string]$Role)
+    foreach($bad in @('Endpoint','Path','Secret','Pid','Skip','Executable','Arguments','WorkingDirectory','Environment')){if($Plan.PSObject.Properties.Name -contains $bad){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}}
+    if($Role -in @('FLYWAY','TASK12')){ $base='C:\Program Files\Java\jdk-21.0.10\bin\java.exe' } elseif($Role -eq 'PG'){$base='C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe'} elseif($Role -eq 'BUILD'){$base='C:\Program Files\JetBrains\IntelliJ IDEA 2025.3.4\plugins\maven\lib\maven3\bin\mvn.cmd'} else {$base='C:\Program Files\Java\jdk-21.0.10\bin\java.exe'}
+    $s=Get-P6SyntheticProcessSpec -Plan $Plan -Role $(if($Role -in @('FLYWAY','TASK12')){'WIRE'}else{$Role})
+    $args=@();switch($Role){'BUILD'{$args=@('-q','-DskipTests','package')};'PG'{$args=@('start','-D',(Join-Path $Plan.Root 'pgdata'),'-o','-h 127.0.0.1')};'FLYWAY'{$args=@('-cp',(Join-Path $Plan.Root 'flyway-helper.jar'),'P6CompositeFlywayTool')};'API'{$args=@('-jar',(Join-Path $Plan.Root 'api.jar'))};'GW'{$args=@('-jar',(Join-Path $Plan.Root 'gateway.jar'))};'WIRE'{$args=@('-cp',(Join-Path $Plan.Root 'wire-harness.jar'),'P6CompositeWireHarness')};'TASK12'{$args=@('-cp',(Join-Path $Plan.Root 'task12-helper.jar'),'InvokeTask12Acceptance')}}
+    $s|Add-Member NoteProperty FileName $base -Force;$s|Add-Member NoteProperty Arguments $args -Force;$s|Add-Member NoteProperty WorkingDirectory $Plan.Root -Force;$s|Add-Member NoteProperty Environment @{P6_SYNTHETIC_ONLY='true';P6_BIND_ADDRESS='127.0.0.1';P6_STREAM_DRAIN='required'} -Force;$s|Add-Member NoteProperty RealActionEnabled $false -Force;$s|Add-Member NoteProperty HealthProbe 'REQUIRED' -Force;$s|Add-Member NoteProperty StopContract 'HELD_PROCESS_ONLY' -Force;$s|Add-Member NoteProperty ReceiptPredecessor 'REQUIRED' -Force;$s|Add-Member NoteProperty Deadline 1800000 -Force
+    return $s
+}
 
 function Invoke-P6CompositeBusinessPipeline {
     param(
