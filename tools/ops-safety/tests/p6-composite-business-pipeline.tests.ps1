@@ -219,6 +219,35 @@ Invoke-C2BTest 'build_pg_real_actions_are_not_ready' {
     $a=New-P6BuildPgFlywayAdapter -Context $ctx
     try {$a.Invoke('BUILD');throw 'REAL_BUILD_STARTED'} catch {$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_REAL_ADAPTER_NOT_READY') 'REAL_BUILD_NOT_READY_CODE_MISSING'}
 }
+Invoke-C2BTest 'api_gateway_wire_task12_seam_contract' {
+    Assert-C2B ($null -ne (Get-Command New-P6ApiGatewayWireTask12Adapter -ErrorAction SilentlyContinue)) 'API_GATEWAY_ADAPTER_MISSING'
+    $a=New-P6ApiGatewayWireTask12Adapter -Context (New-C2BProtectedFixture)
+    $r=$a.DryRun()
+    Assert-C2B (($r.Stages -join ',') -eq 'API_HEALTH,LOGIN,ROTATE,RELOGIN,DATA_PREP,PREVIEW,APPLY,GATEWAY,WIRE,TASK12,LEASE_RELEASE') 'API_GATEWAY_ORDER_WRONG'
+    Assert-C2B ($r.Vehicles -eq 3 -and $r.Terminals -eq 4 -and $r.Systems -eq 3 -and $r.SystemA -eq 2 -and $r.SystemB -eq 1 -and $r.SystemC -eq 1 -and $r.PreviewStable -and $r.Leases -eq 4 -and $r.ConnectionIds -eq 4 -and $r.Task12 -eq 'ACCEPTED4' -and $r.AttachmentFields -eq 0) 'API_GATEWAY_CONTRACT_INVALID'
+    Assert-C2B ($r.SafeOutput -notmatch 'SYNTHETIC_SECRET|SYNTHETIC_UUID|SYNTHETIC_PHONE|Bearer') 'API_GATEWAY_REDACTION_FAILED'
+}
+Invoke-C2BTest 'api_gateway_real_actions_not_ready' {
+    $a=New-P6ApiGatewayWireTask12Adapter -Context (New-C2BProtectedFixture)
+    try{$a.Invoke('API_HEALTH');throw 'REAL_API_STARTED'}catch{$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_REAL_ADAPTER_NOT_READY') 'REAL_API_NOT_READY_MISSING'}
+}
+Invoke-C2BTest 'api_gateway_stateful_failure_paths' {
+    foreach($case in @('LOGIN','ROTATE','PREVIEW_MUTATION','DUPLICATE_CONNECTION','MISSING_UPSTREAM','ATTACHMENT','TASK12_STATUS')){
+        $a=New-P6ApiGatewayWireTask12Adapter -Context (New-C2BProtectedFixture);$a.Failure=$case
+        try{$a.DryRun();throw 'STATEFUL_FAILURE_ACCEPTED'}catch{$m=$_.Exception.Message;$e=$_.Exception;while($null -ne $e.InnerException){$e=$e.InnerException;$m=$e.Message};Assert-C2B ($m -match '^C2B_(AUTH|PREVIEW|CONNECTION|UPSTREAM|ATTACHMENT|TASK12)_[A-Z_]+$') "STATEFUL_${case}_NOT_NORMALIZED"}
+    }
+}
+Invoke-C2BTest 'api_gateway_adapter_integrates_with_business_pipeline' {
+    $a=New-P6ApiGatewayWireTask12Adapter -Context (New-C2BProtectedFixture);$a.State.InDryRun=$true
+    $r=Invoke-P6CompositeBusinessPipeline -Adapter $a -Mode DryRun
+    if(-not ($r.Status -ceq 'PASS' -and $r.Business.Systems -eq 3 -and $r.Business.SystemA -eq 2 -and $r.Business.SystemB -eq 1 -and $r.Business.SystemC -eq 1 -and $a.State.Receipts.Count -eq 15)){Write-Output ('INTEGRATION_FIELDS S='+$r.Status+' CODE='+$r.Code+' SYS='+$r.Business.Systems+' A='+$r.Business.SystemA+' B='+$r.Business.SystemB+' C='+$r.Business.SystemC+' R='+$a.State.Receipts.Count)}
+    Assert-C2B ($r.Status -ceq 'PASS' -and $r.Business.AcceptanceStatus -ceq 'ACCEPTED4' -and $r.Business.Systems -eq 3 -and $r.Business.SystemA -eq 2 -and $r.Business.SystemB -eq 1 -and $r.Business.SystemC -eq 1 -and $a.State.Receipts.Count -eq 15) 'API_ADAPTER_PIPELINE_INTEGRATION_FAILED'
+}
+Invoke-C2BTest 'api_gateway_task12_status_fails_pipeline' {
+    $a=New-P6ApiGatewayWireTask12Adapter -Context (New-C2BProtectedFixture);$a.State.InDryRun=$true;$a.Failure='TASK12_STATUS'
+    $r=Invoke-P6CompositeBusinessPipeline -Adapter $a -Mode DryRun
+    Assert-C2B ($r.Status -ceq 'FAIL' -and $r.Code -ceq 'C2B_TASK12_NOT_ACCEPTED' -and (@($r.Steps|Where-Object {$_.Stage -eq 'TASK12' -and $_.Status -eq 'FAIL'}).Count -eq 1) -and $a.State.Events -notcontains 'LEASE_RELEASE' -and $a.State.Events -notcontains 'CLEANUP') 'TASK12_STATUS_PIPELINE_GATE_FAILED'
+}
 foreach($fixture in @($script:C2BFixtures)){ if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}; Assert-C2B (-not (Test-Path -LiteralPath $fixture)) 'FIXTURE_NOT_REMOVED' }
-Write-Output ('C2B_TESTS TOTAL=30 FAILED={0}' -f $script:Failures)
+Write-Output ('C2B_TESTS TOTAL=35 FAILED={0}' -f $script:Failures)
 if ($script:Failures -ne 0) { exit 1 }

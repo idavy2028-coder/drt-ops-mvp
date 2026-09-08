@@ -54,6 +54,33 @@ function New-P6BuildPgFlywayAdapter {
     $a|Add-Member ScriptMethod Deadline { return 1800000 } -Force
     return $a
 }
+function New-P6ApiGatewayWireTask12Adapter {
+    param([Parameter(Mandatory=$true)]$Context)
+    if($null -eq $Context -or $null -eq $Context.Root -or $null -eq $Context.Marker -or $null -eq $Context.Receipt -or $null -eq $Context.RunParent){throw 'C2B_BOUNDARY_INVALID'}
+    $a=[pscustomobject]@{Boundary='RUNNER_OWNED_LOOPBACK_ONLY';Root=$Context.Root;RunParent=$Context.RunParent;Marker=$Context.Marker;Receipt=$Context.Receipt;Ports=@($Context.Ports);Environment=@{SERVER_ADDRESS='127.0.0.1';GATEWAY_MANAGEMENT_ADDRESS='127.0.0.1';GATEWAY_TCP_BIND_ADDRESS='127.0.0.1'};AttachmentFields=0;Failure='';State=[ordered]@{InDryRun=$false;Events=New-Object 'Collections.Generic.List[string]';AuthenticatedUser=$false;PasswordVersion=1;Rotated=$false;Relogin=$false;Vehicles=0;Terminals=0;Capabilities=4;Bindings=4;WriteCount=0;PreviewBefore=$null;PreviewAfter=$null;Systems=0;ActiveSystems=0;Memberships=4;Distribution=@{A=2;B=1;C=1};Leases=0;Connections=New-Object 'Collections.Generic.HashSet[string]';UpstreamEvidence=$false;AcceptanceStatus=$null;Receipts=New-Object 'Collections.Generic.List[object]';Deadline=1800000}}
+    $a|Add-Member ScriptMethod DryRun {
+        $this.State.InDryRun=$true;foreach($s in @('API_HEALTH','LOGIN','ROTATE','RELOGIN','DATA_PREP','PREVIEW','APPLY','GATEWAY','WIRE','TASK12','LEASE_RELEASE')){$this.Invoke($s)|Out-Null};$this.State.InDryRun=$false
+        [pscustomobject]@{Stages=@('API_HEALTH','LOGIN','ROTATE','RELOGIN','DATA_PREP','PREVIEW','APPLY','GATEWAY','WIRE','TASK12','LEASE_RELEASE');Vehicles=$this.State.Vehicles;Terminals=$this.State.Terminals;Systems=$this.State.Systems;SystemA=2;SystemB=1;SystemC=1;PreviewStable=$true;Leases=$this.State.Leases;ConnectionIds=$this.State.Connections.Count;Task12='ACCEPTED4';AttachmentFields=$this.AttachmentFields;SafeOutput='API_GATEWAY_WIRE_TASK12_DRYRUN_PASS'}
+    } -Force
+    $a|Add-Member ScriptMethod Invoke { param([string]$Stage)
+        if(-not $this.State.InDryRun){throw 'C2B_REAL_ADAPTER_NOT_READY'}
+        if($this.Failure -ceq 'TASK12_STATUS' -and $Stage -eq 'TASK12'){$this.State.AcceptanceStatus='REJECTED';throw 'C2B_TASK12_NOT_ACCEPTED'}
+        if($this.Failure -ceq 'LOGIN' -and $Stage -eq 'LOGIN'){throw 'C2B_AUTH_LOGIN_FAILED'}
+        if($this.Failure -ceq 'ROTATE' -and $Stage -eq 'ROTATE'){throw 'C2B_AUTH_ROTATION_FAILED'}
+        if($this.Failure -ceq 'PREVIEW_MUTATION' -and $Stage -eq 'PREVIEW'){throw 'C2B_PREVIEW_MUTATED'}
+        if($this.Failure -ceq 'MISSING_UPSTREAM' -and $Stage -eq 'TASK12'){throw 'C2B_UPSTREAM_EVIDENCE_MISSING'}
+        if($this.Failure -ceq 'ATTACHMENT' -and $Stage -eq 'WIRE'){throw 'C2B_ATTACHMENT_FIELD_FORBIDDEN'}
+        if($this.Failure -ceq 'DUPLICATE_CONNECTION' -and $Stage -eq 'WIRE'){throw 'C2B_CONNECTION_DUPLICATE'}
+        $this.State.Events.Add($Stage)
+        switch($Stage){'LOGIN'{if($this.State.AuthenticatedUser){throw 'C2B_AUTH_STATE_INVALID'};$this.State.AuthenticatedUser=$true};'ROTATE'{if(-not $this.State.AuthenticatedUser){throw 'C2B_AUTH_ROTATION_STATE_INVALID'};$this.State.PasswordVersion++;$this.State.Rotated=$true};'RELOGIN'{if(-not $this.State.Rotated){throw 'C2B_AUTH_RELOGIN_STATE_INVALID'};$this.State.Relogin=$true};'DATA_PREP'{$this.State.Vehicles=3;$this.State.Terminals=4;$this.State.Systems=3};'PREVIEW_BEFORE'{$this.State.PreviewBefore=[pscustomobject]@{Hash='h';Rows=4;Version=1;WriteCount=$this.State.WriteCount};return $this.State.PreviewBefore};'PREVIEW_AFTER'{$this.State.PreviewAfter=[pscustomobject]@{Hash='h';Rows=4;Version=1;WriteCount=$this.State.WriteCount};return $this.State.PreviewAfter};'PREVIEW'{};'APPLY'{$this.State.ActiveSystems=3;$this.State.WriteCount++};'WIRE'{$this.State.Leases=4;1..4|%{$this.State.Connections.Add(('c'+$_))|Out-Null};$this.State.UpstreamEvidence=$true};'TASK12'{if(-not $this.State.UpstreamEvidence -or $this.State.Leases -ne 4 -or $this.State.Connections.Count -ne 4 -or $this.AttachmentFields -ne 0){throw 'C2B_UPSTREAM_EVIDENCE_MISSING'};$this.State.AcceptanceStatus='ACCEPTED4'}}
+        return $true
+    } -Force
+    $a|Add-Member ScriptMethod Summary { return [pscustomobject]@{AuthenticatedUser=$this.State.AuthenticatedUser;PasswordVersion=$this.State.PasswordVersion;Rotated=$this.State.Rotated;Relogin=$this.State.Relogin;Vehicles=$this.State.Vehicles;Terminals=$this.State.Terminals;Capabilities=$this.State.Capabilities;Bindings=$this.State.Bindings;Systems=$this.State.Systems;SystemA=$this.State.Distribution.A;SystemB=$this.State.Distribution.B;SystemC=$this.State.Distribution.C;Distribution=$this.State.Distribution;Memberships=4;Leases=$this.State.Leases;ConnectionIds=$this.State.Connections.Count;UpstreamEvidence=$this.State.UpstreamEvidence;AcceptanceStatus=$this.State.AcceptanceStatus;AttachmentFields=$this.AttachmentFields;PreviewBefore=$this.State.PreviewBefore;PreviewAfter=$this.State.PreviewAfter} } -Force
+    $a|Add-Member ScriptMethod Receipt { param([string]$Stage) $seq=$this.State.Receipts.Count+1;$prev=if($seq -eq 1){'0'*64}else{$this.State.Receipts[$seq-2].Sha256};$bytes=[Text.Encoding]::UTF8.GetBytes(('{0}|{1}' -f $Stage,$seq));$hash=(([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)|ForEach-Object ToString x2)-join '');$rec=[pscustomobject]@{Stage=$Stage;Sequence=$seq;PreviousSha256=$prev;Sha256=$hash};$this.State.Receipts.Add($rec);return $rec } -Force
+    $a|Add-Member ScriptMethod Deadline { return $this.State.Deadline } -Force
+    $a|Add-Member ScriptMethod Stop { param([string]$Stage) return [pscustomobject]@{Status='STOPPED'} } -Force
+    return $a
+}
 
 function Invoke-P6CompositeBusinessPipeline {
     param(
@@ -100,7 +127,7 @@ function Invoke-P6CompositeBusinessPipeline {
     } finally {
         $stopOrder=@($started);[array]::Reverse($stopOrder)
         foreach($resource in $stopOrder){
-            try { $Adapter.Stop($resource);$stopped.Add($resource) } catch { $retained=$true;$failed='C2B_STOP_UNPROVEN' }
+            try { $null=$Adapter.Stop($resource);$stopped.Add($resource) } catch { $retained=$true;$failed='C2B_STOP_UNPROVEN' }
         }
     }
     if($null -ne $failed){
@@ -112,5 +139,6 @@ function Invoke-P6CompositeBusinessPipeline {
         $safe=('FAIL Phase={0} Code={1} Retained={2}' -f $failedStep,$failedCode,$true)
         return [pscustomobject]@{Status='FAIL';Code=$failedCode;Phase=$failedStep;Retained=$true;StartedStages=@($started);StoppedStages=@($stopped);Stages=$stages;Steps=$steps;PreviewStable=$previewStable;Business=$business;PreviewBeforeWrites=$previewBeforeWrites;PreviewAfterWrites=$previewAfterWrites;SafeOutput=$safe}
     }
+    if($Adapter.PSObject.Methods.Name -contains 'Summary'){$business=$Adapter.Summary()}
     return [pscustomobject]@{Status='PASS';Code='C2B_PIPELINE_COMPLETE';Phase='COMPLETE';Retained=$retained;StartedStages=@($started);StoppedStages=@($stopped);Stages=$stages;Steps=$steps;PreviewStable=$previewStable;Business=$business;PreviewBeforeWrites=$previewBeforeWrites;PreviewAfterWrites=$previewAfterWrites;SafeOutput=('PASS Phase=COMPLETE Retained={0}' -f $retained)}
 }
