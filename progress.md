@@ -1020,3 +1020,34 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 保留门禁：Task10 ByteBuf释放及runner首失败诊断未重新关闭；Task11 library missing/ACL/syntax安全加载未关闭；Task12 count==4与cleanup selector/match-count fail-closed未关闭；cloud V20全库只读盘点未完成。本地APPROVED不授予push/merge/PR/部署或真实设备/流量操作。
 - 最终可复核交付物：`docs/pilot/evidence/p6-2/final-remediation-regression-2026-09-05.md`、`docs/pilot/evidence/p6-2/final-remediation-review-2026-09-05.md`。本进度和两份报告独立文档提交，过程日志/SDD证据保留，后续无需重做本轮已完成门禁。
 - 下一步：关闭已列真实环境/运维前置门禁后再进入相应授权流程；本轮工作到本地整改验证与文档收口为止。
+
+### P6-2 运维安全门禁：Task11（2026-09-05）
+
+- 新分支 `codex/p6-2-ops-safety-gates`，精确基线 `master@ecbaf15a128c6dc6d965e409f2748f5da8d7f5d2`；沿用已隔离工作树，不改动其他工作树或旧分支。
+- 状态：`TASK11_SAFE_LIBRARY_LOADING_APPROVED_LOCAL`。通用runner新增不依赖library的固定加载失败出口，missing/真实NTFS拒读/syntax覆盖三种Mode，stderr空、exit1、manifest不变且不执行后续动作。
+- 可信RED使用原167202...runner备份：12项中3合法通过、9明确WRONG_STDOUT_COUNT；最终GREEN加载12/12及harness自证3/3。独立复核I1/I2/M1均关闭，C/I/M0/0/0：全部等待有界、己方进程异常回收、产品断言/辅助错误分离、三个ACL逐一恢复、未恢复禁止删除。
+- 原private入口先守卫初始hash并备份，再同步版本化runner；两者最终SHA `8C99D07F66F0A95E78FCBFAC82F29F2C1585B1C58DD607E9672217A07613C4C4`一致，业务library保持原SHA5EBF...。
+- 最终业务回归在原样三脚本SHA副本+合成manifest中执行42/42，stderr空、输出扫描0、manifest hash不变。早期原目录42项存在nonloopback catch对真实manifest计算hash的读取路径，已明确披露并不再作为零读取凭据；真实内容未被改写或输出。
+- 版本化交付：`tools/ops-safety/Invoke-CloudOnboardSystemMigration.ps1`、`tools/ops-safety/tests/runner-library-loading.tests.ps1`，以及Task11计划/验收报告；私有业务库和资料继续ignored。测试ACL只作用于合成file并恢复，临时目录/测试进程残留0。
+- 本轮仅关闭Task11，未push/merge/deploy，未改Java/V19–V21或真实资料。Task12数量与cleanup selector/match-count、Task10异常路径及隔离演练仍待各自执行；不能由Task11通过推定云端准入。
+
+### P6-2 运维安全门禁：Task12（2026-09-05）
+
+- 状态：`TASK12_ACCEPTANCE_CLEANUP_APPROVED_LOCAL`。从 `16e174214ff87bc5a90736a34eb3bdc1818a3f04`、分支 `codex/p6-2-ops-safety-gates` 开始；进入时工作树干净。
+- 已批准范围：恰好4物理终端的数量/身份/映射门禁，创建时receipt驱动的本地资源默认只读清理、精确选择及match-count fail-closed。允许同车双设备共享车辆/系统，不改旧seed builder数量合同。
+- 实施计划：`docs/superpowers/plans/2026-09-05-p6-2-ops-task12-acceptance-cleanup.md`；恢复入口：同名SDD目录的 `progress.md`、`task-12-report.md`。本轮采用Subagent-Driven、RED→GREEN与独立复核，已完成，不重新派发Task11/12。
+- 不变边界：Task11、旧Task12库/6测试、业务代码、V19–V21和真实资料不改；不调用真实Docker删除，不访问云端，不推送或部署。
+- 初审前74/74仍遗漏I1标签键大小写、I2 bind共享存储及M1坏库parse证据。Fix1关闭I1/I2；M1首版缺有效receipt/fake PATH正控制，Fix2仅修测试接线，先2/2 RED后2/2 GREEN。最终独立规格/质量PASS，C/I/M=0/0/0。
+- I2保守裁定：全库存任意bind拒绝自动清理，避免仅凭路径字符串推定无别名共享；无关bind也会拒绝，需人工只读核对及单独清理流程，不提供绕过。
+- 最终控制器完整92/92，exit0、stderr0；旧基线6/6；WinPS5.1四脚本Parser0；测试/审阅hash一致，冻结hash漂移0，Task12临时目录0。最终测试SHA `F2D222849CE2900289B7B656133D89131CE8A46B30FFA4FCBA02042F5A8CE28F`。未运行无关Java/Maven回归。
+- 公开门禁报告 `docs/pilot/evidence/p6-2/ops-task12-acceptance-cleanup-2026-09-05.md` 与新本地安全手册已更新，共10个交付文件在本节所在本地提交固化（parent为入口HEAD）；未push/merge/deploy，真实资源删除及四设备验收均未执行。
+- 下一步：Task10异常路径门禁及后续独立隔离演练；需要相应任务指令，不由本次本地保护测试推定云端准入。
+
+### P6-2 运维安全门禁：Task10异常路径（2026-09-06）
+
+- 状态：`TASK10_EXCEPTION_GATES_APPROVED_LOCAL`。从Task12提交 `2c0d274437db5e91a0e30579d03456b5c7e01c1c` 开始；仅两个simulator生产文件及两个测试文件，业务API/gateway/POM/V19–V21/Task11/12未改。
+- ByteBuf测试先纠正不可释放EmptyByteBuf夹具，再真实复现registration/authentication/position异常后refCnt=1；最小finally修复后资源5/5。runner首错/脱敏在29项中6个真实断言RED，另有control reason mutation RED；实例/report共享step/action/fixed reason，不保存cause/raw message，连接关闭和single-use不变。
+- 最终定向34/34、三模块矩阵52/52，均0 failure/error/skip、exit0；四suite XML Fresh=true。独立规格/质量复核PASS，C/I/M0/0/0；差异包SHA `74FE4B21C867BF14714B045FF7C905BB228199456A883D8966F1C38704AB66EB`。
+- 历史RED stdout未单独保存；控制器在发生时接收失败计数/断言值，过程报告如实承接。独立审阅未回滚复现RED，未把当前GREEN冒充历史时序证据。
+- Docker只读库存44容器/16bind/36volume，按Task12不得自动清理，因此连续隔离演练选native PG17.9/PostGIS新实例；不改现有Docker、不绕过Task12。演练预检已识别V21、V2 demo V20前置及注册后真实API激活衔接，正在建立单独plan-owned runner。
+- 本节代码/计划/公开报告在单独Task10本地提交固化；未push/deploy/访问真实资料。下一状态为 `ISOLATED_REHEARSAL_IN_PROGRESS`，不由Task10通过推定演练或云端准入。

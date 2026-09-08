@@ -3,6 +3,7 @@ package com.idavy.drtops.jtsimulator;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -235,20 +236,153 @@ class ScenarioRunnerTest {
     @Test
     void instanceRunnerRejectsSecondRunAfterFailureBeforeExecutingSteps() throws Exception {
         // Mutation caught: allowing a failed runner to retry with stale failed/connection state.
+        AtomicInteger controls = new AtomicInteger();
         Scenario failing = Scenario.multiDevice("failing", List.of(
                 terminal("dispatch-01", "000000000411", "DSP411", "VEHICLE-A", "LOCATION_PRIMARY")),
-                List.of(new Scenario.ScenarioStep(Scenario.MultiAction.REGISTER, "dispatch-01", null)));
+                List.of(
+                        new Scenario.ScenarioStep(Scenario.MultiAction.REGISTER, "dispatch-01", null),
+                        new Scenario.ScenarioStep(Scenario.MultiAction.ADVANCE_CLOCK, null, 1)));
         Scenario valid = authenticatedDualDevice(
                 terminal("dispatch-02", "000000000412", "DSP412", "VEHICLE-A", "LOCATION_PRIMARY"),
                 terminal("recorder-02", "000000000422", "REC422", "VEHICLE-A", "LOCATION_BACKUP"));
         try (FakePlatform platform = new FakePlatform()) {
-            ScenarioRunner runner = new ScenarioRunner(platform.endpoint(), noOpControl());
-            assertThrows(IllegalStateException.class, () -> runner.run(failing));
+            ScenarioRunner runner = new ScenarioRunner(platform.endpoint(), countingControl(controls));
+            IllegalStateException firstFailure = assertThrows(
+                    IllegalStateException.class, () -> runner.run(failing));
+            assertTrue(firstFailure.getMessage().contains("step=0"), firstFailure::getMessage);
+            assertTrue(firstFailure.getMessage().contains("action=REGISTER"), firstFailure::getMessage);
+            assertTrue(firstFailure.getMessage().contains("reason=MISSING_CONNECTION"), firstFailure::getMessage);
+            assertNull(firstFailure.getCause());
+            assertEquals(0, controls.get(), "steps after the first failure must not run");
             int registrations = platform.registrationIdentities().size();
 
             IllegalStateException failure = assertThrows(IllegalStateException.class, () -> runner.run(valid));
             assertTrue(failure.getMessage().contains("single-use"));
             assertEquals(registrations, platform.registrationIdentities().size());
+        }
+    }
+
+    @Test
+    void instanceFailureUsesSafeWireReasonWhenLoopbackConnectFails() throws Exception {
+        int unavailablePort;
+        try (ServerSocket closed = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+            unavailablePort = closed.getLocalPort();
+        }
+        Scenario scenario = Scenario.multiDevice("connect-failure", List.of(
+                terminal("dispatch-01", "000000000431", "DSP431", "VEHICLE-A", "LOCATION_PRIMARY")),
+                List.of(new Scenario.ScenarioStep(Scenario.MultiAction.CONNECT, "dispatch-01", null)));
+        ScenarioRunner runner = new ScenarioRunner(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), unavailablePort), noOpControl());
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> runner.run(scenario));
+
+        assertTrue(failure.getMessage().contains("step=0"), failure::getMessage);
+        assertTrue(failure.getMessage().contains("action=CONNECT"), failure::getMessage);
+        assertTrue(failure.getMessage().contains("reason=WIRE_STEP_FAILED"), failure::getMessage);
+        assertNull(failure.getCause());
+    }
+
+    @Test
+    void registrationRejectionPreservesFirstFailureAndClosesConnection() throws Exception {
+        AtomicInteger controls = new AtomicInteger();
+        Scenario scenario = Scenario.multiDevice("registration-rejected", List.of(
+                terminal("dispatch-01", "000000000441", "DSP441", "VEHICLE-A", "LOCATION_PRIMARY")),
+                List.of(
+                        new Scenario.ScenarioStep(Scenario.MultiAction.CONNECT, "dispatch-01", null),
+                        new Scenario.ScenarioStep(Scenario.MultiAction.REGISTER, "dispatch-01", null),
+                        new Scenario.ScenarioStep(Scenario.MultiAction.ADVANCE_CLOCK, null, 1)));
+        try (FakePlatform platform = new FakePlatform(1)) {
+            ScenarioRunner runner = new ScenarioRunner(platform.endpoint(), countingControl(controls));
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class, () -> runner.run(scenario));
+
+            assertTrue(failure.getMessage().contains("step=1"), failure::getMessage);
+            assertTrue(failure.getMessage().contains("action=REGISTER"), failure::getMessage);
+            assertTrue(failure.getMessage().contains("reason=WIRE_STEP_FAILED"), failure::getMessage);
+            assertNull(failure.getCause());
+            assertEquals(0, controls.get(), "the skipped control step must not execute");
+            await(() -> !platform.events().isEmpty());
+            assertTrue(platform.events().stream().anyMatch(event ->
+                    event.equals("peer-closed") || event.startsWith("connection-ended:")),
+                    platform.events()::toString);
+        }
+    }
+
+    @Test
+    void unexpectedControlFailureIsSanitizedAndStopsLaterSteps() throws Exception {
+        AtomicInteger invocations = new AtomicInteger();
+        String sentinel = "TASK10_SYNTHETIC_SECRET";
+        Scenario scenario = Scenario.multiDevice("unexpected-control", List.of(
+                terminal("dispatch-01", "000000000451", "DSP451", "VEHICLE-A", "LOCATION_PRIMARY")),
+                List.of(
+                        new Scenario.ScenarioStep(Scenario.MultiAction.ADVANCE_CLOCK, null, 1),
+                        new Scenario.ScenarioStep(Scenario.MultiAction.ADVANCE_CLOCK, null, 1)));
+        ScenarioRunner.ScenarioControl exploding = new ScenarioRunner.ScenarioControl() {
+            @Override public void advanceClock(Scenario.ScenarioStep step) {
+                invocations.incrementAndGet();
+                throw new RuntimeException(sentinel + " token/body/identity");
+            }
+            @Override public void expectActiveSource(Scenario.ScenarioStep step) { }
+            @Override public void changeWanUplink(Scenario.ScenarioStep step) { }
+        };
+        try (FakePlatform platform = new FakePlatform()) {
+            ScenarioRunner runner = new ScenarioRunner(platform.endpoint(), exploding);
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class, () -> runner.run(scenario));
+
+            assertTrue(failure.getMessage().contains("step=0"), failure::getMessage);
+            assertTrue(failure.getMessage().contains("action=ADVANCE_CLOCK"), failure::getMessage);
+            assertTrue(failure.getMessage().contains("reason=UNEXPECTED_EXCEPTION"), failure::getMessage);
+            assertFalse(failure.getMessage().contains(sentinel), failure::getMessage);
+            assertNull(failure.getCause());
+            assertEquals(1, invocations.get(), "the first failure must stop the second control action");
+        }
+    }
+
+    @Test
+    void multiReportPreservesFailurePositionSkipAndSafeReason() throws Exception {
+        Scenario scenario = Scenario.multiDevice("report-registration-rejected", List.of(
+                terminal("dispatch-01", "000000000461", "DSP461", "VEHICLE-A", "LOCATION_PRIMARY")),
+                List.of(
+                        new Scenario.ScenarioStep(Scenario.MultiAction.CONNECT, "dispatch-01", null),
+                        new Scenario.ScenarioStep(Scenario.MultiAction.REGISTER, "dispatch-01", null),
+                        new Scenario.ScenarioStep(Scenario.MultiAction.ADVANCE_CLOCK, null, 1)));
+        try (FakePlatform platform = new FakePlatform(1)) {
+            ScenarioReport report = ScenarioRunner.run(scenario, platform.endpoint());
+
+            assertEquals(ScenarioReport.Outcome.PASS, report.steps().get(0).outcome());
+            assertEquals(ScenarioReport.Outcome.FAIL, report.steps().get(1).outcome());
+            assertTrue(report.steps().get(1).detail().contains("reason=WIRE_STEP_FAILED"), report::asText);
+            assertEquals(ScenarioReport.Outcome.SKIP, report.steps().get(2).outcome());
+            assertFalse(report.asText().contains("000000000461"), report::asText);
+            await(() -> !platform.events().isEmpty());
+            assertTrue(platform.events().stream().anyMatch(event ->
+                    event.equals("peer-closed") || event.startsWith("connection-ended:")),
+                    platform.events()::toString);
+        }
+    }
+
+    @Test
+    void multiReportSanitizesUnexpectedRegistrationException() throws Exception {
+        String sentinel = "TASK10_SYNTHETIC_SECRET";
+        Scenario.TerminalDefinition terminal = terminal(
+                "dispatch-01", "000000000471", sentinel, "VEHICLE-A", "LOCATION_PRIMARY");
+        Scenario scenario = Scenario.multiDevice("report-unexpected", List.of(terminal), List.of(
+                new Scenario.ScenarioStep(Scenario.MultiAction.CONNECT, terminal.alias(), null),
+                new Scenario.ScenarioStep(Scenario.MultiAction.REGISTER, terminal.alias(), null),
+                new Scenario.ScenarioStep(Scenario.MultiAction.LOCATION, terminal.alias(), null)));
+        try (FakePlatform platform = new FakePlatform()) {
+            ScenarioReport report = ScenarioRunner.run(scenario, platform.endpoint());
+
+            assertEquals(1, report.steps().get(1).index());
+            assertEquals("REGISTER", report.steps().get(1).action());
+            assertEquals(ScenarioReport.Outcome.FAIL, report.steps().get(1).outcome());
+            assertTrue(report.steps().get(1).detail().contains("reason=UNEXPECTED_EXCEPTION"), report::asText);
+            assertEquals(ScenarioReport.Outcome.SKIP, report.steps().get(2).outcome());
+            assertFalse(report.asText().contains(sentinel), report::asText);
+            assertFalse(report.asText().contains("value does not fit"), report::asText);
+            assertFalse(report.asText().contains("000000000471"), report::asText);
+            await(() -> !platform.events().isEmpty());
         }
     }
 
@@ -395,6 +529,7 @@ class ScenarioRunnerTest {
 
             assertFalse(report.allPassed());
             assertTrue(report.asText().contains("control adapter"), report::asText);
+            assertTrue(report.asText().contains("reason=CONTROL_ADAPTER_REQUIRED"), report::asText);
         }
     }
 
@@ -621,6 +756,14 @@ class ScenarioRunnerTest {
         };
     }
 
+    private static ScenarioRunner.ScenarioControl countingControl(AtomicInteger controls) {
+        return new ScenarioRunner.ScenarioControl() {
+            @Override public void advanceClock(Scenario.ScenarioStep step) { controls.incrementAndGet(); }
+            @Override public void expectActiveSource(Scenario.ScenarioStep step) { controls.incrementAndGet(); }
+            @Override public void changeWanUplink(Scenario.ScenarioStep step) { controls.incrementAndGet(); }
+        };
+    }
+
     private static final class ScenarioControlBlocker implements ScenarioRunner.ScenarioControl {
         private final CountDownLatch entered;
         private final CountDownLatch release;
@@ -837,13 +980,26 @@ class ScenarioRunnerTest {
         private final AtomicInteger platformSerial = new AtomicInteger();
         private final CountDownLatch registrationReplyEntered;
         private final CountDownLatch releaseRegistrationReply;
+        private final int registrationResult;
 
         FakePlatform() throws IOException {
-            this(null, null);
+            this(0, null, null);
+        }
+
+        FakePlatform(int registrationResult) throws IOException {
+            this(registrationResult, null, null);
         }
 
         FakePlatform(CountDownLatch registrationReplyEntered, CountDownLatch releaseRegistrationReply)
                 throws IOException {
+            this(0, registrationReplyEntered, releaseRegistrationReply);
+        }
+
+        private FakePlatform(
+                int registrationResult,
+                CountDownLatch registrationReplyEntered,
+                CountDownLatch releaseRegistrationReply) throws IOException {
+            this.registrationResult = registrationResult;
             this.registrationReplyEntered = registrationReplyEntered;
             this.releaseRegistrationReply = releaseRegistrationReply;
             serverSocket = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
@@ -949,8 +1105,10 @@ class ScenarioRunnerTest {
             int replyId;
             if (messageId == 0x0100) {
                 replyId = 0x8100;
-                body.writeShort(request.header().serialNumber()).writeByte(0);
-                body.writeCharSequence("SIM-TOKEN", StandardCharsets.US_ASCII);
+                body.writeShort(request.header().serialNumber()).writeByte(registrationResult);
+                if (registrationResult == 0) {
+                    body.writeCharSequence("SIM-TOKEN", StandardCharsets.US_ASCII);
+                }
                 delayRegistrationReplyIfRequested();
             } else {
                 replyId = 0x8001;

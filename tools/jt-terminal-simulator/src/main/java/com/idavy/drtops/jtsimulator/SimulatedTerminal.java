@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntFunction;
 
 /**
  * One simulated terminal connection over a real TCP socket. Frames are encoded/decoded with the
@@ -40,6 +41,7 @@ public final class SimulatedTerminal implements AutoCloseable {
     private final String manufacturerId;
     private final String model;
     private final String terminalCode;
+    private final IntFunction<ByteBuf> bodyAllocator;
     private final String maskedAlias;
     private final UUID connectionId = UUID.randomUUID();
     private final AtomicInteger serialNumbers = new AtomicInteger();
@@ -63,6 +65,17 @@ public final class SimulatedTerminal implements AutoCloseable {
             String manufacturerId,
             String model,
             String terminalCode) {
+        this(identity, protocolVersion, plateNumber, manufacturerId, model, terminalCode, Unpooled::buffer);
+    }
+
+    SimulatedTerminal(
+            String identity,
+            ProtocolVersion protocolVersion,
+            String plateNumber,
+            String manufacturerId,
+            String model,
+            String terminalCode,
+            IntFunction<ByteBuf> bodyAllocator) {
         if (identity == null || identity.isBlank()) {
             throw new IllegalArgumentException("identity is required");
         }
@@ -72,6 +85,7 @@ public final class SimulatedTerminal implements AutoCloseable {
         this.manufacturerId = Objects.requireNonNull(manufacturerId, "manufacturerId");
         this.model = Objects.requireNonNull(model, "model");
         this.terminalCode = Objects.requireNonNull(terminalCode, "terminalCode");
+        this.bodyAllocator = Objects.requireNonNull(bodyAllocator, "bodyAllocator");
         int visible = Math.min(4, identity.length());
         this.maskedAlias = "****" + identity.substring(identity.length() - visible);
     }
@@ -112,30 +126,39 @@ public final class SimulatedTerminal implements AutoCloseable {
     /** Sends the registration message and returns its serial number. */
     public int sendRegistration() {
         boolean versioned = protocolVersion.versionedHeader();
-        ByteBuf body = Unpooled.buffer();
-        body.writeShort(32).writeShort(1);
-        writeFixed(body, manufacturerId, versioned ? 11 : 5, StandardCharsets.US_ASCII);
-        writeFixed(body, model, versioned ? 30 : 20, StandardCharsets.US_ASCII);
-        writeFixed(body, terminalCode, versioned ? 30 : 7, StandardCharsets.US_ASCII);
-        body.writeByte(1);
-        body.writeCharSequence(plateNumber, Charset.forName("GBK"));
-        byte[] bytes = new byte[body.readableBytes()];
-        body.readBytes(bytes);
-        body.release();
+        ByteBuf body = bodyAllocator.apply(256);
+        byte[] bytes;
+        try {
+            body.writeShort(32).writeShort(1);
+            writeFixed(body, manufacturerId, versioned ? 11 : 5, StandardCharsets.US_ASCII);
+            writeFixed(body, model, versioned ? 30 : 20, StandardCharsets.US_ASCII);
+            writeFixed(body, terminalCode, versioned ? 30 : 7, StandardCharsets.US_ASCII);
+            body.writeByte(1);
+            body.writeCharSequence(plateNumber, Charset.forName("GBK"));
+            bytes = new byte[body.readableBytes()];
+            body.readBytes(bytes);
+        } finally {
+            // 当前方法拥有临时报文体，字段校验或写入失败时也必须立即释放。
+            body.release();
+        }
         return sendFrame(0x0100, bytes);
     }
 
     /** Sends the authentication message using the token captured from the registration reply. */
     public int sendAuthentication() {
         byte[] token = registrationToken;
-        ByteBuf body = Unpooled.buffer();
-        if (protocolVersion.versionedHeader()) {
-            body.writeByte(token.length);
+        ByteBuf body = bodyAllocator.apply(256);
+        byte[] bytes;
+        try {
+            if (protocolVersion.versionedHeader()) {
+                body.writeByte(token.length);
+            }
+            body.writeBytes(token);
+            bytes = new byte[body.readableBytes()];
+            body.readBytes(bytes);
+        } finally {
+            body.release();
         }
-        body.writeBytes(token);
-        byte[] bytes = new byte[body.readableBytes()];
-        body.readBytes(bytes);
-        body.release();
         return sendFrame(0x0102, bytes);
     }
 
@@ -145,18 +168,22 @@ public final class SimulatedTerminal implements AutoCloseable {
 
     /** Sends a plain 0x0200 position without additional items (synthetic fixed coordinates). */
     public int sendPosition() {
-        ByteBuf body = Unpooled.buffer(28);
-        body.writeInt(0);
-        body.writeInt(2);
-        body.writeInt(32_000_000);
-        body.writeInt(118_000_000);
-        body.writeShort(90);
-        body.writeShort(600);
-        body.writeShort(20);
-        body.writeBytes(HexFormat.of().parseHex("260815120000"));
-        byte[] bytes = new byte[body.readableBytes()];
-        body.readBytes(bytes);
-        body.release();
+        ByteBuf body = bodyAllocator.apply(28);
+        byte[] bytes;
+        try {
+            body.writeInt(0);
+            body.writeInt(2);
+            body.writeInt(32_000_000);
+            body.writeInt(118_000_000);
+            body.writeShort(90);
+            body.writeShort(600);
+            body.writeShort(20);
+            body.writeBytes(HexFormat.of().parseHex("260815120000"));
+            bytes = new byte[body.readableBytes()];
+            body.readBytes(bytes);
+        } finally {
+            body.release();
+        }
         return sendFrame(0x0200, bytes);
     }
 
