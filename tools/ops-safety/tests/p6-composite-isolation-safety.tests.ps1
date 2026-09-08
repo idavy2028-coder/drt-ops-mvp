@@ -413,7 +413,7 @@ if ($Phase -cin @('All','PowerShell')) {
                 }
             }
             function Get-P6GitValue([string]$RepositoryRoot,[string]$Operation) {
-                if($Operation -ceq 'TrackedTools'){return ((1..11 | ForEach-Object {'file'+$_}) -join "`n")}
+                if($Operation -ceq 'TrackedTools'){return ((1..15 | ForEach-Object {'file'+$_}) -join "`n")}
                 return Get-P6Field $state $Operation
             }
             $actions=0;$rejected=$false
@@ -431,7 +431,7 @@ if ($Phase -cin @('All','PowerShell')) {
     Case 'c1_plan_current_head_and_dirty_snapshot_are_reported' {
         $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=' M tracked-file'; FullStatus=' M tracked-file'; ToolFilesCommitted=$true }
         function Get-P6GitValue([string]$RepositoryRoot,[string]$Operation) {
-            if($Operation -ceq 'TrackedTools'){return ((1..11|ForEach-Object {'file'+$_}) -join "`n")}
+            if($Operation -ceq 'TrackedTools'){return ((1..15|ForEach-Object {'file'+$_}) -join "`n")}
             return Get-P6Field $state $Operation
         }
         $plan=Get-P6IsolationPlan $repo $state
@@ -441,7 +441,7 @@ if ($Phase -cin @('All','PowerShell')) {
     Case 'c1_plan_next_commit_changes_confirmation_without_parent_pin' {
         $state=[pscustomobject]@{ Head='a4e0a3a489810dbc59af836c759ad3fb0b470808'; Branch='codex/p6-2-ops-safety-gates'; Root=$repo; TrackedStatus=''; FullStatus=''; ToolFilesCommitted=$true }
         function Get-P6GitValue([string]$RepositoryRoot,[string]$Operation) {
-            if($Operation -ceq 'TrackedTools'){return ((1..11|ForEach-Object {'file'+$_}) -join "`n")}
+            if($Operation -ceq 'TrackedTools'){return ((1..15|ForEach-Object {'file'+$_}) -join "`n")}
             return Get-P6Field $state $Operation
         }
         $first=Get-P6IsolationPlan $repo $state
@@ -575,10 +575,10 @@ if ($Phase -cin @('All','PowerShell')) {
         Check ($before -ceq $after) 'PLAN_CREATED_FILES'
         Check ($r.Error -eq '' -and $r.Out -notmatch '[A-Z]:\\') 'PLAN_PATH_LEAK'
     }
-    Case 'execute_is_inert_even_with_secret_input' {
+    Case 'execute_rejects_invalid_secret_token_before_resource_actions' {
         $sentinel = 'SYNTHETIC_SECRET_DO_NOT_LOG_819273'
         $r = RunTestProcess 'powershell.exe' @('-NoProfile','-File',(Join-Path $ops 'Invoke-P6CompositeIsolationRehearsal.ps1'),'-Mode','Execute','-ConfirmationToken',$sentinel)
-        Check ($r.ExitCode -eq 1 -and $r.Out -cmatch 'CODE=REHEARSAL_EXECUTE_NOT_IMPLEMENTED ACTIONS=0') 'EXECUTE_NOT_INERT'
+        Check ($r.ExitCode -eq 1 -and $r.Out -cmatch 'CODE=REHEARSAL_CONFIRMATION_INVALID ACTIONS=0') 'INVALID_TOKEN_STARTED_ACTION'
         Check (($r.Out + $r.Error) -notmatch $sentinel -and $r.Error -eq '') 'SECRET_LEAK'
     }
     Case 'runner_refuses_unknown_path_or_endpoint_parameter' {

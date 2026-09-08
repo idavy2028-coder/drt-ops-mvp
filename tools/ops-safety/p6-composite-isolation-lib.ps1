@@ -360,7 +360,12 @@ function Write-P6OwnedStorage {
     $password=Get-P6Field $Secrets 'DbPassword'
     if($password -isnot [string] -or $password -cnotmatch '^[A-Za-z0-9_-]{32,128}$'){throw 'REHEARSAL_NATIVE_CREDENTIAL_INVALID'}
     $secretsDirectory=Assert-P6ChildPath $root (Join-Path $root 'secrets')
-    [void][IO.Directory]::CreateDirectory($secretsDirectory);Assert-P6PrivateAcl $secretsDirectory
+    [void][IO.Directory]::CreateDirectory($secretsDirectory)
+    # 提权宿主默认新目录owner可能是Administrators；保持唯一用户DACL并显式归属当前用户。
+    $secretAcl=Get-Acl -LiteralPath $secretsDirectory
+    $secretAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+    Set-Acl -LiteralPath $secretsDirectory -AclObject $secretAcl -ErrorAction Stop
+    Assert-P6PrivateAcl $secretsDirectory
     $lines=@(foreach($key in @('SchemaVersion','RunId','OwnerNonce','RunDirectory','CreatedAt','PgPort')){
         $value=[string]$Marker.$key
         $escaped=New-Object Text.StringBuilder
@@ -503,6 +508,7 @@ function Get-P6GitValue {
         'TrackedTools' { 'ls-files -- tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1 tools/ops-safety/p6-composite-isolation-lib.ps1 tools/ops-safety/p6-composite-isolation-pipeline.ps1 tools/ops-safety/fixtures/P6CompositeFlywayTool.java tools/ops-safety/fixtures/P6CompositeWireHarness.java tools/ops-safety/fixtures/P6CompositeWireHarnessContractTest.java tools/ops-safety/Invoke-Task12SafetyGate.ps1 tools/ops-safety/task12-safety-lib.ps1 tools/ops-safety/tests/p6-composite-isolation-safety.tests.ps1 tools/ops-safety/tests/p6-composite-isolation-pipeline.tests.ps1 docs/pilot/p6-2-local-isolation-rehearsal-runbook.md' }
         default { throw 'REHEARSAL_PREFLIGHT_FAILED' }
     }
+    if($Operation -ceq 'TrackedTools'){$arguments+=' tools/ops-safety/p6-composite-real-runtime.ps1 tools/ops-safety/fixtures/P6CompositeBusinessTool.java tools/ops-safety/fixtures/P6CompositeBusinessToolContractTest.java tools/ops-safety/tests/p6-composite-real-runtime.tests.ps1'}
     $psi=New-Object Diagnostics.ProcessStartInfo
     $psi.FileName=(Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $psi.WorkingDirectory=$RepositoryRoot
@@ -533,12 +539,20 @@ function Get-P6GitValue {
         $process.Dispose()
     }
 }
+function Get-P6PostgresHostState {
+    try {
+        $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal=New-Object Security.Principal.WindowsPrincipal($identity)
+        $admin=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        return [pscustomobject]@{IsAdministrator=[bool]$admin;CanStartPostgres=[bool](-not $admin);IdentityDigest=(Get-P6Sha256 ([Text.Encoding]::UTF8.GetBytes($identity.User.Value)))}
+    }catch{throw 'REHEARSAL_HOST_IDENTITY_UNPROVEN'}
+}
 function Get-P6IsolationPlan {
     param([string] $RepositoryRoot, $RepositoryState=$null)
     try {
         $root=[IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\','/')
         if ($null -eq $RepositoryState) {
-            $RepositoryState=[pscustomobject]@{ Head=(Get-P6GitValue $root 'Head'); Branch=(Get-P6GitValue $root 'Branch'); Root=(Get-P6GitValue $root 'Root'); TrackedStatus=(Get-P6GitValue $root 'TrackedStatus'); FullStatus=(Get-P6GitValue $root 'FullStatus'); ToolFilesCommitted=(@((Get-P6GitValue $root 'TrackedTools') -split "`n" | Where-Object { $_ -ne '' }).Count -eq 11) }
+            $RepositoryState=[pscustomobject]@{ Head=(Get-P6GitValue $root 'Head'); Branch=(Get-P6GitValue $root 'Branch'); Root=(Get-P6GitValue $root 'Root'); TrackedStatus=(Get-P6GitValue $root 'TrackedStatus'); FullStatus=(Get-P6GitValue $root 'FullStatus'); ToolFilesCommitted=(@((Get-P6GitValue $root 'TrackedTools') -split "`n" | Where-Object { $_ -ne '' }).Count -eq 15) }
         }
         if ((Get-P6Field $RepositoryState 'Head') -cnotmatch '^[a-f0-9]{40}$' -or (Get-P6Field $RepositoryState 'Head') -ceq ('0'*40) -or
             (Get-P6Field $RepositoryState 'Branch') -cne 'codex/p6-2-ops-safety-gates') { throw 'REHEARSAL_HEAD_MISMATCH' }
@@ -551,10 +565,17 @@ function Get-P6IsolationPlan {
         $fullStatus=Get-P6Field $RepositoryState 'FullStatus'
         $cleanInputs=($fullStatus -is [string] -and $fullStatus -ceq '')
         $committed=((Get-P6Field $RepositoryState 'ToolFilesCommitted') -is [bool] -and $RepositoryState.ToolFilesCommitted)
+        $hostState=Get-P6PostgresHostState
         $manifest=@('p6-isolation-plan-v4',[string]$RepositoryState.Head,[string]$RepositoryState.Branch,('root='+$rootDigest),('clean='+$clean),('cleanInputs='+$cleanInputs),('committed='+$committed))
+        $manifest+=('hostCanStartPostgres='+$hostState.CanStartPostgres)
+        $manifest+=('hostIdentity='+$hostState.IdentityDigest)
         # 固定清单；未来wire/runbook加入自动使指纹失效；不枚举private目录。
         foreach ($relative in @(
             'tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1',
+            'tools/ops-safety/p6-composite-real-runtime.ps1',
+            'tools/ops-safety/fixtures/P6CompositeBusinessTool.java',
+            'tools/ops-safety/fixtures/P6CompositeBusinessToolContractTest.java',
+            'tools/ops-safety/tests/p6-composite-real-runtime.tests.ps1',
             'tools/ops-safety/p6-composite-isolation-lib.ps1',
             'tools/ops-safety/p6-composite-isolation-pipeline.ps1',
             'tools/ops-safety/fixtures/P6CompositeFlywayTool.java',
@@ -570,8 +591,9 @@ function Get-P6IsolationPlan {
             $manifest+=$relative+'='+$hash
         }
         return [pscustomobject]@{
-            Status='PLAN'; Actions=0; Executable=$false
-            CleanTracked=$clean; CleanInputs=$cleanInputs; RepositoryRoot=$root; ToolFilesCommitted=$committed; ExecutionBlocker='REHEARSAL_EXECUTE_NOT_IMPLEMENTED'; Branch=$RepositoryState.Branch; RootDigest=$rootDigest
+            Status='PLAN'; Actions=0; Executable=($clean -and $cleanInputs -and $committed -and $hostState.CanStartPostgres)
+            HostCanStartPostgres=$hostState.CanStartPostgres;HostIsAdministrator=$hostState.IsAdministrator
+            CleanTracked=$clean; CleanInputs=$cleanInputs; RepositoryRoot=$root; ToolFilesCommitted=$committed; ExecutionBlocker=$(if(-not $hostState.CanStartPostgres){'REHEARSAL_NONADMIN_HOST_REQUIRED'}elseif(-not $clean -or -not $cleanInputs){'REHEARSAL_WORKTREE_DIRTY'}elseif(-not $committed){'REHEARSAL_TOOLS_UNCOMMITTED'}else{'NONE'}); Branch=$RepositoryState.Branch; RootDigest=$rootDigest
             Fingerprint=(Get-P6Sha256 ([Text.Encoding]::UTF8.GetBytes(($manifest -join "`n"))))
             Head=$RepositoryState.Head; Dependencies='JDK21,POSTGRESQL17_POSTGIS,MAVEN,WINDOWS_POWERSHELL_5_1'; Host='WINDOWS_POWERSHELL_5_1'
             Boundary='NEW_NATIVE_CLUSTER,LOOPBACK_ONLY,NO_DOCKER,NO_CLOUD,NO_EXISTING_DB'; RunLocation='WORKTREE_TMP_P6ISO'

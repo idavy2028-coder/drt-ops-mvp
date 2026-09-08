@@ -101,9 +101,9 @@ public final class P6CompositeFlywayTool {
         require(cwd.toString().equals(environment.get("P6_REHEARSAL_RUN_DIRECTORY")) &&
             cwd.getFileName().toString().equals("native-"+run),"REHEARSAL_FLYWAY_OWNERSHIP_INVALID");
         Path parent=cwd.getParent();
-        require(parent!=null && parent.getFileName().toString().equals("2026-09-06-p6-2-local-isolation-rehearsal") &&
-            parent.getParent()!=null && parent.getParent().getFileName().toString().equals("sdd") &&
-            parent.getParent().getParent()!=null && parent.getParent().getParent().getFileName().toString().equals(".superpowers"),"REHEARSAL_FLYWAY_OWNERSHIP_INVALID");
+        require(parent!=null && parent.getFileName().toString().equals("p6iso") &&
+            parent.getParent()!=null && parent.getParent().getFileName().toString().equals(".tmp") &&
+            cwd.resolve("owner.properties").toString().length()<=240,"REHEARSAL_FLYWAY_OWNERSHIP_INVALID");
         for(Path cursor=cwd;cursor!=null;cursor=cursor.getParent()) {
             require(!Files.isSymbolicLink(cursor) && !Files.readAttributes(cursor,java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS).isOther(),"REHEARSAL_FLYWAY_OWNERSHIP_INVALID");
         }

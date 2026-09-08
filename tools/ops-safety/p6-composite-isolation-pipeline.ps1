@@ -161,6 +161,7 @@ function Get-P6JavaResourceSpec {
             if($Context.Secrets[$key] -isnot [string] -or $Context.Secrets[$key] -cnotmatch '^[A-Za-z0-9_-]{32,100}$'){throw 'invalid'}
         }
         $env=Get-P6ChildEnvironment $root;$ports=$Context.Receipt.Ports
+        $env.JAVA_TOOL_OPTIONS='-Xmx512m';$env.LOGGING_LEVEL_ROOT='WARN'
         if($Role -ceq 'API'){
             $env.SERVER_ADDRESS='127.0.0.1';$env.SERVER_PORT=[string]$ports[1]
             $env.DRT_OPS_DATASOURCE_URL='jdbc:postgresql://127.0.0.1:'+$ports[0]+'/composite_live'

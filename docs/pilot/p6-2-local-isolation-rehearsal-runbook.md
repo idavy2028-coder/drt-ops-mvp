@@ -66,3 +66,20 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/op
 ```
 
 历史记录中存在 GW 合成启动的间歇性失败，且旧 Diagnose 动态改写可能自身抛错。现 Diagnose 仅输出固定非侵入类别，不再改写产品函数或读取诊断路径。启动记录架构变更及其限定验证以 `task-1c2a-launchfix-report.md` 为准；此前失败不抹除，也不把后续绿色倒推为历史根因已查明。独立审阅通过前禁止接通 Execute。
+# 2026-09-08 真实执行入口补充（优先于下方历史未开放说明）
+
+必须从普通用户、**未选择“以管理员身份运行”**的 Windows PowerShell 5.1 启动。Windows PostgreSQL拒绝管理员token；管理员Plan明确 `HOST_CAN_START_POSTGRES=false` / `REHEARSAL_NONADMIN_HOST_REQUIRED`，Execute在构建、建目录、initdb前拒绝且ACTIONS=0。宿主管理员条件及用户SID不可逆摘要绑定Plan指纹，换宿主后须重新Plan取得新token。不要沿用管理员Plan的token。
+
+启动目的：在普通权限宿主重新预检，确认干净代码、工具提交状态及可运行PG，再由操作者使用本次指纹执行。示例先在仓库工作树运行 `powershell.exe -NoProfile -File tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Plan`；只有 `EXECUTABLE=true` 才运行同脚本 `-Mode Execute -ConfirmationToken <本次指纹>`。保持原控制台存活直至最终结果。当前自动化提权宿主无法取得关联普通token（1312），受限token子进程初始化失败0xC0000142；不把此环境限制写成完整演练PASS。
+
+安全结果包含每个固定阶段的PASS/FAIL/SKIP，以及GW/API/PG实际Stop返回状态、逐短命工具退出码/停止/保留和存储清理状态。公开摘要不含PID/路径；需要恢复时仅从私有本轮receipt读取精确身份。
+
+`Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Execute -ConfirmationToken <当前Plan指纹>` 现接入真实本地消费者；仅干净当前HEAD、固定分支、根路径与15个已提交工具快照相符时执行。Plan没有资源副作用。不得绕过脏树门禁。
+
+运行风险：新建 `.tmp/p6iso/native-<RunId>` 私有目录、随机四个loopback端口、前台PG/API/GW以及短命Java/Maven进程；不会连接既有数据库、Docker、cloud或private配置。故障保留本轮目录及秘密，服务仅按原句柄和收据逆序停止，不按进程名杀服务。
+
+真实顺序：fresh Maven clean/package → foreground PG → 两库 → external59且skip=0 → 编译本轮helpers → V19/PREPARE_V20/V20/V21/validate → API登录换密重登 → 3车4终端能力及绑定 → 三系统preview前后10张表完整行hash相同再apply → Boot GW → 四真实socket WireHarness → 实际Task12 VerifyAcceptance固定输出ACCEPTED=4 → lease释放 → GW/API/PG逆序停止 → 所有权删除。
+
+Maven直接使用固定安装目录的classworlds Java launcher（不是cmd代理句柄），cwd是仓库；每次等待至多250ms，长构建/测试至多20分钟且仍受统一30分钟预算。external59使用forkCount=0，避免孤儿Surefire JVM。工具失败仅对原始句柄停止并有界等待，不明则落盘精确receipt并保留。Maven输出只计数并丢弃，4Mi字符上限；其他工具64Ki。API/GW内存上限512Mi并设置WARN日志。
+
+Surefire的reportsDirectory不支持命令行属性重定向，故fresh clean后只在原先不存在的 `apps/api/target/surefire-reports` 建立本用户私有ACL和nonce marker，登记为额外合成产物。包含子JVM配置的XML不得公开或打印。成功停止所有本轮进程且验证路径/marker/ACL/no-reparse后精确删除该目录；任何失败保留，不触碰其他target目录。安全结果在ignored SDD的execution目录，记录摘要、源码HEAD和产物SHA，不含密码/token/业务UUID。
