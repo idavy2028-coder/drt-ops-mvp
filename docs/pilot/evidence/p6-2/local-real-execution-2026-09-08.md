@@ -2,6 +2,8 @@
 
 ## 结果
 
+用户已确认将本地隔离演练延期至环境就绪后；本分支按代码交付合并，不以完整演练通过作为本次合并声明。恢复时先使用非管理员宿主重新Plan，再使用新指纹执行。现有合成残留保持原状。
+
 真实执行代码与独立复核完成；完整隔离演练未通过。当前 Windows 工具宿主为管理员，Windows PostgreSQL 拒绝该令牌。Plan 与 Execute 现于创建资源前明确拒绝，错误为 `REHEARSAL_NONADMIN_HOST_REQUIRED`，不再以 `NOT_IMPLEMENTED` 掩盖实现状态。
 
 ## 已实现
