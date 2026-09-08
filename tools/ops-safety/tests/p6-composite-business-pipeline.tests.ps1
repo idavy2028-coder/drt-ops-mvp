@@ -325,6 +325,28 @@ Invoke-C2BTest 'controlled_process_start_execute_token_still_not_ready' {
     $p=Get-P6RuntimeCommandPlan -Context $ctx
     foreach($role in @('BUILD','PG','FLYWAY','API','GW','WIRE','TASK12')){$rejected=$false;try{Invoke-P6ControlledProcessStart -Plan $p -Role $role -ExecutionMode Execute -ConfirmationToken ('a'*64)|Out-Null}catch{if($_.Exception.Message -ceq 'C2B_REAL_ADAPTER_NOT_READY'){$rejected=$true}};Assert-C2B $rejected "EXECUTE_${role}_UNEXPECTEDLY_STARTED"}
 }
+Invoke-C2BTest 'real_stage_process_factory_seam_stays_closed' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx;$called=$false
+    try{Invoke-P6RealStageWithProcessFactory -Plan $p -Role API -ConfirmationToken ('a'*64) -RealActionEnabled $true|Out-Null;throw 'REAL_STAGE_STARTED'}catch{Assert-C2B ($_.Exception.Message -ceq 'C2B_REAL_ADAPTER_NOT_READY') 'REAL_STAGE_GATE_OPEN'}
+}
+Invoke-C2BTest 'real_stage_fake_lifecycle_order' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx;$f={param($spec)$o=[pscustomobject]@{Actions=@{Start={$true};Drain={$true};Receipt={$true};Health={$true};Result={$true};Stop={$true}}};$o};$r=Invoke-P6RealStageWithProcessFactory -Plan $p -Role API -ConfirmationToken ('a'*64) -RealActionEnabled $true -ProcessFactory $f
+    if($r.Status -ne 'PASS'){Write-Output ('LIFECYCLE_STATUS='+$r.Status+' CODE='+$r.Code+' EVENTS='+($r.Events -join ','))}
+    Assert-C2B ($r.Status -ceq 'PASS' -and ($r.Events -join ',') -eq 'START,DRAIN,RECEIPT,HEALTH,RESULT,STOP' -and -not $r.Retained) 'FAKE_LIFECYCLE_ORDER_INVALID'
+}
+Invoke-C2BTest 'real_stage_failure_codes_and_timeout' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx
+    foreach($failure in @('START','DRAIN','RECEIPT','HEALTH','STOP')){$f={param($spec)$o=[pscustomobject]@{Actions=@{Start={if($failure -eq 'START'){throw 'START_FAILED'};$true};Drain={if($failure -eq 'DRAIN'){throw 'DRAIN_FAILED'};$true};Receipt={if($failure -eq 'RECEIPT'){throw 'RECEIPT_FAILED'};$true};Health={if($failure -eq 'HEALTH'){return $false};$true};Result={$true};Stop={if($failure -eq 'STOP'){throw 'STOP_FAILED'};$true}}};$o}.GetNewClosure();$r=Invoke-P6RealStageWithProcessFactory -Plan $p -Role API -ConfirmationToken ('a'*64) -RealActionEnabled $true -ProcessFactory $f;Assert-C2B ($r.Status -ceq 'FAIL') "FAILURE_${failure}_NOT_FAILED";if($failure -eq 'STOP'){Assert-C2B $r.Retained 'STOP_NOT_RETAINED'}}
+    try{Invoke-P6RealStageWithProcessFactory -Plan $p -Role API -ConfirmationToken ('a'*64) -RealActionEnabled $true -ProcessFactory {$null} -DeadlineMilliseconds 0|Out-Null;throw 'TIMEOUT_ACCEPTED'}catch{Assert-C2B ($_.Exception.Message -ceq 'C2B_REAL_STAGE_TIMEOUT') 'TIMEOUT_NOT_FIXED'}
+}
+Invoke-C2BTest 'real_stage_missing_method_contract_rejected' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx
+    foreach($missing in @('Drain','Receipt','Health','Stop')){$f={param($spec)$actions=@{Start={$true};Drain={$true};Receipt={$true};Health={$true};Result={$true};Stop={$true}};[void]$actions.Remove($missing);[pscustomobject]@{Actions=$actions}}.GetNewClosure();$r=Invoke-P6RealStageWithProcessFactory -Plan $p -Role API -ConfirmationToken ('a'*64) -RealActionEnabled $true -ProcessFactory $f;Assert-C2B ($r.Status -ceq 'FAIL' -and $r.Code -ceq 'C2B_REAL_STAGE_CONTRACT_INVALID' -and -not $r.Started -and $r.Events.Count -eq 1) "MISSING_${missing}_NOT_REJECTED"}
+}
 foreach($fixture in @($script:C2BFixtures)){ if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}; Assert-C2B (-not (Test-Path -LiteralPath $fixture)) 'FIXTURE_NOT_REMOVED' }
-Write-Output ('C2B_TESTS TOTAL=49 FAILED={0}' -f $script:Failures)
+Write-Output ('C2B_TESTS TOTAL=53 FAILED={0}' -f $script:Failures)
 if ($script:Failures -ne 0) { exit 1 }

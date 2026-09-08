@@ -122,6 +122,14 @@ function Invoke-P6ControlledProcessStart {
     if($null -eq $script:P6RuntimePlanRegistry[[string]$Plan.Marker.RunId] -or -not [object]::ReferenceEquals($script:P6RuntimePlanRegistry[[string]$Plan.Marker.RunId].Plan,$Plan)){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
     throw 'C2B_REAL_ADAPTER_NOT_READY'
 }
+function Invoke-P6RealStageWithProcessFactory {
+    param([Parameter(Mandatory=$true)]$Plan,[ValidateSet('BUILD','PG','FLYWAY','API','GW','WIRE','TASK12')][string]$Role,[string]$ConfirmationToken='', [bool]$RealActionEnabled=$false,[scriptblock]$ProcessFactory=$null,[int]$DeadlineMilliseconds=1800000)
+    if(-not $RealActionEnabled -or $ConfirmationToken -notmatch '^[a-f0-9]{64}$' -or $null -eq $ProcessFactory){throw 'C2B_REAL_ADAPTER_NOT_READY'}
+    if($DeadlineMilliseconds -le 0){throw 'C2B_REAL_STAGE_TIMEOUT'}
+    $registered=$script:P6RuntimePlanRegistry[[string]$Plan.Marker.RunId];if($null -eq $registered -or -not [object]::ReferenceEquals($registered.Plan,$Plan)){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    $events=New-Object 'Collections.Generic.List[string]';$retained=$false;$spec=Get-P6SyntheticProcessSpec -Plan $Plan -Role $(if($Role -eq 'FLYWAY' -or $Role -eq 'TASK12'){'WIRE'}else{$Role})
+    try{$events.Add('START');$proc=&$ProcessFactory $spec;if($null -eq $proc -or $null -eq $proc.Actions){throw 'C2B_REAL_STAGE_CONTRACT_INVALID'};foreach($m in @('Start','Drain','Receipt','Health','Result','Stop')){if(-not $proc.Actions.ContainsKey($m) -or $proc.Actions[$m] -isnot [scriptblock]){throw 'C2B_REAL_STAGE_CONTRACT_INVALID'}};$null=&$proc.Actions.Start;$events.Add('DRAIN');$null=&$proc.Actions.Drain;$events.Add('RECEIPT');$null=&$proc.Actions.Receipt;$events.Add('HEALTH');if(-not (&$proc.Actions.Health)){throw 'HEALTH_FAILED'};$events.Add('RESULT');$null=&$proc.Actions.Result;$events.Add('STOP');$null=&$proc.Actions.Stop;return [pscustomobject]@{Status='PASS';Events=@($events);Retained=$false;Started=$true}}catch{$code=if($_.Exception.Message -match 'CONTRACT'){'C2B_REAL_STAGE_CONTRACT_INVALID'}elseif($_.Exception.Message -match 'DRAIN'){'C2B_DRAIN_FAILED'}elseif($_.Exception.Message -match 'HEALTH'){'C2B_HEALTH_FAILED'}elseif($_.Exception.Message -match 'START'){'C2B_START_FAILED'}elseif($_.Exception.Message -match 'RECEIPT'){'C2B_RECEIPT_CHAIN_INVALID'}elseif($_.Exception.Message -match 'STOP'){'C2B_REAL_STAGE_STOP_UNPROVEN'}else{'C2B_STAGE_FAILED'};if($code -eq 'C2B_REAL_STAGE_STOP_UNPROVEN'){$retained=$true};return [pscustomobject]@{Status='FAIL';Code=$code;Events=@($events);Retained=$retained;Started=($events -contains 'START' -and $code -notmatch 'CONTRACT')}}
+}
 function Get-P6SyntheticProcessSpec {
     param([Parameter(Mandatory=$true)]$Plan,[ValidateSet('BUILD','PG','API','GW','WIRE','TASK12')][string]$Role)
     if($null -eq $Plan -or $Plan.PlanKind -cne 'RUNTIME_COMMAND_PLAN' -or $Plan.BoundaryDigest -notmatch '^[a-f0-9]{64}$'){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
