@@ -1,5 +1,6 @@
 # C2b business orchestration seam. External systems are injected through Adapter; real Execute remains gated elsewhere.
 Set-StrictMode -Version Latest
+$script:P6RuntimePlanRegistry=@{}
 
 function Get-P6CompositeBusinessPlan {
     [pscustomobject]@{Stages=@('SNAPSHOT','BUILD','PG','EXTERNAL59','HELPER','LIVE_MIGRATION','API_AUTH','DATA_PREP','PREVIEW','APPLY','GATEWAY','WIRE','TASK12','LEASE_RELEASE','CLEANUP');ExecuteEnabled=$false;Boundary='STATEFUL_FAKE_ONLY'}
@@ -95,7 +96,25 @@ function Get-P6RuntimeCommandPlan {
         Task12=[pscustomobject]@{Mode='VerifyAcceptance';Source='UPSTREAM_EVIDENCE_ONLY'};ExecuteCount=0
     }
     $plan|Add-Member NoteProperty BoundaryDigest $inputDigest
+    $plan|Add-Member NoteProperty PlanKind 'RUNTIME_COMMAND_PLAN'
+    $plan|Add-Member NoteProperty Root ([string]$Context.Root)
+    $plan|Add-Member NoteProperty Ports @($Context.Ports)
+    $plan|Add-Member NoteProperty Marker $Context.Marker
+    $plan|Add-Member NoteProperty Receipt $Context.Receipt
+    $plan|Add-Member NoteProperty RunParent ([string]$Context.RunParent)
+    $script:P6RuntimePlanRegistry[[string]$Context.RunId]=[pscustomobject]@{Plan=$plan;Digest=$inputDigest}
     return $plan
+}
+function Invoke-P6ControlledRuntimeAction {
+    param([Parameter(Mandatory=$true)]$Plan,[ValidateSet('BUILD','PG','API','GW','WIRE','TASK12')][string]$Role,[switch]$SyntheticOnly)
+    if(-not $SyntheticOnly){throw 'C2B_REAL_ADAPTER_NOT_READY'}
+    if($null -eq $Plan -or $Plan.ExecuteCount -ne 0 -or $Plan.PlanKind -cne 'RUNTIME_COMMAND_PLAN' -or $Plan.BoundaryDigest -notmatch '^[a-f0-9]{64}$' -or $null -eq $Plan.Root -or $null -eq $Plan.Ports -or $null -eq $Plan.Marker -or $null -eq $Plan.Receipt -or $null -eq $Plan.RunParent -or $Plan.Ports.Count -ne 4){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    $planDigest=(([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$Plan.Root+'|'+(@($Plan.Ports)-join ',')+'|'+(($Plan.Marker|ConvertTo-Json -Compress))+'|'+(($Plan.Receipt|ConvertTo-Json -Compress))+'|'+[string]$Plan.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    if($planDigest -cne [string]$Plan.BoundaryDigest){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    $registered=$script:P6RuntimePlanRegistry[[string]$Plan.Marker.RunId]
+    if($null -eq $registered -or -not [object]::ReferenceEquals($registered.Plan,$Plan) -or $registered.Digest -cne $planDigest){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    try{Assert-P6NativePathLength ([string]$Plan.Root);Assert-P6ChildPath ([IO.Path]::GetDirectoryName([string]$Plan.Root)) ([string]$Plan.Root) -MustExist|Out-Null;Assert-P6LoopbackPorts $Plan.Ports @();Read-P6OwnerMarker $Plan.Receipt $Plan.RunParent|Out-Null;Assert-P6PrivateAcl ([string]$Plan.Root)}catch{throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    [pscustomobject]@{Status='PLANNED';Role=$Role;Started=$false;Deadline=1800000;ReceiptPredecessor='REQUIRED';StreamDrain='REQUIRED';ProcessFactory='REQUIRED';SafeOutput='CONTROLLED_RUNTIME_PLAN_ONLY'}
 }
 
 function Invoke-P6CompositeBusinessPipeline {

@@ -264,6 +264,22 @@ Invoke-C2BTest 'runtime_plan_rejects_owned_input_tamper' {
         try{Get-P6RuntimeCommandPlan -Context $ctx|Out-Null;throw 'RUNTIME_TAMPER_ACCEPTED'}catch{Assert-C2B ($_.Exception.Message -ceq 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID') "RUNTIME_TAMPER_${kind}_NOT_REJECTED"}
     }
 }
+Invoke-C2BTest 'controlled_runtime_action_never_starts_by_default' {
+    Assert-C2B ($null -ne (Get-Command Invoke-P6ControlledRuntimeAction -ErrorAction SilentlyContinue)) 'CONTROLLED_RUNTIME_ENTRY_MISSING'
+    $p=[pscustomobject]@{ExecuteCount=0}
+    try{Invoke-P6ControlledRuntimeAction -Plan $p -Role API;throw 'RUNTIME_STARTED'}catch{Assert-C2B ($_.Exception.Message -ceq 'C2B_REAL_ADAPTER_NOT_READY') 'RUNTIME_DEFAULT_NOT_READY_MISSING'}
+}
+Invoke-C2BTest 'controlled_runtime_synthetic_roles_require_verified_plan' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx
+    foreach($role in @('BUILD','PG','API','GW','WIRE','TASK12')){$r=Invoke-P6ControlledRuntimeAction -Plan $p -Role $role -SyntheticOnly;Assert-C2B ($r.Status -ceq 'PLANNED' -and -not $r.Started) "ROLE_${role}_INVALID"}
+    $p.BoundaryDigest='0'*64;$rejected=$false;try{Invoke-P6ControlledRuntimeAction -Plan $p -Role API -SyntheticOnly|Out-Null}catch{if($_.Exception.Message -ceq 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'){$rejected=$true}};Assert-C2B $rejected 'PLAN_TAMPER_NOT_REJECTED'
+}
+Invoke-C2BTest 'controlled_runtime_rejects_plan_clones_for_all_roles' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx
+    foreach($role in @('BUILD','PG','API','GW','WIRE','TASK12')){foreach($clone in @($p.PSObject.Copy(),($p|ConvertTo-Json -Depth 8|ConvertFrom-Json),[pscustomobject]@{PlanKind=$p.PlanKind;ExecuteCount=0;Root=$p.Root;Ports=$p.Ports;Marker=$p.Marker;Receipt=$p.Receipt;RunParent=$p.RunParent;BoundaryDigest=$p.BoundaryDigest})){ $rejected=$false;try{Invoke-P6ControlledRuntimeAction -Plan $clone -Role $role -SyntheticOnly|Out-Null}catch{if($_.Exception.Message -ceq 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'){$rejected=$true}};Assert-C2B $rejected "CLONE_${role}_ACCEPTED"}}
+}
 foreach($fixture in @($script:C2BFixtures)){ if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}; Assert-C2B (-not (Test-Path -LiteralPath $fixture)) 'FIXTURE_NOT_REMOVED' }
-Write-Output ('C2B_TESTS TOTAL=37 FAILED={0}' -f $script:Failures)
+Write-Output ('C2B_TESTS TOTAL=40 FAILED={0}' -f $script:Failures)
 if ($script:Failures -ne 0) { exit 1 }
