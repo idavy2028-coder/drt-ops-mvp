@@ -141,5 +141,28 @@ Invoke-C2BTest 'receipt_sequence_jump_fails_fast' {
     $r=Invoke-P6CompositeBusinessPipeline -Adapter $fake -Mode DryRun
     Assert-C2B ($r.Status -ceq 'FAIL' -and $r.Code -ceq 'C2B_RECEIPT_CHAIN_INVALID') 'RECEIPT_SEQUENCE_JUMP_ACCEPTED'
 }
-Write-Output ('C2B_TESTS TOTAL=20 FAILED={0}' -f $script:Failures)
+Invoke-C2BTest 'real_adapter_seam_is_explicitly_not_ready' {
+    Assert-C2B ($null -ne (Get-Command New-P6CompositeRealAdapter -ErrorAction SilentlyContinue)) 'REAL_ADAPTER_FACTORY_MISSING'
+    $ctx=[pscustomobject]@{RunId='synthetic-run';Root='C:\synthetic\run';Ports=@(45101,45102,45103,45104);Secrets=@{Db='SYNTHETIC_SECRET_aaaaaaaaaaaaaaaaaaaaaaaa'}}
+    $adapter=New-P6CompositeRealAdapter -Context $ctx
+    try { $adapter.Invoke('BUILD',@{Mode='DryRun'}); throw 'REAL_ADAPTER_FALLBACK_ACCEPTED' } catch { $m=$_.Exception.Message; if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message}; Assert-C2B ($m -ceq 'C2B_REAL_ADAPTER_NOT_READY') 'REAL_ADAPTER_NOT_READY_CODE_MISSING' }
+}
+Invoke-C2BTest 'real_adapter_owns_boundary_inputs' {
+    $ctx=[pscustomobject]@{RunId='synthetic-run';Root='C:\synthetic\run';Ports=@(45101,45102,45103,45104);Secrets=@{Db='SYNTHETIC_SECRET_aaaaaaaaaaaaaaaaaaaaaaaa'}}
+    $adapter=New-P6CompositeRealAdapter -Context $ctx
+    Assert-C2B ($adapter.Boundary -ceq 'RUNNER_OWNED_LOOPBACK_ONLY' -and $adapter.Environment.SERVER_ADDRESS -ceq '127.0.0.1') 'REAL_ADAPTER_BOUNDARY_INVALID'
+    Assert-C2B ($adapter.Environment.DRT_OPS_DATASOURCE_PASSWORD -ceq $ctx.Secrets.Db) 'REAL_ADAPTER_SECRET_ENV_INVALID'
+    Assert-C2B (-not ($adapter.PSObject.Properties.Name -contains 'Endpoint') -and -not ($adapter.PSObject.Properties.Name -contains 'Pid')) 'REAL_ADAPTER_CALLER_CONTROL_EXPOSED'
+}
+Invoke-C2BTest 'real_adapter_rejects_mutated_owned_boundary' {
+    $ctx=[pscustomobject]@{RunId='synthetic-run';Root='C:\synthetic\run';Ports=@(45101,45102,45103,45104);Secrets=@{Db='SYNTHETIC_SECRET_aaaaaaaaaaaaaaaaaaaaaaaa'}}
+    foreach($mutation in @('Root','Ports','Environment')){
+        $adapter=New-P6CompositeRealAdapter -Context $ctx
+        if($mutation -ceq 'Root'){$adapter.Root='C:\attacker'}
+        elseif($mutation -ceq 'Ports'){$adapter.Ports[0]=45999}
+        else{$adapter.Environment.SERVER_ADDRESS='0.0.0.0'}
+        try { Assert-P6CompositeBusinessAdapterContract $adapter; throw 'MUTATION_ACCEPTED' } catch { Assert-C2B ($_.Exception.Message -ceq 'C2B_CALLER_CONTROL_REJECTED') "MUTATION_NOT_REJECTED_$mutation" }
+    }
+}
+Write-Output ('C2B_TESTS TOTAL=23 FAILED={0}' -f $script:Failures)
 if ($script:Failures -ne 0) { exit 1 }

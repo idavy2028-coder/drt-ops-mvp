@@ -8,7 +8,30 @@ function Assert-P6CompositeBusinessAdapterContract {
     param($Adapter)
     if($null -eq $Adapter -or -not ($Adapter.PSObject.Methods.Name -contains 'Invoke') -or -not ($Adapter.PSObject.Methods.Name -contains 'Stop') -or -not ($Adapter.PSObject.Methods.Name -contains 'Summary') -or -not ($Adapter.PSObject.Methods.Name -contains 'Receipt') -or -not ($Adapter.PSObject.Methods.Name -contains 'Deadline')){throw 'C2B_ADAPTER_CONTRACT_INVALID'}
     foreach($property in @('Endpoint','Pid','Secret','Path','Skip')){if($Adapter.PSObject.Properties.Name -contains $property){throw 'C2B_CALLER_CONTROL_REJECTED'}}
+    if($Adapter.PSObject.Properties.Name -contains 'BoundaryDigest'){
+        $current=(([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$Adapter.Root+'|'+(@($Adapter.Ports)-join ',')+'|'+($Adapter.Environment|ConvertTo-Json -Compress))))|ForEach-Object ToString x2)-join '')
+        if($current -cne [string]$Adapter.BoundaryDigest){throw 'C2B_CALLER_CONTROL_REJECTED'}
+    }
     $true
+}
+function New-P6CompositeRealAdapter {
+    param([Parameter(Mandatory=$true)]$Context)
+    if($null -eq $Context -or [string]$Context.Root -notmatch '^[A-Za-z]:\\' -or @($Context.Ports).Count -ne 4){throw 'C2B_REAL_ADAPTER_CONTEXT_INVALID'}
+    $root=[IO.Path]::GetFullPath([string]$Context.Root)
+    $env=[ordered]@{
+        SERVER_ADDRESS='127.0.0.1';SERVER_PORT=[string]$Context.Ports[1]
+        DRT_OPS_DATASOURCE_URL=('jdbc:postgresql://127.0.0.1:{0}/composite_live' -f $Context.Ports[0])
+        DRT_OPS_DATASOURCE_PASSWORD=[string]$Context.Secrets.Db
+        P6_REHEARSAL_RUN_ID=[string]$Context.RunId
+    }
+    $adapter=[pscustomobject]@{Boundary='RUNNER_OWNED_LOOPBACK_ONLY';RunId=[string]$Context.RunId;Root=$root;Ports=@($Context.Ports);Environment=$env;FixedTools=[ordered]@{Jdk='C:\Program Files\Java\jdk-21.0.10\bin\java.exe';Maven='C:\Program Files\JetBrains\IntelliJ IDEA 2025.3.4\plugins\maven\lib\maven3\bin\mvn.cmd';Postgres='C:\Program Files\PostgreSQL\17\bin\postgres.exe';Flyway='RUNNER_COMPILED_HELPER';Wire='RUNNER_COMPILED_HARNESS'} }
+    $adapter|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(($root+'|'+(@($Context.Ports)-join ',')+'|'+($env|ConvertTo-Json -Compress))))|ForEach-Object ToString x2)-join '')
+    $adapter | Add-Member ScriptMethod Invoke { param([string]$Stage,[hashtable]$Input) throw 'C2B_REAL_ADAPTER_NOT_READY' } -Force
+    $adapter | Add-Member ScriptMethod Stop { param([string]$Stage) throw 'C2B_REAL_ADAPTER_NOT_READY' } -Force
+    $adapter | Add-Member ScriptMethod Summary { throw 'C2B_REAL_ADAPTER_NOT_READY' } -Force
+    $adapter | Add-Member ScriptMethod Receipt { param([string]$Stage) throw 'C2B_REAL_ADAPTER_NOT_READY' } -Force
+    $adapter | Add-Member ScriptMethod Deadline { return 1800000 } -Force
+    return $adapter
 }
 
 function Invoke-P6CompositeBusinessPipeline {
