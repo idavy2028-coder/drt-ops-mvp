@@ -315,6 +315,16 @@ Invoke-C2BTest 'real_command_spec_rejects_injected_properties' {
     $p=Get-P6RuntimeCommandPlan -Context $ctx
     foreach($bad in @('Endpoint','Path','Secret','Pid','Skip','Executable','Arguments','WorkingDirectory','Environment')){$clone=$p.PSObject.Copy();$clone|Add-Member NoteProperty $bad 'injected';$rejected=$false;try{Get-P6RealCommandSpec -Plan $clone -Role API|Out-Null}catch{if($_.Exception.Message -ceq 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'){$rejected=$true}};Assert-C2B $rejected "REAL_SPEC_${bad}_INJECTION_ACCEPTED"}
 }
+Invoke-C2BTest 'controlled_process_start_token_gate_stays_closed' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx
+    foreach($role in @('BUILD','PG','FLYWAY','API','GW','WIRE','TASK12')){try{Invoke-P6ControlledProcessStart -Plan $p -Role $role;throw 'START_GATE_OPEN'}catch{Assert-C2B ($_.Exception.Message -ceq 'C2B_REAL_ADAPTER_NOT_READY') "START_GATE_${role}_OPEN"}}
+}
+Invoke-C2BTest 'controlled_process_start_execute_token_still_not_ready' {
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx
+    foreach($role in @('BUILD','PG','FLYWAY','API','GW','WIRE','TASK12')){$rejected=$false;try{Invoke-P6ControlledProcessStart -Plan $p -Role $role -ExecutionMode Execute -ConfirmationToken ('a'*64)|Out-Null}catch{if($_.Exception.Message -ceq 'C2B_REAL_ADAPTER_NOT_READY'){$rejected=$true}};Assert-C2B $rejected "EXECUTE_${role}_UNEXPECTEDLY_STARTED"}
+}
 foreach($fixture in @($script:C2BFixtures)){ if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}; Assert-C2B (-not (Test-Path -LiteralPath $fixture)) 'FIXTURE_NOT_REMOVED' }
-Write-Output ('C2B_TESTS TOTAL=47 FAILED={0}' -f $script:Failures)
+Write-Output ('C2B_TESTS TOTAL=49 FAILED={0}' -f $script:Failures)
 if ($script:Failures -ne 0) { exit 1 }

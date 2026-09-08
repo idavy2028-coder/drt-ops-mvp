@@ -116,6 +116,12 @@ function Invoke-P6ControlledRuntimeAction {
     try{Assert-P6NativePathLength ([string]$Plan.Root);Assert-P6ChildPath ([IO.Path]::GetDirectoryName([string]$Plan.Root)) ([string]$Plan.Root) -MustExist|Out-Null;Assert-P6LoopbackPorts $Plan.Ports @();Read-P6OwnerMarker $Plan.Receipt $Plan.RunParent|Out-Null;Assert-P6PrivateAcl ([string]$Plan.Root)}catch{throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
     [pscustomobject]@{Status='PLANNED';Role=$Role;Started=$false;Deadline=1800000;ReceiptPredecessor='REQUIRED';StreamDrain='REQUIRED';ProcessFactory='REQUIRED';SafeOutput='CONTROLLED_RUNTIME_PLAN_ONLY'}
 }
+function Invoke-P6ControlledProcessStart {
+    param([Parameter(Mandatory=$true)]$Plan,[ValidateSet('BUILD','PG','FLYWAY','API','GW','WIRE','TASK12')][string]$Role,[string]$ConfirmationToken='', [ValidateSet('Plan','Execute')][string]$ExecutionMode='Plan')
+    if($ExecutionMode -ne 'Execute' -or $ConfirmationToken -notmatch '^[a-f0-9]{64}$'){throw 'C2B_REAL_ADAPTER_NOT_READY'}
+    if($null -eq $script:P6RuntimePlanRegistry[[string]$Plan.Marker.RunId] -or -not [object]::ReferenceEquals($script:P6RuntimePlanRegistry[[string]$Plan.Marker.RunId].Plan,$Plan)){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    throw 'C2B_REAL_ADAPTER_NOT_READY'
+}
 function Get-P6SyntheticProcessSpec {
     param([Parameter(Mandatory=$true)]$Plan,[ValidateSet('BUILD','PG','API','GW','WIRE','TASK12')][string]$Role)
     if($null -eq $Plan -or $Plan.PlanKind -cne 'RUNTIME_COMMAND_PLAN' -or $Plan.BoundaryDigest -notmatch '^[a-f0-9]{64}$'){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
