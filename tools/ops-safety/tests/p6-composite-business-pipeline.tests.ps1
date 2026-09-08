@@ -248,6 +248,22 @@ Invoke-C2BTest 'api_gateway_task12_status_fails_pipeline' {
     $r=Invoke-P6CompositeBusinessPipeline -Adapter $a -Mode DryRun
     Assert-C2B ($r.Status -ceq 'FAIL' -and $r.Code -ceq 'C2B_TASK12_NOT_ACCEPTED' -and (@($r.Steps|Where-Object {$_.Stage -eq 'TASK12' -and $_.Status -eq 'FAIL'}).Count -eq 1) -and $a.State.Events -notcontains 'LEASE_RELEASE' -and $a.State.Events -notcontains 'CLEANUP') 'TASK12_STATUS_PIPELINE_GATE_FAILED'
 }
+Invoke-C2BTest 'runtime_command_plan_is_fixed_and_non_executing' {
+    Assert-C2B ($null -ne (Get-Command Get-P6RuntimeCommandPlan -ErrorAction SilentlyContinue)) 'RUNTIME_COMMAND_PLAN_MISSING'
+    $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    $p=Get-P6RuntimeCommandPlan -Context $ctx
+    Assert-C2B ($p.Api.FileName -match 'java.exe$' -and $p.Gateway.FileName -match 'java.exe$' -and $p.Wire.FileName -match 'java.exe$') 'RUNTIME_EXE_INVALID'
+    Assert-C2B (($p.Api.Environment.SERVER_ADDRESS -eq '127.0.0.1') -and ($p.Gateway.Environment.JT_GATEWAY_TCP_BIND_ADDRESS -eq '127.0.0.1') -and ($p.Wire.Environment.P6_WIRE_MODE -eq 'SYNTHETIC_ONLY')) 'RUNTIME_LOOPBACK_INVALID'
+    Assert-C2B (-not ($p.Api.Environment.Keys | Where-Object {$_ -match 'PASSWORD|SECRET|TOKEN'})) 'RUNTIME_SECRET_ENV_EXPOSED'
+    Assert-C2B ($p.ExecuteCount -eq 0 -and $p.Wire.AttachmentFields -eq 0 -and $p.Wire.TerminalCount -eq 4) 'RUNTIME_PLAN_EXECUTED_OR_INVALID'
+}
+Invoke-C2BTest 'runtime_plan_rejects_owned_input_tamper' {
+    foreach($kind in @('Root','Ports','Marker','Receipt','RunParent','BoundaryDigest')){
+        $ctx=New-C2BProtectedFixture;$ctx|Add-Member NoteProperty BoundaryDigest (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$ctx.Root+'|'+(@($ctx.Ports)-join ',')+'|'+(($ctx.Marker|ConvertTo-Json -Compress))+'|'+(($ctx.Receipt|ConvertTo-Json -Compress))+'|'+[string]$ctx.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+        if($kind -ceq 'Root'){$ctx.Root='C:\tampered'}elseif($kind -ceq 'Ports'){$ctx.Ports[0]=45999}elseif($kind -ceq 'Marker'){$ctx.Marker.RunId='c'*32}elseif($kind -ceq 'Receipt'){$ctx.Receipt.RunId='c'*32}elseif($kind -ceq 'RunParent'){$ctx.RunParent='C:\escape'}else{$ctx.BoundaryDigest='0'*64}
+        try{Get-P6RuntimeCommandPlan -Context $ctx|Out-Null;throw 'RUNTIME_TAMPER_ACCEPTED'}catch{Assert-C2B ($_.Exception.Message -ceq 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID') "RUNTIME_TAMPER_${kind}_NOT_REJECTED"}
+    }
+}
 foreach($fixture in @($script:C2BFixtures)){ if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}; Assert-C2B (-not (Test-Path -LiteralPath $fixture)) 'FIXTURE_NOT_REMOVED' }
-Write-Output ('C2B_TESTS TOTAL=35 FAILED={0}' -f $script:Failures)
+Write-Output ('C2B_TESTS TOTAL=37 FAILED={0}' -f $script:Failures)
 if ($script:Failures -ne 0) { exit 1 }

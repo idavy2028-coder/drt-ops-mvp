@@ -81,6 +81,22 @@ function New-P6ApiGatewayWireTask12Adapter {
     $a|Add-Member ScriptMethod Stop { param([string]$Stage) return [pscustomobject]@{Status='STOPPED'} } -Force
     return $a
 }
+function Get-P6RuntimeCommandPlan {
+    param([Parameter(Mandatory=$true)]$Context)
+    if($null -eq $Context.Root -or $null -eq $Context.Marker -or $null -eq $Context.Receipt -or $null -eq $Context.RunParent -or $null -eq $Context.Ports -or $null -eq $Context.BoundaryDigest -or @($Context.Ports).Count -ne 4){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    $inputDigest=(([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$Context.Root+'|'+(@($Context.Ports)-join ',')+'|'+(($Context.Marker|ConvertTo-Json -Compress))+'|'+(($Context.Receipt|ConvertTo-Json -Compress))+'|'+[string]$Context.RunParent+'|SYNTHETIC_ONLY')))|ForEach-Object ToString x2)-join '')
+    if([string]$Context.BoundaryDigest -cne $inputDigest){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    try{Assert-P6NativePathLength ([string]$Context.Root);Assert-P6ChildPath ([IO.Path]::GetDirectoryName([string]$Context.Root)) ([string]$Context.Root) -MustExist|Out-Null;Assert-P6LoopbackPorts $Context.Ports @();Read-P6OwnerMarker $Context.Receipt $Context.RunParent|Out-Null;Assert-P6PrivateAcl ([string]$Context.Root)}catch{throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    $java='C:\Program Files\Java\jdk-21.0.10\bin\java.exe'
+    $plan=[pscustomobject]@{
+        Api=[pscustomobject]@{FileName=$java;Arguments=@('-jar',(Join-Path $Context.Root 'api.jar'));Environment=@{SERVER_ADDRESS='127.0.0.1';SERVER_PORT=[string]$Context.Ports[1];P6_RUNTIME_MODE='SYNTHETIC_ONLY'}}
+        Gateway=[pscustomobject]@{FileName=$java;Arguments=@('-jar',(Join-Path $Context.Root 'gateway.jar'));Environment=@{JT_GATEWAY_MANAGEMENT_ADDRESS='127.0.0.1';JT_GATEWAY_TCP_BIND_ADDRESS='127.0.0.1';P6_RUNTIME_MODE='SYNTHETIC_ONLY'}}
+        Wire=[pscustomobject]@{FileName=$java;Arguments=@('-cp',(Join-Path $Context.Root 'wire-harness.jar'),'P6CompositeWireHarness');Environment=@{P6_WIRE_MODE='SYNTHETIC_ONLY';P6_WIRE_TERMINALS='4'};TerminalCount=4;AttachmentFields=0}
+        Task12=[pscustomobject]@{Mode='VerifyAcceptance';Source='UPSTREAM_EVIDENCE_ONLY'};ExecuteCount=0
+    }
+    $plan|Add-Member NoteProperty BoundaryDigest $inputDigest
+    return $plan
+}
 
 function Invoke-P6CompositeBusinessPipeline {
     param(
