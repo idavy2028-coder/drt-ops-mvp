@@ -1,9 +1,23 @@
 Set-StrictMode -Version Latest
 $pipeline = Join-Path $PSScriptRoot '..\p6-composite-business-pipeline.ps1'
 if (-not (Test-Path -LiteralPath $pipeline)) { throw 'C2B_PIPELINE_MISSING' }
+. (Join-Path $PSScriptRoot '..\p6-composite-isolation-lib.ps1')
 . $pipeline
 
 function Assert-C2B($condition,[string]$message) { if (-not $condition) { throw $message } }
+$script:C2BFixtures=New-Object 'Collections.Generic.List[string]'
+function New-C2BProtectedFixture {
+    $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'));[IO.Directory]::CreateDirectory((Join-Path $repo '.tmp'))|Out-Null;[IO.Directory]::CreateDirectory((Join-Path $repo '.tmp/p6iso'))|Out-Null
+    $parent=Get-P6NativeRunParent $repo
+    $runId=([guid]::NewGuid().ToString('N'));$run=Join-Path $parent ('native-'+$runId);[IO.Directory]::CreateDirectory((Join-Path $run 'pgdata'))|Out-Null
+    Protect-P6RunAcl $run
+    $marker=[pscustomobject]@{SchemaVersion=1;RunId=$runId;OwnerNonce=('b'*64);RunDirectory=$run;CreatedAt=([DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('o'));PgPort=45101}
+    $receipt=[pscustomobject]@{SchemaVersion=1;RunId=$marker.RunId;OwnerNonce=$marker.OwnerNonce;RunDirectory=$run;CreatedAt=$marker.CreatedAt;PgData=(Join-Path $run 'pgdata');PgDatabase='composite_live';MigrationDatabase='composite_onboard';Ports=@(45101,45102,45103,45104);Processes=@()}
+    $secrets=@{DbPassword=('Q'*40)}
+    Write-P6OwnedStorage $receipt $parent $marker $secrets|Out-Null
+    $script:C2BFixtures.Add($run)
+    return [pscustomobject]@{RunId=$marker.RunId;Root=$run;RunParent=$parent;Marker=$marker;Receipt=$receipt;Ports=$receipt.Ports;Secrets=@{Db=$secrets.DbPassword}}
+}
 function New-C2BFakeAdapter {
     param([string]$Failure='')
     $state=[ordered]@{Events=New-Object 'Collections.Generic.List[string]';Writes=0;Stopped=New-Object 'Collections.Generic.List[string]';Retained=$false;PreviewBefore='rows=4;hash=synthetic;version=7';PreviewAfter='rows=4;hash=synthetic;version=7';Secrets=@('SYNTHETIC_SECRET_aaaaaaaaaaaaaaaaaaaaaaaa');Output='';ReceiptCalls=0;DeadlineCalls=0;BadReceipt=$false;BadPrevious=$false;BadSequence=$false;Expired=$false;Business=[ordered]@{Vehicles=3;Terminals=4;Systems=3;Memberships=4;SystemA=2;SystemB=1;SystemC=1}}
@@ -164,5 +178,47 @@ Invoke-C2BTest 'real_adapter_rejects_mutated_owned_boundary' {
         try { Assert-P6CompositeBusinessAdapterContract $adapter; throw 'MUTATION_ACCEPTED' } catch { Assert-C2B ($_.Exception.Message -ceq 'C2B_CALLER_CONTROL_REJECTED') "MUTATION_NOT_REJECTED_$mutation" }
     }
 }
-Write-Output ('C2B_TESTS TOTAL=23 FAILED={0}' -f $script:Failures)
+Invoke-C2BTest 'build_pg_flyway_seam_is_safe_and_ordered' {
+    Assert-C2B ($null -ne (Get-Command New-P6BuildPgFlywayAdapter -ErrorAction SilentlyContinue)) 'BUILD_PG_ADAPTER_MISSING'
+    $ctx=New-C2BProtectedFixture
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx
+    $r=$a.DryRun()
+    Assert-C2B (($r.Stages -join ',') -eq 'BUILD,PG_CREATE,EXTERNAL59,LIVE_V19,PREPARE_V20,LIVE_V20,LIVE_V21,VALIDATE') 'BUILD_PG_ORDER_WRONG'
+    Assert-C2B ($r.BuildBeforePg -and $r.DatabaseCount -eq 2 -and $r.BindAddress -eq '127.0.0.1' -and $r.ExternalMigrationCount -eq 59 -and $r.LiveMigration -eq 'V19,PREPARE_V20,V20,V21,VALIDATE') 'BUILD_PG_CONTRACT_INVALID'
+    Assert-C2B ($r.SideEffectCount -eq 0 -and $r.Stdout -notmatch 'SYNTHETIC_SECRET' -and $r.PrepareUpdateCount -eq 2 -and $r.DemoRetained) 'BUILD_PG_DRYRUN_SIDE_EFFECT_OR_LEAK'
+}
+Invoke-C2BTest 'v20_fixture_identity_mismatch_is_rejected' {
+    $ctx=New-C2BProtectedFixture
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx;$a.DemoIdentities=@('bad','33333333-3333-3333-3333-333333333332')
+    try {$a.DryRun();throw 'V20_FIXTURE_ACCEPTED'} catch {$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_V20_FIXTURE_INVALID') 'V20_IDENTITY_NOT_REJECTED'}
+}
+Invoke-C2BTest 'v20_fixture_update_count_is_rejected' {
+    $ctx=New-C2BProtectedFixture
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx;$a.PrepareUpdateCount=1
+    try {$a.DryRun();throw 'V20_COUNT_ACCEPTED'} catch {$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_V20_FIXTURE_INVALID') 'V20_COUNT_NOT_REJECTED'}
+}
+Invoke-C2BTest 'v20_fixture_delete_is_rejected' {
+    $ctx=New-C2BProtectedFixture
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx;$a.DemoRetained=$false
+    try {$a.DryRun();throw 'V20_DEMO_DELETED_ACCEPTED'} catch {$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_V20_FIXTURE_INVALID') 'V20_DELETE_NOT_REJECTED'}
+}
+Invoke-C2BTest 'build_pg_root_and_ports_are_revalidated' {
+    $ctx=New-C2BProtectedFixture
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx;$a.Root='C:\attacker';try{$a.DryRun();throw 'ROOT_ACCEPTED'}catch{$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_BOUNDARY_INVALID') 'ROOT_NOT_REJECTED'}
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx;$a.Ports[0]=45102;try{$a.DryRun();throw 'PORT_ACCEPTED'}catch{$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_BOUNDARY_INVALID') 'PORT_NOT_REJECTED'}
+}
+Invoke-C2BTest 'build_pg_reuses_c2a_boundary_guards' {
+    $ctx=New-C2BProtectedFixture
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx
+    Assert-C2B ($a.Guards.PSObject.Methods.Name -contains 'PathCheck' -and $a.Guards.PSObject.Methods.Name -contains 'PortsCheck' -and $a.Guards.PSObject.Methods.Name -contains 'OwnerCheck') 'C2A_GUARDS_NOT_REUSED'
+    foreach($bad in @('C:\attacker\native-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','C:\'+('x'*250))){$a.Root=$bad;try{$a.DryRun();throw 'BAD_ROOT_ACCEPTED'}catch{$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -in @('C2B_BOUNDARY_INVALID','REHEARSAL_PATH_INVALID','REHEARSAL_PATH_TOO_LONG')) 'BAD_ROOT_NOT_REJECTED'}}
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx;$a.Ports[0]=1023;try{$a.DryRun();throw 'BAD_PORT_ACCEPTED'}catch{$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -eq 'C2B_BOUNDARY_INVALID') 'BAD_PORT_NOT_REJECTED'}
+}
+Invoke-C2BTest 'build_pg_real_actions_are_not_ready' {
+    $ctx=New-C2BProtectedFixture
+    $a=New-P6BuildPgFlywayAdapter -Context $ctx
+    try {$a.Invoke('BUILD');throw 'REAL_BUILD_STARTED'} catch {$m=$_.Exception.Message;if($null -ne $_.Exception.InnerException){$m=$_.Exception.InnerException.Message};Assert-C2B ($m -ceq 'C2B_REAL_ADAPTER_NOT_READY') 'REAL_BUILD_NOT_READY_CODE_MISSING'}
+}
+foreach($fixture in @($script:C2BFixtures)){ if(Test-Path -LiteralPath $fixture){Remove-Item -LiteralPath $fixture -Recurse -Force}; Assert-C2B (-not (Test-Path -LiteralPath $fixture)) 'FIXTURE_NOT_REMOVED' }
+Write-Output ('C2B_TESTS TOTAL=30 FAILED={0}' -f $script:Failures)
 if ($script:Failures -ne 0) { exit 1 }

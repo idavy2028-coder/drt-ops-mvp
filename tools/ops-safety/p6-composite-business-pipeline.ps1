@@ -33,6 +33,27 @@ function New-P6CompositeRealAdapter {
     $adapter | Add-Member ScriptMethod Deadline { return 1800000 } -Force
     return $adapter
 }
+function New-P6BuildPgFlywayAdapter {
+    param([Parameter(Mandatory=$true)]$Context)
+    if($null -eq $Context -or $null -eq $Context.Root -or $null -eq $Context.Marker -or $null -eq $Context.Receipt -or $null -eq $Context.RunParent -or [string]$Context.Root -notmatch '^[A-Za-z]:\\' -or @($Context.Ports).Count -ne 4){throw 'C2B_BOUNDARY_INVALID'}
+    $guards=[pscustomobject]@{}
+    $guards|Add-Member ScriptMethod PathCheck { Assert-P6NativePathLength ([string]$this.Owner.Root); if(Test-Path -LiteralPath $this.Owner.Root){Assert-P6ChildPath ([IO.Path]::GetDirectoryName($this.Owner.Root)) $this.Owner.Root -MustExist|Out-Null} } -Force
+    $guards|Add-Member ScriptMethod PortsCheck { Assert-P6LoopbackPorts $this.Owner.Ports @() } -Force
+    $guards|Add-Member ScriptMethod OwnerCheck { Read-P6OwnerMarker $this.Owner.Receipt $this.Owner.RunParent|Out-Null;Assert-P6PrivateAcl $this.Owner.Root } -Force
+    $guards|Add-Member NoteProperty Owner $null -Force
+    $a=[pscustomobject]@{Boundary='RUNNER_OWNED_LOOPBACK_ONLY';Root=[IO.Path]::GetFullPath([string]$Context.Root);Ports=@($Context.Ports);OwnedRoot=[IO.Path]::GetFullPath([string]$Context.Root);OwnedPorts=@($Context.Ports);RunParent=[string]$Context.RunParent;Marker=$Context.Marker;Receipt=$Context.Receipt;Guards=$guards;LastGuard='INIT';RunId=[string]$Context.RunId;SecretsEnv=@{P6_REHEARSAL_DB_PASSWORD=[string]$Context.Secrets.Db};ExternalMigrationCount=59;DatabaseNames=@('composite_onboard','composite_live');SideEffectCount=0;DemoIdentities=@('33333333-3333-3333-3333-333333333331','33333333-3333-3333-3333-333333333332');PrepareUpdateCount=2;DemoRetained=$true}
+    $guards.Owner=$a
+    $a|Add-Member ScriptMethod DryRun {
+        if([IO.Path]::GetFullPath([string]$this.Root) -cne [string]$this.OwnedRoot -or @($this.Ports).Count -ne 4 -or (@($this.Ports)|Sort-Object -Unique).Count -ne 4 -or (@($this.Ports)-join ',') -cne (@($this.OwnedPorts)-join ',')){throw 'C2B_BOUNDARY_INVALID'}
+        try { $this.LastGuard='PATH';$this.Guards.PathCheck();$this.LastGuard='PORTS';$this.Guards.PortsCheck();$this.LastGuard='OWNER';$this.Guards.OwnerCheck();$this.LastGuard='PASS' } catch { throw 'C2B_BOUNDARY_INVALID' }
+        if(@($this.DemoIdentities) -join ',' -cne '33333333-3333-3333-3333-333333333331,33333333-3333-3333-3333-333333333332' -or $this.PrepareUpdateCount -ne 2 -or -not $this.DemoRetained){throw 'C2B_V20_FIXTURE_INVALID'}
+        [pscustomobject]@{Stages=@('BUILD','PG_CREATE','EXTERNAL59','LIVE_V19','PREPARE_V20','LIVE_V20','LIVE_V21','VALIDATE');BuildBeforePg=$true;DatabaseCount=2;BindAddress='127.0.0.1';ExternalMigrationCount=59;LiveMigration='V19,PREPARE_V20,V20,V21,VALIDATE';PrepareUpdateCount=$this.PrepareUpdateCount;DemoRetained=$this.DemoRetained;SideEffectCount=0;Stdout='BUILD_PG_DRYRUN_PASS'}
+    } -Force
+    $a|Add-Member ScriptMethod Invoke { param([string]$Stage) throw 'C2B_REAL_ADAPTER_NOT_READY' } -Force
+    $a|Add-Member ScriptMethod Stop { param([string]$Stage) throw 'C2B_REAL_ADAPTER_NOT_READY' } -Force
+    $a|Add-Member ScriptMethod Deadline { return 1800000 } -Force
+    return $a
+}
 
 function Invoke-P6CompositeBusinessPipeline {
     param(
