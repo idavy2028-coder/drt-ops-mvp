@@ -116,6 +116,14 @@ function Invoke-P6ControlledRuntimeAction {
     try{Assert-P6NativePathLength ([string]$Plan.Root);Assert-P6ChildPath ([IO.Path]::GetDirectoryName([string]$Plan.Root)) ([string]$Plan.Root) -MustExist|Out-Null;Assert-P6LoopbackPorts $Plan.Ports @();Read-P6OwnerMarker $Plan.Receipt $Plan.RunParent|Out-Null;Assert-P6PrivateAcl ([string]$Plan.Root)}catch{throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
     [pscustomobject]@{Status='PLANNED';Role=$Role;Started=$false;Deadline=1800000;ReceiptPredecessor='REQUIRED';StreamDrain='REQUIRED';ProcessFactory='REQUIRED';SafeOutput='CONTROLLED_RUNTIME_PLAN_ONLY'}
 }
+function Get-P6SyntheticProcessSpec {
+    param([Parameter(Mandatory=$true)]$Plan,[ValidateSet('BUILD','PG','API','GW','WIRE','TASK12')][string]$Role)
+    if($null -eq $Plan -or $Plan.PlanKind -cne 'RUNTIME_COMMAND_PLAN' -or $Plan.BoundaryDigest -notmatch '^[a-f0-9]{64}$'){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    $registered=$script:P6RuntimePlanRegistry[[string]$Plan.Marker.RunId];if($null -eq $registered -or -not [object]::ReferenceEquals($registered.Plan,$Plan) -or $registered.Digest -cne [string]$Plan.BoundaryDigest){throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    try{Assert-P6NativePathLength ([string]$Plan.Root);Assert-P6ChildPath ([IO.Path]::GetDirectoryName([string]$Plan.Root)) ([string]$Plan.Root) -MustExist|Out-Null;Assert-P6LoopbackPorts $Plan.Ports @();Read-P6OwnerMarker $Plan.Receipt $Plan.RunParent|Out-Null;Assert-P6PrivateAcl ([string]$Plan.Root)}catch{throw 'C2B_RUNTIME_PLAN_BOUNDARY_INVALID'}
+    $exe='C:\Program Files\Java\jdk-21.0.10\bin\java.exe';if($Role -eq 'PG'){$exe='C:\Program Files\PostgreSQL\17\bin\postgres.exe'}
+    [pscustomobject]@{Role=$Role;FileName=$exe;Arguments=@('-Dp6.synthetic.only=true');Environment=@{P6_SYNTHETIC_ONLY='true';P6_STREAM_DRAIN='required';P6_DEADLINE_MS='1800000'};WorkingDirectory=$Plan.Root;StartAllowed=$false;ReceiptRequired=$true;RetainedOnUnknownStop=$true}
+}
 
 function Invoke-P6CompositeBusinessPipeline {
     param(
