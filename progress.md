@@ -1051,3 +1051,24 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 历史RED stdout未单独保存；控制器在发生时接收失败计数/断言值，过程报告如实承接。独立审阅未回滚复现RED，未把当前GREEN冒充历史时序证据。
 - Docker只读库存44容器/16bind/36volume，按Task12不得自动清理，因此连续隔离演练选native PG17.9/PostGIS新实例；不改现有Docker、不绕过Task12。演练预检已识别V21、V2 demo V20前置及注册后真实API激活衔接，正在建立单独plan-owned runner。
 - 本节代码/计划/公开报告在单独Task10本地提交固化；未push/deploy/访问真实资料。下一状态为 `ISOLATED_REHEARSAL_IN_PROGRESS`，不由Task10通过推定演练或云端准入。
+
+### 当前恢复点：代码已合并，真实隔离演练等待普通权限宿主
+
+- 当前工作树：`D:\codex-projects\.worktrees\p6-2-composite-onboard-system`；分支 `codex/p6-2-ops-safety-gates`；HEAD `8e5b4855c7e929942cfa7203b6d1afe758fcfdec`。
+- PR #22 已合并到远端 master，合并提交 `658b85231be9cfaa97753d72fe98523779eb80f6`。本地保留原分支，未切换其他工作树；链接：https://github.com/idavy2028-coder/drt-ops-mvp/pull/22 。这是此前已确认的远端状态，本次保存未重新访问远端。
+- 已完成：Task10/11/12安全门禁、C2a资源生命周期、C2b fake/计划合同、真实runtime/API业务helper/Gateway/WireHarness/Task12接线及独立代码复核。真实执行实现提交为 `e191e1f1fbd5eb3ab23d3a6f38901cd99636f868`，延期说明提交为当前HEAD。
+- 已有测试证据：真实runtime消费者7/7、PowerShell安全125/125、业务helper合同3/3、Flyway真实目录3/3；C2a历史Resource54/54、Isolation130/130、Flyway31/31、Wire94/94。不同轮次/重叠测试不能相加，未在本次保存时重跑。
+- **完整本地隔离演练未通过**：真实initdb已成功，PostgreSQL进程因管理员令牌被拒绝；external59、API/Gateway四终端链路、Task12完整验收尚无本轮成功证据。代码复核通过不能替代演练通过。
+- 用户最新只读反馈：`DESKTOP-P25210C\Davy`、`IsAdministrator=True`、`EnableLUA=0`。UAC关闭解释了当前账户普通启动PowerShell仍持有管理员权限。工具宿主此前同样为管理员；沙箱虽非管理员但无CIM权限，不能用来运行本轮归属校验。
+- 最近用户Plan：`EXECUTABLE=false`，`HOST_CAN_START_POSTGRES=false`，`BLOCKER=REHEARSAL_NONADMIN_HOST_REQUIRED`，`ACTIONS=0`。指纹 `98c00e03e53d4c453151c3e88e90654fa3a8942787eb53a0c8a9e10924ddaf7d` 仅代表当时管理员环境，恢复时必须重新生成，禁止复用。
+- 未提交状态：本次写入前 `git status --porcelain=v1 --untracked-files=all` 为空，暂存0、未跟踪0；本次仅修改根目录 `progress.md`，保存后唯一预期未提交文件为 ` M progress.md`。没有运行git add/commit/push或新测试。
+- ignored上下文保留：`.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/` 的progress、real-execute-report.md、real-execute-review.md及历史诊断证据。ignored内容不出现在上述git状态中，本次未全量扫描或清理。
+- 已知合成残留维持原状：`.tmp/p6iso/native-f24cf232d4c0438fa51de0b3a0c227d5`（此前PG已STOPPED、删除证明未通过）及 `native-a43b8f93f06c4c37aad92e5fec5c5433`（首轮ACL诊断未启动PG）。本次未重新查询进程或删除目录；下轮不得复用这些目录。既有PG/Docker/云端/真实设备不在演练操作范围。
+
+#### 下一步待执行
+
+1. 使用真正非管理员的Windows PowerShell 5.1宿主；先确认有效令牌 `IsAdministrator=False`，并核对项目、JDK/Maven/PostgreSQL读写权限及CIM进程/端口读取权限。不得仅凭窗口标题推定未提权；不自动修改UAC或创建账户。
+2. 环境就绪后核对Git分支/HEAD及本文件未提交改动；妥善保存本进度后取得干净工作树，按已合并代码恢复。不要重做已完成的fake/计划合同。
+3. 重新运行 `tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Plan`。只有 `EXECUTABLE=true` 才提取本次指纹并调用Execute；失败必须结束同一脚本流程，不能在交互窗口报错后继续下一段。
+4. Execute使用新run目录完成真实构建、新PG双库、external59、V19/V20/V21、API数据准备/preview、Gateway/Wire四连接和Task12验收。任一步失败即停，记录失败与逐资源清理状态；停止归属不明时保留。
+5. 报告真实验收结果和清理证据；仅全部通过才标记隔离演练完成。当前状态：`WAITING_FOR_NONADMIN_HOST`。
