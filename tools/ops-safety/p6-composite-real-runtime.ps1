@@ -183,6 +183,7 @@ function Invoke-P6RealIsolationExecution($Plan,[string]$ConfirmationToken) {
         $start=Start-P6HeldResource $context PG;if($start.Status -cne 'STARTED'){throw 'REHEARSAL_RESOURCE_START_FAILED'}
         Wait-P6RuntimeReady $context PG
         foreach($action in @('CREATE_MIGRATION_DB','CREATE_LIVE_DB')){Invoke-P6RuntimeTool $context (Get-P6NativeToolSpec $action $context.Receipt $context.RunParent $context.Marker $context.Secrets) $action|Out-Null}
+        foreach($action in @('ENABLE_MIGRATION_POSTGIS','ENABLE_LIVE_POSTGIS')){Invoke-P6RuntimeTool $context (Get-P6NativeToolSpec $action $context.Receipt $context.RunParent $context.Marker $context.Secrets) $action|Out-Null}
         Invoke-P6RuntimeTool $context (Get-P6NativeToolSpec PG_PROBE $context.Receipt $context.RunParent $context.Marker $context.Secrets) PG_PROBE|Out-Null
         $phase='EXTERNAL59';[Console]::Out.WriteLine('P6_PHASE=EXTERNAL59')
         $testStart=[DateTime]::UtcNow

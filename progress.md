@@ -1097,3 +1097,11 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - finally 返回 CLEANUP / REHEARSAL_STOP_UNPROVEN；PG 子码此次为 REHEARSAL_STOP_FAILED，与旧轮 REHEARSAL_PROCESS_UNPROVEN 不同。停止结果判定仍需另行诊断，原报告不包含 pg_ctl 子结果，现有证据不足以确定其具体原因。
 - 随后独立系统复核：新 PG PID 12476 不存在，已观测五个后代均不存在，无带本轮 pgdata 命令行的 PostgreSQL，65292–65295 均无监听，postmaster.pid 不存在。已证实当前资源退出，不把这项事后核验倒写为原 runner 自动清理成功；本轮目录和测试报告保留。
 - 本轮真实结果报告：`.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/7473f1ad6a704a4da92bf0e2002bb1f7.json`。下一诊断入口为 EXTERNAL59 的 PostGIS 类型可见性，以及停止命令返回失败但进程已退出的证据缺口。旧实例专项恢复已完成；两轮隔离 PostgreSQL 当前均已退出。本轮未继续修改迁移或扩大停止权限，未推送。
+### PostGIS 与停止等待修复、保留目录回收（2026-09-10）
+
+- 本节为最新恢复点。已确认 PostGIS 3.6.1 安装完整，V1 包含 CREATE EXTENSION IF NOT EXISTS postgis；原运行器未预先在 public 初始化，首个测试在独有 schema 安装扩展，后续 42 项因 geography 不可见失败。修复仅在新建的两个隔离数据库中显式初始化 public.postgis，并校验扩展归属和 public.geography；没有修改冻结迁移。
+- 同负载诊断确认 pg_ctl 原 5 秒等待一次返回 exit=1、耗时 5735ms，随后数据库实际退出；另一次成功也耗时 5390ms。正常等待调整为 30 秒，外层预算 40 秒，保存 PG_STOP 的状态、退出码和耗时；不降低进程归属或停止成功证明要求。
+- 回归：安全合同 135/135、真实 runtime 合同 7/7、未知停止保留原句柄定向合同 1/1，均零失败。
+- 使用原保留目录重新核验 owner/receipt 链、ACL、进程不存在、端口释放、pidfile 消失及删除证明，四目录 native-67271fde54024ec7a799f254c2771f5d、native-7473f1ad6a704a4da92bf0e2002bb1f7、native-0bca15647c1d409b9762531df96d90ce、native-39a6d599d7c747929b69622ea788d1d4 已完成 STORAGE=REMOVED。未复用或重启旧实例，未删除其他历史目录。
+- 私有证据归档位于 .superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/native-9b47052285754434b27b2ef2bf81fee7，包含 recovery-summary.json、归属凭据及测试报告；临时数据库与秘密目录已删除，未备份数据库文件。
+- 下一步：固化本地修复，使用新 Plan、新指纹、新运行目录执行完整演练；本节不代表完整业务演练已经通过。

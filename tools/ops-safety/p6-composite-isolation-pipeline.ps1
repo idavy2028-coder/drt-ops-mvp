@@ -262,8 +262,11 @@ function Stop-P6HeldResource {
                     $quick=New-Object P6QuickGuardState
                     # PG is expected to exit during this command; still monitor its output drain.
                     $quick.Drains=@($ticket.Drain)
-                    $result=Invoke-P6BoundedChild $spec 10000 $null $quick
+                    $result=Invoke-P6BoundedChild $spec 40000 $null $quick
                     if($result.Retained){$Context.ShortTickets.Add($result.HeldTicket)}
+                    if($null -ne (Get-P6Field $Context 'Evidence')){
+                        $Context.Evidence.Add([pscustomobject]@{Phase='PG_STOP';Status=$result.Status;Code=$result.Code;ExitCode=$result.ExitCode;ElapsedMilliseconds=$result.ElapsedMilliseconds;Retained=$result.Retained})
+                    }
                     Assert-P6CurrentResourceReceipt $Context
                     if($result.Status -cne 'EXITED'){throw 'invalid'}
                 }elseif($null -eq $StopProcess){$ticket.Process.Kill()}else{&$StopProcess $ticket.Process|Out-Null}

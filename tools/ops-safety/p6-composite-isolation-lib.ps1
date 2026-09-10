@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 function Get-P6NativeToolSpec {
     param([string] $Action,$Receipt,[string] $RunParent,$Marker,[hashtable] $Secrets)
-    if($Action -cnotin @('INITDB','CREATE_MIGRATION_DB','CREATE_LIVE_DB','PG_STOP','PG_PROBE')){throw 'REHEARSAL_NATIVE_ACTION_INVALID'}
+    if($Action -cnotin @('INITDB','CREATE_MIGRATION_DB','CREATE_LIVE_DB','ENABLE_MIGRATION_POSTGIS','ENABLE_LIVE_POSTGIS','PG_STOP','PG_PROBE')){throw 'REHEARSAL_NATIVE_ACTION_INVALID'}
     $root=Assert-P6Receipt $Receipt $RunParent $Marker
     Assert-P6NativePathLength (Join-Path $root 'secrets/pg-password.txt')
     $password=Get-P6Field $Secrets 'DbPassword'
@@ -16,7 +16,13 @@ function Get-P6NativeToolSpec {
         'INITDB' {$tool='initdb.exe';$arguments=@('-D',$Receipt.PgData,'-U','composite','--encoding=UTF8','--auth-host=scram-sha-256','--auth-local=scram-sha-256',('--pwfile='+(Join-Path $root 'secrets/pg-password.txt')))}
         'CREATE_MIGRATION_DB' {$tool='createdb.exe';$arguments=@('-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','--no-password','composite_onboard')}
         'CREATE_LIVE_DB' {$tool='createdb.exe';$arguments=@('-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','--no-password','composite_live')}
-        'PG_STOP' {$tool='pg_ctl.exe';$arguments=@('-D',$Receipt.PgData,'-m','fast','-w','-t','5','stop')}
+        {$_ -cin @('ENABLE_MIGRATION_POSTGIS','ENABLE_LIVE_POSTGIS')} {
+            $tool='psql.exe'
+            $database=if($Action -ceq 'ENABLE_MIGRATION_POSTGIS'){'composite_onboard'}else{'composite_live'}
+            $sql='CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public; DO $p6$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname=''postgis'' AND n.nspname=''public'') OR to_regtype(''public.geography'') IS NULL THEN RAISE EXCEPTION ''REHEARSAL_POSTGIS_SCHEMA_INVALID''; END IF; END $p6$;'
+            $arguments=@('-X','--no-password','-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','-d',$database,'-v','ON_ERROR_STOP=1','-c',$sql)
+        }
+        'PG_STOP' {$tool='pg_ctl.exe';$arguments=@('-D',$Receipt.PgData,'-m','fast','-w','-t','30','stop')}
         'PG_PROBE' {$tool='psql.exe';$arguments=@('-X','--no-password','-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','-d','composite_live','-v','ON_ERROR_STOP=1','-A','-t','-c','SELECT 1')}
     }
     return [pscustomobject]@{Action=$Action;FileName=(Join-Path $pg $tool);Arguments=$arguments;WorkingDirectory=$root;Environment=$environment}
@@ -294,7 +300,7 @@ function Stop-P6NativePostgres {
         $read={param($record,$timeout) Read-P6PostgresOwnership $Context}.GetNewClosure()
         $stop={param($record)
             $spec=Get-P6NativeToolSpec 'PG_STOP' $Context.Receipt $Context.RunParent (Read-P6OwnerMarker $Context.Receipt $Context.RunParent) $Context.Secrets
-            $result=Invoke-P6BoundedChild $spec 10000
+            $result=Invoke-P6BoundedChild $spec 40000
             if($result.Status -cne 'EXITED'){throw 'REHEARSAL_STOP_FAILED'}
         }.GetNewClosure()
         $wait={param($record,$timeout) return $Context.Ticket.Process.WaitForExit($timeout)}.GetNewClosure()

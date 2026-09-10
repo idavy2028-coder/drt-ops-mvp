@@ -120,6 +120,15 @@ function InvokePgFixtureStop($Fixture,[scriptblock] $Read,[scriptblock] $Stop,[s
 }
 
 if ($Phase -cin @('All','PowerShell')) {
+    foreach($db in @('MIGRATION','LIVE')) {
+        Case ('postgis_initialization_spec_'+$db) {
+            $f=PgFixture
+            $spec=Get-P6NativeToolSpec ('ENABLE_'+$db+'_POSTGIS') $f.Receipt $f.Parent $f.Marker @{DbPassword=('Q'*40)}
+            $expected=if($db -ceq 'MIGRATION'){'composite_onboard'}else{'composite_live'}
+            Check ($spec.FileName.EndsWith('\psql.exe') -and $spec.Arguments[[array]::IndexOf($spec.Arguments,'-d')+1] -ceq $expected) 'POSTGIS_WRONG_DATABASE'
+            Check ($spec.Arguments[-1].Contains('WITH SCHEMA public') -and $spec.Arguments[-1].Contains('pg_extension') -and $spec.Arguments[-1].Contains('REHEARSAL_POSTGIS_SCHEMA_INVALID')) 'POSTGIS_SCHEMA_GUARD_MISSING'
+        }
+    }
     foreach($shape in @('other_path','parent_segment','ready_suffix','ready_tab','starting')) {
         Case ('pg_native_pidfile_rejects_'+$shape) {
             $f=PgFixture
@@ -398,7 +407,7 @@ if ($Phase -cin @('All','PowerShell')) {
             Check ($spec.FileName -like 'C:\Program Files\PostgreSQL\17\bin\*.exe' -and $spec.WorkingDirectory -ceq $f.Receipt.RunDirectory) 'NATIVE_PATH_WRONG'
             Check ($spec.Arguments -notmatch ('Q'*40) -and $spec.Environment.PGPASSWORD -ceq ('Q'*40)) 'NATIVE_SECRET_ARGUMENT'
             if($action -eq 'CREATE_LIVE_DB'){Check (($spec.Arguments -join ' ') -ceq '-h 127.0.0.1 -p 45431 -U composite --no-password composite_live') 'NATIVE_DB_ARGUMENTS'}
-            if($action -eq 'PG_STOP'){Check (($spec.Arguments -join ' ') -ceq ('-D '+$f.Receipt.PgData+' -m fast -w -t 5 stop')) 'NATIVE_STOP_ARGUMENTS'}
+            if($action -eq 'PG_STOP'){Check (($spec.Arguments -join ' ') -ceq ('-D '+$f.Receipt.PgData+' -m fast -w -t 30 stop')) 'NATIVE_STOP_ARGUMENTS'}
         }
         Reject { Get-P6NativeToolSpec 'DROP_DATABASE' $f.Receipt $f.Parent $f.Marker $secrets } 'REHEARSAL_NATIVE_ACTION_INVALID'
     }
