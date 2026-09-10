@@ -1169,3 +1169,13 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 清理报告：GW/API/PG/TOOLS均STOPPED，所有工具exit0；PG_STOP exit0、17226ms、Retained=false；STORAGE=REMOVED/REHEARSAL_REMOVAL_CONFIRMED。本次只读复核确认该run目录不存在。仅证明本成功运行的清理，不能据此宣称所有历史保留目录已回收。
 - 本次操作仅核对已有报告并更新progress.md，没有重跑演练、修改业务代码或操作云端；更新前工作区干净，更新后仅progress.md未提交，未commit/push。
 - 下一步：云端准入评估中的“本地完整演练未通过”阻挡已关闭。云端当前数据备份、独立恢复验证、V18→V19–V21迁移前置与回滚配置证据仍须分别完成；本地成功不等于授权云端部署/迁移，也不等于真实终端流量验收通过。
+
+### V2 演示车辆业务确认与本地部署前准备（2026-09-10）
+
+- **业务负责人确认 DRT-001/DRT-002 为演示数据，不参与运营**，具体为不参与通渭县试点；车队Demo Fleet。对应车辆ID分别为`33333333-3333-3333-3333-333333333331`与`33333333-3333-3333-3333-333333333332`。
+- 目标为仅将这两条记录的dispatchable由true改false，作为部署前数据准备，不属于Flyway迁移；不删除车辆，不修改manifest或其他车辆。
+- 按本次明确范围限制，仅本地准备，未连接云端、未实际改值、未查询云端最新数据、未执行迁移。状态`DEMO_VEHICLE_PREPARATION_READY_AWAITING_AUTHORIZATION`，云端属性调整与全库门禁复核均`NOT_EXECUTED`，V19–V21继续暂停。
+- 已准备文档`docs/pilot/p6-2-demo-vehicle-predeployment-preparation.md`：精确目标、备份/审计要求、事务前置/影响行数保护、失败回滚和只读复核SQL。本地控制器未发现现成dispatchable更新接口，不编造API，不用创建或删除重建替代更新。
+- 调整后预计全库dispatchable=true为0仅基于上次盘点，不作为实测PASS。V18阶段先查询全库属性计数；onboard_systems尚不存在时不运行依赖该表的查询。V19另获授权后再核对V20原始NOT EXISTS条件及全部其他门禁。
+- 现有manifest仍为4车/4设备、全部SAFETY_MONITOR_ONLY；本轮未改，SHA-256保持`3D93E67918898A486C2EC3B7B27B92E38572154EBF43B1F904534E2346896364`。
+- 下一步等待云端核验与精确属性调整授权；完成数据准备并复核后，再等待迁移授权。本次仅本进度与新增准备文档未提交，不commit/push。
