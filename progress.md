@@ -1089,3 +1089,11 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 专项脚本重新核验 owner/receipt 前驱链、私有 ACL、当前 Windows 进程所有者 SID、PID/启动时间/可执行文件/完整命令行、postmaster.pid 及唯一回环监听；没有伪造丢失的原始启动句柄或 cwd 观测。
 - 对 native-67271fde54024ec7a799f254c2771f5d 执行一次 pg_ctl fast stop，退出码 0；随后独立确认 PID 16124 与已采集后代全部不存在，50931–50934 无监听，postmaster.pid 已移除。专项结果 RECOVERY_STOP=PASS；原数据与秘密目录作为失败证据保留，未删除，也不记作 STORAGE=REMOVED。
 - 本地提交范围为 pg 身份格式修复、8 条新增安全用例及本进度。已完成的完整安全回归 133/133，零失败；本轮提交前再次检查差异。完整业务隔离演练仍需新目录、新 Plan 和新指纹，不复用旧目录。
+
+### 修复后的真实演练复验（2026-09-10）
+
+- 修复本地提交 `5fac7abc3fa91384554c7adad3c388eed8001c3a`；提交后工作树干净，新 Plan EXECUTABLE=true、BLOCKER=NONE。使用新指纹和新运行目录 `native-7473f1ad6a704a4da92bf0e2002bb1f7` 继续真实演练。
+- BUILD、PG_INIT、CREATE_MIGRATION_DB、CREATE_LIVE_DB、PG_PROBE 均通过，证明真实 pidfile 格式不再阻断 PG 就绪校验。EXTERNAL59 执行 59 项，failure=0、error=42、skip=0，Maven exit=1；第一项错误为 V1__create_core_schema.sql 第20行 SQLSTATE 42704：类型 geography 不存在。API/GW/WIRE/Task12 后续均未执行，不能宣称业务演练通过。
+- finally 返回 CLEANUP / REHEARSAL_STOP_UNPROVEN；PG 子码此次为 REHEARSAL_STOP_FAILED，与旧轮 REHEARSAL_PROCESS_UNPROVEN 不同。停止结果判定仍需另行诊断，原报告不包含 pg_ctl 子结果，现有证据不足以确定其具体原因。
+- 随后独立系统复核：新 PG PID 12476 不存在，已观测五个后代均不存在，无带本轮 pgdata 命令行的 PostgreSQL，65292–65295 均无监听，postmaster.pid 不存在。已证实当前资源退出，不把这项事后核验倒写为原 runner 自动清理成功；本轮目录和测试报告保留。
+- 本轮真实结果报告：`.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/7473f1ad6a704a4da92bf0e2002bb1f7.json`。下一诊断入口为 EXTERNAL59 的 PostGIS 类型可见性，以及停止命令返回失败但进程已退出的证据缺口。旧实例专项恢复已完成；两轮隔离 PostgreSQL 当前均已退出。本轮未继续修改迁移或扩大停止权限，未推送。
