@@ -120,6 +120,24 @@ function InvokePgFixtureStop($Fixture,[scriptblock] $Read,[scriptblock] $Stop,[s
 }
 
 if ($Phase -cin @('All','PowerShell')) {
+    foreach($delta in @(-1,1,2)) {
+        Case ('pg_epoch_boundary_'+$delta) {
+            $f=PgFixture
+            $epoch=([DateTimeOffset]::Parse($f.Recorded.StartTimeUtc)).ToUnixTimeSeconds()
+            $f.Evidence.PidFileLines[2]=[string]($epoch+$delta)
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $r=InvokePgFixtureStop $f {if($calls.Count -eq 0){$f.Evidence}else{StoppedEvidence $f}} {$calls.Add('stop')} {$true}
+            if($delta -eq 1){Check ($r.Status -ceq 'STOPPED' -and $calls.Count -eq 1) 'NEXT_SECOND_START_REJECTED'}
+            else{Check ($r.Status -ceq 'RETAINED' -and $calls.Count -eq 0) 'OUT_OF_BOUND_START_ACCEPTED'}
+        }
+    }
+    Case 'pg_epoch_boundary_does_not_allow_process_start_drift' {
+        $f=PgFixture
+        $f.Observed.StartTimeUtc=([DateTimeOffset]::Parse($f.Recorded.StartTimeUtc)).AddSeconds(1).ToString('o')
+        $calls=New-Object 'Collections.Generic.List[string]'
+        $r=InvokePgFixtureStop $f {$f.Evidence} {$calls.Add('stop')} {$true}
+        Check ($r.Status -ceq 'RETAINED' -and $calls.Count -eq 0) 'PROCESS_START_DRIFT_ACCEPTED'
+    }
     foreach($db in @('MIGRATION','LIVE')) {
         Case ('postgis_initialization_spec_'+$db) {
             $f=PgFixture

@@ -793,11 +793,14 @@ function Assert-P6PgIdentity {
         Assert-P6ProcessIdentity $Receipt $Recorded $Observed $LaunchEvidence | Out-Null
         if ($Recorded.Kind -cne 'Postgres' -or $null -eq $PidFileLines -or @($PidFileLines).Count -lt 8 -or $null -eq $Listeners) { throw 'invalid' }
         $epoch=([DateTimeOffset]::Parse($Recorded.StartTimeUtc)).ToUnixTimeSeconds()
+        # PostgreSQL samples its own start time after Windows process creation.
+        # Permit only the adjacent later second; OS/held-handle identity stays exact above.
+        $pidEpochMatches=$PidFileLines[2] -ceq [string]$epoch -or $PidFileLines[2] -ceq [string]($epoch+1)
         # PostgreSQL writes forward slashes and space-pads its fixed-width status line.
         # Only normalize separators; do not resolve aliases, dot segments, or other paths.
         if ($PidFileLines[1] -isnot [string] -or $PidFileLines[7] -isnot [string]) { throw 'invalid' }
         if ($PidFileLines[0] -cne [string]$Recorded.Pid -or $PidFileLines[1].Replace('/','\') -cne $Receipt.PgData.Replace('/','\') -or
-            $PidFileLines[2] -cne [string]$epoch -or $PidFileLines[3] -cne [string]$Receipt.Ports[0] -or
+            -not $pidEpochMatches -or $PidFileLines[3] -cne [string]$Receipt.Ports[0] -or
             $PidFileLines[5] -cne '127.0.0.1' -or $PidFileLines[7] -cnotmatch '\Aready *\z') { throw 'invalid' }
         $matching=@($Listeners | Where-Object { $_.LocalPort -eq $Receipt.Ports[0] -or $_.OwningProcess -eq $Recorded.Pid })
         if ($matching.Count -ne 1 -or $matching[0].LocalAddress -cne '127.0.0.1' -or
