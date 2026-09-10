@@ -170,19 +170,38 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 public sealed class P6NativeStreamDrain {
+    private int startupKind;
+    public string StartupExceptionKind { get { return new[] { "NONE", "JAVA_EXCEPTION", "APPLICATION_START_FAILED", "DATABASE", "PORT_BIND" }[Volatile.Read(ref startupKind)]; } }
+    private void Classify(string text) {
+        int kind = text.Contains("java.net.BindException") ? 4 :
+            text.Contains("org.h2.jdbc.JdbcSQL") || text.Contains("org.flywaydb.core.api.FlywayException") || text.Contains("java.sql.SQLException") ? 3 :
+            text.Contains("APPLICATION FAILED TO START") ? 2 :
+            System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(?:java|org|com)\.[A-Za-z0-9_.$]*(?:Exception|Error)\b") ? 1 : 0;
+        int old;
+        do { old = Volatile.Read(ref startupKind); if (kind <= old) return; }
+        while (Interlocked.CompareExchange(ref startupKind, kind, old) != old);
+    }
     private long count;
     private int failed;
     private readonly Task[] tasks;
+    private readonly bool classifyStartup;
     public long Count { get { return Interlocked.Read(ref count); } }
     public bool Failed { get { return Volatile.Read(ref failed) != 0; } }
-    public P6NativeStreamDrain(StreamReader stdout, StreamReader stderr) {
+    public P6NativeStreamDrain(StreamReader stdout, StreamReader stderr) : this(stdout, stderr, false) { }
+    public P6NativeStreamDrain(StreamReader stdout, StreamReader stderr, bool classifyStartup) {
+        this.classifyStartup = classifyStartup;
         tasks = new[] { Drain(stdout), Drain(stderr) };
     }
     private Task Drain(StreamReader input) {
         return Task.Run(async () => {
-            try { var buffer = new char[2048]; int n;
-                while ((n = await input.ReadAsync(buffer, 0, buffer.Length)) > 0)
+            try { var buffer = new char[2048]; int n; string tail = "";
+                while ((n = await input.ReadAsync(buffer, 0, buffer.Length)) > 0) {
                     Interlocked.Add(ref count, n);
+                    if (classifyStartup) {
+                        string text = tail + new string(buffer, 0, n); Classify(text);
+                        tail = text.Substring(Math.Max(0, text.Length - 256));
+                    }
+                }
             } catch { Interlocked.Exchange(ref failed, 1); }
         });
     }

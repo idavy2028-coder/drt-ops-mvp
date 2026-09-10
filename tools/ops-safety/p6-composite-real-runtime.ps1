@@ -132,29 +132,68 @@ function Get-P6RuntimeMavenSpec($Context,[string[]]$Goals,[hashtable]$Extra=@{})
     # 直接运行固定Maven Java launcher，避开cmd持有句柄但Java后代失联的问题。
     [pscustomobject]@{FileName='C:\Program Files\Java\jdk-21.0.10\bin\java.exe';WorkingDirectory=$Context.RepositoryRoot;Environment=$environment;Arguments=@('-Xmx768m',('-Dmaven.home='+$maven),('-Dclassworlds.conf='+(Join-Path $maven 'bin/m2.conf')),('-Dmaven.multiModuleProjectDirectory='+$Context.RepositoryRoot),'-cp',(Join-Path $maven 'boot/plexus-classworlds-2.9.0.jar'),'org.codehaus.plexus.classworlds.launcher.Launcher','-q','-B','-ntp')+$Goals}
 }
-function Wait-P6RuntimeReady($Context,[string]$Role) {
+function Get-P6SafeHealth($Body) {
+    $safe=[ordered]@{}
+    $state=Get-P6Field $Body 'status'
+    if($state -is [string] -and $state -cin @('UP','DOWN','UNKNOWN','OUT_OF_SERVICE')){$safe.status=$state}
+    $components=Get-P6Field $Body 'components'
+    foreach($name in @('jtGateway','jtGatewayLiveness')){
+        $component=Get-P6Field $components $name
+        $state=Get-P6Field $component 'status'
+        if($state -is [string] -and $state -cin @('UP','DOWN','UNKNOWN','OUT_OF_SERVICE')){$safe[$name]=$state}
+        $details=Get-P6Field $component 'details'
+        foreach($key in @('tcpListening','bufferWritable')){$value=Get-P6Field $details $key;if($value -is [bool]){$safe[$key]=$value}}
+        foreach($key in @('operationsApiStatus','operationsApiRegistryStatus','operationsApiIngressStatus','operationsApiProbeStatus')){
+            $value=Get-P6Field $details $key;if($value -is [string] -and $value -cin @('UP','DOWN','UNKNOWN','DISABLED','STALE')){$safe[$key]=$value}
+        }
+        $value=Get-P6Field $details 'operationsApiOperation'
+        if($value -is [string] -and $value -cin @('NONE','STALE','AUTHENTICATED_CONTRACT_REQUIRED','HEALTH_PROBE','REGISTRATION_VERIFY','REGISTRATION_COMPLETE','AUTHENTICATION_VERIFY')){$safe.operationsApiOperation=$value}
+    }
+    return [pscustomobject]$safe
+}
+function Wait-P6RuntimeReady($Context,[string]$Role,[ValidateSet('Readiness','Liveness')][string]$Probe='Readiness') {
+    if($Probe -ceq 'Liveness' -and $Role -cne 'GW'){throw 'REHEARSAL_ARGUMENT_INVALID'}
+    $diagnostic=[pscustomobject]@{Phase=($Role+'_'+$Probe.ToUpperInvariant());Status='FAIL';HttpStatus=0;ExceptionKind='NONE';StartupExceptionKind='NONE';Health=[pscustomobject]@{};Attempts=0}
+    if($null -ne $Context.PSObject.Properties['Evidence'] -and $null -ne $Context.Evidence){$Context.Evidence.Add($diagnostic)}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     while($timer.ElapsedMilliseconds -lt 120000){
-        Assert-P6RuntimeGuard $Context $Role
+        $diagnostic.Attempts++
+        $diagnostic.HttpStatus=0;$diagnostic.Health=[pscustomobject]@{};$diagnostic.ExceptionKind='GUARD'
         try{
+            Assert-P6RuntimeGuard $Context $Role
+            $diagnostic.ExceptionKind='NONE'
             if($Role -ceq 'PG'){
                 $ev=Read-P6HeldResourceOwnership $Context 'PG'
                 Assert-P6PgIdentity $Context.Receipt $Context.Tickets.PG.Recorded $ev.ObservedProcess $ev.PidFileLines $ev.Listeners.Items $ev.LaunchEvidence|Out-Null
             }else{
                 $port=if($Role -ceq 'API'){$Context.Receipt.Ports[1]}else{$Context.Receipt.Ports[2]}
-                # API exposes overall health anonymously; gateway retains readiness semantics.
-                $healthPath=if($Role -ceq 'API'){'/actuator/health'}else{'/actuator/health/readiness'}
+                $healthPath=if($Role -ceq 'API'){'/actuator/health'}elseif($Probe -ceq 'Liveness'){'/actuator/health/liveness'}else{'/actuator/health/readiness'}
                 $req=[Net.HttpWebRequest]::Create(('http://127.0.0.1:{0}{1}' -f $port,$healthPath));$req.Proxy=$null;$req.Timeout=3000;$req.ReadWriteTimeout=1000;$req.AllowAutoRedirect=$false
-                $res=$req.GetResponse();try{
-                    if([int]$res.StatusCode -ne 200){throw 'not ready'}
+                $res=$null
+                try{$res=$req.GetResponse()}catch [Net.WebException]{if($null -eq $_.Exception.Response){throw};$res=$_.Exception.Response}
+                try{
+                    $diagnostic.HttpStatus=[int]$res.StatusCode
                     $stream=$res.GetResponseStream();$buffer=New-Object byte[] 1024;$memory=New-Object IO.MemoryStream;$bodyTimer=[Diagnostics.Stopwatch]::StartNew()
                     try{while($true){Assert-P6ResourceLifetime $Context.Lifetime;if($bodyTimer.ElapsedMilliseconds -ge 3000){throw 'REHEARSAL_READY_BODY_TIMEOUT'};$n=$stream.Read($buffer,0,$buffer.Length);if($n -eq 0){break};if($memory.Length+$n -gt 65536){throw 'REHEARSAL_READY_BODY_LIMIT'};$memory.Write($buffer,0,$n)};$body=[Text.Encoding]::UTF8.GetString($memory.ToArray())|ConvertFrom-Json}finally{$stream.Dispose();$memory.Dispose()}
-                    if($body.status -cne 'UP'){throw 'not ready'}
+                    $diagnostic.Health=Get-P6SafeHealth $body
+                    if([int]$res.StatusCode -ne 200){$diagnostic.ExceptionKind='HTTP_STATUS';throw 'not ready'}
+                    if($body.status -isnot [string] -or $body.status -cne 'UP'){$diagnostic.ExceptionKind='HEALTH_NOT_UP';throw 'not ready'}
                 }finally{$res.Dispose()}
             }
+            $diagnostic.ExceptionKind='LISTENER_GUARD'
             Assert-P6RuntimeGuard $Context
+            $diagnostic.ExceptionKind='NONE';$diagnostic.Status='PASS'
             return
-        }catch{if($Context.Tickets[$Role].Process.HasExited){throw 'REHEARSAL_READY_FAILED'}}
+        }catch{
+            if($diagnostic.ExceptionKind -ceq 'NONE'){
+                $diagnostic.ExceptionKind=if($_.Exception -is [Net.WebException]){'NETWORK'}elseif($_.Exception.Message -ceq 'REHEARSAL_READY_BODY_LIMIT'){'BODY_LIMIT'}elseif($_.Exception.Message -ceq 'REHEARSAL_READY_BODY_TIMEOUT'){'BODY_TIMEOUT'}else{'RESPONSE_INVALID'}
+            }
+            $drain=Get-P6Field $Context.Tickets[$Role] 'Drain'
+            $kind=Get-P6Field $drain 'StartupExceptionKind'
+            if($kind -cin @('NONE','JAVA_EXCEPTION','APPLICATION_START_FAILED','DATABASE','PORT_BIND')){$diagnostic.StartupExceptionKind=$kind}
+            if($diagnostic.ExceptionKind -ceq 'GUARD'){throw}
+            if($Context.Tickets[$Role].Process.HasExited){$diagnostic.ExceptionKind='PROCESS_EXITED';throw 'REHEARSAL_READY_FAILED'}
+        }
         Start-Sleep -Milliseconds 500
     }
     throw 'REHEARSAL_READY_TIMEOUT'
@@ -201,7 +240,7 @@ function Remove-P6RuntimeReports($Context) {
 }
 function Invoke-P6RealIsolationExecution($Plan,[string]$ConfirmationToken) {
     $context=$null;$phase='SNAPSHOT';$ok=$false;$businessPassed=$false;$retained=$true;$code='REHEARSAL_EXECUTION_FAILED'
-    $stageNames=@('SNAPSHOT','BUILD','PG_INIT','EXTERNAL59','HELPER','MIGRATE_19','PREPARE_V20','MIGRATE_20','MIGRATE_21','VALIDATE','API','BUSINESS','GW','WIRE','TASK12','LEASE_RELEASE','FINAL_PG_PROBE')
+    $stageNames=@('SNAPSHOT','BUILD','PG_INIT','EXTERNAL59','HELPER','MIGRATE_19','PREPARE_V20','MIGRATE_20','MIGRATE_21','VALIDATE','API','BUSINESS','GW','WIRE','GW_READINESS','TASK12','LEASE_RELEASE','FINAL_PG_PROBE')
     $cleanup=New-Object 'Collections.Generic.List[object]'
     $executionPhase='SNAPSHOT'
     try {
@@ -258,13 +297,14 @@ function Invoke-P6RealIsolationExecution($Plan,[string]$ConfirmationToken) {
         $wireHash=Get-P6Sha256 ([IO.File]::ReadAllBytes((Join-Path $root 'wire.properties')))
         Write-P6AtomicNewFile $root (Join-Path $root 'wire-receipt.json') ([Text.Encoding]::UTF8.GetBytes((@{WireSha256=$wireHash;PreviousReceiptSha256=$context.ReceiptHash}|ConvertTo-Json -Compress)))
         $phase='GW';[Console]::Out.WriteLine('P6_PHASE=GW');Assert-P6RuntimeGuard $context
-        $start=Start-P6HeldResource $context GW;if($start.Status -cne 'STARTED'){throw 'REHEARSAL_RESOURCE_START_FAILED'};Wait-P6RuntimeReady $context GW
+        $start=Start-P6HeldResource $context GW;if($start.Status -cne 'STARTED'){throw 'REHEARSAL_RESOURCE_START_FAILED'};Wait-P6RuntimeReady $context GW Liveness
         $phase='WIRE';[Console]::Out.WriteLine('P6_PHASE=WIRE')
         $env=Get-P6RuntimeHelperEnvironment $context;$env.P6_REHEARSAL_API_BASE_URL='http://127.0.0.1:'+$context.Receipt.Ports[1];$env.P6_REHEARSAL_GATEWAY_TCP_PORT=[string]$context.Receipt.Ports[3];$env.P6_REHEARSAL_GATEWAY_INSTANCE='rehearsal-'+$context.Receipt.RunId;$env.P6_REHEARSAL_API_TOKEN=[IO.File]::ReadAllText((Join-Path $root 'secrets/api-token.txt'))
         if((Get-P6Sha256 ([IO.File]::ReadAllBytes((Join-Path $root 'wire.properties')))) -cne $wireHash){throw 'REHEARSAL_WIRE_RECEIPT_CHANGED'}
         $wireLines=[IO.File]::ReadAllLines((Join-Path $root 'wire.properties'))
         foreach($letter in @('A','B','C')){$line=@($wireLines|Where-Object{$_ -cmatch ('^Vehicle'+$letter+'Id=')});if($line.Count -ne 1){throw 'REHEARSAL_WIRE_MAPPING_INVALID'};$env['P6_REHEARSAL_VEHICLE_'+$letter+'_ID']=$line[0].Split('=')[1]}
         Invoke-P6RuntimeJava $context P6CompositeWireHarness $env $phase 120000
+        $phase='GW_READINESS';[Console]::Out.WriteLine('P6_PHASE=GW_READINESS');Wait-P6RuntimeReady $context GW Readiness
         $phase='TASK12';[Console]::Out.WriteLine('P6_PHASE=TASK12')
         $task=Join-Path $context.RepositoryRoot 'tools/ops-safety/Invoke-Task12SafetyGate.ps1';$expected=Join-Path $root 'acceptance/expected.json';$results=Join-Path $root 'acceptance/results.json'
         $spec=[pscustomobject]@{FileName=(Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe');WorkingDirectory=$root;Environment=(Get-P6ChildEnvironment $root);Arguments=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$task,'-Mode','VerifyAcceptance','-ExpectedPath',$expected,'-ResultsPath',$results);ExpectedOutput='TASK12_SAFETY_STATUS=PASS MODE=VerifyAcceptance ACCEPTED=4'}

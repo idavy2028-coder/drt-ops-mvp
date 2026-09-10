@@ -207,7 +207,7 @@ function Start-P6HeldResource {
         if($p -isnot [Diagnostics.Process] -or -not $p.Start()){throw 'invalid'}
         $ticket=[pscustomobject]@{Process=$p;Recorded=$null;LaunchEvidence=$null;Drain=$null;State='STARTING';Role=$Role}
         $Context.Tickets[$Role]=$ticket
-        $ticket.Drain=New-Object P6NativeStreamDrain($p.StandardOutput,$p.StandardError)
+        $ticket.Drain=New-Object P6NativeStreamDrain($p.StandardOutput,$p.StandardError,($Role -ceq 'GW'))
         $ticket.Recorded=New-P6ResourceLaunchRecord $Context.Receipt $Role $spec $p
         $ticket.LaunchEvidence=[pscustomobject]@{Process=$p;StartTicks=$p.StartTime.ToUniversalTime().Ticks;WorkingDirectory=$p.StartInfo.WorkingDirectory;LaunchExecutablePath=$ticket.Recorded.LaunchExecutablePath}
         if($p.HasExited){throw 'invalid'}
@@ -215,7 +215,22 @@ function Start-P6HeldResource {
         if($p.HasExited){throw 'invalid'}
         $ticket.State='RUNNING'
         return [pscustomobject]@{Status='STARTED';Code='REHEARSAL_RESOURCE_STARTED';Retained=$false}
-    }catch{if($null -ne $ticket){$ticket.State='FAILED'};return [pscustomobject]@{Status='FAILED';Code='REHEARSAL_RESOURCE_START_FAILED';Retained=($null -ne $ticket)}}
+    }catch{
+        $failure=$_
+        if($null -ne $ticket){$ticket.State='FAILED'}
+        if($Role -ceq 'GW' -and $null -ne $Context.PSObject.Properties['Evidence'] -and $null -ne $Context.Evidence){
+            $kind='STARTUP_GUARD_FAILED';$exception=$failure.Exception
+            for($depth=0;$depth -lt 8 -and $null -ne $exception;$depth++){
+                if($exception -is [ComponentModel.Win32Exception]){$kind='WIN32';break}
+                if($exception -is [UnauthorizedAccessException]){$kind='ACCESS_DENIED';break}
+                $exception=$exception.InnerException
+            }
+            $startup=Get-P6Field (Get-P6Field $ticket 'Drain') 'StartupExceptionKind'
+            if($startup -cnotin @('JAVA_EXCEPTION','APPLICATION_START_FAILED','DATABASE','PORT_BIND')){$startup='NONE'}
+            $Context.Evidence.Add([pscustomobject]@{Phase='GW_START';Status='FAIL';Code='REHEARSAL_RESOURCE_START_FAILED';ExceptionKind=$kind;StartupExceptionKind=$startup})
+        }
+        return [pscustomobject]@{Status='FAILED';Code='REHEARSAL_RESOURCE_START_FAILED';Retained=($null -ne $ticket)}
+    }
 }
 function Read-P6HeldResourceOwnership {
     param($Context,[string]$Role,[scriptblock]$Observe=$null)
