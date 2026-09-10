@@ -17,6 +17,18 @@ public sealed class P6FixedOutputDrain {
  private Task Drain(StreamReader reader,bool capture){return Task.Run(async()=>{try{char[] b=new char[1024];int n;while((n=await reader.ReadAsync(b,0,b.Length))>0){Interlocked.Add(ref count,n);if(capture){lock(text){if(text.Length+n<=4096)text.Append(b,0,n);else Interlocked.Exchange(ref failed,1);}}}}catch{Interlocked.Exchange(ref failed,1);}});}
  public bool Wait(int ms){try{return Task.WaitAll(tasks,ms);}catch{return false;}}
  public bool Matches(string expected){lock(text){return !Failed && text.ToString().Trim()==expected;}}
+ public string ReadBusinessFailure(){lock(text){
+  if(Failed || text.Length>1024)return null;
+  const string steps="START|ACTION|OWNER_READ|OWNER_VALIDATE|ENV_VALIDATE|PREPARE_CREDENTIALS|LOGIN|ROTATE_PASSWORD|RELOGIN|CREATE_VEHICLE|CREATE_TERMINAL|GET_TERMINAL|BIND_TERMINAL|VERIFY_CAPABILITY|GET_SYSTEM|PREVIEW_BEFORE|PREVIEW_REQUEST|PREVIEW_AFTER|PREVIEW_COMPARE|APPLY_CONFIGURATION|VERIFY_COUNTS|WRITE_WIRE|WRITE_TOKEN|WRITE_EVIDENCE|LEASE_RELEASE|COMPLETE";
+  const string states="NONE|OTHER|08001|08003|08004|08006|08007|08P01|22001|22003|22007|22P02|23502|23503|23505|23514|28000|28P01|3D000|3F000|40001|40P01|42501|42601|42703|42704|42883|42P01|53300|53400|57014|57P01|57P02|57P03|58030|XX000";
+  string pattern=@"\A\{""SchemaVersion"":1,""Status"":""FAIL"",""Code"":""(?<code>REHEARSAL_BUSINESS_FAILED|REHEARSAL_BUSINESS_ASSERTION_FAILED)"",""Step"":""("+steps+@")"",""ExceptionKind"":""(?<kind>ASSERTION|SQL|JSON|TIMEOUT|IO|ARGUMENT|OTHER)"",""HttpStatus"":(0|[1-5][0-9]{2}),""SqlState"":""(?<sql>"+states+@")"",""AssertionId"":""(?<assertion>NONE|B00[1-9]|B01[0-9]|B02[01])""\}(\r?\n)?\z";
+  var match=System.Text.RegularExpressions.Regex.Match(text.ToString(),pattern);
+  if(!match.Success)return null;
+  bool assertion=match.Groups["kind"].Value=="ASSERTION";
+  if(assertion!=(match.Groups["code"].Value=="REHEARSAL_BUSINESS_ASSERTION_FAILED") || assertion==(match.Groups["assertion"].Value=="NONE"))return null;
+  if((match.Groups["kind"].Value=="SQL")== (match.Groups["sql"].Value=="NONE"))return null;
+  return match.Value.TrimEnd('\r','\n');
+ }}
 }
 '@ | Out-Null
 }
@@ -32,18 +44,24 @@ function Invoke-P6RuntimeTool($Context,$Spec,[string]$Phase,[int]$Timeout=60000)
     if($Timeout -lt 100 -or $Timeout -gt 1200000){throw 'REHEARSAL_TOOL_TIMEOUT_INVALID'}
     Assert-P6RuntimeGuard $Context
     Initialize-P6StreamDrain
-    if($null -ne (Get-P6Field $Spec 'ExpectedOutput')){Initialize-P6FixedOutputDrain}
+    $business=(Get-P6Field $Spec 'BusinessResult') -eq $true
+    if($business -or $null -ne (Get-P6Field $Spec 'ExpectedOutput')){Initialize-P6FixedOutputDrain}
     $p=New-Object Diagnostics.Process;$p.StartInfo=New-P6ProcessStartInfo $Spec
     $drain=$null;$timer=[Diagnostics.Stopwatch]::StartNew();$started=$false;$done=$false
     try {
         if(-not $p.Start()){throw 'REHEARSAL_TOOL_FAILED'};$started=$true
-        if($null -ne (Get-P6Field $Spec 'ExpectedOutput')){Initialize-P6FixedOutputDrain;$drain=New-Object P6FixedOutputDrain($p.StandardOutput,$p.StandardError)}else{$drain=New-Object P6NativeStreamDrain($p.StandardOutput,$p.StandardError)}
+        if($business -or $null -ne (Get-P6Field $Spec 'ExpectedOutput')){$drain=New-Object P6FixedOutputDrain($p.StandardOutput,$p.StandardError)}else{$drain=New-Object P6NativeStreamDrain($p.StandardOutput,$p.StandardError)}
         $Context.ToolProcessIds.Add($p.Id)
         $nextGuard=0L
         while(-not ($p.HasExited -and $drain.Wait(0))){
             Assert-P6ResourceLifetime $Context.Lifetime
-            # drain从不保存文本；Maven测试输出允许至4Mi字符，其他工具仍64Ki。
+            # BUSINESS stdout is bounded in memory and only a strict whitelist projection is persisted.
+            # Other tools retain the existing count-only/fixed-output contracts.
             $limit=if($Phase -cin @('BUILD','EXTERNAL59')){4194304}else{65536}
+            if($business -and ($drain.Failed -or $drain.Count -gt $limit)){
+                $Context.Evidence.Add([pscustomobject]@{Phase=$Phase;Code='REHEARSAL_BUSINESS_DIAGNOSTIC_INVALID';DiagnosticStatus='REJECTED'})
+                throw 'REHEARSAL_BUSINESS_DIAGNOSTIC_INVALID'
+            }
             if($timer.ElapsedMilliseconds -ge $Timeout -or $drain.Failed -or $drain.Count -gt $limit){throw 'REHEARSAL_TOOL_FAILED'}
             if($timer.ElapsedMilliseconds -ge $nextGuard){Assert-P6RuntimeGuard $Context;$nextGuard=$timer.ElapsedMilliseconds+3000}
             [void]$p.WaitForExit(250)
@@ -51,6 +69,24 @@ function Invoke-P6RuntimeTool($Context,$Spec,[string]$Phase,[int]$Timeout=60000)
         $done=$true
         $result=[pscustomobject]@{Phase=$Phase;ExitCode=$p.ExitCode;OutputCharacters=$drain.Count;ElapsedMilliseconds=$timer.ElapsedMilliseconds}
         $Context.Evidence.Add($result)
+        if($business){
+            # Persist only validated diagnostic fields before later guards can mask the primary failure.
+            $passed=$p.ExitCode -eq 0 -and -not $drain.Failed -and $drain.Count -le 65536 -and $drain.Matches('P6_BUSINESS_STATUS=PASS')
+            if(-not $passed){
+                $safeJson=$drain.ReadBusinessFailure()
+                if($p.ExitCode -eq 1 -and $drain.Count -le 65536 -and $null -ne $safeJson){
+                    $failure=$safeJson|ConvertFrom-Json
+                    $result|Add-Member NoteProperty BusinessFailure $failure
+                    $result|Add-Member NoteProperty Code $failure.Code
+                }else{
+                    $result|Add-Member NoteProperty Code 'REHEARSAL_BUSINESS_DIAGNOSTIC_INVALID'
+                    $result|Add-Member NoteProperty DiagnosticStatus 'REJECTED'
+                }
+            }
+            Assert-P6RuntimeGuard $Context
+            if(-not $passed){throw $result.Code}
+            return $result
+        }
         Assert-P6RuntimeGuard $Context
         if($p.ExitCode -ne 0){throw 'REHEARSAL_TOOL_FAILED'}
         if($null -ne (Get-P6Field $Spec 'ExpectedOutput') -and -not $drain.Matches($Spec.ExpectedOutput)){throw 'REHEARSAL_TOOL_OUTPUT_INVALID'}
@@ -132,6 +168,7 @@ function Get-P6RuntimeHelperEnvironment($Context) {
 }
 function Invoke-P6RuntimeJava($Context,[string]$Class,[hashtable]$Environment,[string]$Phase,[int]$Timeout=60000){
     $spec=[pscustomobject]@{FileName='C:\Program Files\Java\jdk-21.0.10\bin\java.exe';WorkingDirectory=$Context.Receipt.RunDirectory;Environment=$Environment;Arguments=@('-Xmx512m',('-Dp6.rehearsal.run='+$Context.Receipt.RunId),'-cp',$Context.ClassPath,$Class)}
+    if($Class -ceq 'P6CompositeBusinessTool'){$spec|Add-Member NoteProperty BusinessResult $true}
     Invoke-P6RuntimeTool $Context $spec $Phase $Timeout|Out-Null
 }
 function New-P6RuntimeReports($Context) {

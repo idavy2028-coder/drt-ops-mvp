@@ -1,5 +1,14 @@
 # 当前进度
 
+## 最新：BUSINESS 白名单诊断增强（2026-09-10，未重跑演练）
+
+- 用户确认仅增加诊断与流程合同测试，不修改业务逻辑、不重跑演练。辅助程序新增固定步骤名、异常类别、当前步骤 HTTP 状态、白名单 SQLSTATE、固定断言编号；失败只输出 8 字段 ASCII JSON，原成功输出及退出码 0/1 不变。请求顺序、参数、SQL、事务、校验条件及数据写入流程未改变。
+- 运行器仅为 P6CompositeBusinessTool 启用结构化结果消费：stdout 内存缓存上限 4096 字符，失败记录上限 1024 字符；严格拒绝额外/重复字段、未知值、多记录、截断、超长及退出码不一致。无原始异常消息、类名、堆栈、URL、SQL、请求响应体或 stderr 落盘。
+- 合规失败保存为 Evidence[].BusinessFailure，保留 REHEARSAL_BUSINESS_ASSERTION_FAILED 或 REHEARSAL_BUSINESS_FAILED；后置门禁失败之前先保存安全字段，避免主因丢失。无效结果只记录 REHEARSAL_BUSINESS_DIAGNOSTIC_INVALID。诊断协议及断言映射见 tools/ops-safety/business-diagnostics.md。
+- 测试驱动证据：旧辅助程序在 STRUCTURED_FAILURE_MISSING_login 用例失败；旧运行器不能保留业务码；后置门禁覆盖主因也已先复现再修复。最终 Windows PowerShell 5.1 验证：辅助程序基础/诊断合同 7/7、真实 main/prepare 流程合同 12/12、真实辅助程序到运行器接线 1/1、结果消费合同 21/21、运行器合同 7/7、健康探测合同 6/6、安全合同 139/139，全部通过；git diff --check 通过。不同套件计数不合并。
+- 流程合同只使用本地测试 HTTP 服务、测试专用 JDBC 驱动与新建的私有合成目录；没有启动 API/PostgreSQL，也没有调用 Plan/Execute 或重跑完整演练。合成测试目录保留，历史 native-44c5229925144e638a7934c2e88153f1 失败现场和报告未修改。
+- 原 BUSINESS 失败的具体根因仍未重现，不能将诊断合同通过记为演练通过；后续需经授权执行新演练才能得到实际失败步骤。当前仅准备好安全诊断能力，未推送远端。
+
 ## 最新：API 修复后完整重演（2026-09-10）
 
 - 用户要求完整重演，并允许脚本支持时跳过 BUILD/PG_INIT；当前 CLI 仅支持 Plan/Execute，无断点续跑参数，原始进程句柄无法跨轮恢复，因此未改脚本绕过，使用提交 15365b8 的新 Plan、新指纹和新目录 native-44c5229925144e638a7934c2e88153f1 完整执行。
