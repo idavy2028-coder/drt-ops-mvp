@@ -1072,3 +1072,20 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 3. 重新运行 `tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Plan`。只有 `EXECUTABLE=true` 才提取本次指纹并调用Execute；失败必须结束同一脚本流程，不能在交互窗口报错后继续下一段。
 4. Execute使用新run目录完成真实构建、新PG双库、external59、V19/V20/V21、API数据准备/preview、Gateway/Wire四连接和Task12验收。任一步失败即停，记录失败与逐资源清理状态；停止归属不明时保留。
 5. 报告真实验收结果和清理证据；仅全部通过才标记隔离演练完成。当前状态：`WAITING_FOR_NONADMIN_HOST`。
+
+### CLEANUP 失败恢复诊断（2026-09-10）
+
+- 最新现场优先于上述历史宿主检查点：HEAD `bca3bb96db2919faa9b20f2f9cde35ac460464b5`，分支 `codex/p6-2-ops-safety-gates`。普通权限宿主已经可用；新鲜 Plan 为 HOST_IS_ADMINISTRATOR=false、HOST_CAN_START_POSTGRES=true。
+- 2026-09-09 本轮 `67271fde54024ec7a799f254c2771f5d` 的真实报告显示 BUILD 与 initdb 工具 exit=0，PG_INIT 阶段失败，随后 CLEANUP 覆盖顶层代码为 REHEARSAL_STOP_UNPROVEN；PG cleanup 子码为 REHEARSAL_PROCESS_UNPROVEN，external59/API/GW/WIRE/Task12 均未执行。证据保存在 `.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/67271fde54024ec7a799f254c2771f5d.json`。
+- 本次独立只读核验确认遗留 PostgreSQL PID 16124、父 PID 18088、启动时间、固定 postgres.exe、完整 -D/-h/-p 命令行及 127.0.0.1:50931 监听归属一致。父运行器已不存在；原始启动 Process/StartInfo 和输出 drain 不能跨宿主恢复。
+- 确认两个确定性格式缺陷：postmaster.pid 数据目录使用 `/` 而收据使用 `\`；状态行为 `ready` 加三个空格。原 Assert-P6PgIdentity 逐字符比较导致 ready 校验及 stop 前身份门禁均拒绝真实格式。新增三个正向用例在修复前 0/3，通过同一生产停止入口复现；修复仅统一路径分隔符，并接受 ready 后 ASCII 空格；旧 native ready 等待同步处理状态空格。
+- 新增错误目录、父路径片段、状态后缀、TAB、starting 五个拒绝用例；修复后定向 8/8，完整 Windows PowerShell 5.1 安全合同 133/133，均失败 0、exit=0；git diff --check 通过。未改迁移、业务代码或原始失败报告。
+- 停止机制本身仍为严格身份校验后 pg_ctl fast stop，再核验原句柄退出及独立进程/端口不存在。当前旧实例由于原运行器退出，不能从收据伪造原句柄；按照运行手册的恢复限制继续保留，未停止或删除。失败时 STORAGE=FAILURE_EVIDENCE_RETAINED 是有意保留，不能解释为清理成功。
+- 新鲜 Plan 当前被 REHEARSAL_WORKTREE_DIRTY 阻挡：本轮代码、测试及本进度尚未提交。下一步需要固化本地修复后重新 Plan，并对失去原始句柄的旧实例另行采用明确批准的人工恢复流程；不得调用原自动清理入口冒充持有启动证据。本轮未重新 Execute，完整演练仍未通过。
+
+### 专项恢复停止与本地提交（2026-09-10）
+
+- 用户明确授权本地提交，并授权对已核验归属的旧 PostgreSQL 执行一次专项恢复停止。
+- 专项脚本重新核验 owner/receipt 前驱链、私有 ACL、当前 Windows 进程所有者 SID、PID/启动时间/可执行文件/完整命令行、postmaster.pid 及唯一回环监听；没有伪造丢失的原始启动句柄或 cwd 观测。
+- 对 native-67271fde54024ec7a799f254c2771f5d 执行一次 pg_ctl fast stop，退出码 0；随后独立确认 PID 16124 与已采集后代全部不存在，50931–50934 无监听，postmaster.pid 已移除。专项结果 RECOVERY_STOP=PASS；原数据与秘密目录作为失败证据保留，未删除，也不记作 STORAGE=REMOVED。
+- 本地提交范围为 pg 身份格式修复、8 条新增安全用例及本进度。已完成的完整安全回归 133/133，零失败；本轮提交前再次检查差异。完整业务隔离演练仍需新目录、新 Plan 和新指纹，不复用旧目录。

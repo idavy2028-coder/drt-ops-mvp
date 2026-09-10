@@ -278,7 +278,7 @@ function Wait-P6PostgresReady {
         while($timer.ElapsedMilliseconds -lt 15000){
             if($Context.Ticket.Process.HasExited -or $Context.Ticket.Drain.Failed -or $Context.Ticket.Drain.Count -gt 65536){throw 'invalid'}
             $evidence=Read-P6PostgresOwnership $Context
-            if($evidence.PidFileLines.Count -ge 8 -and $evidence.PidFileLines[7] -ceq 'ready'){
+            if($evidence.PidFileLines.Count -ge 8 -and $evidence.PidFileLines[7] -cmatch '\Aready *\z'){
                 Assert-P6PgIdentity $Context.Receipt $Context.Ticket.Recorded $evidence.ObservedProcess $evidence.PidFileLines $evidence.Listeners.Items $evidence.LaunchEvidence | Out-Null
                 return $true
             }
@@ -787,9 +787,12 @@ function Assert-P6PgIdentity {
         Assert-P6ProcessIdentity $Receipt $Recorded $Observed $LaunchEvidence | Out-Null
         if ($Recorded.Kind -cne 'Postgres' -or $null -eq $PidFileLines -or @($PidFileLines).Count -lt 8 -or $null -eq $Listeners) { throw 'invalid' }
         $epoch=([DateTimeOffset]::Parse($Recorded.StartTimeUtc)).ToUnixTimeSeconds()
-        if ($PidFileLines[0] -cne [string]$Recorded.Pid -or $PidFileLines[1] -cne $Receipt.PgData -or
+        # PostgreSQL writes forward slashes and space-pads its fixed-width status line.
+        # Only normalize separators; do not resolve aliases, dot segments, or other paths.
+        if ($PidFileLines[1] -isnot [string] -or $PidFileLines[7] -isnot [string]) { throw 'invalid' }
+        if ($PidFileLines[0] -cne [string]$Recorded.Pid -or $PidFileLines[1].Replace('/','\') -cne $Receipt.PgData.Replace('/','\') -or
             $PidFileLines[2] -cne [string]$epoch -or $PidFileLines[3] -cne [string]$Receipt.Ports[0] -or
-            $PidFileLines[5] -cne '127.0.0.1' -or $PidFileLines[7] -cne 'ready') { throw 'invalid' }
+            $PidFileLines[5] -cne '127.0.0.1' -or $PidFileLines[7] -cnotmatch '\Aready *\z') { throw 'invalid' }
         $matching=@($Listeners | Where-Object { $_.LocalPort -eq $Receipt.Ports[0] -or $_.OwningProcess -eq $Recorded.Pid })
         if ($matching.Count -ne 1 -or $matching[0].LocalAddress -cne '127.0.0.1' -or
             $matching[0].LocalPort -ne $Receipt.Ports[0] -or $matching[0].OwningProcess -ne $Recorded.Pid) { throw 'invalid' }

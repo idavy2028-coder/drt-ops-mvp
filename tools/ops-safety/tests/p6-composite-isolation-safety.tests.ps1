@@ -120,6 +120,31 @@ function InvokePgFixtureStop($Fixture,[scriptblock] $Read,[scriptblock] $Stop,[s
 }
 
 if ($Phase -cin @('All','PowerShell')) {
+    foreach($shape in @('other_path','parent_segment','ready_suffix','ready_tab','starting')) {
+        Case ('pg_native_pidfile_rejects_'+$shape) {
+            $f=PgFixture
+            switch($shape){
+                'other_path' {$f.Evidence.PidFileLines[1]=$f.Receipt.PgData.Replace('\','/')+'-other'}
+                'parent_segment' {$f.Evidence.PidFileLines[1]=$f.Receipt.PgData.Replace('\','/')+'/../pgdata'}
+                'ready_suffix' {$f.Evidence.PidFileLines[7]='ready other'}
+                'ready_tab' {$f.Evidence.PidFileLines[7]="ready`t"}
+                'starting' {$f.Evidence.PidFileLines[7]='starting'}
+            }
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $r=InvokePgFixtureStop $f {$f.Evidence} {$calls.Add('stop')} {$true}
+            Check ($r.Status -ceq 'RETAINED' -and $calls.Count -eq 0) 'INVALID_PIDFILE_STOP_CALLED'
+        }
+    }
+    foreach($shape in @('slashes','padded_ready','both')) {
+        Case ('pg_native_pidfile_accepts_'+$shape) {
+            $f=PgFixture
+            if($shape -cin @('slashes','both')){$f.Evidence.PidFileLines[1]=$f.Receipt.PgData.Replace('\','/')}
+            if($shape -cin @('padded_ready','both')){$f.Evidence.PidFileLines[7]='ready   '}
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $r=InvokePgFixtureStop $f {if($calls.Count -eq 0){$f.Evidence}else{StoppedEvidence $f}} {$calls.Add('stop')} {$true}
+            Check ($r.Status -ceq 'STOPPED' -and $calls.Count -eq 1) 'NATIVE_PIDFILE_STOP_REJECTED'
+        }
+    }
     Case 'fix1_M1_winps51_json_receipt_preserves_string_created_at' {
         Check ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -ge 1) 'TEST_HOST_NOT_WINPS51'
         $f=Fixture;$decoded=$f.Receipt|ConvertTo-Json -Depth 20|ConvertFrom-Json
