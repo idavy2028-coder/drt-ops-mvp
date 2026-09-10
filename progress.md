@@ -1099,6 +1099,14 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 本轮真实结果报告：`.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/7473f1ad6a704a4da92bf0e2002bb1f7.json`。下一诊断入口为 EXTERNAL59 的 PostGIS 类型可见性，以及停止命令返回失败但进程已退出的证据缺口。旧实例专项恢复已完成；两轮隔离 PostgreSQL 当前均已退出。本轮未继续修改迁移或扩大停止权限，未推送。
 ### PostGIS 与停止等待修复、保留目录回收（2026-09-10）
 
+#### 最新真实复验结果
+
+- 当前修复提交 606b57b、0f500c2；新鲜 Plan EXECUTABLE=true，完整重演 native-f3aab4f44eda4071aa3cb553a0d51c0b。双库 PostGIS 初始化 exit=0，EXTERNAL59 为 tests=59 / failures=0 / errors=0 / skipped=0；HELPER、MIGRATE_19、PREPARE_V20、MIGRATE_20、MIGRATE_21、VALIDATE 全通过。最新完整安全合同为 139/139，零失败。
+- 本轮结果 FAIL / API / REHEARSAL_READY_TIMEOUT，BUSINESS、GW、WIRE、TASK12 及后续阶段未执行，不能宣称完整演练通过。报告在 .superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/f3aab4f44eda4071aa3cb553a0d51c0b.json。
+- 自动清理 API=STOPPED、PG=STOPPED、TOOLS=STOPPED。新增 PG_STOP 证据为 EXITED / REHEARSAL_NATIVE_EXIT_CONFIRMED / exit=0 / 18411ms / Retained=false，真实负载验证新的 30秒/40秒预算足够本轮正常停止。独立系统复核 MatchingProcesses=0、ReservedPortListeners=0、PidFileExists=false。
+- STORAGE=RETAINED / FAILURE_EVIDENCE_RETAINED 是 API 阶段失败的有意证据保留，不是停止失败。原四个已批准目录回收已完成；另保留新增 native-768eb01797f942d4a17dd4a22cf248c1 和本轮 native-f3aab4f44eda4071aa3cb553a0d51c0b，两者进程均已停止。
+- 下一诊断入口为 API 就绪探测：运行器请求 /actuator/health/readiness，SecurityConfiguration.java 仅明确匿名放行 /actuator/health；存在契约不一致嫌疑，但运行器未保存实际响应，不能将静态推断写作确定根因。本轮未修改 API 安全配置，未推送远端。
+
 - 补充：修复提交 606b57b 后首次重演 native-768eb01797f942d4a17dd4a22cf248c1 在 PG_INIT 暴露跨秒边界：系统创建时间 06:30:01.952633、pidfile 内部启动秒 06:30:02。原精确整数秒比较拒绝身份，并未执行迁移测试。现仅允许内部时钟晚一个整数秒，操作系统观测与原句柄时间仍精确比较；定向测试修复前 0/1、修复后 4/4。独立重验本轮 PID 21208 的所有者、启动时间、命令行、pidfile 和唯一回环监听后专项停止成功，pg_ctl exit=0，后代不存在、端口释放、pidfile 消失；该轮目录保留作为新增失败证据。
 
 - 本节为最新恢复点。已确认 PostGIS 3.6.1 安装完整，V1 包含 CREATE EXTENSION IF NOT EXISTS postgis；原运行器未预先在 public 初始化，首个测试在独有 schema 安装扩展，后续 42 项因 geography 不可见失败。修复仅在新建的两个隔离数据库中显式初始化 public.postgis，并校验扩展归属和 public.geography；没有修改冻结迁移。
