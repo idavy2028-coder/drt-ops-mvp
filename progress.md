@@ -1,5 +1,13 @@
 # 当前进度
 
+## 最新：API 修复后完整重演（2026-09-10）
+
+- 用户要求完整重演，并允许脚本支持时跳过 BUILD/PG_INIT；当前 CLI 仅支持 Plan/Execute，无断点续跑参数，原始进程句柄无法跨轮恢复，因此未改脚本绕过，使用提交 15365b8 的新 Plan、新指纹和新目录 native-44c5229925144e638a7934c2e88153f1 完整执行。
+- BUILD、PG_INIT、PostGIS 双库初始化、EXTERNAL59、HELPER、V19/V20/V21 及 VALIDATE 全通过。EXTERNAL59 tests=59、failures=0、errors=0、skipped=0。API 使用 /actuator/health 的真实健康检查已通过，确认先前 API 超时阻挡消除。
+- 新结果 FAIL / BUSINESS / REHEARSAL_TOOL_FAILED：业务辅助程序 ExitCode=1、ElapsedMilliseconds=6229、OutputCharacters=56。辅助程序统一吞掉异常并输出 REHEARSAL_BUSINESS_FAILED，运行器只保存字符数，现有证据不能确认具体接口或断言。BUSINESS 未通过，GW/WIRE/TASK12/LEASE_RELEASE/FINAL_PG_PROBE 未执行；完整演练仍未通过。
+- 自动清理 API=STOPPED、PG=STOPPED、TOOLS=STOPPED；PG_STOP EXITED、exit=0、18173ms、Retained=false。独立系统核验 MatchingProcesses=0、ReservedPortListeners=0、PidFileExists=false。STORAGE=RETAINED / FAILURE_EVIDENCE_RETAINED，保留本轮失败现场，未清理旧目录。
+- 报告：.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/44c5229925144e638a7934c2e88153f1.json。下一恢复点为 BUSINESS 失败诊断；本轮未更改业务逻辑或安全配置，未推送远端。
+
 ## 最新：API 健康探测最小修复（2026-09-10）
 
 - 用户确认最小改动方案：API 改用已匿名公开的 /actuator/health，网关保留 /actuator/health/readiness；不修改 API 安全配置，不添加令牌，不扩大 Actuator 放行范围，不延长超时。
