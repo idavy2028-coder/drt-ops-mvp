@@ -106,8 +106,11 @@ function Wait-P6RuntimeReady($Context,[string]$Role) {
                 Assert-P6PgIdentity $Context.Receipt $Context.Tickets.PG.Recorded $ev.ObservedProcess $ev.PidFileLines $ev.Listeners.Items $ev.LaunchEvidence|Out-Null
             }else{
                 $port=if($Role -ceq 'API'){$Context.Receipt.Ports[1]}else{$Context.Receipt.Ports[2]}
-                $req=[Net.HttpWebRequest]::Create(('http://127.0.0.1:{0}/actuator/health/readiness' -f $port));$req.Proxy=$null;$req.Timeout=3000;$req.ReadWriteTimeout=1000;$req.AllowAutoRedirect=$false
+                # API exposes overall health anonymously; gateway retains readiness semantics.
+                $healthPath=if($Role -ceq 'API'){'/actuator/health'}else{'/actuator/health/readiness'}
+                $req=[Net.HttpWebRequest]::Create(('http://127.0.0.1:{0}{1}' -f $port,$healthPath));$req.Proxy=$null;$req.Timeout=3000;$req.ReadWriteTimeout=1000;$req.AllowAutoRedirect=$false
                 $res=$req.GetResponse();try{
+                    if([int]$res.StatusCode -ne 200){throw 'not ready'}
                     $stream=$res.GetResponseStream();$buffer=New-Object byte[] 1024;$memory=New-Object IO.MemoryStream;$bodyTimer=[Diagnostics.Stopwatch]::StartNew()
                     try{while($true){Assert-P6ResourceLifetime $Context.Lifetime;if($bodyTimer.ElapsedMilliseconds -ge 3000){throw 'REHEARSAL_READY_BODY_TIMEOUT'};$n=$stream.Read($buffer,0,$buffer.Length);if($n -eq 0){break};if($memory.Length+$n -gt 65536){throw 'REHEARSAL_READY_BODY_LIMIT'};$memory.Write($buffer,0,$n)};$body=[Text.Encoding]::UTF8.GetString($memory.ToArray())|ConvertFrom-Json}finally{$stream.Dispose();$memory.Dispose()}
                     if($body.status -cne 'UP'){throw 'not ready'}
