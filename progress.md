@@ -1158,3 +1158,14 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - RED→GREEN 已复现原编排提前 readiness、缺少探测诊断、缺少启动类别、包装异常类别丢失及错误健康状态数组被隐式接受。修复后真实 HTTP 合同11/11、生产编排语句合同4/4、启动分类合同7/7、真实 runtime 合同7/7、身份/生命周期合同15/15、真实合成GW进程启停合同1/1通过。
 - 首次完整安全回归与资源测试并行，目录时间戳稳定性检查失败（154/155）；随后不改该检查串行重验155/155通过，其中 Flyway31/31、Wire94/94亦通过；不将重叠计数相加。只读审阅无Critical/Important问题，唯一Minor包装异常分类问题已增加失败用例并修复。
 - 本轮不重跑完整演练、不启动真实PG/API/GW、不操作历史实例或保留目录、不推送。最新真实演练仍未整体通过；新编排需后续获准执行的新演练验证。
+
+### 本地完整隔离演练已通过（2026-09-10，最新状态）
+
+- 本节取代上述“完整演练未通过/等待复验”的当前状态描述，历史失败和修复过程保留。状态：`LOCAL_ISOLATION_REHEARSAL_COMPLETE`。
+- 已读取并核对最新执行报告 `.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/5b4dd1917ed44c128bd7fefd3be79af0.json`，文件写入时间2026-09-10 20:37:55（本地时区）；SourceHead=`c84a75edda5d29557a1fe5b4ea3ee1c6cbd02401`，与本次核对HEAD一致。
+- 报告结果：`Status=PASS`、`Phase=COMPLETE`、`Code=REHEARSAL_COMPLETE`、`Retained=false`；18个阶段全部PASS，无FAIL/SKIP。报告SHA-256：`6C2032CB378AC634A32E13D71E66EB480A10F3C2BF3CC7900C93A9D74581B5D9`。
+- BUILD、PG_INIT、EXTERNAL59（59 tests、0 failures、0 errors、0 skipped）、HELPER、V19/PREPARE_V20/V20/V21/VALIDATE均通过。
+- API_READINESS HTTP200/UP；BUSINESS确认改密后重登成功、3车辆/4终端/3系统/4成员关系，三次各10表preview比较稳定。GW_LIVENESS HTTP200/UP后WIRE exit0，随后GW_READINESS HTTP200/UP（注册、入站及probe状态均UP），TASK12、LEASE_RELEASE、FINAL_PG_PROBE均exit0。
+- 清理报告：GW/API/PG/TOOLS均STOPPED，所有工具exit0；PG_STOP exit0、17226ms、Retained=false；STORAGE=REMOVED/REHEARSAL_REMOVAL_CONFIRMED。本次只读复核确认该run目录不存在。仅证明本成功运行的清理，不能据此宣称所有历史保留目录已回收。
+- 本次操作仅核对已有报告并更新progress.md，没有重跑演练、修改业务代码或操作云端；更新前工作区干净，更新后仅progress.md未提交，未commit/push。
+- 下一步：云端准入评估中的“本地完整演练未通过”阻挡已关闭。云端当前数据备份、独立恢复验证、V18→V19–V21迁移前置与回滚配置证据仍须分别完成；本地成功不等于授权云端部署/迁移，也不等于真实终端流量验收通过。
