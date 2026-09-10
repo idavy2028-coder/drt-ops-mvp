@@ -120,6 +120,93 @@ function InvokePgFixtureStop($Fixture,[scriptblock] $Read,[scriptblock] $Stop,[s
 }
 
 if ($Phase -cin @('All','PowerShell')) {
+    foreach($shape in @('pg_70000','pg_70001','other_70000')) {
+        Case ('pg_stop_budget_'+$shape) {
+            $f=PgFixture;$spec=Get-P6NativeToolSpec PG_STOP $f.Receipt $f.Parent $f.Marker @{DbPassword=('Q'*40)}
+            $timeout=if($shape -eq 'pg_70001'){70001}else{70000}
+            if($shape -eq 'other_70000'){$spec.Action='PG_PROBE'}
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $factory={param($info)$calls.Add('factory');return $null}
+            Invoke-P6BoundedChild $spec $timeout $factory|Out-Null
+            $expected=if($shape -eq 'pg_70000'){1}else{0}
+            Check ($calls.Count -eq $expected) 'STOP_BUDGET_SCOPE_WRONG'
+        }
+    }
+    foreach($shape in @('absent','alive','wait_timeout','listener','pidfile','read_failed','retained_tool','tool_timeout')) {
+        Case ('pg_nonzero_recheck_'+$shape) {
+            $f=PgFixture;$calls=New-Object 'Collections.Generic.List[string]'
+            $native=[pscustomobject]@{Status='FAILED';Code='REHEARSAL_NATIVE_EXIT_FAILED';ExitCode=1;Retained=$false}
+            if($shape -eq 'retained_tool'){$native.Retained=$true}
+            if($shape -eq 'tool_timeout'){$native.Code='REHEARSAL_NATIVE_TIMEOUT'}
+            $read={
+                if($calls.Count -eq 0){return $f.Evidence}
+                $after=StoppedEvidence $f
+                switch($shape){
+                    'alive' {$after.ObservedProcess=$f.Observed}
+                    'listener' {$after.Listeners=$f.Evidence.Listeners}
+                    'pidfile' {$after.PidFileLines=$f.Evidence.PidFileLines}
+                    'read_failed' {$after.Succeeded=$false}
+                }
+                return $after
+            }
+            $stop={$calls.Add('stop');Assert-P6PgStopCommandResult $native|Out-Null}
+            $r=InvokePgFixtureStop $f $read $stop {$shape -ne 'wait_timeout'}
+            $expected=if($shape -eq 'absent'){'STOPPED'}else{'RETAINED'}
+            Check ($r.Status -ceq $expected -and $calls.Count -eq 1) 'NONZERO_STOP_PROOF_WRONG'
+        }
+    }
+    foreach($delta in @(-1,1,2)) {
+        Case ('pg_epoch_boundary_'+$delta) {
+            $f=PgFixture
+            $epoch=([DateTimeOffset]::Parse($f.Recorded.StartTimeUtc)).ToUnixTimeSeconds()
+            $f.Evidence.PidFileLines[2]=[string]($epoch+$delta)
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $r=InvokePgFixtureStop $f {if($calls.Count -eq 0){$f.Evidence}else{StoppedEvidence $f}} {$calls.Add('stop')} {$true}
+            if($delta -eq 1){Check ($r.Status -ceq 'STOPPED' -and $calls.Count -eq 1) 'NEXT_SECOND_START_REJECTED'}
+            else{Check ($r.Status -ceq 'RETAINED' -and $calls.Count -eq 0) 'OUT_OF_BOUND_START_ACCEPTED'}
+        }
+    }
+    Case 'pg_epoch_boundary_does_not_allow_process_start_drift' {
+        $f=PgFixture
+        $f.Observed.StartTimeUtc=([DateTimeOffset]::Parse($f.Recorded.StartTimeUtc)).AddSeconds(1).ToString('o')
+        $calls=New-Object 'Collections.Generic.List[string]'
+        $r=InvokePgFixtureStop $f {$f.Evidence} {$calls.Add('stop')} {$true}
+        Check ($r.Status -ceq 'RETAINED' -and $calls.Count -eq 0) 'PROCESS_START_DRIFT_ACCEPTED'
+    }
+    foreach($db in @('MIGRATION','LIVE')) {
+        Case ('postgis_initialization_spec_'+$db) {
+            $f=PgFixture
+            $spec=Get-P6NativeToolSpec ('ENABLE_'+$db+'_POSTGIS') $f.Receipt $f.Parent $f.Marker @{DbPassword=('Q'*40)}
+            $expected=if($db -ceq 'MIGRATION'){'composite_onboard'}else{'composite_live'}
+            Check ($spec.FileName.EndsWith('\psql.exe') -and $spec.Arguments[[array]::IndexOf($spec.Arguments,'-d')+1] -ceq $expected) 'POSTGIS_WRONG_DATABASE'
+            Check ($spec.Arguments[-1].Contains('WITH SCHEMA public') -and $spec.Arguments[-1].Contains('pg_extension') -and $spec.Arguments[-1].Contains('REHEARSAL_POSTGIS_SCHEMA_INVALID')) 'POSTGIS_SCHEMA_GUARD_MISSING'
+        }
+    }
+    foreach($shape in @('other_path','parent_segment','ready_suffix','ready_tab','starting')) {
+        Case ('pg_native_pidfile_rejects_'+$shape) {
+            $f=PgFixture
+            switch($shape){
+                'other_path' {$f.Evidence.PidFileLines[1]=$f.Receipt.PgData.Replace('\','/')+'-other'}
+                'parent_segment' {$f.Evidence.PidFileLines[1]=$f.Receipt.PgData.Replace('\','/')+'/../pgdata'}
+                'ready_suffix' {$f.Evidence.PidFileLines[7]='ready other'}
+                'ready_tab' {$f.Evidence.PidFileLines[7]="ready`t"}
+                'starting' {$f.Evidence.PidFileLines[7]='starting'}
+            }
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $r=InvokePgFixtureStop $f {$f.Evidence} {$calls.Add('stop')} {$true}
+            Check ($r.Status -ceq 'RETAINED' -and $calls.Count -eq 0) 'INVALID_PIDFILE_STOP_CALLED'
+        }
+    }
+    foreach($shape in @('slashes','padded_ready','both')) {
+        Case ('pg_native_pidfile_accepts_'+$shape) {
+            $f=PgFixture
+            if($shape -cin @('slashes','both')){$f.Evidence.PidFileLines[1]=$f.Receipt.PgData.Replace('\','/')}
+            if($shape -cin @('padded_ready','both')){$f.Evidence.PidFileLines[7]='ready   '}
+            $calls=New-Object 'Collections.Generic.List[string]'
+            $r=InvokePgFixtureStop $f {if($calls.Count -eq 0){$f.Evidence}else{StoppedEvidence $f}} {$calls.Add('stop')} {$true}
+            Check ($r.Status -ceq 'STOPPED' -and $calls.Count -eq 1) 'NATIVE_PIDFILE_STOP_REJECTED'
+        }
+    }
     Case 'fix1_M1_winps51_json_receipt_preserves_string_created_at' {
         Check ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -ge 1) 'TEST_HOST_NOT_WINPS51'
         $f=Fixture;$decoded=$f.Receipt|ConvertTo-Json -Depth 20|ConvertFrom-Json
@@ -373,7 +460,7 @@ if ($Phase -cin @('All','PowerShell')) {
             Check ($spec.FileName -like 'C:\Program Files\PostgreSQL\17\bin\*.exe' -and $spec.WorkingDirectory -ceq $f.Receipt.RunDirectory) 'NATIVE_PATH_WRONG'
             Check ($spec.Arguments -notmatch ('Q'*40) -and $spec.Environment.PGPASSWORD -ceq ('Q'*40)) 'NATIVE_SECRET_ARGUMENT'
             if($action -eq 'CREATE_LIVE_DB'){Check (($spec.Arguments -join ' ') -ceq '-h 127.0.0.1 -p 45431 -U composite --no-password composite_live') 'NATIVE_DB_ARGUMENTS'}
-            if($action -eq 'PG_STOP'){Check (($spec.Arguments -join ' ') -ceq ('-D '+$f.Receipt.PgData+' -m fast -w -t 5 stop')) 'NATIVE_STOP_ARGUMENTS'}
+            if($action -eq 'PG_STOP'){Check (($spec.Arguments -join ' ') -ceq ('-D '+$f.Receipt.PgData+' -m fast -w -t 60 stop')) 'NATIVE_STOP_ARGUMENTS'}
         }
         Reject { Get-P6NativeToolSpec 'DROP_DATABASE' $f.Receipt $f.Parent $f.Marker $secrets } 'REHEARSAL_NATIVE_ACTION_INVALID'
     }

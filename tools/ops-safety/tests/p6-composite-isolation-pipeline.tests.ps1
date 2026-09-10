@@ -391,7 +391,7 @@ function Test-Fix1RetainedBeforePostProof {
         $ctx|Add-Member TestSpec ({param($Action)Check ($Action -ceq 'PG_STOP') 'WRONG_STOP_ACTION';[pscustomobject]@{Action=$Action}})
         $ctx|Add-Member TestNative ({
             param($Spec,$TimeoutMilliseconds,$ProcessFactory,$QuickState)
-            Check ($Spec.Action -ceq 'PG_STOP' -and $TimeoutMilliseconds -eq 10000) 'WRONG_STOP_NATIVE_SPEC'
+            Check ($Spec.Action -ceq 'PG_STOP' -and $TimeoutMilliseconds -eq 70000) 'WRONG_STOP_NATIVE_SPEC'
             $state.Returned=$true
             [pscustomobject]@{Status='FAILED';Code='REHEARSAL_NATIVE_TIMEOUT';Retained=$true;HeldTicket=$pending}
         }.GetNewClosure())
@@ -400,7 +400,7 @@ function Test-Fix1RetainedBeforePostProof {
         $body=$body.Replace('Assert-P6CurrentResourceReceipt $Context','& $Context.TestReceiptProof $Context')
         $body=$body.Replace("Get-P6NativeToolSpec 'PG_STOP'","& `$Context.TestSpec 'PG_STOP'")
         $body=$body.Replace('Stop-P6OwnedPostgres $Context.Receipt','& $Context.TestOwnedStop $Context.Receipt')
-        $body=$body.Replace('Invoke-P6BoundedChild $spec 10000 $null $quick','& $Context.TestNative $spec 10000 $null $quick')
+        $body=$body.Replace('Invoke-P6BoundedChild $spec 70000 $null $quick','& $Context.TestNative $spec 70000 $null $quick')
         $controlled=[scriptblock]::Create($body)
         $result=&$controlled $ctx 'PG'
         Check ($result.Status -ceq 'RETAINED' -and $state.PostChecks -eq 1) 'POST_PROOF_FAILURE_NOT_EXERCISED'

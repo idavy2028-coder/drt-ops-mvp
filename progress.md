@@ -1,5 +1,28 @@
 # 当前进度
 
+## 最新：BUSINESS 白名单诊断增强（2026-09-10，未重跑演练）
+
+- 用户确认仅增加诊断与流程合同测试，不修改业务逻辑、不重跑演练。辅助程序新增固定步骤名、异常类别、当前步骤 HTTP 状态、白名单 SQLSTATE、固定断言编号；失败只输出 8 字段 ASCII JSON，原成功输出及退出码 0/1 不变。请求顺序、参数、SQL、事务、校验条件及数据写入流程未改变。
+- 运行器仅为 P6CompositeBusinessTool 启用结构化结果消费：stdout 内存缓存上限 4096 字符，失败记录上限 1024 字符；严格拒绝额外/重复字段、未知值、多记录、截断、超长及退出码不一致。无原始异常消息、类名、堆栈、URL、SQL、请求响应体或 stderr 落盘。
+- 合规失败保存为 Evidence[].BusinessFailure，保留 REHEARSAL_BUSINESS_ASSERTION_FAILED 或 REHEARSAL_BUSINESS_FAILED；后置门禁失败之前先保存安全字段，避免主因丢失。无效结果只记录 REHEARSAL_BUSINESS_DIAGNOSTIC_INVALID。诊断协议及断言映射见 tools/ops-safety/business-diagnostics.md。
+- 测试驱动证据：旧辅助程序在 STRUCTURED_FAILURE_MISSING_login 用例失败；旧运行器不能保留业务码；后置门禁覆盖主因也已先复现再修复。最终 Windows PowerShell 5.1 验证：辅助程序基础/诊断合同 7/7、真实 main/prepare 流程合同 12/12、真实辅助程序到运行器接线 1/1、结果消费合同 21/21、运行器合同 7/7、健康探测合同 6/6、安全合同 139/139，全部通过；git diff --check 通过。不同套件计数不合并。
+- 流程合同只使用本地测试 HTTP 服务、测试专用 JDBC 驱动与新建的私有合成目录；没有启动 API/PostgreSQL，也没有调用 Plan/Execute 或重跑完整演练。合成测试目录保留，历史 native-44c5229925144e638a7934c2e88153f1 失败现场和报告未修改。
+- 原 BUSINESS 失败的具体根因仍未重现，不能将诊断合同通过记为演练通过；后续需经授权执行新演练才能得到实际失败步骤。当前仅准备好安全诊断能力，未推送远端。
+
+## 最新：API 修复后完整重演（2026-09-10）
+
+- 用户要求完整重演，并允许脚本支持时跳过 BUILD/PG_INIT；当前 CLI 仅支持 Plan/Execute，无断点续跑参数，原始进程句柄无法跨轮恢复，因此未改脚本绕过，使用提交 15365b8 的新 Plan、新指纹和新目录 native-44c5229925144e638a7934c2e88153f1 完整执行。
+- BUILD、PG_INIT、PostGIS 双库初始化、EXTERNAL59、HELPER、V19/V20/V21 及 VALIDATE 全通过。EXTERNAL59 tests=59、failures=0、errors=0、skipped=0。API 使用 /actuator/health 的真实健康检查已通过，确认先前 API 超时阻挡消除。
+- 新结果 FAIL / BUSINESS / REHEARSAL_TOOL_FAILED：业务辅助程序 ExitCode=1、ElapsedMilliseconds=6229、OutputCharacters=56。辅助程序统一吞掉异常并输出 REHEARSAL_BUSINESS_FAILED，运行器只保存字符数，现有证据不能确认具体接口或断言。BUSINESS 未通过，GW/WIRE/TASK12/LEASE_RELEASE/FINAL_PG_PROBE 未执行；完整演练仍未通过。
+- 自动清理 API=STOPPED、PG=STOPPED、TOOLS=STOPPED；PG_STOP EXITED、exit=0、18173ms、Retained=false。独立系统核验 MatchingProcesses=0、ReservedPortListeners=0、PidFileExists=false。STORAGE=RETAINED / FAILURE_EVIDENCE_RETAINED，保留本轮失败现场，未清理旧目录。
+- 报告：.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/44c5229925144e638a7934c2e88153f1.json。下一恢复点为 BUSINESS 失败诊断；本轮未更改业务逻辑或安全配置，未推送远端。
+
+## 最新：API 健康探测最小修复（2026-09-10）
+
+- 用户确认最小改动方案：API 改用已匿名公开的 /actuator/health，网关保留 /actuator/health/readiness；不修改 API 安全配置，不添加令牌，不扩大 Actuator 放行范围，不延长超时。
+- 显式要求 HTTP 200 且 JSON status=UP；真实 HTTP 回归在修改前复现 API 错误请求 readiness，路径修正后另捕获原逻辑接受 302+UP，补齐严格状态码校验后 6/6 通过（API、GW、DOWN、401、302、201）。运行器合同 7/7 通过，git diff --check 通过。
+- 本轮仅完成修复及定向验证，尚未重新执行完整数据库/API/GW/Task12 演练，不把合同通过记为真实演练通过。旧失败报告及保留目录未变更；下一步需使用干净提交生成新 Plan 和新指纹后重新 Execute。
+
 ## 当前进度快照（2026-08-11）
 
 - 当前基线：`master`；P6-1 评估 PR #12 和独立 E2E 修复 PR #13 均已合并。
@@ -1051,3 +1074,87 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 历史RED stdout未单独保存；控制器在发生时接收失败计数/断言值，过程报告如实承接。独立审阅未回滚复现RED，未把当前GREEN冒充历史时序证据。
 - Docker只读库存44容器/16bind/36volume，按Task12不得自动清理，因此连续隔离演练选native PG17.9/PostGIS新实例；不改现有Docker、不绕过Task12。演练预检已识别V21、V2 demo V20前置及注册后真实API激活衔接，正在建立单独plan-owned runner。
 - 本节代码/计划/公开报告在单独Task10本地提交固化；未push/deploy/访问真实资料。下一状态为 `ISOLATED_REHEARSAL_IN_PROGRESS`，不由Task10通过推定演练或云端准入。
+
+### 当前恢复点：代码已合并，真实隔离演练等待普通权限宿主
+
+- 当前工作树：`D:\codex-projects\.worktrees\p6-2-composite-onboard-system`；分支 `codex/p6-2-ops-safety-gates`；HEAD `8e5b4855c7e929942cfa7203b6d1afe758fcfdec`。
+- PR #22 已合并到远端 master，合并提交 `658b85231be9cfaa97753d72fe98523779eb80f6`。本地保留原分支，未切换其他工作树；链接：https://github.com/idavy2028-coder/drt-ops-mvp/pull/22 。这是此前已确认的远端状态，本次保存未重新访问远端。
+- 已完成：Task10/11/12安全门禁、C2a资源生命周期、C2b fake/计划合同、真实runtime/API业务helper/Gateway/WireHarness/Task12接线及独立代码复核。真实执行实现提交为 `e191e1f1fbd5eb3ab23d3a6f38901cd99636f868`，延期说明提交为当前HEAD。
+- 已有测试证据：真实runtime消费者7/7、PowerShell安全125/125、业务helper合同3/3、Flyway真实目录3/3；C2a历史Resource54/54、Isolation130/130、Flyway31/31、Wire94/94。不同轮次/重叠测试不能相加，未在本次保存时重跑。
+- **完整本地隔离演练未通过**：真实initdb已成功，PostgreSQL进程因管理员令牌被拒绝；external59、API/Gateway四终端链路、Task12完整验收尚无本轮成功证据。代码复核通过不能替代演练通过。
+- 用户最新只读反馈：`DESKTOP-P25210C\Davy`、`IsAdministrator=True`、`EnableLUA=0`。UAC关闭解释了当前账户普通启动PowerShell仍持有管理员权限。工具宿主此前同样为管理员；沙箱虽非管理员但无CIM权限，不能用来运行本轮归属校验。
+- 最近用户Plan：`EXECUTABLE=false`，`HOST_CAN_START_POSTGRES=false`，`BLOCKER=REHEARSAL_NONADMIN_HOST_REQUIRED`，`ACTIONS=0`。指纹 `98c00e03e53d4c453151c3e88e90654fa3a8942787eb53a0c8a9e10924ddaf7d` 仅代表当时管理员环境，恢复时必须重新生成，禁止复用。
+- 未提交状态：本次写入前 `git status --porcelain=v1 --untracked-files=all` 为空，暂存0、未跟踪0；本次仅修改根目录 `progress.md`，保存后唯一预期未提交文件为 ` M progress.md`。没有运行git add/commit/push或新测试。
+- ignored上下文保留：`.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/` 的progress、real-execute-report.md、real-execute-review.md及历史诊断证据。ignored内容不出现在上述git状态中，本次未全量扫描或清理。
+- 已知合成残留维持原状：`.tmp/p6iso/native-f24cf232d4c0438fa51de0b3a0c227d5`（此前PG已STOPPED、删除证明未通过）及 `native-a43b8f93f06c4c37aad92e5fec5c5433`（首轮ACL诊断未启动PG）。本次未重新查询进程或删除目录；下轮不得复用这些目录。既有PG/Docker/云端/真实设备不在演练操作范围。
+
+#### 下一步待执行
+
+1. 使用真正非管理员的Windows PowerShell 5.1宿主；先确认有效令牌 `IsAdministrator=False`，并核对项目、JDK/Maven/PostgreSQL读写权限及CIM进程/端口读取权限。不得仅凭窗口标题推定未提权；不自动修改UAC或创建账户。
+2. 环境就绪后核对Git分支/HEAD及本文件未提交改动；妥善保存本进度后取得干净工作树，按已合并代码恢复。不要重做已完成的fake/计划合同。
+3. 重新运行 `tools/ops-safety/Invoke-P6CompositeIsolationRehearsal.ps1 -Mode Plan`。只有 `EXECUTABLE=true` 才提取本次指纹并调用Execute；失败必须结束同一脚本流程，不能在交互窗口报错后继续下一段。
+4. Execute使用新run目录完成真实构建、新PG双库、external59、V19/V20/V21、API数据准备/preview、Gateway/Wire四连接和Task12验收。任一步失败即停，记录失败与逐资源清理状态；停止归属不明时保留。
+5. 报告真实验收结果和清理证据；仅全部通过才标记隔离演练完成。当前状态：`WAITING_FOR_NONADMIN_HOST`。
+
+### CLEANUP 失败恢复诊断（2026-09-10）
+
+- 最新现场优先于上述历史宿主检查点：HEAD `bca3bb96db2919faa9b20f2f9cde35ac460464b5`，分支 `codex/p6-2-ops-safety-gates`。普通权限宿主已经可用；新鲜 Plan 为 HOST_IS_ADMINISTRATOR=false、HOST_CAN_START_POSTGRES=true。
+- 2026-09-09 本轮 `67271fde54024ec7a799f254c2771f5d` 的真实报告显示 BUILD 与 initdb 工具 exit=0，PG_INIT 阶段失败，随后 CLEANUP 覆盖顶层代码为 REHEARSAL_STOP_UNPROVEN；PG cleanup 子码为 REHEARSAL_PROCESS_UNPROVEN，external59/API/GW/WIRE/Task12 均未执行。证据保存在 `.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/67271fde54024ec7a799f254c2771f5d.json`。
+- 本次独立只读核验确认遗留 PostgreSQL PID 16124、父 PID 18088、启动时间、固定 postgres.exe、完整 -D/-h/-p 命令行及 127.0.0.1:50931 监听归属一致。父运行器已不存在；原始启动 Process/StartInfo 和输出 drain 不能跨宿主恢复。
+- 确认两个确定性格式缺陷：postmaster.pid 数据目录使用 `/` 而收据使用 `\`；状态行为 `ready` 加三个空格。原 Assert-P6PgIdentity 逐字符比较导致 ready 校验及 stop 前身份门禁均拒绝真实格式。新增三个正向用例在修复前 0/3，通过同一生产停止入口复现；修复仅统一路径分隔符，并接受 ready 后 ASCII 空格；旧 native ready 等待同步处理状态空格。
+- 新增错误目录、父路径片段、状态后缀、TAB、starting 五个拒绝用例；修复后定向 8/8，完整 Windows PowerShell 5.1 安全合同 133/133，均失败 0、exit=0；git diff --check 通过。未改迁移、业务代码或原始失败报告。
+- 停止机制本身仍为严格身份校验后 pg_ctl fast stop，再核验原句柄退出及独立进程/端口不存在。当前旧实例由于原运行器退出，不能从收据伪造原句柄；按照运行手册的恢复限制继续保留，未停止或删除。失败时 STORAGE=FAILURE_EVIDENCE_RETAINED 是有意保留，不能解释为清理成功。
+- 新鲜 Plan 当前被 REHEARSAL_WORKTREE_DIRTY 阻挡：本轮代码、测试及本进度尚未提交。下一步需要固化本地修复后重新 Plan，并对失去原始句柄的旧实例另行采用明确批准的人工恢复流程；不得调用原自动清理入口冒充持有启动证据。本轮未重新 Execute，完整演练仍未通过。
+
+### 专项恢复停止与本地提交（2026-09-10）
+
+- 用户明确授权本地提交，并授权对已核验归属的旧 PostgreSQL 执行一次专项恢复停止。
+- 专项脚本重新核验 owner/receipt 前驱链、私有 ACL、当前 Windows 进程所有者 SID、PID/启动时间/可执行文件/完整命令行、postmaster.pid 及唯一回环监听；没有伪造丢失的原始启动句柄或 cwd 观测。
+- 对 native-67271fde54024ec7a799f254c2771f5d 执行一次 pg_ctl fast stop，退出码 0；随后独立确认 PID 16124 与已采集后代全部不存在，50931–50934 无监听，postmaster.pid 已移除。专项结果 RECOVERY_STOP=PASS；原数据与秘密目录作为失败证据保留，未删除，也不记作 STORAGE=REMOVED。
+- 本地提交范围为 pg 身份格式修复、8 条新增安全用例及本进度。已完成的完整安全回归 133/133，零失败；本轮提交前再次检查差异。完整业务隔离演练仍需新目录、新 Plan 和新指纹，不复用旧目录。
+
+### 修复后的真实演练复验（2026-09-10）
+
+- 修复本地提交 `5fac7abc3fa91384554c7adad3c388eed8001c3a`；提交后工作树干净，新 Plan EXECUTABLE=true、BLOCKER=NONE。使用新指纹和新运行目录 `native-7473f1ad6a704a4da92bf0e2002bb1f7` 继续真实演练。
+- BUILD、PG_INIT、CREATE_MIGRATION_DB、CREATE_LIVE_DB、PG_PROBE 均通过，证明真实 pidfile 格式不再阻断 PG 就绪校验。EXTERNAL59 执行 59 项，failure=0、error=42、skip=0，Maven exit=1；第一项错误为 V1__create_core_schema.sql 第20行 SQLSTATE 42704：类型 geography 不存在。API/GW/WIRE/Task12 后续均未执行，不能宣称业务演练通过。
+- finally 返回 CLEANUP / REHEARSAL_STOP_UNPROVEN；PG 子码此次为 REHEARSAL_STOP_FAILED，与旧轮 REHEARSAL_PROCESS_UNPROVEN 不同。停止结果判定仍需另行诊断，原报告不包含 pg_ctl 子结果，现有证据不足以确定其具体原因。
+- 随后独立系统复核：新 PG PID 12476 不存在，已观测五个后代均不存在，无带本轮 pgdata 命令行的 PostgreSQL，65292–65295 均无监听，postmaster.pid 不存在。已证实当前资源退出，不把这项事后核验倒写为原 runner 自动清理成功；本轮目录和测试报告保留。
+- 本轮真实结果报告：`.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/7473f1ad6a704a4da92bf0e2002bb1f7.json`。下一诊断入口为 EXTERNAL59 的 PostGIS 类型可见性，以及停止命令返回失败但进程已退出的证据缺口。旧实例专项恢复已完成；两轮隔离 PostgreSQL 当前均已退出。本轮未继续修改迁移或扩大停止权限，未推送。
+### PostGIS 与停止等待修复、保留目录回收（2026-09-10）
+
+#### 最新真实复验结果
+
+- 当前修复提交 606b57b、0f500c2；新鲜 Plan EXECUTABLE=true，完整重演 native-f3aab4f44eda4071aa3cb553a0d51c0b。双库 PostGIS 初始化 exit=0，EXTERNAL59 为 tests=59 / failures=0 / errors=0 / skipped=0；HELPER、MIGRATE_19、PREPARE_V20、MIGRATE_20、MIGRATE_21、VALIDATE 全通过。最新完整安全合同为 139/139，零失败。
+- 本轮结果 FAIL / API / REHEARSAL_READY_TIMEOUT，BUSINESS、GW、WIRE、TASK12 及后续阶段未执行，不能宣称完整演练通过。报告在 .superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/f3aab4f44eda4071aa3cb553a0d51c0b.json。
+- 自动清理 API=STOPPED、PG=STOPPED、TOOLS=STOPPED。新增 PG_STOP 证据为 EXITED / REHEARSAL_NATIVE_EXIT_CONFIRMED / exit=0 / 18411ms / Retained=false，真实负载验证新的 30秒/40秒预算足够本轮正常停止。独立系统复核 MatchingProcesses=0、ReservedPortListeners=0、PidFileExists=false。
+- STORAGE=RETAINED / FAILURE_EVIDENCE_RETAINED 是 API 阶段失败的有意证据保留，不是停止失败。原四个已批准目录回收已完成；另保留新增 native-768eb01797f942d4a17dd4a22cf248c1 和本轮 native-f3aab4f44eda4071aa3cb553a0d51c0b，两者进程均已停止。
+- 下一诊断入口为 API 就绪探测：运行器请求 /actuator/health/readiness，SecurityConfiguration.java 仅明确匿名放行 /actuator/health；存在契约不一致嫌疑，但运行器未保存实际响应，不能将静态推断写作确定根因。本轮未修改 API 安全配置，未推送远端。
+
+- 补充：修复提交 606b57b 后首次重演 native-768eb01797f942d4a17dd4a22cf248c1 在 PG_INIT 暴露跨秒边界：系统创建时间 06:30:01.952633、pidfile 内部启动秒 06:30:02。原精确整数秒比较拒绝身份，并未执行迁移测试。现仅允许内部时钟晚一个整数秒，操作系统观测与原句柄时间仍精确比较；定向测试修复前 0/1、修复后 4/4。独立重验本轮 PID 21208 的所有者、启动时间、命令行、pidfile 和唯一回环监听后专项停止成功，pg_ctl exit=0，后代不存在、端口释放、pidfile 消失；该轮目录保留作为新增失败证据。
+
+- 本节为最新恢复点。已确认 PostGIS 3.6.1 安装完整，V1 包含 CREATE EXTENSION IF NOT EXISTS postgis；原运行器未预先在 public 初始化，首个测试在独有 schema 安装扩展，后续 42 项因 geography 不可见失败。修复仅在新建的两个隔离数据库中显式初始化 public.postgis，并校验扩展归属和 public.geography；没有修改冻结迁移。
+- 同负载诊断确认 pg_ctl 原 5 秒等待一次返回 exit=1、耗时 5735ms，随后数据库实际退出；另一次成功也耗时 5390ms。正常等待调整为 30 秒，外层预算 40 秒，保存 PG_STOP 的状态、退出码和耗时；不降低进程归属或停止成功证明要求。
+- 回归：安全合同 135/135、真实 runtime 合同 7/7、未知停止保留原句柄定向合同 1/1，均零失败。
+- 使用原保留目录重新核验 owner/receipt 链、ACL、进程不存在、端口释放、pidfile 消失及删除证明，四目录 native-67271fde54024ec7a799f254c2771f5d、native-7473f1ad6a704a4da92bf0e2002bb1f7、native-0bca15647c1d409b9762531df96d90ce、native-39a6d599d7c747929b69622ea788d1d4 已完成 STORAGE=REMOVED。未复用或重启旧实例，未删除其他历史目录。
+- 私有证据归档位于 .superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/native-9b47052285754434b27b2ef2bf81fee7，包含 recovery-summary.json、归属凭据及测试报告；临时数据库与秘密目录已删除，未备份数据库文件。
+- 下一步：固化本地修复，使用新 Plan、新指纹、新运行目录执行完整演练；本节不代表完整业务演练已经通过。
+
+### RELOGIN 401 与 PostgreSQL 停止超时限定修复（2026-09-10）
+
+- 本节为最新恢复点。最近真实演练报告为 `.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/9da3100e0ac44727a43c3d40ebc9eb58.json`；BUILD、PG_INIT、EXTERNAL59（59/59）、迁移及 API 已通过，BUSINESS 失败字段为 Step=RELOGIN、ExceptionKind=ASSERTION、HttpStatus=401、SqlState=NONE、AssertionId=B010，原始业务码 REHEARSAL_BUSINESS_ASSERTION_FAILED。
+- 401 根因：AuthService.changePassword 更新密码，UserAccount.changePassword 增加 tokenVersion 并撤销旧会话；辅助程序紧接着重新登录却仍携带旧 Bearer，JwtAuthenticationFilter 在登录处理前因版本不符返回 401。仅在轮换成功后清空辅助程序旧令牌；使用新密码匿名重新登录，并保存新令牌。未修改服务端认证、密码轮换业务逻辑或迁移。
+- 同轮 PG_STOP 为 REHEARSAL_NATIVE_EXIT_FAILED、exit=1、32878ms、Retained=false；原运行器直接认定停止失败，未进入独立退出核验。随后只读检查已确认进程不存在、预留端口无监听、pidfile 消失，不能将事后结果倒写为原自动清理成功。
+- 本次 pg_ctl 等待由 30 秒调整为 60 秒，固定 PG_STOP 工具外层预算由 40 秒调整为 70 秒，其他工具上限不变。已结束且非零退出的 pg_ctl 允许进入原句柄等待及新鲜归属/进程/监听/pidfile 二次核验；全部证明通过才判定 STOPPED，并追加 PG_STOP_RECHECK=PASS，保留原命令退出码。工具归属未证、工具仍保留、未知超时或退出证据不足继续保留资源。
+- RED→GREEN：旧令牌重新登录合同先失败，修复后真实 Java helper 在测试 HTTP/JDBC 依赖上的业务流程合同 12/12，诊断基础 7/7、helper/runner 集成通过。流程明确区分旧令牌和新令牌，验证两次登录不带 Authorization、轮换带旧令牌、后续请求带新令牌。
+- 停止非零后二次核验新增 8 项（正常退出、仍存活、句柄等待超时、监听残留、pidfile 残留、读取失败、工具保留、未知超时），正向用例修复前失败、修复后 8/8；新增 3 项预算边界。完整安全合同 150/150，未知停止保留原句柄定向合同 1/1，真实 runtime 合同 7/7，健康探测合同 6/6，均 exit=0。
+- 本轮仅修复上述两项并运行限定回归；未重新执行完整演练、未停止或删除历史实例/保留目录、未推送。60 秒窗口和新的停止成功判定尚待下一次真实演练验证，不宣称完整演练通过。
+
+### GW 启动门禁编排及安全诊断修复（2026-09-10）
+
+- 最近真实重演基于 `62b01b5`，报告为 `.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/6440e8c52a194dd49bb752ce80747109.json`。BUSINESS 已通过（PasswordRotatedAndRelogin=true、3车4终端3系统、三次10表 preview 稳定）；EXTERNAL59 为59/59，PG_STOP exit=0、17026ms。GW/API/PG/TOOLS 均 STOPPED，独立进程/端口/pidfile 复核为空；STORAGE 因 GW 失败保留，不记作回收完成。
+- 该轮顶层 FAIL/GW/REHEARSAL_READY_TIMEOUT，WIRE、TASK12 未运行。只读诊断确认：GW readiness 明确要求非 PROBE 的已认证交互成功；运行器却在启动 WIRE 前等待 readiness，形成启动顺序冲突。GW readiness 路径配置存在，无 Spring Security 库或对应安全过滤链。代码及既有集成测试支持交互前503、交互后200；该轮没有保存 HTTP 状态或启动日志，不能把预期503当成本轮实测值。
+- 按用户确认的最小方案修复：GW 启动后 liveness 200/UP 加完整归属及双端口回环监听证明，随后 WIRE；WIRE 成功后进入单独 GW_READINESS 严格门禁，通过才执行 TASK12。服务端 readiness、安全规则、业务逻辑、迁移及原超时常量均未修改。
+- 探测 Evidence 每个门禁仅保存一条最新观测：HTTP 状态、固定异常类别、健康白名单枚举/布尔字段、次数。GW 启动输出仅内存有界分类，不保存原文；启动入口失败保存限深异常链对应的固定类别，仍保留原错误码和 ticket。字段说明见 `tools/ops-safety/gateway-readiness-diagnostics.md`。
+- RED→GREEN 已复现原编排提前 readiness、缺少探测诊断、缺少启动类别、包装异常类别丢失及错误健康状态数组被隐式接受。修复后真实 HTTP 合同11/11、生产编排语句合同4/4、启动分类合同7/7、真实 runtime 合同7/7、身份/生命周期合同15/15、真实合成GW进程启停合同1/1通过。
+- 首次完整安全回归与资源测试并行，目录时间戳稳定性检查失败（154/155）；随后不改该检查串行重验155/155通过，其中 Flyway31/31、Wire94/94亦通过；不将重叠计数相加。只读审阅无Critical/Important问题，唯一Minor包装异常分类问题已增加失败用例并修复。
+- 本轮不重跑完整演练、不启动真实PG/API/GW、不操作历史实例或保留目录、不推送。最新真实演练仍未整体通过；新编排需后续获准执行的新演练验证。

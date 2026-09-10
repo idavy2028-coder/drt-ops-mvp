@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 function Get-P6NativeToolSpec {
     param([string] $Action,$Receipt,[string] $RunParent,$Marker,[hashtable] $Secrets)
-    if($Action -cnotin @('INITDB','CREATE_MIGRATION_DB','CREATE_LIVE_DB','PG_STOP','PG_PROBE')){throw 'REHEARSAL_NATIVE_ACTION_INVALID'}
+    if($Action -cnotin @('INITDB','CREATE_MIGRATION_DB','CREATE_LIVE_DB','ENABLE_MIGRATION_POSTGIS','ENABLE_LIVE_POSTGIS','PG_STOP','PG_PROBE')){throw 'REHEARSAL_NATIVE_ACTION_INVALID'}
     $root=Assert-P6Receipt $Receipt $RunParent $Marker
     Assert-P6NativePathLength (Join-Path $root 'secrets/pg-password.txt')
     $password=Get-P6Field $Secrets 'DbPassword'
@@ -16,7 +16,13 @@ function Get-P6NativeToolSpec {
         'INITDB' {$tool='initdb.exe';$arguments=@('-D',$Receipt.PgData,'-U','composite','--encoding=UTF8','--auth-host=scram-sha-256','--auth-local=scram-sha-256',('--pwfile='+(Join-Path $root 'secrets/pg-password.txt')))}
         'CREATE_MIGRATION_DB' {$tool='createdb.exe';$arguments=@('-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','--no-password','composite_onboard')}
         'CREATE_LIVE_DB' {$tool='createdb.exe';$arguments=@('-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','--no-password','composite_live')}
-        'PG_STOP' {$tool='pg_ctl.exe';$arguments=@('-D',$Receipt.PgData,'-m','fast','-w','-t','5','stop')}
+        {$_ -cin @('ENABLE_MIGRATION_POSTGIS','ENABLE_LIVE_POSTGIS')} {
+            $tool='psql.exe'
+            $database=if($Action -ceq 'ENABLE_MIGRATION_POSTGIS'){'composite_onboard'}else{'composite_live'}
+            $sql='CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public; DO $p6$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname=''postgis'' AND n.nspname=''public'') OR to_regtype(''public.geography'') IS NULL THEN RAISE EXCEPTION ''REHEARSAL_POSTGIS_SCHEMA_INVALID''; END IF; END $p6$;'
+            $arguments=@('-X','--no-password','-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','-d',$database,'-v','ON_ERROR_STOP=1','-c',$sql)
+        }
+        'PG_STOP' {$tool='pg_ctl.exe';$arguments=@('-D',$Receipt.PgData,'-m','fast','-w','-t','60','stop')}
         'PG_PROBE' {$tool='psql.exe';$arguments=@('-X','--no-password','-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','-d','composite_live','-v','ON_ERROR_STOP=1','-A','-t','-c','SELECT 1')}
     }
     return [pscustomobject]@{Action=$Action;FileName=(Join-Path $pg $tool);Arguments=$arguments;WorkingDirectory=$root;Environment=$environment}
@@ -164,19 +170,38 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 public sealed class P6NativeStreamDrain {
+    private int startupKind;
+    public string StartupExceptionKind { get { return new[] { "NONE", "JAVA_EXCEPTION", "APPLICATION_START_FAILED", "DATABASE", "PORT_BIND" }[Volatile.Read(ref startupKind)]; } }
+    private void Classify(string text) {
+        int kind = text.Contains("java.net.BindException") ? 4 :
+            text.Contains("org.h2.jdbc.JdbcSQL") || text.Contains("org.flywaydb.core.api.FlywayException") || text.Contains("java.sql.SQLException") ? 3 :
+            text.Contains("APPLICATION FAILED TO START") ? 2 :
+            System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(?:java|org|com)\.[A-Za-z0-9_.$]*(?:Exception|Error)\b") ? 1 : 0;
+        int old;
+        do { old = Volatile.Read(ref startupKind); if (kind <= old) return; }
+        while (Interlocked.CompareExchange(ref startupKind, kind, old) != old);
+    }
     private long count;
     private int failed;
     private readonly Task[] tasks;
+    private readonly bool classifyStartup;
     public long Count { get { return Interlocked.Read(ref count); } }
     public bool Failed { get { return Volatile.Read(ref failed) != 0; } }
-    public P6NativeStreamDrain(StreamReader stdout, StreamReader stderr) {
+    public P6NativeStreamDrain(StreamReader stdout, StreamReader stderr) : this(stdout, stderr, false) { }
+    public P6NativeStreamDrain(StreamReader stdout, StreamReader stderr, bool classifyStartup) {
+        this.classifyStartup = classifyStartup;
         tasks = new[] { Drain(stdout), Drain(stderr) };
     }
     private Task Drain(StreamReader input) {
         return Task.Run(async () => {
-            try { var buffer = new char[2048]; int n;
-                while ((n = await input.ReadAsync(buffer, 0, buffer.Length)) > 0)
+            try { var buffer = new char[2048]; int n; string tail = "";
+                while ((n = await input.ReadAsync(buffer, 0, buffer.Length)) > 0) {
                     Interlocked.Add(ref count, n);
+                    if (classifyStartup) {
+                        string text = tail + new string(buffer, 0, n); Classify(text);
+                        tail = text.Substring(Math.Max(0, text.Length - 256));
+                    }
+                }
             } catch { Interlocked.Exchange(ref failed, 1); }
         });
     }
@@ -278,7 +303,7 @@ function Wait-P6PostgresReady {
         while($timer.ElapsedMilliseconds -lt 15000){
             if($Context.Ticket.Process.HasExited -or $Context.Ticket.Drain.Failed -or $Context.Ticket.Drain.Count -gt 65536){throw 'invalid'}
             $evidence=Read-P6PostgresOwnership $Context
-            if($evidence.PidFileLines.Count -ge 8 -and $evidence.PidFileLines[7] -ceq 'ready'){
+            if($evidence.PidFileLines.Count -ge 8 -and $evidence.PidFileLines[7] -cmatch '\Aready *\z'){
                 Assert-P6PgIdentity $Context.Receipt $Context.Ticket.Recorded $evidence.ObservedProcess $evidence.PidFileLines $evidence.Listeners.Items $evidence.LaunchEvidence | Out-Null
                 return $true
             }
@@ -287,6 +312,14 @@ function Wait-P6PostgresReady {
     }catch{throw 'REHEARSAL_PG_UNPROVEN'}
     throw 'REHEARSAL_PG_UNPROVEN'
 }
+function Assert-P6PgStopCommandResult($Result) {
+    # This only admits the command result to the existing wait + independent exit proof.
+    # It never certifies that PostgreSQL stopped, and never admits an unowned/retained tool.
+    if((Get-P6Field $Result 'Retained') -isnot [bool] -or $Result.Retained -or (Get-P6Field $Result 'ExitCode') -isnot [int]){throw 'REHEARSAL_STOP_FAILED'}
+    if($Result.Status -ceq 'EXITED' -and $Result.ExitCode -eq 0 -and $Result.Code -ceq 'REHEARSAL_NATIVE_EXIT_CONFIRMED'){return $false}
+    if($Result.Status -ceq 'FAILED' -and $Result.ExitCode -ne 0 -and $Result.Code -ceq 'REHEARSAL_NATIVE_EXIT_FAILED'){return $true}
+    throw 'REHEARSAL_STOP_FAILED'
+}
 function Stop-P6NativePostgres {
     param($Context)
     try{
@@ -294,8 +327,8 @@ function Stop-P6NativePostgres {
         $read={param($record,$timeout) Read-P6PostgresOwnership $Context}.GetNewClosure()
         $stop={param($record)
             $spec=Get-P6NativeToolSpec 'PG_STOP' $Context.Receipt $Context.RunParent (Read-P6OwnerMarker $Context.Receipt $Context.RunParent) $Context.Secrets
-            $result=Invoke-P6BoundedChild $spec 10000
-            if($result.Status -cne 'EXITED'){throw 'REHEARSAL_STOP_FAILED'}
+            $result=Invoke-P6BoundedChild $spec 70000
+            Assert-P6PgStopCommandResult $result|Out-Null
         }.GetNewClosure()
         $wait={param($record,$timeout) return $Context.Ticket.Process.WaitForExit($timeout)}.GetNewClosure()
         $result=Stop-P6OwnedPostgres $Context.Receipt $Context.RunParent $Context.Ticket.Recorded $read $stop $wait
@@ -425,7 +458,9 @@ function Invoke-P6BoundedChild {
     $drain=$null;$retained=$false;$status='FAILED';$exitCode=-1;$cleanup='NOT_STARTED'
     $launchElapsed=-1;$drainElapsed=-1;$cleanupWait=0
     try {
-        if($TimeoutMilliseconds -lt 100 -or $TimeoutMilliseconds -gt 60000){throw 'invalid'}
+        # Only the fixed PostgreSQL stop tool gets 10s overhead beyond its 60s wait.
+        $maxTimeout=if((Get-P6Field $Spec 'Action') -ceq 'PG_STOP' -and (Get-P6Field $Spec 'FileName') -ceq 'C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe'){70000}else{60000}
+        if($TimeoutMilliseconds -lt 100 -or $TimeoutMilliseconds -gt $maxTimeout){throw 'invalid'}
         Initialize-P6StreamDrain
         if($null -ne $QuickState -and $QuickState -isnot [P6QuickGuardState]){throw 'invalid'}
         if($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds){$code='REHEARSAL_NATIVE_TIMEOUT';throw 'timeout'}
@@ -787,9 +822,15 @@ function Assert-P6PgIdentity {
         Assert-P6ProcessIdentity $Receipt $Recorded $Observed $LaunchEvidence | Out-Null
         if ($Recorded.Kind -cne 'Postgres' -or $null -eq $PidFileLines -or @($PidFileLines).Count -lt 8 -or $null -eq $Listeners) { throw 'invalid' }
         $epoch=([DateTimeOffset]::Parse($Recorded.StartTimeUtc)).ToUnixTimeSeconds()
-        if ($PidFileLines[0] -cne [string]$Recorded.Pid -or $PidFileLines[1] -cne $Receipt.PgData -or
-            $PidFileLines[2] -cne [string]$epoch -or $PidFileLines[3] -cne [string]$Receipt.Ports[0] -or
-            $PidFileLines[5] -cne '127.0.0.1' -or $PidFileLines[7] -cne 'ready') { throw 'invalid' }
+        # PostgreSQL samples its own start time after Windows process creation.
+        # Permit only the adjacent later second; OS/held-handle identity stays exact above.
+        $pidEpochMatches=$PidFileLines[2] -ceq [string]$epoch -or $PidFileLines[2] -ceq [string]($epoch+1)
+        # PostgreSQL writes forward slashes and space-pads its fixed-width status line.
+        # Only normalize separators; do not resolve aliases, dot segments, or other paths.
+        if ($PidFileLines[1] -isnot [string] -or $PidFileLines[7] -isnot [string]) { throw 'invalid' }
+        if ($PidFileLines[0] -cne [string]$Recorded.Pid -or $PidFileLines[1].Replace('/','\') -cne $Receipt.PgData.Replace('/','\') -or
+            -not $pidEpochMatches -or $PidFileLines[3] -cne [string]$Receipt.Ports[0] -or
+            $PidFileLines[5] -cne '127.0.0.1' -or $PidFileLines[7] -cnotmatch '\Aready *\z') { throw 'invalid' }
         $matching=@($Listeners | Where-Object { $_.LocalPort -eq $Receipt.Ports[0] -or $_.OwningProcess -eq $Recorded.Pid })
         if ($matching.Count -ne 1 -or $matching[0].LocalAddress -cne '127.0.0.1' -or
             $matching[0].LocalPort -ne $Receipt.Ports[0] -or $matching[0].OwningProcess -ne $Recorded.Pid) { throw 'invalid' }
@@ -827,6 +868,7 @@ function Invoke-P6ValidatedStop {
             $null -eq $after.PSObject.Properties['ObservedProcess'] -or $null -ne $after.ObservedProcess) { throw 'invalid' }
         Assert-P6Receipt $Receipt $RunParent (Get-P6Field $after 'Marker') | Out-Null
         $afterListeners=Assert-P6ListenerEvidence (Get-P6Field $after 'Listeners')
+        if($Kind -ceq 'Postgres' -and ($null -eq $after.PSObject.Properties['PidFileLines'] -or $after.PidFileLines -isnot [array] -or $after.PidFileLines.Count -ne 0)){throw 'invalid'}
         foreach ($listener in $afterListeners.Items) {
             if ($listener.OwningProcess -eq $Recorded.Pid -or ($Kind -ceq 'Postgres' -and $listener.LocalPort -eq $Receipt.Ports[0])) { throw 'invalid' }
         }

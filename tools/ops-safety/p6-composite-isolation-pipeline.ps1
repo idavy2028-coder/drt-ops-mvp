@@ -207,7 +207,7 @@ function Start-P6HeldResource {
         if($p -isnot [Diagnostics.Process] -or -not $p.Start()){throw 'invalid'}
         $ticket=[pscustomobject]@{Process=$p;Recorded=$null;LaunchEvidence=$null;Drain=$null;State='STARTING';Role=$Role}
         $Context.Tickets[$Role]=$ticket
-        $ticket.Drain=New-Object P6NativeStreamDrain($p.StandardOutput,$p.StandardError)
+        $ticket.Drain=New-Object P6NativeStreamDrain($p.StandardOutput,$p.StandardError,($Role -ceq 'GW'))
         $ticket.Recorded=New-P6ResourceLaunchRecord $Context.Receipt $Role $spec $p
         $ticket.LaunchEvidence=[pscustomobject]@{Process=$p;StartTicks=$p.StartTime.ToUniversalTime().Ticks;WorkingDirectory=$p.StartInfo.WorkingDirectory;LaunchExecutablePath=$ticket.Recorded.LaunchExecutablePath}
         if($p.HasExited){throw 'invalid'}
@@ -215,7 +215,22 @@ function Start-P6HeldResource {
         if($p.HasExited){throw 'invalid'}
         $ticket.State='RUNNING'
         return [pscustomobject]@{Status='STARTED';Code='REHEARSAL_RESOURCE_STARTED';Retained=$false}
-    }catch{if($null -ne $ticket){$ticket.State='FAILED'};return [pscustomobject]@{Status='FAILED';Code='REHEARSAL_RESOURCE_START_FAILED';Retained=($null -ne $ticket)}}
+    }catch{
+        $failure=$_
+        if($null -ne $ticket){$ticket.State='FAILED'}
+        if($Role -ceq 'GW' -and $null -ne $Context.PSObject.Properties['Evidence'] -and $null -ne $Context.Evidence){
+            $kind='STARTUP_GUARD_FAILED';$exception=$failure.Exception
+            for($depth=0;$depth -lt 8 -and $null -ne $exception;$depth++){
+                if($exception -is [ComponentModel.Win32Exception]){$kind='WIN32';break}
+                if($exception -is [UnauthorizedAccessException]){$kind='ACCESS_DENIED';break}
+                $exception=$exception.InnerException
+            }
+            $startup=Get-P6Field (Get-P6Field $ticket 'Drain') 'StartupExceptionKind'
+            if($startup -cnotin @('JAVA_EXCEPTION','APPLICATION_START_FAILED','DATABASE','PORT_BIND')){$startup='NONE'}
+            $Context.Evidence.Add([pscustomobject]@{Phase='GW_START';Status='FAIL';Code='REHEARSAL_RESOURCE_START_FAILED';ExceptionKind=$kind;StartupExceptionKind=$startup})
+        }
+        return [pscustomobject]@{Status='FAILED';Code='REHEARSAL_RESOURCE_START_FAILED';Retained=($null -ne $ticket)}
+    }
 }
 function Read-P6HeldResourceOwnership {
     param($Context,[string]$Role,[scriptblock]$Observe=$null)
@@ -262,10 +277,13 @@ function Stop-P6HeldResource {
                     $quick=New-Object P6QuickGuardState
                     # PG is expected to exit during this command; still monitor its output drain.
                     $quick.Drains=@($ticket.Drain)
-                    $result=Invoke-P6BoundedChild $spec 10000 $null $quick
+                    $result=Invoke-P6BoundedChild $spec 70000 $null $quick
                     if($result.Retained){$Context.ShortTickets.Add($result.HeldTicket)}
+                    if($null -ne (Get-P6Field $Context 'Evidence')){
+                        $Context.Evidence.Add([pscustomobject]@{Phase='PG_STOP';Status=$result.Status;Code=$result.Code;ExitCode=$result.ExitCode;ElapsedMilliseconds=$result.ElapsedMilliseconds;Retained=$result.Retained})
+                    }
                     Assert-P6CurrentResourceReceipt $Context
-                    if($result.Status -cne 'EXITED'){throw 'invalid'}
+                    if(Assert-P6PgStopCommandResult $result){$ticket|Add-Member NoteProperty StopRecheckRequired $true -Force}
                 }elseif($null -eq $StopProcess){$ticket.Process.Kill()}else{&$StopProcess $ticket.Process|Out-Null}
             }.GetNewClosure()
             $wait={param($record,$timeout)$ticket.Process.WaitForExit($timeout)}.GetNewClosure()
@@ -275,6 +293,9 @@ function Stop-P6HeldResource {
         $after=&$read
         if($null -ne $after.ObservedProcess -or @($after.Listeners.Items|Where-Object{$_.OwningProcess -eq $ticket.Recorded.Pid -or $_.LocalPort -in $ports}).Count -ne 0 -or -not $ticket.Drain.Wait(1000)){throw 'invalid'}
         $ticket.State='STOPPED'
+        if($Role -ceq 'PG' -and (Get-P6Field $ticket 'StopRecheckRequired') -eq $true -and $null -ne (Get-P6Field $Context 'Evidence')){
+            $Context.Evidence.Add([pscustomobject]@{Phase='PG_STOP_RECHECK';Status='PASS';Code='REHEARSAL_STOP_CONFIRMED'})
+        }
         # Keep the original handle until removal proof, not just until Kill returns.
         return [pscustomobject]@{Status='STOPPED';Code='REHEARSAL_STOP_CONFIRMED'}
     }catch{return [pscustomobject]@{Status='RETAINED';Code='REHEARSAL_RESOURCE_OWNERSHIP_UNPROVEN'}}
