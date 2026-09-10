@@ -1179,3 +1179,25 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 调整后预计全库dispatchable=true为0仅基于上次盘点，不作为实测PASS。V18阶段先查询全库属性计数；onboard_systems尚不存在时不运行依赖该表的查询。V19另获授权后再核对V20原始NOT EXISTS条件及全部其他门禁。
 - 现有manifest仍为4车/4设备、全部SAFETY_MONITOR_ONLY；本轮未改，SHA-256保持`3D93E67918898A486C2EC3B7B27B92E38572154EBF43B1F904534E2346896364`。
 - 下一步等待云端核验与精确属性调整授权；完成数据准备并复核后，再等待迁移授权。本次仅本进度与新增准备文档未提交，不commit/push。
+
+### 演示车辆现值差异：暂停写入并补充只读核验（2026-09-10）
+
+- 云端前置查询发现：ID `33333333-3333-3333-3333-333333333331` 实际为 `京A·DRT01 / 望京接驳车队`，方案预期为 `DRT-001 / Demo Fleet`；ID `33333333-3333-3333-3333-333333333332` 实际为 `京A·DRT02 / 望京接驳车队`，方案预期为 `DRT-002 / Demo Fleet`。两者均IDLE、dispatchable=true，绑定总数0。
+- 按前置合同停止：未创建备份、未调整属性、未写审计、未迁移。用户要求业务再次确认前继续保持此边界，本轮只读核对创建来源、修改证据、业务关联和试点范围。
+- 本地源码发现V5__refine_demo_operations_labels.sql明确将上述V2种子ID更新为云端当前车牌/车队；这提供了标签变化的迁移来源解释，不能仅凭源码推定云端具体执行时间、最后修改人或无业务使用。本轮进一步核验结果待补充。
+- 补充只读核验完成：云端两辆车分别为京A·DRT01、京A·DRT02，均望京接驳车队、Microbus、12座、IDLE、dispatchable=true；创建时间均为`2026-08-23 14:54:22.217482+00`。当前位置分别116.318/39.929与116.346/39.925，等于V2种子坐标；位置来源/坐标系/上报与记录时间为空，无当前位置终端。
+- 云端Flyway记录：V2 `V2__seed_demo_operations.sql` installed_on=`2026-08-23 14:54:22.205427`，V5 `V5__refine_demo_operations_labels.sql` installed_on=`2026-08-23 14:54:22.286392`，均success=true，installed_by=`drt_ops_cloud_test`；数据库时区Etc/UTC。源码、ID、创建时间与V5标签更新相互吻合，明确支持V2创建、V5迁移改名的来源解释。此前只比较V2原始标签的准备方案遗漏了V5，不据此自动修改已提交方案或恢复写入。
+- 修改追溯限制：vehicles没有updated_at/updated_by/created_by/created_source/source_type字段；以两车ID为entity_id的audit_logs均0条。可指认V5的已知标签变更及数据库执行角色，但不能认定它就是实际最后一次修改，也不能把数据库角色冒充业务操作人；更晚人工改动无法由现有记录排除。
+- 两车逐一核对：全部终端绑定0、车辆任务0、任务站点0、关联订单0（经task_stops和dispatch_decisions直接车辆/候选任务路径去重）、调度决策best_vehicle引用0、vehicle_location_events0、vehicle_alarms0、jt_gateway_audit_events0、直接车辆audit_logs0。仅说明当前保留的结构化关联，无删除历史或JSON中未建关系的全量保证。
+- 试点范围：数据库仅查到启用的“望京园区接驳示范区”（GCJ02/LEGACY），名称含“通渭”的服务区0；vehicles无service_area_id直接归属字段。结合种子坐标、V5标签及无业务关联，未发现纳入通渭试点的数据库证据；不能仅按名称/位置替代业务负责人最终范围确认。
+- 全部云端SQL强制只读并设置statement/lock timeout；中途订单表名及一条UUID文本错误均被只读查询拒绝，修正查询后完成核验，无写入。未执行备份、属性调整、审计写入或迁移。当前状态`WAITING_FOR_BUSINESS_RECONFIRMATION_OF_ACTUAL_LABELS`，下一步等待对实际车牌/车队的业务决策；本轮仅progress.md未提交，未commit/push。
+
+### 云端演示车辆属性调整已完成（2026-09-10）
+
+- 用户再次明确确认两个完整种子ID及实际望京标签属于演示/开发数据，不参与通渭县试点；授权完整备份、仅两条dispatchable调整及审计。该确认覆盖此前V2/V5标签差异，未授权迁移。
+- 单次SSH连接到已知指纹主机，执行用户ubuntu。备份：`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/demo-dispatchable-20260910T152701Z-nPGTDN/pre-adjustment.dump`，257532 bytes，mode600；SHA-256=`a908dbf8553435d0eababae3de9fee55e37b66a6295777748990cc3e2a8dda52`。同目录保存.dump.sha256，sha256sum校验通过，pg_restore完整读取归档到/dev/null通过；未在新数据库实际恢复，不能称恢复演练已完成。
+- 事务锁定车辆及绑定表，核验V18、精确ID与京A·DRT01/京A·DRT02、望京接驳车队、IDLE、旧值true、无绑定/任务/调度关联；仅更新dispatchable=false。ROW_COUNT强断言2；前后比较非目标车辆全行及目标除dispatchable外全部字段，未发生额外变化。事务已COMMIT。
+- 同事务写入2条audit_logs：action=`VEHICLE_DISPATCHABLE_CHANGED`、actor_type=SYSTEM、actor_id=`ssh:ubuntu`，UTC时间`2026-09-10 15:27:02.181536`与`.181707`；reason说明业务确认演示环境且排除通渭试点；metadata包含数据库操作者、批次、修改前后值、单行/批次影响数和备份路径/校验值。批次`demo-dispatchable-20260910T152701Z-nPGTDN`，审计2条强断言通过。
+- 提交后另开只读事务复核：两条false、AFFECTED_ROWS=2、GLOBAL_DISPATCHABLE_TRUE=0、DISPATCH_SYSTEM_GATE=PASS_EMPTY_DISPATCHABLE_SET。onboard_systems尚不存在；因全库可调度集合为空，缺ACTIVE系统的可调度车辆集合为空，不为核验创建表。Flyway仍18/success=true，V19–V21未执行。
+- 云端同目录保留transaction.log及verification.log。提交与独立只读复核及ADJUSTMENT_RESULT=COMPLETE之后，SSH脚本末尾额外CR空行报command not found；这是尾部shell错误，不否定已确认的COMMIT，未重跑任何写入。
+- 当前状态`DEMO_DISPATCHABLE_ADJUSTMENT_COMPLETE`；仅该调度系统缺失项已复核，V20其余全库门禁与云端备份恢复验证仍待后续授权；未修改manifest、其他业务记录、服务配置或迁移版本。根progress.md保留此前未提交记录并追加本节，未commit/push。
