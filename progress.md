@@ -1222,3 +1222,16 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 实查全库dispatchable=true为0，调度系统缺失/调度模式/调度与定位主角色的车辆专属门禁当前无适用对象（NO_APPLICABLE_VEHICLES），不意味着已建立或配置目标系统。ACTIVE终端1条；旧绑定表全库有效绑定4条，ACTIVE终端旧绑定数量违规0；旧绑定证据不能替代V19新成员及系统状态检查。
 - 六类门禁状态：ACTIVE终端新成员唯一性待核验；可调度车辆系统模式及两独占角色当前空集无违规；有效角色/成员及VERIFIED能力待核验；WAN_UPLINK网络模式待核验；定位主备不同设备待核验；ACTIVE系统至少一有效成员待核验。缺表分支返回NOT_VERIFIABLE_SCHEMA_ABSENT，未执行针对不存在表的SQL，更未为核对创建表或迁移。
 - 结论：恢复演练PASS按用户证据已记录，V20全库准入尚未完成。下一步必须按另行批准的分阶段方案，在V19结构及目标配置具备后重新只读检查其余条件；不能从V18直接把全部V20门禁标记PASS。本次仅progress.md未提交，无云端写入/备份/恢复/迁移/重启/删除，未commit/push。
+
+### 云端 V19 迁移完成（2026-09-11）
+
+- 本轮首先按用户要求提交进度：`a92b2e0` / `docs: record restore rehearsal pass and V20 gate status`，未推送；随后仅执行明确授权的V19。
+- 迁移前只读核验：云端VM-0-13-ubuntu，库/角色drt_ops_cloud_test，Flyway18/success=true，有效旧绑定4条/4车辆/4终端；两演示车实际望京标签、dispatchable=false、绑定0；gateway停止。
+- 新完整V18备份：`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/v19-migration-20260910T232133Z-cr6Lrs/pre-v19.dump`。SHA-256=`019486fb443bd12d985cfb0bc6b8f1c5b031f8460448a326cf815fa924335266`；sha256sum及pg_restore完整归档读取通过。该新备份未单独恢复到数据库，不与用户此前pre-adjustment备份恢复PASS混同。
+- 使用现有API镜像中的真实Flyway/JDBC依赖，在一次性迁移容器运行固定target19工具；原始V19 SQL SHA-256=`9e9d50baa4dd44616aeff4c4f6412d346f5cf9c2d4cd0704bf39a917d36e5775`。网络仅共享目标PG命名空间、工作目录只读挂载，临时容器执行后自动移除；没有启动应用主类或新版API。
+- Flyway group事务只发现/执行V19；before callback锁定车辆/旧绑定并核验V18及目标形状，after callback核对回填及模式并同事务写入audit_logs；检查/审计失败即事务失败。结果`V19_MIGRATION=PASS MIGRATIONS=1`，历史V19 checksum=70356190，installed_by=drt_ops_cloud_test，installed_on=`2026-09-10 23:21:44.063987`（云端UTC），success=true。
+- 回填影响行数：onboard_systems=4、onboard_system_runtime_state=4、onboard_device_memberships=4，共12条业务回填；另新增迁移审计1条和Flyway迁移历史1条。旧有效绑定仍4条。系统状态/成员映射与旧绑定一致，全部4个系统对应dispatchable=false且模式SAFETY_MONITOR_ONLY。
+- 两辆种子演示车ID尾号333331/333332均保持dispatchable=false，onboard_systems关联数均0，按无绑定条件跳过。未修改车辆原有属性或manifest。
+- 审计：ID=`d9748d6d-abdf-4ba9-a311-e24458000d7d`，action=DATABASE_MIGRATED_V19，actor=ssh:ubuntu，UTC时间`2026-09-10 23:21:44.283189+00`；记录原因、18→19、三类回填计数、演示车跳过数、备份路径/SHA及迁移SQL SHA。工作目录内保留migration.log、verification.log、备份及受限迁移环境文件。
+- 提交后独立只读事务确认LATEST_VERSION=19/success=true、V20_V21_RECORDS=0，V20旧绑定只读trigger=0；角色/能力/协议档案均0条（V19未自动补齐配置，不声称V20全部准入通过）。原API/PG保持running，gateway保持exited，无服务重启。
+- 当前状态`CLOUD_V19_COMPLETE_AWAITING_NEXT_AUTHORIZATION`。本次执行结束，无异常；V20/V21暂停，等待目标配置和全库门禁核验的下一步授权。新增本节尚未commit/push。
