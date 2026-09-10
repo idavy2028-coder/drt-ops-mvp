@@ -262,13 +262,13 @@ function Stop-P6HeldResource {
                     $quick=New-Object P6QuickGuardState
                     # PG is expected to exit during this command; still monitor its output drain.
                     $quick.Drains=@($ticket.Drain)
-                    $result=Invoke-P6BoundedChild $spec 40000 $null $quick
+                    $result=Invoke-P6BoundedChild $spec 70000 $null $quick
                     if($result.Retained){$Context.ShortTickets.Add($result.HeldTicket)}
                     if($null -ne (Get-P6Field $Context 'Evidence')){
                         $Context.Evidence.Add([pscustomobject]@{Phase='PG_STOP';Status=$result.Status;Code=$result.Code;ExitCode=$result.ExitCode;ElapsedMilliseconds=$result.ElapsedMilliseconds;Retained=$result.Retained})
                     }
                     Assert-P6CurrentResourceReceipt $Context
-                    if($result.Status -cne 'EXITED'){throw 'invalid'}
+                    if(Assert-P6PgStopCommandResult $result){$ticket|Add-Member NoteProperty StopRecheckRequired $true -Force}
                 }elseif($null -eq $StopProcess){$ticket.Process.Kill()}else{&$StopProcess $ticket.Process|Out-Null}
             }.GetNewClosure()
             $wait={param($record,$timeout)$ticket.Process.WaitForExit($timeout)}.GetNewClosure()
@@ -278,6 +278,9 @@ function Stop-P6HeldResource {
         $after=&$read
         if($null -ne $after.ObservedProcess -or @($after.Listeners.Items|Where-Object{$_.OwningProcess -eq $ticket.Recorded.Pid -or $_.LocalPort -in $ports}).Count -ne 0 -or -not $ticket.Drain.Wait(1000)){throw 'invalid'}
         $ticket.State='STOPPED'
+        if($Role -ceq 'PG' -and (Get-P6Field $ticket 'StopRecheckRequired') -eq $true -and $null -ne (Get-P6Field $Context 'Evidence')){
+            $Context.Evidence.Add([pscustomobject]@{Phase='PG_STOP_RECHECK';Status='PASS';Code='REHEARSAL_STOP_CONFIRMED'})
+        }
         # Keep the original handle until removal proof, not just until Kill returns.
         return [pscustomobject]@{Status='STOPPED';Code='REHEARSAL_STOP_CONFIRMED'}
     }catch{return [pscustomobject]@{Status='RETAINED';Code='REHEARSAL_RESOURCE_OWNERSHIP_UNPROVEN'}}

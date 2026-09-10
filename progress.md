@@ -1138,3 +1138,13 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 使用原保留目录重新核验 owner/receipt 链、ACL、进程不存在、端口释放、pidfile 消失及删除证明，四目录 native-67271fde54024ec7a799f254c2771f5d、native-7473f1ad6a704a4da92bf0e2002bb1f7、native-0bca15647c1d409b9762531df96d90ce、native-39a6d599d7c747929b69622ea788d1d4 已完成 STORAGE=REMOVED。未复用或重启旧实例，未删除其他历史目录。
 - 私有证据归档位于 .superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/native-9b47052285754434b27b2ef2bf81fee7，包含 recovery-summary.json、归属凭据及测试报告；临时数据库与秘密目录已删除，未备份数据库文件。
 - 下一步：固化本地修复，使用新 Plan、新指纹、新运行目录执行完整演练；本节不代表完整业务演练已经通过。
+
+### RELOGIN 401 与 PostgreSQL 停止超时限定修复（2026-09-10）
+
+- 本节为最新恢复点。最近真实演练报告为 `.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/9da3100e0ac44727a43c3d40ebc9eb58.json`；BUILD、PG_INIT、EXTERNAL59（59/59）、迁移及 API 已通过，BUSINESS 失败字段为 Step=RELOGIN、ExceptionKind=ASSERTION、HttpStatus=401、SqlState=NONE、AssertionId=B010，原始业务码 REHEARSAL_BUSINESS_ASSERTION_FAILED。
+- 401 根因：AuthService.changePassword 更新密码，UserAccount.changePassword 增加 tokenVersion 并撤销旧会话；辅助程序紧接着重新登录却仍携带旧 Bearer，JwtAuthenticationFilter 在登录处理前因版本不符返回 401。仅在轮换成功后清空辅助程序旧令牌；使用新密码匿名重新登录，并保存新令牌。未修改服务端认证、密码轮换业务逻辑或迁移。
+- 同轮 PG_STOP 为 REHEARSAL_NATIVE_EXIT_FAILED、exit=1、32878ms、Retained=false；原运行器直接认定停止失败，未进入独立退出核验。随后只读检查已确认进程不存在、预留端口无监听、pidfile 消失，不能将事后结果倒写为原自动清理成功。
+- 本次 pg_ctl 等待由 30 秒调整为 60 秒，固定 PG_STOP 工具外层预算由 40 秒调整为 70 秒，其他工具上限不变。已结束且非零退出的 pg_ctl 允许进入原句柄等待及新鲜归属/进程/监听/pidfile 二次核验；全部证明通过才判定 STOPPED，并追加 PG_STOP_RECHECK=PASS，保留原命令退出码。工具归属未证、工具仍保留、未知超时或退出证据不足继续保留资源。
+- RED→GREEN：旧令牌重新登录合同先失败，修复后真实 Java helper 在测试 HTTP/JDBC 依赖上的业务流程合同 12/12，诊断基础 7/7、helper/runner 集成通过。流程明确区分旧令牌和新令牌，验证两次登录不带 Authorization、轮换带旧令牌、后续请求带新令牌。
+- 停止非零后二次核验新增 8 项（正常退出、仍存活、句柄等待超时、监听残留、pidfile 残留、读取失败、工具保留、未知超时），正向用例修复前失败、修复后 8/8；新增 3 项预算边界。完整安全合同 150/150，未知停止保留原句柄定向合同 1/1，真实 runtime 合同 7/7，健康探测合同 6/6，均 exit=0。
+- 本轮仅修复上述两项并运行限定回归；未重新执行完整演练、未停止或删除历史实例/保留目录、未推送。60 秒窗口和新的停止成功判定尚待下一次真实演练验证，不宣称完整演练通过。

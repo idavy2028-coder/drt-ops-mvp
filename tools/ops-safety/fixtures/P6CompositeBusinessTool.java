@@ -91,6 +91,8 @@ public final class P6CompositeBusinessTool {
   step(Step.PREPARE_CREDENTIALS);String initial=env.get("P6_REHEARSAL_BOOTSTRAP_PASSWORD"),rotated=env.get("P6_REHEARSAL_ROTATED_PASSWORD");check(initial!=null&&rotated!=null&&!initial.equals(rotated),"B013");
   step(Step.LOGIN);token=post("/api/auth/login",object().put("username","rehearsal-admin").put("password",initial)).path("accessToken").asText();check(!token.isEmpty(),"B014");
   step(Step.ROTATE_PASSWORD);post("/api/auth/password",object().put("currentPassword",initial).put("newPassword",rotated));
+  // Password rotation revokes the previous token; login must be anonymous.
+  token="";
   step(Step.RELOGIN);token=post("/api/auth/login",object().put("username","rehearsal-admin").put("password",rotated)).path("accessToken").asText();check(token.matches("[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"),"B015");
   List<String> vehicles=new ArrayList<>();
   for(char name='A';name<='C';name++){step(Step.CREATE_VEHICLE);JsonNode v=post("/api/vehicles",object().put("plateNumber","SYN-"+name).put("vehicleType","Microbus").put("capacity",12).put("currentStatus","IDLE").put("lng",116.318).put("lat",39.929).put("fleetName","SYNTHETIC-REHEARSAL").put("dispatchable",false).put("reason",REASON));String id=v.path("id").asText();UUID.fromString(id);vehicles.add(id);}

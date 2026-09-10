@@ -14,14 +14,15 @@ public class P6CompositeBusinessFlowTest {
  static final ObjectMapper JSON=new ObjectMapper();
  static final String SECRET="DO_NOT_EXPORT_password_token_url_phone";
  static final String TOKEN="synthetic.payload.signature";
+ static final String OLD_TOKEN="revoked.payload.signature";
  static final String[] IDS={"00000000-0000-0000-0000-000000000001","00000000-0000-0000-0000-000000000002","00000000-0000-0000-0000-000000000003"};
  static void require(boolean ok,String code){if(!ok)throw new AssertionError(code);}
  record Call(String method,String path,String data){}
  static List<Call> calls(){
   var q=new ArrayList<Call>();
-  q.add(new Call("POST","/api/auth/login","{\"accessToken\":\""+TOKEN+"\"}"));
+  q.add(new Call("POST","/api/auth/login","{\"accessToken\":\""+OLD_TOKEN+"\"}"));
   q.add(new Call("POST","/api/auth/password",null));
-  q.add(q.get(0));
+  q.add(new Call("POST","/api/auth/login","{\"accessToken\":\""+TOKEN+"\"}"));
   for(String id:IDS)q.add(new Call("POST","/api/vehicles","{\"id\":\""+id+"\"}"));
   for(int i=1;i<=4;i++){
    String p="/api/terminals/SYN000"+i;
@@ -69,7 +70,8 @@ public class P6CompositeBusinessFlowTest {
    int index=seen.size();Call call=queue.get(index);String path=exchange.getRequestURI().getPath();
    require(call.method.equals(exchange.getRequestMethod())&&call.path.equals(path),"HTTP_SEQUENCE_CHANGED");
    String input=new String(exchange.getRequestBody().readAllBytes(),StandardCharsets.UTF_8);
-   if(index>0)require(exchange.getRequestHeaders().getFirst("Authorization").equals("Bearer "+TOKEN),"MISSING_AUTH");
+   if(index==0||index==2)require(exchange.getRequestHeaders().getFirst("Authorization")==null,"LOGIN_MUST_NOT_SEND_REVOKED_TOKEN");
+   else require(exchange.getRequestHeaders().getFirst("Authorization").equals("Bearer "+(index==1?OLD_TOKEN:TOKEN)),"MISSING_AUTH");
    JsonNode payload=input.isEmpty()?JSON.nullNode():JSON.readTree(input);
    if(index==0||index==2)require(payload.path("username").asText().equals("rehearsal-admin")&&payload.path("password").asText().equals((index==0?"I":"R").repeat(40)),"LOGIN_PAYLOAD_CHANGED");
    if(index==1)require(payload.path("currentPassword").asText().equals("I".repeat(40))&&payload.path("newPassword").asText().equals("R".repeat(40)),"ROTATION_CHANGED");
@@ -95,7 +97,7 @@ public class P6CompositeBusinessFlowTest {
    var stdout=CompletableFuture.supplyAsync(()->{try{return held.getInputStream().readNBytes(8193);}catch(IOException e){throw new UncheckedIOException(e);}});
    var stderr=CompletableFuture.supplyAsync(()->{try{return held.getErrorStream().readNBytes(8193);}catch(IOException e){throw new UncheckedIOException(e);}});
    require(child.waitFor(30,TimeUnit.SECONDS),"CHILD_TIMEOUT");String text=new String(stdout.get(3,TimeUnit.SECONDS),StandardCharsets.UTF_8);
-   require(stderr.get(3,TimeUnit.SECONDS).length==0&&!text.contains(SECRET)&&!text.contains(root.toString())&&!text.contains(TOKEN),"DIAGNOSTIC_LEAK");
+   require(stderr.get(3,TimeUnit.SECONDS).length==0&&!text.contains(SECRET)&&!text.contains(root.toString())&&!text.contains(TOKEN)&&!text.contains(OLD_TOKEN),"DIAGNOSTIC_LEAK");
    require(!handlerFailure.get(),"HTTP_CONTRACT_FAILED");
    if(expectedStep==null){require(child.exitValue()==0&&text.trim().equals("P6_BUSINESS_STATUS=PASS"),"SUCCESS_FLOW_CHANGED");
     if(!mode.equals("lease")){require(seen.size()==35&&Files.exists(root.resolve("wire.properties"))&&Files.exists(root.resolve("secrets/api-token.txt")),"INCOMPLETE_FLOW");JsonNode evidence=JSON.readTree(Files.readString(root.resolve("business-evidence.json")));require(evidence.path("PreviewComparisons").asInt()==3&&evidence.path("PreviewStable").asBoolean(),"EVIDENCE_CHANGED");}

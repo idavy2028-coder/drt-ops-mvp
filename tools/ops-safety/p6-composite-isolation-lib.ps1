@@ -22,7 +22,7 @@ function Get-P6NativeToolSpec {
             $sql='CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public; DO $p6$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname=''postgis'' AND n.nspname=''public'') OR to_regtype(''public.geography'') IS NULL THEN RAISE EXCEPTION ''REHEARSAL_POSTGIS_SCHEMA_INVALID''; END IF; END $p6$;'
             $arguments=@('-X','--no-password','-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','-d',$database,'-v','ON_ERROR_STOP=1','-c',$sql)
         }
-        'PG_STOP' {$tool='pg_ctl.exe';$arguments=@('-D',$Receipt.PgData,'-m','fast','-w','-t','30','stop')}
+        'PG_STOP' {$tool='pg_ctl.exe';$arguments=@('-D',$Receipt.PgData,'-m','fast','-w','-t','60','stop')}
         'PG_PROBE' {$tool='psql.exe';$arguments=@('-X','--no-password','-h','127.0.0.1','-p',[string]$Receipt.Ports[0],'-U','composite','-d','composite_live','-v','ON_ERROR_STOP=1','-A','-t','-c','SELECT 1')}
     }
     return [pscustomobject]@{Action=$Action;FileName=(Join-Path $pg $tool);Arguments=$arguments;WorkingDirectory=$root;Environment=$environment}
@@ -293,6 +293,14 @@ function Wait-P6PostgresReady {
     }catch{throw 'REHEARSAL_PG_UNPROVEN'}
     throw 'REHEARSAL_PG_UNPROVEN'
 }
+function Assert-P6PgStopCommandResult($Result) {
+    # This only admits the command result to the existing wait + independent exit proof.
+    # It never certifies that PostgreSQL stopped, and never admits an unowned/retained tool.
+    if((Get-P6Field $Result 'Retained') -isnot [bool] -or $Result.Retained -or (Get-P6Field $Result 'ExitCode') -isnot [int]){throw 'REHEARSAL_STOP_FAILED'}
+    if($Result.Status -ceq 'EXITED' -and $Result.ExitCode -eq 0 -and $Result.Code -ceq 'REHEARSAL_NATIVE_EXIT_CONFIRMED'){return $false}
+    if($Result.Status -ceq 'FAILED' -and $Result.ExitCode -ne 0 -and $Result.Code -ceq 'REHEARSAL_NATIVE_EXIT_FAILED'){return $true}
+    throw 'REHEARSAL_STOP_FAILED'
+}
 function Stop-P6NativePostgres {
     param($Context)
     try{
@@ -300,8 +308,8 @@ function Stop-P6NativePostgres {
         $read={param($record,$timeout) Read-P6PostgresOwnership $Context}.GetNewClosure()
         $stop={param($record)
             $spec=Get-P6NativeToolSpec 'PG_STOP' $Context.Receipt $Context.RunParent (Read-P6OwnerMarker $Context.Receipt $Context.RunParent) $Context.Secrets
-            $result=Invoke-P6BoundedChild $spec 40000
-            if($result.Status -cne 'EXITED'){throw 'REHEARSAL_STOP_FAILED'}
+            $result=Invoke-P6BoundedChild $spec 70000
+            Assert-P6PgStopCommandResult $result|Out-Null
         }.GetNewClosure()
         $wait={param($record,$timeout) return $Context.Ticket.Process.WaitForExit($timeout)}.GetNewClosure()
         $result=Stop-P6OwnedPostgres $Context.Receipt $Context.RunParent $Context.Ticket.Recorded $read $stop $wait
@@ -431,7 +439,9 @@ function Invoke-P6BoundedChild {
     $drain=$null;$retained=$false;$status='FAILED';$exitCode=-1;$cleanup='NOT_STARTED'
     $launchElapsed=-1;$drainElapsed=-1;$cleanupWait=0
     try {
-        if($TimeoutMilliseconds -lt 100 -or $TimeoutMilliseconds -gt 60000){throw 'invalid'}
+        # Only the fixed PostgreSQL stop tool gets 10s overhead beyond its 60s wait.
+        $maxTimeout=if((Get-P6Field $Spec 'Action') -ceq 'PG_STOP' -and (Get-P6Field $Spec 'FileName') -ceq 'C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe'){70000}else{60000}
+        if($TimeoutMilliseconds -lt 100 -or $TimeoutMilliseconds -gt $maxTimeout){throw 'invalid'}
         Initialize-P6StreamDrain
         if($null -ne $QuickState -and $QuickState -isnot [P6QuickGuardState]){throw 'invalid'}
         if($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds){$code='REHEARSAL_NATIVE_TIMEOUT';throw 'timeout'}
@@ -839,6 +849,7 @@ function Invoke-P6ValidatedStop {
             $null -eq $after.PSObject.Properties['ObservedProcess'] -or $null -ne $after.ObservedProcess) { throw 'invalid' }
         Assert-P6Receipt $Receipt $RunParent (Get-P6Field $after 'Marker') | Out-Null
         $afterListeners=Assert-P6ListenerEvidence (Get-P6Field $after 'Listeners')
+        if($Kind -ceq 'Postgres' -and ($null -eq $after.PSObject.Properties['PidFileLines'] -or $after.PidFileLines -isnot [array] -or $after.PidFileLines.Count -ne 0)){throw 'invalid'}
         foreach ($listener in $afterListeners.Items) {
             if ($listener.OwningProcess -eq $Recorded.Pid -or ($Kind -ceq 'Postgres' -and $listener.LocalPort -eq $Receipt.Ports[0])) { throw 'invalid' }
         }
