@@ -1210,3 +1210,15 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 只读查看镜像启动脚本确认docker_temp_server_start使用listen_addresses=''，临时初始化服务会通过Unix-socket pg_isready；原就绪门禁存在过早放行风险。第一次运行未保存container启动日志，不能唯一归因实际退出原因。修正本地验证脚本为等待-h127.0.0.1 TCP正式就绪，并在后续失败时保存受限container日志/状态。
 - 修正后的新轮连接返回`Connection closed by 124.223.109.157 port 22`、SSH exit255；未建立新测试实例。按此前SSH失败不重试要求停止，等待用户指令。只读诊断时原PG容器running/healthy，未停止或修改。
 - 下一步待连接可用后另获继续指令：使用全新隔离容器恢复同一备份，验证V18/6车辆/4终端/4绑定、备份时两演示车仍true、新调整审计尚不存在、约束及索引、全表读取，再精确清理。本轮进度仅记录失败和待办，未commit/push、未迁移。
+
+### 独立恢复演练 PASS（2026-09-11，用户回传结果）
+
+- 用户明确回传：pre-adjustment.dump的SHA-256一致，独立隔离容器内pg_restore成功，关键数据、约束、索引验证完整。本节更新当前恢复验收状态为`RESTORE_REHEARSAL_PASS_USER_CONFIRMED`，保留此前失败历史。
+- 备份路径沿用`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/demo-dispatchable-20260910T152701Z-nPGTDN/pre-adjustment.dump`；SHA-256=`a908dbf8553435d0eababae3de9fee55e37b66a6295777748990cc3e2a8dda52`。
+- 用户回传核验计数：vehicles=6、jt_terminals=4、jt_terminal_vehicle_bindings=4、audit_logs=43、约束=384、索引=70；两演示车dispatchable=t符合调整前备份时间点，不代表当前源数据库属性回退。
+- 证据来源是用户提供的成功结果；本次未重新恢复或独立重跑这些计数，未收到新成功运行的目录/原始日志或清理证明，因此不补造运行ID、源角色ACL恢复或容器已清理结论。
+- 下一步仅只读核对云端现有V20门禁；不执行V19–V21、不修改云端资源。门禁实查结果待补充。
+- 云端实查时间`2026-09-10 23:06:20 UTC`（北京时间2026-09-11 07:06:20）：只读REPEATABLE READ事务、statement_timeout=5s、lock_timeout=2s；Flyway最新18/success=true，onboard_systems/onboard_device_memberships/onboard_device_role_assignments/onboard_device_capabilities四表均不存在。
+- 实查全库dispatchable=true为0，调度系统缺失/调度模式/调度与定位主角色的车辆专属门禁当前无适用对象（NO_APPLICABLE_VEHICLES），不意味着已建立或配置目标系统。ACTIVE终端1条；旧绑定表全库有效绑定4条，ACTIVE终端旧绑定数量违规0；旧绑定证据不能替代V19新成员及系统状态检查。
+- 六类门禁状态：ACTIVE终端新成员唯一性待核验；可调度车辆系统模式及两独占角色当前空集无违规；有效角色/成员及VERIFIED能力待核验；WAN_UPLINK网络模式待核验；定位主备不同设备待核验；ACTIVE系统至少一有效成员待核验。缺表分支返回NOT_VERIFIABLE_SCHEMA_ABSENT，未执行针对不存在表的SQL，更未为核对创建表或迁移。
+- 结论：恢复演练PASS按用户证据已记录，V20全库准入尚未完成。下一步必须按另行批准的分阶段方案，在V19结构及目标配置具备后重新只读检查其余条件；不能从V18直接把全部V20门禁标记PASS。本次仅progress.md未提交，无云端写入/备份/恢复/迁移/重启/删除，未commit/push。
