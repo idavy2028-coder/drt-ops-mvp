@@ -1201,3 +1201,12 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 提交后另开只读事务复核：两条false、AFFECTED_ROWS=2、GLOBAL_DISPATCHABLE_TRUE=0、DISPATCH_SYSTEM_GATE=PASS_EMPTY_DISPATCHABLE_SET。onboard_systems尚不存在；因全库可调度集合为空，缺ACTIVE系统的可调度车辆集合为空，不为核验创建表。Flyway仍18/success=true，V19–V21未执行。
 - 云端同目录保留transaction.log及verification.log。提交与独立只读复核及ADJUSTMENT_RESULT=COMPLETE之后，SSH脚本末尾额外CR空行报command not found；这是尾部shell错误，不否定已确认的COMMIT，未重跑任何写入。
 - 当前状态`DEMO_DISPATCHABLE_ADJUSTMENT_COMPLETE`；仅该调度系统缺失项已复核，V20其余全库门禁与云端备份恢复验证仍待后续授权；未修改manifest、其他业务记录、服务配置或迁移版本。根progress.md保留此前未提交记录并追加本节，未commit/push。
+
+### pre-adjustment.dump 独立恢复演练：验证未完成（2026-09-10）
+
+- 用户授权独立实例恢复备份并验证完整性/可读性。本轮使用已有postgis/postgis:16-3.5镜像新建专用容器，network=none、无host端口、数据仅tmpfs、memory=1GiB/cpus=1；不挂载原数据库卷，备份经stdin导入。
+- 原备份SHA-256复核一致：`a908dbf8553435d0eababae3de9fee55e37b66a6295777748990cc3e2a8dda52`。第一次恢复目录`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/restore-validation-20260910T153654Z-F7bw87`，保留result.txt/restore日志/清理日志。pg_restore以single-transaction/exit-on-error/no-owner/no-privileges成功退出，restore stdout/stderr均0bytes；此轮验证不涵盖源角色/ACL恢复。
+- 随后验证查询前容器已停止（OCI cannot exec in a stopped container），未执行成功数据断言/全表读取；结果`RESTORE_VALIDATION=FAIL`，不能以pg_restore成功冒充完整恢复演练通过。专用容器经label和network归属检查后已停止/删除，tmpfs恢复数据随容器清理，无保留测试实例；原数据库及备份未修改。
+- 只读查看镜像启动脚本确认docker_temp_server_start使用listen_addresses=''，临时初始化服务会通过Unix-socket pg_isready；原就绪门禁存在过早放行风险。第一次运行未保存container启动日志，不能唯一归因实际退出原因。修正本地验证脚本为等待-h127.0.0.1 TCP正式就绪，并在后续失败时保存受限container日志/状态。
+- 修正后的新轮连接返回`Connection closed by 124.223.109.157 port 22`、SSH exit255；未建立新测试实例。按此前SSH失败不重试要求停止，等待用户指令。只读诊断时原PG容器running/healthy，未停止或修改。
+- 下一步待连接可用后另获继续指令：使用全新隔离容器恢复同一备份，验证V18/6车辆/4终端/4绑定、备份时两演示车仍true、新调整审计尚不存在、约束及索引、全表读取，再精确清理。本轮进度仅记录失败和待办，未commit/push、未迁移。
