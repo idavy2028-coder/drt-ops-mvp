@@ -1254,3 +1254,14 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 核对范围状态：dispatchable车辆0，ACTIVE系统4，有效角色0，VERIFIED能力0。空角色条件不代表配置齐备；当前仅SQL迁移前置无违规。
 - 云端证据目录内保存`v20-readonly-gates.log`，结果`V20_GATE_CHECK=PASS CHECKS=10 VIOLATIONS=0`、`C1_STEP1=PASS`，SSH/脚本exit0；Flyway仍19/success=true，V20/V21记录0。
 - 当前暂停等待用户确认，未执行V20/V21、未修改manifest或其他业务数据。API停写维护窗口、当前V19独立恢复验证及后续部署/能力配置按已批准清单另行落实；本轮新增进度尚未commit/push。
+
+### C1 第二步：当前V19备份独立恢复验证 PASS（2026-09-11）
+
+- 先按授权推送并核对远端分支HEAD为`12d5c8ca483f95bf46501b99d8a1270aedaa2cb7`，随后仅执行恢复验证；未停止旧API、未迁移V20/V21。
+- 恢复源为`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/c1-pre-v20-20260911T000707Z-O2EmP5/pre-v20-v19.dump`，导入前后SHA-256均为`bd3ffefaa61ae441e510250f093ec95ac761fd6ebdb56ddd96f7231ea901b20c`。
+- 使用已存在的PostgreSQL16.9/PostGIS3.5.2镜像创建全新隔离容器：network none、无host端口、仅tmpfs数据、1GiB内存及1CPU限制；无原数据卷挂载。等待正式TCP就绪，另用template0新建restore_validation，pg_restore single-transaction/exit-on-error/no-owner/no-privileges退出0。未将错误退出降为成功；本次不涵盖原角色权限/ACL恢复验证。
+- 验证期间容器保持running。只读事务实查：vehicles=6、jt_terminals=4、jt_terminal_vehicle_bindings=4、audit_logs=46；onboard_systems=4、onboard_device_memberships=4、onboard_system_runtime_state=4。用户描述的onboard_system_members对应实际表onboard_device_memberships，不存在另建或改名。
+- 约束计数：public=192、全数据库=388；public索引=85。public外键/CHECK未验证数0、无效或未就绪索引0；绑定/成员孤立引用0、系统模式匹配车辆可调度属性。pg_restore完整执行所有归档对象，未按表过滤。
+- 全部32张public表逐行JSON转换读取成功（不输出行内容）；两演示车辆dispatchable=false、全库可调度车辆0；Flyway最高19/success=true，无20/21。结果READ_VALIDATION=PASS。
+- 验证结束后重新核验容器run标签及network none，仅停止/删除本次容器；核验/tmp/p6-v19-restore-*精确本轮目录、owner标记且仅含普通文件后清理临时日志与目录。结果RESTORE_CONTAINER_CLEANUP=PASS、RESTORE_TEMP_DIRECTORY=REMOVED、RESTORE_VALIDATION=PASS，脚本exit0。恢复出的临时数据库已随tmpfs容器删除，不可恢复；原始备份保留。
+- 原API的Running/StartedAt/RestartCount前后完全一致（SOURCE_API_UNCHANGED=PASS），原数据库未访问或修改。当前状态`C1_V19_RESTORE_VALIDATED_AWAITING_STEP3_CONFIRMATION`；暂停等待确认，不进入API停写或V20/V21。新增本节未commit/push。
