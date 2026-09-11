@@ -1274,3 +1274,29 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - Gateway仍exited，7611监听0；PostgreSQL保持运行，Flyway最新19/success=true，V20/V21记录0。校验时间2026-09-11 00:28:11 UTC（北京时间08:28:11），脚本exit0。
 - 当前状态`C1_API_WRITES_PAUSED_AWAITING_V20_AUTHORIZATION`。API及gateway继续停止，等待用户授权V20；本轮未执行V20/V21、未修改manifest或业务数据。执行V20前仍需重新核对停写和门禁，以防状态漂移。
 - 新增本节未commit/push；已推送提交只包含此前恢复验证结果，不混同本次新停写记录。
+
+### C1 V20 迁移及验证成功（2026-09-11）
+
+- 先按用户要求提交并推送`39f6c069dd55506f88f44f9b679de30ad3551a7c` / `docs: record C1 pre-v20 api pause`，远端SHA已核对；随后仅执行V20。
+- 前置复核：API/GW均exited，8080/7611无监听，V19数据库无其他client backend，已独立恢复验证的V19备份SHA再次一致：`bd3ffefaa61ae441e510250f093ec95ac761fd6ebdb56ddd96f7231ea901b20c`。备份沿用c1-pre-v20-20260911T000707Z-O2EmP5/pre-v20-v19.dump，未覆盖或修改。
+- 实际Flyway一次性工具只加载既有V0–V18及原始V19/V20，target20、group事务、无V21；V20 SQL SHA-256=`c1fed7c9d4f796f556f8b4e4bce83e6cb01b54ac3da1156d1d593a4f04435dd3`。before callback按固定顺序锁定9表，核验V19、数据及全库门禁；after callback核验结构、零行写保护、数据摘要并同事务写审计。
+- 结果：V20_MIGRATION=PASS，migrationsExecuted=1，退出码0，工具耗时5125ms，Flyway历史execution_time=268ms，warnings=0。V20历史checksum=688197546、installed_by=drt_ops_cloud_test、installed_on=`2026-09-11 00:38:50.920513`（UTC）、success=true；V21记录0。
+- 影响范围：业务DML行数0，9张业务表全行摘要与行数前后一致；onboard_systems/onboard_device_memberships/onboard_system_runtime_state各4行，旧绑定仍4行，两演示车dispatchable=false。另新增1条audit_logs和1条Flyway成功历史。
+- 旧绑定写保护：trigger trg_jt_terminal_vehicle_bindings_read_only启用（O、tgtype30）。在同迁移事务savepoint内分别执行零行INSERT/UPDATE/DELETE，三者均以SQLSTATE55000/LEGACY_TERMINAL_BINDINGS_READ_ONLY拒绝，savepoint回滚，无测试数据写入。保护来自trigger而非事务结束后继续持有表锁。
+- 旧uq_jt_terminal_vehicle_bindings_active_vehicle已不存在；V19建立的新uq_onboard_device_memberships_active_terminal及uq_onboard_systems_active_vehicle仍unique/valid，分别约束有效终端唯一成员、车辆唯一ACTIVE系统，允许一个系统有多个不同设备。未额外插入虚构成员测试数据。
+- 审计ID=`9d537f67-f859-4943-b734-cfb322c1108f`，action=DATABASE_MIGRATED_V20，actor=ssh:ubuntu，UTC时间`2026-09-11 00:38:51.100946+00`；包含19→20、业务DML0、门禁10/违规0、写保护测试3、核心表数量、备份路径/SHA与迁移SHA。
+- 提交后另开一致性只读事务核验全部10项V20前置条件，违规均0。角色/能力仍为空的事实不等于配置完整，不能据此放行真实业务。
+- 私有证据目录`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/v20-migration-20260911T003841Z-Dmkpyk`保存probe/migration/verification日志和受限迁移材料；临时工具容器自动移除。原API/GW仍exited、8080/7611无监听，未部署API、未启动gateway、未修改manifest。
+- 当前状态`CLOUD_V20_COMPLETE_AWAITING_V21_AUTHORIZATION`，已暂停等待用户下一步授权；本轮新增进度尚未commit/push。
+
+### C1 V20→V21 结构迁移完成（2026-09-11）
+
+- 用户授权连续完成到V21，边界为每步前备份、后验门禁，不部署正式API、不启动gateway。首先只读确认V20已在前轮成功，故未重复执行V20；三张核心表4/4/4、V20审计1条、API/GW均exited。
+- V20前的V19备份及独立恢复证据沿用前述c1-pre-v20-20260911T000707Z-O2EmP5/pre-v20-v19.dump（SHA bd3ffefaa61ae441e510250f093ec95ac761fd6ebdb56ddd96f7231ea901b20c）。本次V21前另做完整V20备份：`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/v21-migration-20260911T005009Z-xU7o8e/pre-v21-v20.dump`，SHA-256=`f0744e8181ca1707331e81c9538835cf3c00586981adf2c0162d6a0794d422dd`，校验及完整归档读取通过；未对这份新V20备份单独做恢复演练。
+- 固定Flyway target21，仅发现/执行一个pending V21，未重复V20或带入更高版本；原始V21 SQL SHA-256=`ec6fec3c8e38b9b4a48054e89220434b4b606f69147c01234e337e9758e33fa3`。同事务callback前置锁定相关表、验证V20门禁并保存数据摘要/预期位置映射，后置核验V21结果并写审计；提交后Flyway validate通过。
+- 结果V21_MIGRATION=PASS，退出码0，工具耗时6011ms，Flyway历史execution_time=285ms、checksum=-2114098118、installed_by=drt_ops_cloud_test、installed_on=`2026-09-11 00:50:20.494446`（UTC）、success=true，warnings=0。V20历史仍success=true/原checksum688197546。
+- V21位置归属回填命中行数0（事务锁定后按原UPDATE谓词计算并验证最终预期映射）；原有字段与行数完整。onboard_systems/onboard_device_memberships/onboard_system_runtime_state各4行，旧绑定4行，新增jt_terminal_session_leases=0行；两演示车辆仍dispatchable=false。
+- 新增runtime三字段、vehicle_alarms.onboard_system_id已存在，两个V21索引indisvalid=true，新增租约约束均validated；V20旧绑定写保护trigger保持启用。未配置角色/能力或写入真实运行时会话。
+- 同事务新增审计ID=`e543e4ba-16b9-4b88-bef5-ab58dd12bd9c`、action=DATABASE_MIGRATED_V21、actor=ssh:ubuntu、UTC时间`2026-09-11 00:50:20.58698+00`；含20→21、回填命中数0、门禁10/违规0、核心表计数、备份路径/SHA及迁移SHA。只读复核V20/V21迁移审计各1条。
+- 提交后独立只读事务：LATEST=21/true、十项全库合同违规均0，POST_V21_GATES=PASS。API/GW保持exited、8080/7611无监听，未部署正式API、未启动gateway；操作整体exit0，临时工具容器自动移除，私有备份/日志/迁移材料保留。
+- 当前目标完成：`C1_SCHEMA_MIGRATION_COMPLETE_V21`。这仅证明结构迁移及现有数据门禁通过，空角色/能力不代表业务配置或真实接入就绪；后续正式API部署、能力证据核验和配置写入均需下一步授权。本轮仅追加progress.md，保留前轮V20未提交记录，未commit/push。
