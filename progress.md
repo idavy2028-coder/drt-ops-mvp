@@ -1334,3 +1334,91 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 证据边界：本轮只读检查本地记录，未发现新增登录/四系统查询结果文件；上述最终验收结果来源于用户确认，并非本轮独立云端实测。健康检查修复过程、最终容器ID、各接口HTTP状态和原始脱敏输出未随本次确认提供，故不补造相关细节；若需独立技术复核，应另行读取最终运行状态和验收证据。
 - 回滚材料沿用私密目录`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/c1-api-v21-20260911T010635Z-CXwHfv/rollback`，旧镜像归档SHA-256=`b5657c25b4633dfbff15ad255d38e16314836588e5e57e48aa161c544aed9044`（前轮校验通过）。不在进度文档保存密码、令牌、环境原文或设备敏感字段。
 - 本轮仅固化文档及Git提交/推送，不操作云端、不启动gateway、不开放7611、不修改manifest、不写设备配置、不执行迁移。第1批通过不代表能力核验、角色/协议配置或真实接入验收已完成，后续批次等待明确授权。
+
+### C1 B阶段隔离预检（2026-09-11）
+
+- 新鲜Plan/Execute：HEAD=4caa715d330ae7c2d07147e20995428046c60995，run=f6ad8000b8de470182641aabb5006e87。现有18阶段全部PASS，REHEARSAL_COMPLETE；数据库合同59/59、失败/错误/跳过0。V21、API/GW健康、4终端注册鉴权心跳、能力核验、3系统preview/apply/read-back及4有效租约通过。
+- B完整范围未通过：现有Wire不发送定位/ADAS/DMS；VIDEO仅合成事实与配置；续租未断言expires_at推进；LEASE_RELEASE只证实活跃租约归零，不足以单独证明释放接口。暂不具备进入A阶段条件；下一恢复点为补齐这些隔离场景后重验。
+- 原API摘要匹配部署包；本轮按既有运行器fresh构建，源码与c84a75e相关apps/packages/模拟器无差异，实际产物摘要见报告，不声称部署二进制逐字节复用。
+- GW/API/PG/TOOLS均STOPPED、STORAGE=REMOVED、Retained=false；独立复核本轮资源进程0、51556–51559监听0、run目录不存在。未连接真实设备/云端业务数据库，未改manifest或云端配置，未启动云端gateway。
+- 报告：docs/pilot/evidence/p6-2/c1-b-isolation-precheck-2026-09-11.md；执行JSON：.superpowers/sdd/2026-09-06-p6-2-local-isolation-rehearsal/execution/f6ad8000b8de470182641aabb5006e87.json，SHA256=a1a3604fae3962763430f391b4301fb5e0127cac782eb55078b77059d89c121c。本轮未改产品/运行器代码，未commit/push。
+
+### C1 B补测与视频必要性确认（2026-09-11）
+
+- 用户明确首期必须视频监控或取证，视频不能整体后置；仅提出声明链路设计，未改视频/产品代码。
+- 本地H2、真实HTTP/TCP合成补测：位置集成66/66、质量判断7/7、租约服务5/5；新增双报警及HTTP续租释放用例首次失败源于S08实际ADAS END与文字说明不符，派生双START后单独重测1/1通过。原始fixture未改。
+- 定位经纬度/速度/方向正确，事件1，WARNING且snapshotApplied=true；ADAS/DMS两报警写入且设备/车辆归属正确。四质量状态由既有质量/集成测试覆盖，非四组TCP端到端场景；独立报警审计未新增断言。
+- 续租HTTP200、expires_at延长、version+1且leaseGeneration不变；释放200/RELEASED、released_at/原因正确、version再+1，释放后续租409。但两操作audit_logs及jt_gateway_audit_events增量均0，确认审计合同缺口，已报告并暂停进一步执行，A不放行。
+- 无云端/真实设备连接，无manifest/云配置/迁移文件变更；API测试H2自动建表，gateway仅全新临时H2初始化既有outbox结构。不是部署JAR/PostgreSQL复验。两测试JVM已退出。
+- 详细结果、5–8人日声明设计估算、媒体另计10–20人日的初步估算与替代验证条件见docs/pilot/evidence/p6-2/c1-b-supplement-video-decision-2026-09-11.md。新增1个合成集成测试，未改产品逻辑，未commit/push。
+
+### C1 审计修复完成本地验证、视频设计待审（2026-09-11）
+
+- 已修复租约续租/有效释放的audit_logs写入，以及ADAS/DMS实际创建/结束的独立业务审计。审计要求同事务，失败回滚；重放/重复释放/失效所有者不写重复成功审计，无迁移变更。
+- 测试驱动先复现租约审计0/应1、报警0/应2；最新五套件2+6+11+67+15共101项通过、失败/错误/跳过0（分两次验证）。真实HTTP续租审计+1，释放累计+2，双报警创建审计2；回滚/重放测试通过。详情见docs/pilot/evidence/p6-2/c1-audit-fix-2026-09-11.md。
+- 视频最小设计仅成文：docs/pilot/p6-2-c1-video-declaration-minimal-design.md。声明只到DECLARED，实测后人工VERIFIED；包含幂等/审计/冲突。确认gateway outbox kind CHECK不允许新声明类型，后续需单独审阅新增约束迁移，当前未改。估算声明7–12人日，媒体主路径额外10–20人日低置信度；首期实时/取证具体主路径尚待明确。
+- 本轮仅本地合成H2/HTTP/TCP；无真实设备/云库连接，无manifest/云配置/迁移文件改动，无云端gateway启动。未commit/push或部署；尚无本修复的PostgreSQL/匹配JAR复验。
+- A仍不放行：视频业务必需但声明/实际媒体链路未实施验收；审计修复尚未部署。下一步审阅视频设计及后续环境验证方案，不自动扩大授权。
+
+### C1 PostgreSQL审计复验通过、A视频门禁明确（2026-09-11）
+
+- 当前不改manifest的目标包含VIDEO角色；代码只接受VIDEO VERIFIED并要求非NONE媒体档案，DECLARED不足以通过配置。首期视频必需的业务确认仍有效，本轮不将A改成无视频阶段。
+- 新建隔离PostgreSQL/PostGIS：.tmp/c1-pg-audit-2065c68f6de244f894613ccc834fd8c6，13/13测试通过、失败/错误/跳过0，Flyway21/true。续租/释放审计及JSON关联、双报警创建/结束审计、重放与数据库拒绝审计时回滚均通过。
+- 本轮PG已停止，端口63016监听0；私有数据和日志保留，未触碰历史库。首次ACL命名预检失败没有启动数据库，另开新目录完成复验。
+- 新gateway源码已有V21租约合同，构建与验证估算1–2人日可在A前准备；当前本地Docker daemon未运行，未构建或启动Docker。API审计修复与gateway需固定版本组合，未来视频变更后再构建最终镜像。
+- 视频可靠声明需新增队列类型，现有CHECK禁止；遵守不改迁移/白名单，本轮未实施视频代码。建议声明7–12人日→媒体主路径额外10–20人日→另获授权真实证据核验VERIFIED。A仍不放行，审计PostgreSQL阻挡已关闭。
+- 完整报告docs/pilot/evidence/p6-2/c1-a-requirements-pg-audit-gateway-2026-09-11.md。本轮只增补PostgreSQL测试与文档；无云端/真实设备连接，无manifest/云配置/迁移文件修改，无部署、推送。
+
+## 额度收尾与唯一恢复入口（2026-09-11）
+
+- 用户要求额度恢复前停止新增工作。本次仅保存、提交和推送，不运行测试、不构建镜像、不启动演练、不连接云端业务环境。Git远程推送为本次明确授权。
+- 当前分支：`codex/p6-2-ops-safety-gates`；收尾前HEAD：`4caa715d330ae7c2d07147e20995428046c60995`。本节记录的是提交前快照；包含本节的保存提交将推进HEAD，恢复时以`git rev-parse HEAD`和远端同名分支实测为准，不能将此基线当作保存后的HEAD。
+- 收尾前工作区不干净，具体文件清单见下方；为避免修复只留本地，本次把现有审计实现、测试和必要文档一并提交。忽略目录中的私有数据/口令/日志不加入Git。提交推送后另以git status及远端SHA核验同步状态。
+
+### 已完成、不得重复执行
+
+- 云端既有结构V21、API部署版本c1-v21-c84a75e；本地新审计修复尚未部署。C阶段材料审查已完成，但真实视频及网络证据不足的事实仍保留。
+- B基础隔离演练18阶段通过；定位/ADAS/DMS及显式租约本地HTTP/TCP补测完成。VIDEO仍只是合成能力配置，不是真实视频验收。
+- 审计缺口已修复：成功续租、有效释放、报警创建/结束写audit_logs，同事务失败回滚；幂等重放、重复释放不新增成功审计。H2相关五套件最新101项通过，真实隔离PostgreSQL/PostGIS V21复验13/13、失败/错误/跳过0。上述均为已完成历史证据，本次未重跑。
+- 隔离PostgreSQL已停止，进程及端口63016监听0。私有复验目录`.tmp/c1-pg-audit-2065c68f6de244f894613ccc834fd8c6`保留；结果result.json SHA256=`7543d98c7e8d75f721f8fde36335f4f610c696f0d15df7c1c2757e4da9cdc1f0`。早期ACL失败目录及历史失败现场不覆盖，不从收据自动重启/清理。
+- 视频最小设计已成文，尚未获准修改队列白名单/迁移或实施。首期视频必需；现有目标启用VIDEO角色需VIDEO=VERIFIED，DECLARED不足。A阶段尚不放行。
+- gateway当前源码具备V21新版租约合同，预计新镜像构建和验证1–2人日；本地Docker daemon未运行，本轮未构建或启动Docker。未来须验证配套API/gateway产物，视频变更后重新构建最终候选。
+
+### 待执行任务及顺序
+
+1. 视频声明链路设计审阅：阅读`docs/pilot/p6-2-c1-video-declaration-minimal-design.md`，明确首期实时监控/录像取证主路径、能力DECLARED→实测VERIFIED、可靠投递/幂等/审计/冲突、证据存储；新增队列kind受CHECK约束，白名单及迁移必须单独审阅，不能绕过。
+2. gateway镜像构建：先确认本地构建环境可用，固定源码、基础镜像和依赖、JAR摘要/镜像digest，再以配套API/V21隔离环境验证；不因本恢复指令自动部署、推送镜像或启动云端gateway。
+3. 视频链路实施与隔离验证：按获审方案实施声明链路（规划7–12人日），再建设/集成选定媒体闭环（额外10–20人日初估）。当前禁止修改manifest、云端配置或迁移；涉及队列/迁移须先取得单独审阅授权。
+4. 真实设备/云端业务库接入、部署及实际能力核验仍需独立授权。本地合成结果不记为真实设备VERIFIED。
+
+### 恢复指令
+
+额度恢复后直接说：**“继续 P6-2 C1 视频链路实施”**。
+
+收到后先读取本progress.md最新节和视频最小设计，再检查实际分支、HEAD及工作区。不要重跑已完成迁移、审计复验或历史演练；从设计审阅及尚未批准的队列/存储决策恢复。该短指令不解除上述明确边界。
+
+### 证据入口
+
+- `docs/pilot/evidence/p6-2/c1-a-requirements-pg-audit-gateway-2026-09-11.md`：A准入、PG13/13及gateway评估。
+- `docs/pilot/evidence/p6-2/c1-audit-fix-2026-09-11.md`：审计修复及101项测试证据/覆盖限制。
+- `docs/pilot/evidence/p6-2/c1-b-supplement-video-decision-2026-09-11.md`：补测历史和首期视频必要性。
+- `docs/pilot/evidence/p6-2/c1-b-isolation-precheck-2026-09-11.md`：B基础演练及覆盖边界。
+- `docs/pilot/p6-2-c1-video-declaration-minimal-design.md`：待审视频最小设计。
+
+### 收尾前未提交文件完整清单（本次提交范围）
+- `apps/api/src/main/java/com/idavy/drtops/domain/alarm/JpaAlarmStore.java`
+- `apps/api/src/main/java/com/idavy/drtops/domain/terminal/JtTerminalSessionLease.java`
+- `apps/api/src/main/java/com/idavy/drtops/domain/terminal/JtTerminalSessionLeaseService.java`
+- `apps/api/src/test/java/com/idavy/drtops/domain/alarm/PostgisVehicleAlarmIngressIntegrationTest.java`
+- `apps/api/src/test/java/com/idavy/drtops/domain/location/GpsLocationIngressIntegrationTest.java`
+- `apps/api/src/test/java/com/idavy/drtops/domain/terminal/JtTerminalSessionLeaseServiceTest.java`
+- `apps/api/src/test/java/com/idavy/drtops/e2e/JtGatewayApiContractEndToEndTest.java`
+- `progress.md`
+- `apps/api/src/main/java/com/idavy/drtops/domain/audit/GatewayStateAudit.java`
+- `apps/api/src/test/java/com/idavy/drtops/domain/audit/AuditFailureTestConfiguration.java`
+- `apps/api/src/test/java/com/idavy/drtops/domain/audit/GatewayStateAuditTest.java`
+- `docs/pilot/evidence/p6-2/c1-a-requirements-pg-audit-gateway-2026-09-11.md`
+- `docs/pilot/evidence/p6-2/c1-audit-fix-2026-09-11.md`
+- `docs/pilot/evidence/p6-2/c1-b-isolation-precheck-2026-09-11.md`
+- `docs/pilot/evidence/p6-2/c1-b-supplement-video-decision-2026-09-11.md`
+- `docs/pilot/p6-2-c1-video-declaration-minimal-design.md`

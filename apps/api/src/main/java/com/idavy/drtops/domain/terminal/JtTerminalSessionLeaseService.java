@@ -26,12 +26,15 @@ public class JtTerminalSessionLeaseService {
     private final JtTerminalRepository terminalRepository;
     private final EntityManager entityManager;
     private final Clock clock;
+    private final com.idavy.drtops.domain.audit.GatewayStateAudit audit;
 
     public JtTerminalSessionLeaseService(
             JtTerminalSessionLeaseRepository leaseRepository,
             JtTerminalRepository terminalRepository,
             EntityManager entityManager,
-            ObjectProvider<Clock> clocks) {
+            ObjectProvider<Clock> clocks,
+            com.idavy.drtops.domain.audit.GatewayStateAudit audit) {
+        this.audit = Objects.requireNonNull(audit);
         this.leaseRepository = leaseRepository;
         this.terminalRepository = terminalRepository;
         this.entityManager = entityManager;
@@ -89,8 +92,11 @@ public class JtTerminalSessionLeaseService {
                 || !lease.get().isLiveAt(terminal.getAuthTokenVersion(), now)) {
             return Optional.empty();
         }
+        OffsetDateTime previousExpiry = lease.get().getExpiresAt();
         lease.get().renew(now, LEASE_TTL);
-        return Optional.of(leaseRepository.saveAndFlush(lease.get()).toGrant());
+        JtTerminalSessionLease renewed = leaseRepository.saveAndFlush(lease.get());
+        audit.leaseRenewed(renewed, previousExpiry);
+        return Optional.of(renewed.toGrant());
     }
 
     @Transactional
@@ -113,6 +119,7 @@ public class JtTerminalSessionLeaseService {
         }
         current.release(safeReasonCode, now());
         leaseRepository.saveAndFlush(current);
+        audit.leaseReleased(current);
         return new SessionLeaseReleaseResult("RELEASED");
     }
 

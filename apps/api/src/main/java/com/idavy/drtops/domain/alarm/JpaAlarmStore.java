@@ -20,12 +20,15 @@ class JpaAlarmStore implements AlarmStore {
     private final VehicleLocationEventRepository locations;
     private final JtGatewayIngressReceiptRepository receipts;
     private final JdbcTemplate jdbc;
+    private final com.idavy.drtops.domain.audit.GatewayStateAudit audit;
     JpaAlarmStore(
             VehicleAlarmRepository alarms,
             VehicleAlarmOutboxRepository outbox,
             VehicleLocationEventRepository locations,
             JtGatewayIngressReceiptRepository receipts,
-            JdbcTemplate jdbc) {
+            JdbcTemplate jdbc,
+            com.idavy.drtops.domain.audit.GatewayStateAudit audit) {
+        this.audit = Objects.requireNonNull(audit);
         this.alarms = alarms;
         this.outbox = outbox;
         this.locations = locations;
@@ -145,7 +148,10 @@ class JpaAlarmStore implements AlarmStore {
                 fact.module(), fact.typeCode(), fact.terminalAlarmId());
     }
     @Override public VehicleAlarm save(VehicleAlarm alarm) { return alarms.save(alarm); }
-    @Override public void appendOutbox(VehicleAlarm alarm, String eventType) { outbox.save(VehicleAlarmOutboxEvent.pending(alarm, eventType)); }
+    @Override public void appendOutbox(VehicleAlarm alarm, String eventType) {
+        outbox.save(VehicleAlarmOutboxEvent.pending(alarm, eventType));
+        audit.alarmChanged(alarm, eventType);
+    }
     @Override public void end(VehicleAlarm alarm, Instant endedAt) { alarm.endAt(endedAt); alarms.save(alarm); }
 
     private boolean locksExactlyOne(String sql, Object... arguments) {

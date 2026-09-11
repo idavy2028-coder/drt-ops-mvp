@@ -425,6 +425,63 @@ class JtGatewayApiContractEndToEndTest {
         assertThat(audits.findByIdempotencyKey(key)).isPresent();
     }
 
+    @Test
+    void c1SupplementExplicitLeaseAndDualAlarm() throws Exception {
+        try (GatewayRig rig = new GatewayRig(tempDir.resolve("c1-supplement"), apiBaseUri());
+             SimulatedTerminal simulator = registerAndAuthenticate(rig)) {
+            byte[] dualStart = fixtureBody("S08"); // Derived synthetic: S08 ADAS is END; explicitly test two START events.
+            assertThat(dualStart[34]).isEqualTo((byte)2);
+            dualStart[34] = 1;
+            assertGeneralAck(simulator, simulator.sendFrame(0x0200, dualStart), 0x0200);
+            await(() -> rig.repository.totalCount() >= 5);
+            rig.dispatchUntilSettled(20);
+            assertThat(locations.findAll()).hasSize(1);
+            var location = locations.findAll().getFirst();
+            assertThat(location.getRawLongitude()).isEqualByComparingTo("118");
+            assertThat(location.getRawLatitude()).isEqualByComparingTo("32");
+            assertThat(location.getSpeedKph()).isEqualByComparingTo("60");
+            assertThat(location.getDirectionDegrees()).isEqualTo(90);
+            assertThat(apiJdbc.queryForList("select module from vehicle_alarms", String.class))
+                    .containsExactlyInAnyOrder("ADAS", "DMS");
+            assertThat(apiJdbc.queryForObject("select count(*) from vehicle_alarms where vehicle_id=? and terminal_id=? and onboard_system_id is not null", Integer.class, VEHICLE_ID, TERMINAL_ID)).isEqualTo(2);
+            assertThat(apiJdbc.queryForObject("select count(*) from audit_logs where action='VEHICLE_ALARM_CREATED'", Long.class)).isEqualTo(2);
+            System.out.println("C1_DUAL_ALARM=PASS LOCATION_QUALITY=" + location.getQualityStatus() + " SNAPSHOT=" + location.isSnapshotApplied());
+            var before = apiJdbc.queryForMap("select * from jt_terminal_session_leases where terminal_id=?", TERMINAL_ID);
+            var owner = objectMapper.createObjectNode();
+            owner.put("terminalId", TERMINAL_ID.toString());
+            owner.put("gatewayInstance", before.get("gateway_instance").toString());
+            owner.put("connectionId", before.get("connection_id").toString());
+            owner.put("tokenVersion", ((Number)before.get("token_version")).intValue());
+            owner.put("leaseGeneration", ((Number)before.get("lease_generation")).longValue());
+            long auditBefore = apiJdbc.queryForObject("select count(*) from audit_logs", Long.class);
+            long gatewayAuditBefore = audits.count();
+            Thread.sleep(25);
+            var renewed = postGateway("/internal/jt-gateway/session-leases/renew", HttpRequest.BodyPublishers.ofString(owner.toString()));
+            assertThat(renewed.statusCode()).isEqualTo(200);
+            var after = apiJdbc.queryForMap("select * from jt_terminal_session_leases where terminal_id=?", TERMINAL_ID);
+            assertThat(((java.time.OffsetDateTime)after.get("expires_at")).toInstant()).isAfter(((java.time.OffsetDateTime)before.get("expires_at")).toInstant());
+            assertThat(((Number)after.get("version")).longValue()).isEqualTo(((Number)before.get("version")).longValue()+1);
+            assertThat(after.get("lease_generation")).isEqualTo(before.get("lease_generation"));
+            assertThat(apiJdbc.queryForObject("select count(*) from audit_logs where action='SESSION_LEASE_RENEWED'", Long.class)).isEqualTo(1);
+            System.out.println("C1_RENEW=PASS AUDIT_DELTA="+(apiJdbc.queryForObject("select count(*) from audit_logs", Long.class)-auditBefore)+" GATEWAY_AUDIT_DELTA="+(audits.count()-gatewayAuditBefore));
+            var release = objectMapper.createObjectNode().set("owner", owner);
+            ((com.fasterxml.jackson.databind.node.ObjectNode)release).put("reasonCode", "SYNTHETIC_C1_RELEASE");
+            var released = postGateway("/internal/jt-gateway/session-leases/release", HttpRequest.BodyPublishers.ofString(release.toString()));
+            assertThat(released.statusCode()).isEqualTo(200);
+            assertThat(objectMapper.readTree(released.body()).path("data").path("status").asText()).isEqualTo("RELEASED");
+            var last = apiJdbc.queryForMap("select * from jt_terminal_session_leases where terminal_id=?", TERMINAL_ID);
+            assertThat(last.get("released_at")).isNotNull();
+            assertThat(last.get("release_reason")).isEqualTo("SYNTHETIC_C1_RELEASE");
+            assertThat(((Number)last.get("version")).longValue()).isEqualTo(((Number)after.get("version")).longValue()+1);
+            var rejectedRenewal = postGateway("/internal/jt-gateway/session-leases/renew", HttpRequest.BodyPublishers.ofString(owner.toString()));
+            assertThat(rejectedRenewal.statusCode()).isEqualTo(409);
+            var repeatedRelease = postGateway("/internal/jt-gateway/session-leases/release", HttpRequest.BodyPublishers.ofString(release.toString()));
+            assertThat(objectMapper.readTree(repeatedRelease.body()).path("data").path("status").asText()).isEqualTo("ALREADY_RELEASED");
+            assertThat(apiJdbc.queryForObject("select count(*) from audit_logs where action='SESSION_LEASE_RELEASED'", Long.class)).isEqualTo(1);
+            assertThat(apiJdbc.queryForObject("select count(*) from audit_logs", Long.class)-auditBefore).isEqualTo(2);
+            System.out.println("C1_RELEASE=PASS AUDIT_DELTA="+(apiJdbc.queryForObject("select count(*) from audit_logs", Long.class)-auditBefore)+" GATEWAY_AUDIT_DELTA="+(audits.count()-gatewayAuditBefore));
+        }
+    }
     private SimulatedTerminal registerAndAuthenticate(GatewayRig rig) {
         SimulatedTerminal simulator = new SimulatedTerminal(
                 TERMINAL_IDENTITY, ProtocolVersion.JT808_2013, VEHICLE_PLATE);

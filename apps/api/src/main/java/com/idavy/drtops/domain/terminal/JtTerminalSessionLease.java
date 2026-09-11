@@ -139,6 +139,8 @@ public class JtTerminalSessionLease {
                 expiresAt.toInstant());
     }
 
+    public long getVersion() { return version; }
+
     public UUID getTerminalId() {
         return terminalId;
     }

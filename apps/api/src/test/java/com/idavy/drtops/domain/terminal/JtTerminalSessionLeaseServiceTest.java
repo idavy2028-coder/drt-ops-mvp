@@ -41,7 +41,7 @@ import org.springframework.test.util.ReflectionTestUtils;
         "spring.flyway.enabled=false",
         "spring.jpa.hibernate.ddl-auto=create-drop"
 })
-@Import(JtTerminalSessionLeaseServiceTest.ClockConfiguration.class)
+@Import({JtTerminalSessionLeaseServiceTest.ClockConfiguration.class, com.idavy.drtops.domain.audit.AuditFailureTestConfiguration.class})
 class JtTerminalSessionLeaseServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-09-04T02:00:00Z");
@@ -64,6 +64,11 @@ class JtTerminalSessionLeaseServiceTest {
     JtTerminalRepository terminalRepository;
 
     @Autowired
+    com.idavy.drtops.domain.audit.AuditLogRepository auditLogs;
+
+    @Autowired com.idavy.drtops.domain.audit.AuditFailureTestConfiguration.FailureSwitch auditFailure;
+
+    @Autowired
     MutableClock clock;
 
     @Autowired
@@ -72,6 +77,8 @@ class JtTerminalSessionLeaseServiceTest {
     @BeforeEach
     void setUp() {
         firstLeaseCreationRace.reset();
+        auditFailure.fail = false;
+        auditLogs.deleteAll();
         repository.deleteAll();
         terminalRepository.deleteAll();
         clock.set(NOW);
@@ -89,6 +96,33 @@ class JtTerminalSessionLeaseServiceTest {
     }
 
     @Test
+    void auditFailureRollsBackLeaseAndNoOpsDoNotAddAudit() {
+        var grant = service.acquire(TERMINAL_ID, "gateway-a", CONNECTION_A, 7);
+        long originalVersion = repository.findById(TERMINAL_ID).orElseThrow().getVersion();
+        clock.set(NOW.plusSeconds(30));
+        auditFailure.fail = true;
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.renew(grant.owner()))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(repository.findById(TERMINAL_ID).orElseThrow().getVersion()).isEqualTo(originalVersion);
+        assertThat(repository.findById(TERMINAL_ID).orElseThrow().getExpiresAt().toInstant()).isEqualTo(grant.expiresAt());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.release(grant.owner(), "SESSION_OFFLINE"))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(repository.findById(TERMINAL_ID).orElseThrow().getReleasedAt()).isNull();
+        assertThat(auditLogs.count()).isZero();
+        auditFailure.fail = false;
+        service.renew(grant.owner());
+        service.release(grant.owner(), "SESSION_OFFLINE");
+        assertThat(service.release(grant.owner(), "SESSION_OFFLINE").status()).isEqualTo("ALREADY_RELEASED");
+        assertThat(service.renew(grant.owner())).isEmpty();
+        assertThat(auditLogs.findAll()).extracting(a -> a.getAction())
+                .containsExactlyInAnyOrder("SESSION_LEASE_RENEWED", "SESSION_LEASE_RELEASED");
+        var takeover = service.acquire(TERMINAL_ID, "gateway-b", CONNECTION_B, 7);
+        assertThat(service.release(grant.owner(), "SESSION_OFFLINE").status()).isEqualTo("STALE_OWNER_IGNORED");
+        assertThat(service.renew(grant.owner())).isEmpty();
+        assertThat(auditLogs.count()).isEqualTo(2);
+    }
+
+    @Test
     void acquireRenewReleaseAndExpiryUseOnlyApiClock() {
         SessionLeaseGrant first = service.acquire(
                 TERMINAL_ID, "gateway-a", CONNECTION_A, 7);
@@ -103,6 +137,7 @@ class JtTerminalSessionLeaseServiceTest {
         SessionLeaseGrant renewed = service.renew(first.owner()).orElseThrow();
         assertThat(renewed.lastValidMessageAt()).isEqualTo(NOW.plusSeconds(30));
         assertThat(renewed.expiresAt()).isEqualTo(NOW.plusSeconds(210));
+        assertThat(auditLogs.findAll()).filteredOn(a -> a.getAction().equals("SESSION_LEASE_RENEWED")).hasSize(1);
 
         SessionLeaseReleaseResult released =
                 service.release(renewed.owner(), "SESSION_OFFLINE");

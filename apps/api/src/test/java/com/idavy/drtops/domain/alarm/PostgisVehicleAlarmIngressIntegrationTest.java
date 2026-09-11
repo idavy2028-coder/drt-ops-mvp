@@ -63,6 +63,7 @@ class PostgisVehicleAlarmIngressIntegrationTest {
     private static boolean ownsPostgresContainer;
 
     @Autowired VehicleAlarmIngressService service;
+    @Autowired com.idavy.drtops.domain.terminal.JtTerminalSessionLeaseService leaseService;
     @Autowired JdbcTemplate jdbc;
     @Autowired VehicleRepository vehicles;
     @Autowired VehicleAlarmRepository alarms;
@@ -103,8 +104,54 @@ class PostgisVehicleAlarmIngressIntegrationTest {
 
     @AfterEach
     void removeOutboxRejector() {
+        jdbc.execute("drop trigger if exists trg_reject_c1_audit_for_test on audit_logs");
+        jdbc.execute("drop function if exists reject_c1_audit_for_test()");
         jdbc.execute("drop trigger if exists trg_reject_alarm_outbox_for_test on vehicle_alarm_outbox");
         jdbc.execute("drop function if exists reject_alarm_outbox_for_test()");
+    }
+
+    @Test
+    void postgresC1LeaseAuditPersistsAndNoOpsStayIdempotent() throws Exception {
+        OnboardAlarmFixture fixture = onboardAlarmFixture(false, "GOOD", "ADAS");
+        int tokenVersion = jdbc.queryForObject("select auth_token_version from jt_terminals where id=?", Integer.class, fixture.terminalId());
+        var first = leaseService.acquire(fixture.terminalId(), "c1-pg-synthetic", UUID.randomUUID(), tokenVersion);
+        long beforeVersion = jdbc.queryForObject("select version from jt_terminal_session_leases where terminal_id=?", Long.class, fixture.terminalId());
+        Thread.sleep(25);
+        var renewed = leaseService.renew(first.owner()).orElseThrow();
+        assertThat(renewed.expiresAt()).isAfter(first.expiresAt());
+        assertThat(renewed.owner().leaseGeneration()).isEqualTo(first.owner().leaseGeneration());
+        assertThat(jdbc.queryForObject("select version from jt_terminal_session_leases where terminal_id=?", Long.class, fixture.terminalId())).isEqualTo(beforeVersion+1);
+        assertThat(leaseService.release(first.owner(), "SYNTHETIC_C1_RELEASE").status()).isEqualTo("RELEASED");
+        assertThat(leaseService.release(first.owner(), "SYNTHETIC_C1_RELEASE").status()).isEqualTo("ALREADY_RELEASED");
+        assertThat(leaseService.renew(first.owner())).isEmpty();
+        assertThat(jdbc.queryForObject("select released_at from jt_terminal_session_leases where terminal_id=?", java.time.OffsetDateTime.class, fixture.terminalId())).isNotNull();
+        assertThat(jdbc.queryForList("select action from audit_logs where entity_id=? and entity_type='JT_TERMINAL_SESSION_LEASE'", String.class, fixture.terminalId()))
+                .containsExactlyInAnyOrder("SESSION_LEASE_RENEWED", "SESSION_LEASE_RELEASED");
+        assertThat(jdbc.queryForList("select metadata_json ->> 'connectionId' from audit_logs where entity_id=?", String.class, fixture.terminalId()))
+                .containsOnly(first.owner().connectionId().toString());
+    }
+
+    @Test
+    void postgresC1DatabaseAuditFailureRollsBackLeaseAlarmAndReceipt() {
+        OnboardAlarmFixture fixture = onboardAlarmFixture(false, "GOOD", "ADAS");
+        int tokenVersion = jdbc.queryForObject("select auth_token_version from jt_terminals where id=?", Integer.class, fixture.terminalId());
+        var lease = leaseService.acquire(fixture.terminalId(), "c1-pg-synthetic", UUID.randomUUID(), tokenVersion);
+        var before = jdbc.queryForMap("select version,expires_at,released_at from jt_terminal_session_leases where terminal_id=?", fixture.terminalId());
+        jdbc.execute("create function reject_c1_audit_for_test() returns trigger language plpgsql as $$ begin raise exception 'C1_SYNTHETIC_AUDIT_REJECT'; end $$");
+        jdbc.execute("create trigger trg_reject_c1_audit_for_test before insert on audit_logs for each row execute function reject_c1_audit_for_test()");
+        assertThatThrownBy(() -> leaseService.renew(lease.owner())).hasStackTraceContaining("C1_SYNTHETIC_AUDIT_REJECT");
+        assertThatThrownBy(() -> leaseService.release(lease.owner(), "SYNTHETIC_C1_RELEASE")).hasStackTraceContaining("C1_SYNTHETIC_AUDIT_REJECT");
+        assertThat(jdbc.queryForMap("select version,expires_at,released_at from jt_terminal_session_leases where terminal_id=?", fixture.terminalId())).isEqualTo(before);
+        UUID key = UUID.randomUUID();
+        var fact = fixture.fact("ADAS", 1, "FORWARD_COLLISION", "00000001", "START");
+        assertThatThrownBy(() -> service.ingest(key, fact)).hasStackTraceContaining("C1_SYNTHETIC_AUDIT_REJECT");
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarms where terminal_id=?", Integer.class, fixture.terminalId())).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from jt_gateway_ingress_receipts where idempotency_key=?", Integer.class, key)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from audit_logs where entity_id=?", Integer.class, fixture.terminalId())).isZero();
+        removeOutboxRejector();
+        assertThat(service.ingest(key, fact).status()).isEqualTo("ACCEPTED");
+        assertThat(service.ingest(key, fact).status()).isEqualTo("REPLAYED");
+        assertThat(jdbc.queryForObject("select count(*) from audit_logs l join vehicle_alarms a on a.id=l.entity_id where a.terminal_id=? and l.action='VEHICLE_ALARM_CREATED'", Integer.class, fixture.terminalId())).isEqualTo(1);
     }
 
     @Test
@@ -119,6 +166,13 @@ class PostgisVehicleAlarmIngressIntegrationTest {
         service.ingest(List.of(adas, dms));
         service.ingest(List.of(withTerminalIdentifier(
                 adas.endAt(Instant.parse("2026-01-15T02:01:00Z")), "f".repeat(64))));
+        assertThat(jdbc.queryForList("select l.action from audit_logs l join vehicle_alarms a on a.id=l.entity_id where a.terminal_id=?", String.class, fixture.terminalId()))
+                .containsExactlyInAnyOrder("VEHICLE_ALARM_CREATED", "VEHICLE_ALARM_CREATED", "VEHICLE_ALARM_ENDED");
+        assertThat(jdbc.queryForList("select l.metadata_json ->> 'terminalId' from audit_logs l join vehicle_alarms a on a.id=l.entity_id where a.terminal_id=?", String.class, fixture.terminalId()))
+                .containsOnly(fixture.terminalId().toString());
+        assertThat(jdbc.queryForList("select distinct l.metadata_json ->> 'module' from audit_logs l join vehicle_alarms a on a.id=l.entity_id where a.terminal_id=?", String.class, fixture.terminalId()))
+                .containsExactlyInAnyOrder("ADAS", "DMS");
+
 
         assertThat(jdbc.queryForObject(
                 "select count(*) from vehicle_alarms where terminal_id = ?",

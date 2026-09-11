@@ -72,7 +72,7 @@ import org.springframework.test.web.servlet.MockMvc;
         "spring.datasource.username=sa", "spring.datasource.password=", "spring.flyway.enabled=false",
         "spring.jpa.hibernate.ddl-auto=create-drop"})
 @AutoConfigureMockMvc
-@Import(GpsLocationIngressIntegrationTest.LocationCheckerConfiguration.class)
+@Import({GpsLocationIngressIntegrationTest.LocationCheckerConfiguration.class, com.idavy.drtops.domain.audit.AuditFailureTestConfiguration.class})
 class GpsLocationIngressIntegrationTest {
     private static final String CREDENTIAL = "gps-ingress-test-credential";
     private static final UUID VEHICLE_ID = UUID.fromString("aa000000-0000-0000-0000-000000000001");
@@ -98,6 +98,8 @@ class GpsLocationIngressIntegrationTest {
     @Autowired OnboardDeviceRoleAssignmentRepository roleRepository;
     @Autowired OnboardSystemRuntimeStateRepository runtimeRepository;
     @Autowired AuditLogRepository auditLogRepository;
+    @Autowired com.idavy.drtops.domain.audit.AuditFailureTestConfiguration.FailureSwitch auditFailure;
+    @Autowired com.idavy.drtops.domain.alarm.VehicleAlarmIngressService alarmIngress;
     @Autowired JtGatewayAuditEventRepository gatewayAuditRepository;
     @Autowired JtGatewayIngressReceiptRepository receiptRepository;
     @Autowired VehicleLocationSnapshotService snapshotService;
@@ -123,6 +125,7 @@ class GpsLocationIngressIntegrationTest {
         jdbc.update("delete from vehicle_alarm_outbox");
         jdbc.update("delete from vehicle_alarms");
         receiptRepository.deleteAll(); gatewayAuditRepository.deleteAll(); eventRepository.deleteAll();
+        auditFailure.fail = false;
         auditLogRepository.deleteAll();
         roleRepository.deleteAll(); capabilityRepository.deleteAll();
         profileRepository.deleteAll(); membershipRepository.deleteAll();
@@ -1125,6 +1128,36 @@ class GpsLocationIngressIntegrationTest {
         roleRepository.saveAndFlush(role);
 
         assertCompositeAuthorityRejected();
+    }
+
+    @Test
+    void alarmAuditFailureRollsBackAndLifecycleReplayDoesNotDuplicateAudit() throws Exception {
+        UUID positionKey = UUID.randomUUID();
+        Instant now = Instant.parse("2026-08-12T09:00:00Z");
+        postIngress(List.of(envelopeAt(positionKey, VEHICLE_ID, 0x02,
+                "105.2384988", "35.2109657", now.minusSeconds(10), now))).andExpect(status().isOk());
+        var fact = new com.idavy.drtops.domain.alarm.VehicleAlarmIngressService.AlarmFact(
+                TERMINAL_ID, onboardSystemId, VEHICLE_ID, "T/JSATL12-2017", "ADAS", 1,
+                "FORWARD_COLLISION", 1, "START", 1, "synthetic-audit", now, now,
+                new BigDecimal("105.2384988"), new BigDecimal("35.2109657"), new BigDecimal("60"),
+                positionKey, "UNASSESSED", "a".repeat(64));
+        UUID key = UUID.randomUUID();
+        auditFailure.fail = true;
+        assertThatThrownBy(() -> alarmIngress.ingest(key, fact))
+                .isInstanceOf(org.springframework.dao.InvalidDataAccessApiUsageException.class)
+                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .hasRootCauseMessage("synthetic audit failure");
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarms", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_outbox", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from jt_gateway_ingress_receipts where idempotency_key=?", Integer.class, key)).isZero();
+        auditFailure.fail = false;
+        assertThat(alarmIngress.ingest(key, fact).status()).isEqualTo("ACCEPTED");
+        assertThat(alarmIngress.ingest(key, fact).status()).isEqualTo("REPLAYED");
+        assertThat(alarmIngress.ingest(UUID.randomUUID(), fact).status()).isEqualTo("REPLAYED");
+        assertThat(alarmIngress.ingest(UUID.randomUUID(), fact.endAt(now.plusSeconds(1))).status()).isEqualTo("ACCEPTED");
+        assertThat(alarmIngress.ingest(UUID.randomUUID(), fact.endAt(now.plusSeconds(1))).status()).isEqualTo("REPLAYED");
+        assertThat(auditLogRepository.findAll()).filteredOn(a -> a.getEntityType().equals("VEHICLE_ALARM"))
+                .extracting(a -> a.getAction()).containsExactlyInAnyOrder("VEHICLE_ALARM_CREATED", "VEHICLE_ALARM_ENDED");
     }
 
     @Test
