@@ -1235,3 +1235,12 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 审计：ID=`d9748d6d-abdf-4ba9-a311-e24458000d7d`，action=DATABASE_MIGRATED_V19，actor=ssh:ubuntu，UTC时间`2026-09-10 23:21:44.283189+00`；记录原因、18→19、三类回填计数、演示车跳过数、备份路径/SHA及迁移SQL SHA。工作目录内保留migration.log、verification.log、备份及受限迁移环境文件。
 - 提交后独立只读事务确认LATEST_VERSION=19/success=true、V20_V21_RECORDS=0，V20旧绑定只读trigger=0；角色/能力/协议档案均0条（V19未自动补齐配置，不声称V20全部准入通过）。原API/PG保持running，gateway保持exited，无服务重启。
 - 当前状态`CLOUD_V19_COMPLETE_AWAITING_NEXT_AUTHORIZATION`。本次执行结束，无异常；V20/V21暂停，等待目标配置和全库门禁核验的下一步授权。新增本节尚未commit/push。
+
+### C1 方案确认与发布前准备（2026-09-11）
+
+- 用户确认采用C1：维护窗口内先独立迁移到V21，再部署匹配API，随后补齐配置并复核。本次固化方案，不执行云端迁移/停服/部署或配置写入。
+- 云端旧API的实际JAR不包含OnboardSystemController/ConfigurationService，新模型管理不可用；本地最新API的runtime/lease依赖V21。方案详情见`docs/pilot/p6-2-c1-v21-api-cutover-plan.md`。
+- 本地候选API JAR SHA-256=`d4e9bba42e725a66403ce10fbb551b5ce588e0d4808cdd91a23734bd54b2bf2a`，与REHEARSAL_COMPLETE报告中API摘要一致；c84a75e至77783a6的API/协议源码无差异。仅验证已有JAR，尚未为C1构建/上传Docker镜像。
+- 执行批次必须建立当前V19完整备份与恢复验证，再迁V20/验证、V21/验证，部署API时禁用自动Flyway并核对数据库结构，避免隐式超范围迁移。旧pre-v19.dump实际为V18备份，不替代V19恢复点。
+- 四系统仍保持SAFETY_MONITOR_ONLY目标；manifest期望LOCATION_PRIMARY/ACTIVE_SAFETY/VIDEO/WAN_UPLINK，协议2019/NONE/JSATL12_2017/JT1078_2016，间隔10/10秒；真实VERIFIED证据与实际网络模式仍需逐台核验，不从声明自动认证。
+- 当前状态`C1_DESIGN_APPROVED_PREPARATION_ONLY`。本次仅更新进度并新增执行方案，manifest及云端资源未改，未commit/push。下一步按新方案固定镜像/当前V19恢复点，再进入具体执行批次；gateway/真实接入保持独立放行条件。
