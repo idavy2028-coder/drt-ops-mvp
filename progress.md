@@ -1265,3 +1265,12 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 全部32张public表逐行JSON转换读取成功（不输出行内容）；两演示车辆dispatchable=false、全库可调度车辆0；Flyway最高19/success=true，无20/21。结果READ_VALIDATION=PASS。
 - 验证结束后重新核验容器run标签及network none，仅停止/删除本次容器；核验/tmp/p6-v19-restore-*精确本轮目录、owner标记且仅含普通文件后清理临时日志与目录。结果RESTORE_CONTAINER_CLEANUP=PASS、RESTORE_TEMP_DIRECTORY=REMOVED、RESTORE_VALIDATION=PASS，脚本exit0。恢复出的临时数据库已随tmpfs容器删除，不可恢复；原始备份保留。
 - 原API的Running/StartedAt/RestartCount前后完全一致（SOURCE_API_UNCHANGED=PASS），原数据库未访问或修改。当前状态`C1_V19_RESTORE_VALIDATED_AWAITING_STEP3_CONFIRMATION`；暂停等待确认，不进入API停写或V20/V21。新增本节未commit/push。
+
+### C1 旧API停写及迁移前暂停（2026-09-11）
+
+- 按用户要求提交恢复PASS进度：`0103fc00d124f85b647414d35180a080049d0d6f` / `docs: record C1 recovery verification pass`，已推送至指定私有仓库origin/codex/p6-2-ops-safety-gates并核对远端SHA一致。
+- 云端停止前核对主机、ubuntu用户、容器完整ID、名称及Compose project/service标签，仅对`drt-ops-jt-cloud-test-api-1`（ID `deaa8f2c00c8b46d5fa6b8a8e15f407a76682eefb82ef33f45e26ad56aab86c3`）执行docker stop -t60；状态running→exited，Running=false，宿主8080监听0。未删除API容器、镜像或配置。
+- 检查时数据库其他client backend连接0、其他active客户端请求0（排除本次只读核验连接）；证明当次API停写窗口状态，不代表撤销了所有账户写权限或保证未来人工连接不存在。
+- Gateway仍exited，7611监听0；PostgreSQL保持运行，Flyway最新19/success=true，V20/V21记录0。校验时间2026-09-11 00:28:11 UTC（北京时间08:28:11），脚本exit0。
+- 当前状态`C1_API_WRITES_PAUSED_AWAITING_V20_AUTHORIZATION`。API及gateway继续停止，等待用户授权V20；本轮未执行V20/V21、未修改manifest或业务数据。执行V20前仍需重新核对停写和门禁，以防状态漂移。
+- 新增本节未commit/push；已推送提交只包含此前恢复验证结果，不混同本次新停写记录。
