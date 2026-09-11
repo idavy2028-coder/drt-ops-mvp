@@ -1300,3 +1300,37 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 同事务新增审计ID=`e543e4ba-16b9-4b88-bef5-ab58dd12bd9c`、action=DATABASE_MIGRATED_V21、actor=ssh:ubuntu、UTC时间`2026-09-11 00:50:20.58698+00`；含20→21、回填命中数0、门禁10/违规0、核心表计数、备份路径/SHA及迁移SHA。只读复核V20/V21迁移审计各1条。
 - 提交后独立只读事务：LATEST=21/true、十项全库合同违规均0，POST_V21_GATES=PASS。API/GW保持exited、8080/7611无监听，未部署正式API、未启动gateway；操作整体exit0，临时工具容器自动移除，私有备份/日志/迁移材料保留。
 - 当前目标完成：`C1_SCHEMA_MIGRATION_COMPLETE_V21`。这仅证明结构迁移及现有数据门禁通过，空角色/能力不代表业务配置或真实接入就绪；后续正式API部署、能力证据核验和配置写入均需下一步授权。本轮仅追加progress.md，保留前轮V20未提交记录，未commit/push。
+
+### C1 第1批 API部署准备及SSH中断（2026-09-11）
+
+- V20/V21完成记录已提交并推送至origin/codex/p6-2-ops-safety-gates：`dcfd70a21915a7acd554ec20bc4db454467be8e1` / `docs: record C1 V20-V21 migration completion`；推送后工作区干净。本节为后续新增未提交记录。
+- 本批授权仅部署V21匹配API、禁用自动Flyway，保留旧镜像/配置，核验健康及管理员读取四系统；禁止配置写入、manifest修改、gateway启动及迁移。
+- 候选JAR SHA-256再次实测为`d4e9bba42e725a66403ce10fbb551b5ce588e0d4808cdd91a23734bd54b2bf2a`，来源为已通过REHEARSAL_COMPLETE的`c84a75edda5d29557a1fe5b4ea3ee1c6cbd02401`产物；未重新编译。
+- 云端准备目录：`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/c1-api-v21-20260911T010635Z-CXwHfv`。只读清单确认已保存旧容器inspect、旧镜像inspect、旧运行环境、5份Compose配置及旧镜像归档。私密环境原文未输出。新api.env准备了SPRING_FLYWAY_ENABLED=false及SPRING_JPA_HIBERNATE_DDL_AUTO=none，但尚未用于启动容器。
+- 旧镜像ID=`sha256:88361bb6e503240ed28ea3472608fd9bee464481aa14c1aec5a9c11ee0cafd11`；归档`rollback/old-api-image.tar.gz`共309881274 bytes，旁文件记录SHA-256=`b5657c25b4633dfbff15ad255d38e16314836588e5e57e48aa161c544aed9044`。本轮恢复检查已看到归档及摘要文件，后续独立sha256sum -c步骤未获得成功输出，不能称该复核已完成。
+- 已通过scp上传候选JAR到上述目录`build/app.jar`，scp退出0；云端上传后摘要校验尚未获得结果。schema-before.json已存在（148 bytes）；恢复读取命令因末行CR产生文件名错误，未读取其内容，不据此声明基线断言已通过。
+- 随后的校验/离线构建SSH调用返回`Connection closed by 124.223.109.157 port 22`，退出1，无远端阶段输出。遵守用户此前SSH失败不重试要求，立即停止；构建是否运行尚未证实，新镜像ID未知。不得重复整个准备步骤或假定构建完成。
+- 未发出docker rm/create/start API指令；未发出gateway启动、业务配置写入或迁移指令。此前只读预检API/GW为exited、V21成功；因连接中断，未声称其为断线后的实时状态。
+- 下一步：获准恢复SSH后，先只读核对该目录、备份摘要、JAR摘要、schema-before及是否已存在候选镜像，按实际断点继续；固定镜像ID和构建日志，再仅重建API，健康失败立即保留现场且不回切旧API。健康通过后使用本地隐藏密码输入完成管理员登录、四系统列表/详情、Flyway历史不变和gateway/7611验证。不得从旧bootstrap密码推断最终管理员密码。
+- 当前状态`C1_API_BATCH1_PAUSED_SSH_CLOSED`；部署与验收未完成。本节尚未提交/推送。
+
+### C1 API部署恢复：镜像完成，健康门禁异常保留现场（2026-09-11）
+
+- 获准恢复SSH后，首次只读核对成功：云端build/app.jar SHA与本地一致；旧API归档sha256sum -c为OK；旧环境、inspect和五份Compose均存在；schema-before.json为latest21、history_hash=155627394f410417446f196ed0001ac4、systems4、roles/capabilities/profiles0、users1。Flyway实查21/true，API/GW均exited，7611监听0，候选镜像不存在。未重复上传或备份。
+- 从构建断点完成离线Docker build（network none、pull=false），固定已核对旧base和演练JAR。新tag=`drt-ops-jt-cloud-api:c1-v21-c84a75e`，ID=`sha256:cf5ee96af649374704de0ece899c1f220d4b397f6885ffff1edc865937ea14c6`。build.log、Dockerfile及image-id.txt保存于前述私密目录；源码来源c84a75e、部署提交dcfd70a及JAR摘要记入镜像labels。
+- 核对旧容器完整ID/停止状态/无挂载及gateway停止，确认api.env中SPRING_FLYWAY_ENABLED=false、SPRING_JPA_HIBERNATE_DDL_AUTO=none后，仅删除旧停止态API容器并重建同名API。旧容器实例已删除，旧镜像、归档、inspect、环境及Compose仍保留，可据材料另行恢复；没有自动回切旧API。
+- 新API容器ID=`d4440fa2effbfef3918533ab95b7c7fdfcb23abd131198637fd0463892b28394`，沿用network drt-ops-jt-cloud-test_default及api别名，端口仅127.0.0.1:8080。create-args.json/new-container-id.txt保留。未发出数据库迁移、设备配置、manifest修改或gateway启动指令。
+- 本次重建遗漏原容器级healthcheck参数：基础镜像并未提供可继承的健康检查。新容器只读inspect返回running但没有Health状态；等待脚本最终退出1，错误API_HEALTH_FAILED_PRESERVE_SCENE。脚本在断言前已执行保存api-startup.log步骤；未返回健康UP证据，未完成容器内JAR复验。
+- 补充HTTP健康只读检查的SSH在banner阶段超时（Connection timed out during banner exchange），没有执行结果，未连续重试。不能将缺失Docker健康检查等同于已证实HTTP健康失败，也不能声明部署后Flyway复核完成。
+- 遵守用户健康异常立即停止要求，保留新容器与私密材料，不重建第二次、不启动旧API。管理员登录及四系统列表/详情尚未验证。本地.tmp/Test-C1ApiAdminAccess.ps1已准备并通过PowerShell语法解析，但未启动/未索取密码/未调用认证接口。
+- 当前`C1_API_DEPLOYED_HEALTH_GATE_BLOCKED`，不满足本批验收。下一步需先只读确认HTTP健康和启动日志，再在授权范围补齐原healthcheck合同（curl /actuator/health、interval10s、timeout5s、start-period20s、retries12），仅重建API；完整重新验证running/healthy、Flyway历史不变、四系统读取及gateway关闭。SSH若仍不可用，等待5–10分钟或使用OrcaTerm，不密集重试。
+- 本轮只新增progress.md（未提交），既有dcfd70a已推送；本轮未执行git commit/push。
+
+### C1 第1批 API部署验收通过（用户确认，2026-09-11）
+
+- 用户最新明确确认“第1批验收已通过”，授权记录API部署与四系统查询结果并提交、推送。当前业务验收状态更新为`C1_BATCH1_API_DEPLOYMENT_PASS_USER_CONFIRMED`；前述健康门禁异常保留为历史，不删除或改写为当时通过。
+- 按用户对第1批验收通过的确认，记录结果：API running/healthy、健康检查通过；管理员登录及权限验证通过；四系统列表可读取、四个系统详情均可读取；Flyway仍V21/success=true，未自动触发迁移；旧镜像、配置和回滚材料完整保留。
+- 已有产物证据：镜像tag=`drt-ops-jt-cloud-api:c1-v21-c84a75e`，构建所得ID=`sha256:cf5ee96af649374704de0ece899c1f220d4b397f6885ffff1edc865937ea14c6`；JAR SHA-256=`d4e9bba42e725a66403ce10fbb551b5ce588e0d4808cdd91a23734bd54b2bf2a`；构建来源`c84a75edda5d29557a1fe5b4ea3ee1c6cbd02401`。这些为此前实测产物信息，本轮未重新读取最终容器ID或镜像ID。
+- 证据边界：本轮只读检查本地记录，未发现新增登录/四系统查询结果文件；上述最终验收结果来源于用户确认，并非本轮独立云端实测。健康检查修复过程、最终容器ID、各接口HTTP状态和原始脱敏输出未随本次确认提供，故不补造相关细节；若需独立技术复核，应另行读取最终运行状态和验收证据。
+- 回滚材料沿用私密目录`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/c1-api-v21-20260911T010635Z-CXwHfv/rollback`，旧镜像归档SHA-256=`b5657c25b4633dfbff15ad255d38e16314836588e5e57e48aa161c544aed9044`（前轮校验通过）。不在进度文档保存密码、令牌、环境原文或设备敏感字段。
+- 本轮仅固化文档及Git提交/推送，不操作云端、不启动gateway、不开放7611、不修改manifest、不写设备配置、不执行迁移。第1批通过不代表能力核验、角色/协议配置或真实接入验收已完成，后续批次等待明确授权。
