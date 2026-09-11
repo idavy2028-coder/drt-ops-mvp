@@ -1244,3 +1244,13 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 执行批次必须建立当前V19完整备份与恢复验证，再迁V20/验证、V21/验证，部署API时禁用自动Flyway并核对数据库结构，避免隐式超范围迁移。旧pre-v19.dump实际为V18备份，不替代V19恢复点。
 - 四系统仍保持SAFETY_MONITOR_ONLY目标；manifest期望LOCATION_PRIMARY/ACTIVE_SAFETY/VIDEO/WAN_UPLINK，协议2019/NONE/JSATL12_2017/JT1078_2016，间隔10/10秒；真实VERIFIED证据与实际网络模式仍需逐台核验，不从声明自动认证。
 - 当前状态`C1_DESIGN_APPROVED_PREPARATION_ONLY`。本次仅更新进度并新增执行方案，manifest及云端资源未改，未commit/push。下一步按新方案固定镜像/当前V19恢复点，再进入具体执行批次；gateway/真实接入保持独立放行条件。
+
+### C1 第一步完成：V19备份及V20只读前置核对（2026-09-11）
+
+- 已按用户要求仅提交两份C1文档：`f1b1d9c`，提交信息`docs: plan C1 v20-v21 migration and API cutover`；未推送。
+- 单次SSH在确认主机/用户及当前V19后，新建完整备份`/home/ubuntu/p6-2-cloud-7fa38d0/.private-recovery/c1-pre-v20-20260911T000707Z-O2EmP5/pre-v20-v19.dump`；288722 bytes、mode600。SHA-256=`bd3ffefaa61ae441e510250f093ec95ac761fd6ebdb56ddd96f7231ea901b20c`，同目录.sha256校验及pg_restore完整归档读取通过。本轮未恢复该新备份到独立数据库，不将其称为V19恢复演练已通过。
+- Gateway实际状态exited，宿主7611监听数0；未停止/重启任何现有服务。
+- 按当前V20 SQL全部10项前置条件提取SELECT，在REPEATABLE READ READ ONLY事务内核验，所有违规计数0：ACTIVE终端成员唯一性、调度系统存在、调度模式、DISPATCH角色数、LOCATION_PRIMARY角色数、角色对应成员、角色对应VERIFIED能力、WAN网络模式、主备设备不同、ACTIVE系统至少一成员。设置statement_timeout=10s/lock_timeout=2s，未执行原V20的LOCK/DDL/迁移步骤。
+- 核对范围状态：dispatchable车辆0，ACTIVE系统4，有效角色0，VERIFIED能力0。空角色条件不代表配置齐备；当前仅SQL迁移前置无违规。
+- 云端证据目录内保存`v20-readonly-gates.log`，结果`V20_GATE_CHECK=PASS CHECKS=10 VIOLATIONS=0`、`C1_STEP1=PASS`，SSH/脚本exit0；Flyway仍19/success=true，V20/V21记录0。
+- 当前暂停等待用户确认，未执行V20/V21、未修改manifest或其他业务数据。API停写维护窗口、当前V19独立恢复验证及后续部署/能力配置按已批准清单另行落实；本轮新增进度尚未commit/push。
