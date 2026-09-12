@@ -416,6 +416,12 @@ public class OnboardSystemConfigurationService {
                 .map(OnboardDeviceCapability::getCapability)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         for (OnboardDeviceRoleAssignment role : rolesToTransfer) {
+            if (role.getRole() == Role.VIDEO
+                    && entityManager.createQuery("select count(o) from VideoDeclarationObservation o "
+                        + "where o.terminalId=:id and o.resolvedAt is null and o.outcome in ('REVIEW_REQUIRED','DISABLED_CONFLICT','NO_VIDEO_CHANNELS')", Long.class)
+                        .setParameter("id", replacementTerminalId).getSingleResult() > 0) {
+                throw conflict("VIDEO_DECLARATION_REVIEW_REQUIRED");
+            }
             if (role.getRole() == Role.WAN_UPLINK) {
                 if (replacementMembership.getNetworkMode() != NetworkMode.DIRECT_CELLULAR) {
                     throw conflict("ONBOARD_REPLACEMENT_NETWORK_MODE_INVALID");
@@ -1222,6 +1228,12 @@ public class OnboardSystemConfigurationService {
             }
             if (device.networkMode() == null) {
                 throw new IllegalArgumentException("NETWORK_MODE_REQUIRED");
+            }
+            if (device.roles() != null && device.roles().contains(Role.VIDEO)
+                    && entityManager.createQuery("select count(o) from VideoDeclarationObservation o "
+                        + "where o.terminalId = :terminalId and o.resolvedAt is null and o.outcome in ('REVIEW_REQUIRED', 'DISABLED_CONFLICT', 'NO_VIDEO_CHANNELS')", Long.class)
+                        .setParameter("terminalId", terminal.getId()).getSingleResult() > 0) {
+                throw conflict("VIDEO_DECLARATION_REVIEW_REQUIRED");
             }
             ResolvedProfiles profiles = resolveProfiles(device.protocolProfiles());
             Set<Capability> verifiedCapabilities = capabilityRepository

@@ -1422,3 +1422,32 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - `docs/pilot/evidence/p6-2/c1-b-isolation-precheck-2026-09-11.md`
 - `docs/pilot/evidence/p6-2/c1-b-supplement-video-decision-2026-09-11.md`
 - `docs/pilot/p6-2-c1-video-declaration-minimal-design.md`
+
+## 2026-09-12 视频恢复：设计审阅与构建预检
+
+- 当前分支codex/p6-2-ops-safety-gates，HEAD 1dba2f2e03ee74539327ab57bb7038d036e6f4d0；恢复时git status干净。本轮仅文档改动，未提交/推送。
+- 用户确认首期实时监控和报警录像取证均必需，没有现成媒体服务。设计补充已写入docs/pilot/p6-2-c1-video-declaration-minimal-design.md，推荐新增观测表、独立队列kind、事务审计、旧会话历史证据与当前事实分离、preview/apply冲突门禁。
+- 声明仍估7–12人日；双路径媒体重估18–30人日，总25–42，不含gateway1–2及真实设备窗口。A仍要求真实视频VERIFIED，隔离合成或DECLARED不能替代。
+- gateway：启动本地Docker Desktop，但引擎HTTP500且后端持续等待init/engine ping；构建尝试中止，未获得镜像/JAR构建验证证据。Desktop进程可能仍在运行；未启动业务容器，未连接真实设备或云库。
+- 下一步：单独审阅并授权新增gateway队列迁移与API观测表方案；确认录像取证验收参数；恢复本地Docker引擎后用精简构建上下文构建并验证版本组合。未修改任何迁移、白名单、manifest或云配置；未实施视频代码，未重跑历史测试。
+
+## 2026-09-12 有条件实施批准后的进展
+
+- 用户已明确批准API新增观测表迁移与gateway队列迁移，仅本地隔离验证，并要求先恢复Docker。API编号V22，gateway独立序列V6；既有V21及旧迁移不改。
+- Docker诊断：日志2026-09-12T08:48:53Z显示WSL engine starting→running并清除错误；当时500是启动未就绪。现已实测客户端/服务端29.4.1可用，无需重装/重置。
+- 已构建保存HEAD1dba2f2的基线镜像c1-jt-gateway:1dba2f2-local；另构建视频候选c1-jt-gateway:video-v6-local。候选image ID sha256:8e01e31d9c2bd97eea420d243a6f6dd44196e2ea90f38f780bd746d73834cb02，JAR SHA256 9418e0f92e69f4cfbd69ff62cd7d00bd186a218b149df5cb742e3f20895df6f6。无网络容器V6迁移/启动/liveness UP，用户10001:10001；该测试容器已停止移除，未发布端口/挂载/推送。
+- 已实现0x1003固定长度codec、当前租约/查询窗口、独立持久队列、internal ingress、设备观测与DECLARED、幂等/审计/冲突门禁。查询目前需显式JVM属性-Djt.gateway.video-declaration.enabled=true，默认关闭；不修改manifest或云配置。
+- 相同事件时间精度统一到微秒；未证实的旧会话声明持久化为QUARANTINED，不改变能力，避免阻塞队列。声明冲突提供受TERMINAL权限保护的分页read-back及带版本/证据/人员审计的解除入口；解除不改变能力核验状态。
+- 实际本地TCP模拟器→HTTP→API入库/设备关联/DECLARED测试已通过。最初失败由旧定位夹具时钟早于当前租约导致，已仅修正视频测试时钟，不放宽业务校验。
+- 隔离PostgreSQL复验最终PASS：.tmp/c1-pg-audit-9e979358b71d422fae4f8c5630cf9b05/result.json；2/2、失败/错误/跳过0、schema22|t；幂等、连续相同声明、冲突解除、旧会话隔离、审计失败回滚与V21备份恢复均通过。已停止，端口61166监听0。
+- 失败现场保留：df0d1fe...为报告ACL预检失败且未启动DB；942b9d...为新增全库Hibernate validate触发既有CHAR/VARCHAR映射差异；cebbf59...恢复测试通过但故障注入夹具未覆盖新审计动作；均未连接云库。完整validate差异未修复，不应把实际配置ddl-auto=none下测试通过写成全库校验通过。
+- 最后一轮相关回归正在运行，日志.tmp/c1-video-final-regression.log；最终状态以随后追加记录为准。恢复流程docs/pilot/p6-2-c1-video-isolated-recovery.md，计划docs/pilot/p6-2-c1-video-implementation-plan.md。
+- 未提交或推送。A仍不放行：首期实时监控和报警取证两者必须，但媒体闭环尚未建设/真实验收，模拟器证据不能替代真实VIDEO VERIFIED。
+
+### 2026-09-12 本轮最终收尾
+
+- 最终相关本地回归34/34通过，隔离PostgreSQL另2/2通过；失败/错误/跳过均0。配置preview/apply冲突解除前后、gateway V5备份恢复均已实测。本轮未运行全仓测试或真实媒体测试。
+- PG result.json SHA256 a2089f288991fca93811bfa489f50af632d1011562645674e058200d5c958aaf；最终API JAR SHA256 905258df3b189e8af8897ceb9a0ce6f582bfbd255effb6fd78d664b3db76df24。
+- 候选镜像上下文126文件与当前相应源码完全一致；测试容器已停止移除，PG已停止。Docker Desktop本地引擎保留运行；没有启动云端gateway。
+- 完整报告：docs/pilot/evidence/p6-2/c1-video-declaration-isolation-2026-09-12.md。声明最小链路可继续推进媒体阶段；A仍不具备条件。已有全库Hibernate validate映射差异仍未修复，不能误报已通过。
+- 工作区保留本轮未提交代码/测试/新迁移/文档；未提交、未推送。后续恢复先读本节与报告，再处理媒体闭环与候选组合验收，不自动接入真实或云端环境。

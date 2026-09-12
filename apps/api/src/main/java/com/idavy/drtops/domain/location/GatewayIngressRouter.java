@@ -18,6 +18,11 @@ import org.springframework.stereotype.Component;
 /** Separates gateway envelopes before any position mutation; malformed alarms cannot reach GPS ingestion. */
 @Component
 public class GatewayIngressRouter {
+    private com.idavy.drtops.domain.onboard.VideoDeclarationIngressService videoDeclarationService;
+    @Autowired
+    void setVideoDeclarationService(com.idavy.drtops.domain.onboard.VideoDeclarationIngressService service) {
+        this.videoDeclarationService = service;
+    }
     private final Port port;
     private final GpsLocationIngressService gpsService;
     private final VehicleAlarmIngressService alarmService;
@@ -91,6 +96,7 @@ public class GatewayIngressRouter {
         }
         return switch (envelope.kind() == null ? "" : envelope.kind()) {
             case "POSITION", "LOCATION" -> gpsService.ingest(List.of(envelope)).getFirst();
+            case "CAPABILITY_DECLARATION" -> videoDeclarationService.ingest(envelope);
             case "ALARM" -> ingestAlarm(envelope);
             case "PROTOCOL_AUDIT" -> ingestAudit(envelope);
             case "ATTACHMENT_METADATA" -> gpsService.rejectStable(

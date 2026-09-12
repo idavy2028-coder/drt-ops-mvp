@@ -475,6 +475,11 @@ public final class RegistrationAuthenticationHandler extends ChannelInboundHandl
             throw closeOnAuthenticationInfrastructureFailure(frame, exception);
         }
         writeGeneralReply(context, frame.header(), 0);
+        // Explicit local opt-in until declaration/media rollout is authorized.
+        if (Boolean.getBoolean("jt.gateway.video-declaration.enabled")) {
+            session.beginVideoDeclarationQuery(clock.instant());
+            context.writeAndFlush(responseFrame(0x9003, frame.header(), Unpooled.buffer(0)));
+        }
         release(frame);
         leaseReporter.renewIfDue(session, clock.instant());
     }

@@ -145,6 +145,7 @@ class JtGatewayApiContractEndToEndTest {
 
     @BeforeEach
     void setUpSyntheticTerminal() {
+        apiJdbc.update("delete from video_declaration_observations");
         apiJdbc.update("delete from vehicle_alarm_outbox");
         apiJdbc.update("delete from vehicle_alarms");
         receipts.deleteAll();
@@ -423,6 +424,33 @@ class JtGatewayApiContractEndToEndTest {
 
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(audits.findByIdempotencyKey(key)).isPresent();
+    }
+
+    @Test
+    void c1VideoDeclarationTraversesTcpAndHttpWithoutVerification() throws Exception {
+        String previous = System.getProperty("jt.gateway.video-declaration.enabled");
+        System.setProperty("jt.gateway.video-declaration.enabled", "true");
+        try (GatewayRig rig = new GatewayRig(tempDir.resolve("video-declaration"), apiBaseUri());
+             SimulatedTerminal simulator = registerAndAuthenticate(rig)) {
+            var query = simulator.awaitReply(Duration.ofSeconds(5));
+            assertThat(query).isNotNull();
+            assertThat(query.messageId()).isEqualTo(0x9003);
+            assertThat(query.bodyHex()).isEmpty();
+            // This test uses current API leases; the historical location fixture clock is not valid here.
+            rig.clock.advance(Duration.between(rig.clock.instant(), Instant.now()));
+            apiJdbc.update("delete from onboard_device_capabilities where terminal_id=? and capability='VIDEO'", TERMINAL_ID);
+            long before = apiJdbc.queryForObject("select count(*) from audit_logs where entity_type='VIDEO_DECLARATION'", Long.class);
+            assertGeneralAck(simulator, simulator.sendFrame(0x1003,
+                    HexFormat.of().parseHex("06010001014001620404")), 0x1003);
+            await(() -> rig.jdbc.queryForObject("select count(*) from gateway_outbox where kind='CAPABILITY_DECLARATION'", Long.class) == 1);
+            rig.dispatchUntilSettled(20);
+            assertThat(apiJdbc.queryForObject("select count(*) from video_declaration_observations where terminal_id=? and outcome='DECLARED'",Long.class,TERMINAL_ID)).isEqualTo(1);
+            assertThat(apiJdbc.queryForObject("select status from onboard_device_capabilities where terminal_id=? and capability='VIDEO'",String.class,TERMINAL_ID)).isEqualTo("DECLARED");
+            assertThat(apiJdbc.queryForObject("select count(*) from audit_logs where entity_type='VIDEO_DECLARATION'",Long.class)).isEqualTo(before+1);
+        } finally {
+            if (previous == null) System.clearProperty("jt.gateway.video-declaration.enabled");
+            else System.setProperty("jt.gateway.video-declaration.enabled", previous);
+        }
     }
 
     @Test

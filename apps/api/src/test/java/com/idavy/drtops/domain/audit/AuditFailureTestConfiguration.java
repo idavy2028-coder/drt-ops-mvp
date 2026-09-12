@@ -17,7 +17,7 @@ public class AuditFailureTestConfiguration {
             return Proxy.newProxyInstance(AuditLogRepository.class.getClassLoader(),
                     new Class<?>[]{AuditLogRepository.class}, (proxy, method, args) -> {
                         if (fail && method.getName().equals("save") && args[0] instanceof AuditLog audit
-                                && (audit.getAction().startsWith("SESSION_LEASE_") || audit.getAction().startsWith("VEHICLE_ALARM_"))) {
+                                && (audit.getAction().startsWith("SESSION_LEASE_") || audit.getAction().startsWith("VEHICLE_ALARM_") || audit.getAction().startsWith("DECLARATION_"))) {
                             throw new IllegalStateException("synthetic audit failure");
                         }
                         try { return method.invoke(bean, args); }

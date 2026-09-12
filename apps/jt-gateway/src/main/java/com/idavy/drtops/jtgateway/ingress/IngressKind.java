@@ -1,6 +1,7 @@
 package com.idavy.drtops.jtgateway.ingress;
 
 public enum IngressKind {
+    CAPABILITY_DECLARATION,
     LOCATION,
     ALARM,
     PROTOCOL_AUDIT,

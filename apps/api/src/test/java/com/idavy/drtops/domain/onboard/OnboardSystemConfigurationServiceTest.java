@@ -88,6 +88,9 @@ class OnboardSystemConfigurationServiceTest {
     @Autowired
     OnboardSystemConfigurationService service;
 
+    @Autowired VideoDeclarationObservationRepository videoObservations;
+    @Autowired VideoDeclarationIngressService videoDeclarations;
+
     @Autowired
     OnboardTestFixtures fixtures;
 
@@ -432,6 +435,24 @@ class OnboardSystemConfigurationServiceTest {
         assertThatThrownBy(() -> service.preview(system.getVehicleId(), command))
                 .isInstanceOf(OnboardConfigurationConflictException.class)
                 .hasMessage("PRIMARY_BACKUP_SAME_TERMINAL");
+    }
+
+    @Test
+    void videoConflictBlocksPreviewAndApplyUntilAuditedResolution() {
+        OnboardSystem system = fixtures.activeSystem(OperatingMode.DISPATCH_SERVICE);
+        fixtures.verifyDispatchAndLocation("dispatch-01");
+        fixtures.verifySafetyVideoAndLocation("recorder-01");
+        ConfigurationCommand command = command(system.getVersion(), List.of(
+                device("dispatch-01", NetworkMode.DIRECT_CELLULAR, Set.of(Role.DISPATCH,Role.LOCATION_PRIMARY,Role.WAN_UPLINK)),
+                device("recorder-01", NetworkMode.SHARED_LAN_CLIENT, Set.of(Role.LOCATION_BACKUP,Role.ACTIVE_SAFETY,Role.VIDEO))));
+        UUID terminalId=jdbcTemplate.queryForObject("select id from jt_terminals where terminal_code='recorder-01'",UUID.class);
+        var observation=videoObservations.saveAndFlush(new VideoDeclarationObservation(UUID.randomUUID(),terminalId,UUID.randomUUID(),1,1,"a".repeat(64),objectMapper.createObjectNode(),OffsetDateTime.now(),"REVIEW_REQUIRED"));
+        assertThatThrownBy(()->service.preview(system.getVehicleId(),command)).hasMessage("VIDEO_DECLARATION_REVIEW_REQUIRED");
+        assertThatThrownBy(()->service.apply(system.getVehicleId(),command,OnboardTestFixtures.ACTOR_ID)).hasMessage("VIDEO_DECLARATION_REVIEW_REQUIRED");
+        videoDeclarations.resolve("recorder-01",observation.getId(),observation.getVersion(),OnboardTestFixtures.ACTOR_ID,"Synthetic reviewed conflict","synthetic-only-evidence");
+        assertThat(service.preview(system.getVehicleId(),command)).isNotNull();
+        assertThat(service.apply(system.getVehicleId(),command,OnboardTestFixtures.ACTOR_ID)).isNotNull();
+        videoObservations.deleteAll();
     }
 
     @Test

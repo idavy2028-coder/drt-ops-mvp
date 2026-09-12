@@ -99,6 +99,7 @@ public final class ProtocolModuleRegistry {
                 || messageId == Jt1078ControlModule.MSG_FILE_UPLOAD_COMPLETE_NOTIFICATION) {
             return dispatchAttachmentMetadata(session, frame);
         }
+        if (messageId == 0x1003) return dispatchVideoDeclaration(session, frame);
         if (messageId != LOCATION_REPORT_MESSAGE_ID) {
             unknownMessageCount.incrementAndGet();
             return DispatchResult.MAY_ACKNOWLEDGE_SUCCESS;
@@ -139,6 +140,34 @@ public final class ProtocolModuleRegistry {
         }
         return appendActiveSafetyAlarms(session, report, ingress, gatewayReceivedAt)
                 ? DispatchResult.MAY_ACKNOWLEDGE_SUCCESS : DispatchResult.REJECTED;
+    }
+
+    private DispatchResult dispatchVideoDeclaration(TerminalSession session, Jt808Frame frame) {
+        if (gatewayBuffer == null || session.leaseOwner().isEmpty()) return DispatchResult.REJECTED;
+        try {
+            var attributes = com.idavy.drtops.jt.protocol.jt1078.VideoAttributesCodec.decode(frame.body().duplicate());
+            String payloadDigest = digest(frame);
+            var observation = session.videoObservationIdentity(clock.instant(), frame.header().serialNumber(), payloadDigest);
+            if (observation.isEmpty()) return DispatchResult.REJECTED;
+            var owner = session.leaseOwner().orElseThrow();
+            var identity = observation.get();
+            var payload = objectMapper.createObjectNode()
+                    .put("terminalId", owner.terminalId().toString())
+                    .put("connectionId", owner.connectionId().toString())
+                    .put("gatewayInstance", owner.gatewayInstance())
+                    .put("tokenVersion", owner.tokenVersion())
+                    .put("leaseGeneration", owner.leaseGeneration())
+                    .put("queryId", identity.queryId().toString())
+                    .put("messageId", 0x1003).put("serialNumber", frame.header().serialNumber())
+                    .put("payloadDigest", payloadDigest);
+            payload.set("attributes", objectMapper.valueToTree(attributes));
+            UUID key = UUID.nameUUIDFromBytes((identity.queryId() + "|" + frame.header().serialNumber()
+                    + "|" + payloadDigest).getBytes(StandardCharsets.UTF_8));
+            return durable(gatewayBuffer.append(new GatewayIngressEnvelope(1, key,
+                    IngressKind.CAPABILITY_DECLARATION, identity.receivedAt(), objectMapper.writeValueAsString(payload))));
+        } catch (IllegalArgumentException | JsonProcessingException malformed) {
+            return DispatchResult.REJECTED;
+        }
     }
 
     private DispatchResult dispatchAttachmentMetadata(TerminalSession session, Jt808Frame frame) {

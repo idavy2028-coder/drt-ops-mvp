@@ -292,7 +292,37 @@ public final class TerminalSession {
         renewalInFlight.set(false);
     }
 
-    synchronized Optional<TerminalRegistryPort.SessionLeaseOwner> leaseOwner() {
+    private UUID videoQueryId;
+    private Instant videoQueryDeadline;
+    private Instant videoReceivedAt;
+    private String videoResponseIdentity;
+
+    public synchronized void beginVideoDeclarationQuery(Instant now) {
+        if (state != TerminalSessionState.AUTHENTICATED || leaseExpired(now)) {
+            throw new IllegalStateException("video query requires a live authenticated lease");
+        }
+        if (videoQueryDeadline != null && now.isBefore(videoQueryDeadline)) {
+            throw new IllegalStateException("video query already outstanding");
+        }
+        videoQueryId = UUID.randomUUID();
+        videoQueryDeadline = now.plusSeconds(30);
+        videoReceivedAt = null;
+        videoResponseIdentity = null;
+    }
+
+    public synchronized Optional<VideoObservationIdentity> videoObservationIdentity(
+            Instant now, int serial, String digest) {
+        if (videoQueryId == null || !now.isBefore(videoQueryDeadline) || leaseExpired(now)) return Optional.empty();
+        String identity = serial + "|" + digest;
+        if (videoResponseIdentity != null && !videoResponseIdentity.equals(identity)) return Optional.empty();
+        videoResponseIdentity = identity;
+        if (videoReceivedAt == null) videoReceivedAt = now;
+        return Optional.of(new VideoObservationIdentity(videoQueryId, videoReceivedAt));
+    }
+
+    public record VideoObservationIdentity(UUID queryId, Instant receivedAt) { }
+
+    public synchronized Optional<TerminalRegistryPort.SessionLeaseOwner> leaseOwner() {
         return leaseGrant == null ? Optional.empty() : Optional.of(leaseGrant.owner());
     }
 
