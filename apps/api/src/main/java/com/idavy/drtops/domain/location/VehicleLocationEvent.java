@@ -93,7 +93,7 @@ public class VehicleLocationEvent {
     @Column(precision = 10, scale = 7) private BigDecimal rawLatitude;
     @Column(length = 20) private String rawCoordinateSystem;
     private OffsetDateTime gatewayReceivedAt;
-    @Column(length = 64) private String payloadDigest;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(length = 64) private String payloadDigest;
     @Column(precision = 6, scale = 2) private BigDecimal speedKph;
     private Integer directionDegrees;
     private BigDecimal altitudeMeters;

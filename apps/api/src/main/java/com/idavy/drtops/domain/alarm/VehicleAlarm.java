@@ -40,8 +40,8 @@ public class VehicleAlarm {
     @Column(nullable = false) private String locationQualityStatus;
     @JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false) private String locationQualityReasons;
     @Enumerated(EnumType.STRING) @Column(nullable = false) private ProcessingStatus processingStatus;
-    @Column(nullable = false, length = 64, columnDefinition = "char(64)") private String payloadDigest;
-    @Column(nullable = false, length = 64, columnDefinition = "char(64)") private String deduplicationKey;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(nullable = false, length = 64, columnDefinition = "char(64)") private String payloadDigest;
+    @JdbcTypeCode(SqlTypes.CHAR) @Column(nullable = false, length = 64, columnDefinition = "char(64)") private String deduplicationKey;
     @Column(name = "handled_by") private UUID handledBy;
     @Column(name = "handled_at") private Instant handledAt;
     @Version @Column(nullable = false) private long version;

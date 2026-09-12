@@ -28,7 +28,7 @@ class PostgresVideoDeclarationMigrationTest extends VideoDeclarationIngressServi
   Flyway.configure().dataSource(url,user,password).target("21").load().migrate();
   pg("pg_dump.exe","-Fc","-f",run.resolve("before-v22.dump").toString(),"-d","alarm_authority");
   registry.add("spring.datasource.url",()->url);registry.add("spring.datasource.username",()->user);registry.add("spring.datasource.password",()->password);
-  registry.add("spring.datasource.driver-class-name",()->"org.postgresql.Driver");registry.add("spring.flyway.enabled",()->"true");registry.add("spring.jpa.hibernate.ddl-auto",()->"none");
+  registry.add("spring.datasource.driver-class-name",()->"org.postgresql.Driver");registry.add("spring.flyway.enabled",()->"true");registry.add("spring.jpa.hibernate.ddl-auto",()->"validate");
  }
  @Test void migrationAndRestoreToSeparateV21Database() throws Exception {
   assertThat(jdbc.queryForObject("select version from flyway_schema_history order by installed_rank desc limit 1",String.class)).isEqualTo("22");

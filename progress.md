@@ -1462,3 +1462,16 @@ P6-1 当前状态：**人工审阅已完成，P6-1 已正式收口**。上车点
 - 双路径媒体预算更新为 25–40 人日（M0 2–3、M1 8–12、M2 4–6、M3 7–12、M4 4–7），取代此前媒体 18–30 初估；不重复计声明和现有镜像。Hibernate 2–4、真实核验操作 2–4 另计，不含等待。编码／并发／报警片段／保留期为稿内待审提案，尚未生效。
 - A 仍不具备条件：需完成实时和取证、最终候选组合隔离验证，另行授权真实 VIDEO VERIFIED 及目标配置验收。当前候选 gateway 已本地构建，媒体改变字节后仍须重建。恢复先读本节及两份新文档，从设计审阅开始，不自动实施或接入云端／真实设备。
 - 文档同步状态：两份新增设计／评估文档与本节更新只在本地提交，远端保留已成功推送的视频代码提交 da6eaeb。新增文档推送被自动审批拒绝，理由是其认定原推送例外未明确覆盖新增内部文档对外同步；没有绕过或重试推送。后续若需同步文档，应先取得用户对此的明确授权。本地文档提交位于视频提交之后，恢复时用 git log/status 读取实际 HEAD。
+
+
+## 2026-09-12 Hibernate 映射修复：完整 validate 已通过
+
+- 同步纠正历史状态：用户已明确授权文档提交 2c6e71a 向私有仓库推送，现已成功推送并核对远端；本轮开始时分支 codex/p6-2-ops-safety-gates、HEAD 2c6e71ac9f2e764fe40f038d9fd816130f57370b，工作区干净。此前自动审批拒绝只代表当时状态。
+- 本轮新指令要求先完成 Hibernate 修复并通过隔离全库 validate，然后再讨论媒体启动；不再按旧评估的并行推进建议启动媒体。
+- 产品变更：JtTerminal.authTokenHash、JtGatewayAuditEvent.payloadDigest、VehicleAlarm.payloadDigest/deduplicationKey、VehicleAlarmAttachment.payloadDigest、VehicleLocationEvent.payloadDigest，共五实体六字段显式 @JdbcTypeCode(SqlTypes.CHAR)。V22 VARCHAR、生产 ddl-auto=none、空间映射、依赖版本及所有迁移不变。
+- 两个现有 PG 集成测试强制 validate；报警 PG 测试新增实际类型／长度／可空性、六字段 ORM round-trip／JPQL 参数查询、三类 null、非法附件摘要约束与失败回滚。旧映射先复现 RED，新映射随后通过完整 API persistence unit 的 31 实体校验。
+- 隔离 PG：c1-pg-audit-b9b42e9a1ada48f8bfa34ac15ae19047 为预期 RED；784e50fa2bf942898ab1965dc037aaaf 为 validate/视频/恢复 2/2 PASS；4758fd7be723454cb88e59428364b318 为完整 validate/摘要/审计合同 16/16 PASS。三个本轮实例均已按归属核验停止，端口 52312/52521/52892 监听 0，schema V22。
+- 本地定向回归 151/151（TerminalManagement 35、GatewayRegistration 1、Lease 6、GatewayStateAudit 2、AlarmIngress 15、Attachment 12、GPS 67、VideoDeclaration 1、TCP/HTTP E2E 12），全部失败/错误/跳过 0。不是全仓测试，也不将新增 PG 字段测试写成完整 PG 鉴权/GPS 流程验证。
+- 完整报告 docs/pilot/evidence/p6-2/c1-hibernate-validate-fix-2026-09-12.md，评估文档已加实施状态入口。API JAR SHA256 6987c14f40f91681fae23e94c91981c50c78eda1dca1eda2ea76cf983cfdddee。只读审查未发现需修复的问题；未重新构建 gateway 或发布镜像。
+- 当前保留未提交成果：上述五个实体、PostgisVehicleAlarmIngressIntegrationTest、PostgresVideoDeclarationMigrationTest、Hibernate 评估文档、此进度文件及新增验证报告。没有提交／推送本轮修复，没有部署、连接真实设备或云端业务库、修改 manifest／迁移／云配置、启动媒体。
+- 恢复入口：先核对本节和验证报告；Hibernate 前置已完成，不重跑已通过测试除非代码或环境变化。下一步可以讨论媒体设计启动，但尚未批准媒体实施／新增存储或原始报警标识保留政策。A 仍等待双路径媒体、真实 VIDEO VERIFIED、最终组合与配置验收。

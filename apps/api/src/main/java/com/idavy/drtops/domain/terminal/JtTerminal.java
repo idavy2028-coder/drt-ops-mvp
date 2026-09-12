@@ -70,6 +70,7 @@ public class JtTerminal {
     @Column(nullable = false, length = 20)
     private Status status;
 
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(nullable = false, length = 64, columnDefinition = "char(64)")
     private String authTokenHash;
 

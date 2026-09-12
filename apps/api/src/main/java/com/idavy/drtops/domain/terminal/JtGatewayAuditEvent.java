@@ -8,6 +8,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "jt_gateway_audit_events")
@@ -43,6 +45,7 @@ public class JtGatewayAuditEvent {
 
     private Integer messageId;
 
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(length = 64, columnDefinition = "char(64)")
     private String payloadDigest;
 

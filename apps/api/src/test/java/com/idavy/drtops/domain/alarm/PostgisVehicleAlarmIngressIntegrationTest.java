@@ -38,7 +38,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 @EnabledIf("integrationEnvironmentAvailable")
-@SpringBootTest(properties = {"spring.jpa.hibernate.ddl-auto=none", "spring.jpa.open-in-view=false"})
+@SpringBootTest(properties = {"spring.jpa.hibernate.ddl-auto=validate", "spring.jpa.open-in-view=false"})
 class PostgisVehicleAlarmIngressIntegrationTest {
     private static final String MASTER_PROPERTY = "drt.integration.postgis";
     private static final String EXTERNAL_PROPERTY =
@@ -68,6 +68,7 @@ class PostgisVehicleAlarmIngressIntegrationTest {
     @Autowired VehicleRepository vehicles;
     @Autowired VehicleAlarmRepository alarms;
     @Autowired PlatformTransactionManager transactionManager;
+    @Autowired jakarta.persistence.EntityManager entityManager;
 
     @DynamicPropertySource
     static void postgisProperties(DynamicPropertyRegistry registry) {
@@ -108,6 +109,143 @@ class PostgisVehicleAlarmIngressIntegrationTest {
         jdbc.execute("drop function if exists reject_c1_audit_for_test()");
         jdbc.execute("drop trigger if exists trg_reject_alarm_outbox_for_test on vehicle_alarm_outbox");
         jdbc.execute("drop function if exists reject_alarm_outbox_for_test()");
+    }
+
+    @Test
+    void validatesAllMappedEntitiesAndKeepsTheFlywayDigestColumnTypes() throws Exception {
+        assertThat(entityManager.getEntityManagerFactory().getProperties()
+                .get("hibernate.hbm2ddl.auto")).isEqualTo("validate");
+        // Full application bootstrap validates the entire persistence unit, not an entity subset.
+        int entities = entityManager.getMetamodel().getEntities().size();
+        assertThat(entities).isPositive();
+        record ColumnSpec(String table, String column, int jdbcType, boolean nullable) { }
+        var columns = List.of(
+                new ColumnSpec("jt_gateway_audit_events", "payload_digest", java.sql.Types.CHAR, true),
+                new ColumnSpec("jt_terminals", "auth_token_hash", java.sql.Types.CHAR, false),
+                new ColumnSpec("vehicle_alarms", "payload_digest", java.sql.Types.CHAR, false),
+                new ColumnSpec("vehicle_alarms", "deduplication_key", java.sql.Types.CHAR, false),
+                new ColumnSpec("vehicle_alarm_attachments", "payload_digest", java.sql.Types.CHAR, true),
+                new ColumnSpec("vehicle_location_events", "payload_digest", java.sql.Types.CHAR, true),
+                new ColumnSpec("video_declaration_observations", "payload_digest", java.sql.Types.VARCHAR, false));
+        try (var connection = jdbc.getDataSource().getConnection()) {
+            for (var spec : columns) {
+                try (var column = connection.getMetaData().getColumns(
+                        null, "public", spec.table(), spec.column())) {
+                    assertThat(column.next()).as(spec.table() + "." + spec.column()).isTrue();
+                    assertThat(column.getInt("DATA_TYPE")).isEqualTo(spec.jdbcType());
+                    assertThat(column.getInt("COLUMN_SIZE")).isEqualTo(64);
+                    assertThat(column.getInt("NULLABLE")).isEqualTo(spec.nullable()
+                            ? java.sql.DatabaseMetaData.columnNullable
+                            : java.sql.DatabaseMetaData.columnNoNulls);
+                    assertThat(column.next()).isFalse();
+                }
+            }
+        }
+        assertThat(jdbc.queryForObject("select version from flyway_schema_history "
+                + "order by installed_rank desc limit 1", String.class)).isEqualTo("22");
+        System.out.println("C1_FULL_VALIDATE entities=" + entities + " CHAR_columns=6 VARCHAR_columns=1 schema=22");
+    }
+
+    @Test
+    void charDigestsRoundTripAndBindQueriesWithoutPaddingWhileNullsStayNull() {
+        var fixture = onboardAlarmFixture(false, "GOOD", "ADAS");
+        service.ingest(List.of(fixture.fact("ADAS", 1, "FORWARD_COLLISION", "CHAR-MAPPING", "START")));
+        UUID alarmId = jdbc.queryForObject("select id from vehicle_alarms where terminal_id=?",
+                UUID.class, fixture.terminalId());
+        String deduplicationKey = jdbc.queryForObject("select deduplication_key from vehicle_alarms where id=?",
+                String.class, alarmId);
+        assertThat(deduplicationKey).matches("[0-9a-f]{64}");
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            var terminal = entityManager.find(com.idavy.drtops.domain.terminal.JtTerminal.class, fixture.terminalId());
+            terminal.completeRegistration(2, "9".repeat(64));
+            UUID actor = jdbc.queryForObject("select id from user_accounts order by id limit 1", UUID.class);
+            var location = mappingLocation(fixture.vehicleId(), actor, "c".repeat(64));
+            var nullLocation = mappingLocation(fixture.vehicleId(), actor, null);
+            entityManager.persist(location);
+            entityManager.persist(nullLocation);
+            var audit = mappingAudit(fixture.terminalId(), fixture.vehicleId(), "d".repeat(64));
+            var nullAudit = mappingAudit(fixture.terminalId(), fixture.vehicleId(), null);
+            entityManager.persist(audit);
+            entityManager.persist(nullAudit);
+            var attachment = VehicleAlarmAttachment.register(alarmId, "VIDEO", "1", "MP4",
+                    "synthetic.mp4", 128L, "e".repeat(64),
+                    VehicleAlarmAttachment.Status.WAITING_MEDIA_SERVICE, Instant.now());
+            var nullAttachment = VehicleAlarmAttachment.register(alarmId, "VIDEO", "1", "MP4",
+                    null, null, null, VehicleAlarmAttachment.Status.WAITING_MEDIA_SERVICE, Instant.now());
+            entityManager.persist(attachment);
+            entityManager.persist(nullAttachment);
+            entityManager.flush();
+            entityManager.clear();
+            assertMappedDigest("JtTerminal", "authTokenHash", fixture.terminalId(), "9".repeat(64));
+            assertMappedDigest("JtGatewayAuditEvent", "payloadDigest", audit.getId(), "d".repeat(64));
+            assertMappedDigest("JtGatewayAuditEvent", "payloadDigest", nullAudit.getId(), null);
+            assertMappedDigest("VehicleLocationEvent", "payloadDigest", location.getId(), "c".repeat(64));
+            assertMappedDigest("VehicleLocationEvent", "payloadDigest", nullLocation.getId(), null);
+            assertMappedDigest("VehicleAlarm", "payloadDigest", alarmId, "a".repeat(64));
+            assertMappedDigest("VehicleAlarm", "deduplicationKey", alarmId, deduplicationKey);
+            assertMappedDigest("VehicleAlarmAttachment", "payloadDigest", attachment.getId(), "e".repeat(64));
+            assertMappedDigest("VehicleAlarmAttachment", "payloadDigest", nullAttachment.getId(), null);
+        });
+    }
+
+    @Test
+    void postgresStillRejectsShortLongUppercaseAndSpacePaddedAttachmentDigests() {
+        var fixture = onboardAlarmFixture(false, "GOOD", "ADAS");
+        service.ingest(List.of(fixture.fact("ADAS", 1, "FORWARD_COLLISION", "CHAR-INVALID", "START")));
+        UUID alarmId = jdbc.queryForObject("select id from vehicle_alarms where terminal_id=?",
+                UUID.class, fixture.terminalId());
+        record InvalidDigest(String value, String sqlState) { }
+        for (var invalid : List.of(new InvalidDigest("a".repeat(63), "23514"),
+                new InvalidDigest("a".repeat(65), "22001"),
+                new InvalidDigest("A".repeat(64), "23514"),
+                new InvalidDigest("a".repeat(63) + " ", "23514"))) {
+            Throwable failure = org.assertj.core.api.Assertions.catchThrowable(() ->
+                    new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+                        var attachment = VehicleAlarmAttachment.register(alarmId, "VIDEO", "1", "MP4",
+                                "invalid.mp4", 128L, invalid.value(),
+                                VehicleAlarmAttachment.Status.WAITING_MEDIA_SERVICE, Instant.now());
+                        entityManager.persist(attachment);
+                        entityManager.flush();
+                    }));
+            assertThat(failure).hasRootCauseInstanceOf(java.sql.SQLException.class);
+            while (failure.getCause() != null) failure = failure.getCause();
+            assertThat(((java.sql.SQLException) failure).getSQLState()).isEqualTo(invalid.sqlState());
+        }
+        assertThat(jdbc.queryForObject("select count(*) from vehicle_alarm_attachments where vehicle_alarm_id=?",
+                Integer.class, alarmId)).isZero();
+    }
+
+    private void assertMappedDigest(String entity, String property, UUID id, String expected) {
+        assertThat(entityManager.createQuery("select e." + property + " from " + entity + " e where e.id=:id",
+                String.class).setParameter("id", id).getSingleResult()).isEqualTo(expected);
+        if (expected != null) {
+            assertThat(entityManager.createQuery("select e.id from " + entity
+                    + " e where e.id=:id and e." + property + "=:digest", UUID.class)
+                    .setParameter("id", id).setParameter("digest", expected).getResultList()).containsExactly(id);
+        }
+    }
+
+    private static com.idavy.drtops.domain.location.VehicleLocationEvent mappingLocation(
+            UUID vehicleId, UUID actor, String digest) {
+        var at = java.time.OffsetDateTime.parse("2026-01-15T02:00:00Z");
+        var event = com.idavy.drtops.domain.location.VehicleLocationEvent.record(vehicleId, null, null, null,
+                com.idavy.drtops.domain.location.LocationEventType.TASK_STARTED,
+                com.idavy.drtops.domain.location.LocationSource.MANUAL_DISPATCHER,
+                "POINT(118 32)", new BigDecimal("118.0000000"), new BigDecimal("32.0000000"),
+                "GCJ02", "Synthetic mapping fixture", at, at, actor, null, null, null,
+                UUID.randomUUID(), "b".repeat(64), false, false);
+        // Populate this optional field without invoking unrelated GPS authorization in a mapping test.
+        org.springframework.test.util.ReflectionTestUtils.setField(event, "payloadDigest", digest);
+        return event;
+    }
+
+    private static com.idavy.drtops.domain.terminal.JtGatewayAuditEvent mappingAudit(
+            UUID terminalId, UUID vehicleId, String digest) {
+        return com.idavy.drtops.domain.terminal.JtGatewayAuditEvent.record(terminalId, vehicleId,
+                com.idavy.drtops.domain.terminal.JtGatewayAuditEvent.EventType.PROTOCOL_REJECTED,
+                com.idavy.drtops.domain.terminal.JtGatewayAuditEvent.Result.REJECTED,
+                "SYNTHETIC_MAPPING_TEST", "JT808_2019", 512, digest, null,
+                java.time.OffsetDateTime.now(), "c1-mapping-test");
     }
 
     @Test

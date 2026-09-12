@@ -9,6 +9,8 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "vehicle_alarm_attachments")
@@ -20,6 +22,7 @@ public class VehicleAlarmAttachment {
     @Column(name = "media_format", nullable = false, length = 40) private String mediaFormat;
     @Column(name = "sanitized_filename", nullable = true, length = 255) private String sanitizedFilename;
     @Column(name = "size_bytes", nullable = true) private Long sizeBytes;
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "payload_digest", nullable = true, length = 64, columnDefinition = "char(64)")
     private String payloadDigest;
     @Column(name = "external_media_reference", nullable = true, length = 255)
